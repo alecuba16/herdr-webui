@@ -114,7 +114,6 @@
   // dir. Returns true when navigation happened.
   async function openFolderAsWorkspace(dir) {
     const target = String(dir || "").replace(/\/+$/, "") || "/";
-    const navigate = goFn();
     const previousWorkspaceId = state.ws;
     const sameFolder = !!(state.workspaces || []).find(
       (w) => previousWorkspaceId && w.workspace_id === previousWorkspaceId &&
@@ -123,54 +122,88 @@
     // Step 1: an open workspace already lives on this folder. Plain
     // folders have no worktree row, so the worktree.open fallback below
     // cannot focus them; go() does.
-    const existing = (state.workspaces || []).find((w) =>
-      samePathValue(workspacePathOf(w), target),
-    );
+    const existing = await focusWorkspaceOnFolder(target);
     if (existing) {
-      if (navigate && existing.workspace_id !== state.ws) navigate(existing.workspace_id, null, null);
       if (!sameFolder) await autoCloseLeftWorkspace(previousWorkspaceId);
       return true;
     }
     if (typeof showBlocking === "function") showBlocking("Opening folder...");
     try {
-      // Step 2: git checkout. /api/worktrees?cwd=<dir> returns the
-      // worktree rows of the repo that contains the dir (empty for plain
-      // folders), so the dir is a checkout only when a row's path matches.
-      const data = await api(`/api/worktrees?cwd=${encodeURIComponent(target)}`);
-      const rows = ((data && data.result) || {}).worktrees || [];
-      const row = rows.find((candidate) => samePathValue(candidate.path, target)) || null;
-      if (row) {
-        const response = await postJson("/api/worktrees/open", {
-          workspace_id: null,
-          cwd: null,
-          path: row.path,
-          label: null,
-          branch: null,
-          open_terminal: terminalFlag(),
-        });
-        navigateToOpenedWorkspace(response);
-        await autoCloseLeftWorkspace(previousWorkspaceId);
-        return true;
-      }
-      // Step 3: plain folder, create a workspace on it.
-      const created = await postJson("/api/workspaces", {
-        label: pathBasenameOf(target) || target,
-        cwd: target,
-        open_terminal: terminalFlag(),
-      });
-      try {
-        await postJson("/api/recent-workspaces/record", {
-          path: target,
-          label: pathBasenameOf(target) || target,
-        });
-      } catch (_) {} // recents are a nice-to-have; the workspace is open
-      navigateToOpenedWorkspace(created);
-      await autoCloseLeftWorkspace(previousWorkspaceId);
-      return true;
+      // Steps 2 and 3: checkout or plain folder.
+      const opened = await openFolderUnchecked(target, previousWorkspaceId);
+      return !!opened;
     } finally {
       if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
-  window.HerdrOpenFolder = { openFolderAsWorkspace, navigateToOpenedWorkspace, autoCloseLeftWorkspace };
+  // Step 1 of the ladder, exported for the location bar's discovery
+  // popover: when an open workspace already lives on the folder, focus
+  // it and return its id. Plain folders have no worktree row, so the
+  // openFolderUnchecked fallback below cannot focus them; go() does.
+  async function focusWorkspaceOnFolder(dir) {
+    const target = String(dir || "").replace(/\/+$/, "") || "/";
+    const navigate = goFn();
+    const existing = (state.workspaces || []).find((w) =>
+      samePathValue(workspacePathOf(w), target),
+    );
+    if (!existing) return null;
+    if (navigate && existing.workspace_id !== state.ws) navigate(existing.workspace_id, null, null);
+    return existing.workspace_id || null;
+  }
+
+  // Steps 2 and 3 of the ladder (no step-1 focus), exported for the
+  // location bar's discovery popover: the popover already knows whether
+  // the folder is a checkout (worktree rows) or a plain folder, so it can
+  // skip the extra /api/worktrees probe the full ladder pays for.
+  async function openFolderUnchecked(dir, previousWorkspaceId) {
+    const target = String(dir || "").replace(/\/+$/, "") || "/";
+    previousWorkspaceId = previousWorkspaceId || state.ws;
+    // Step 2: git checkout.
+    const data = await api(`/api/worktrees?cwd=${encodeURIComponent(target)}`);
+    const rows = ((data && data.result) || {}).worktrees || [];
+    const row = rows.find((candidate) => samePathValue(candidate.path, target)) || null;
+    if (row) {
+      const response = await postJson("/api/worktrees/open", {
+        workspace_id: null,
+        cwd: null,
+        path: row.path,
+        label: null,
+        branch: null,
+        open_terminal: terminalFlag(),
+      });
+      navigateToOpenedWorkspace(response);
+      await autoCloseLeftWorkspace(previousWorkspaceId);
+      return response;
+    }
+    return createPlainWorkspace(target, previousWorkspaceId);
+  }
+
+  async function createPlainWorkspace(dir, previousWorkspaceId) {
+    const target = String(dir || "").replace(/\/+$/, "") || "/";
+    previousWorkspaceId = previousWorkspaceId || state.ws;
+    const created = await postJson("/api/workspaces", {
+      label: pathBasenameOf(target) || target,
+      cwd: target,
+      open_terminal: terminalFlag(),
+    });
+    try {
+      await postJson("/api/recent-workspaces/record", {
+        path: target,
+        label: pathBasenameOf(target) || target,
+      });
+    } catch (_) {} // recents are a nice-to-have; the workspace is open
+    navigateToOpenedWorkspace(created);
+    await autoCloseLeftWorkspace(previousWorkspaceId);
+    return created;
+  }
+
+  window.HerdrOpenFolder = {
+    openFolderAsWorkspace,
+    navigateToOpenedWorkspace,
+    autoCloseLeftWorkspace,
+    focusWorkspaceOnFolder,
+    openFolderUnchecked,
+    createPlainWorkspace,
+  };
 })();

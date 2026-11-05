@@ -1,5 +1,5 @@
 import { describe, it } from "node:test";
-import { doesNotThrow, equal, match, ok } from "node:assert/strict";
+import { deepEqual, doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { TextEncoder } from "node:util";
@@ -2481,6 +2481,131 @@ describe("mobile bundle load", () => {
     );
   });
 
+  it("creates a mobile worktree with pull-base when the checkbox is on", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("Pull base branch before create"), "create disclosure offers the pull-base checkbox");
+    ok(html.includes("HerdrMobile.updateWorktreeField('worktreePullBase', this.checked)"), "checkbox toggles the shared state field");
+
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile-create");
+    await ctx.HerdrMobile.createWorktree();
+    const createCalls = ctx.requests.filter(
+      (request) => request.url === "/api/worktrees" && request.opt.method === "POST",
+    );
+    ok(createCalls.length === 1, "one create POST");
+    equal(JSON.parse(createCalls[0].opt.body).pull_base, true, "checkbox state lands in pull_base");
+    equal(ctx.HerdrMobileAppDeps.state.worktreePullBase, false, "checkbox resets after a successful create");
+  });
+
+  it("retries a mobile pull-base create without pulling after the diverged-base question", async () => {
+    const answers = [];
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      confirm: () => true,
+    });
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/diverged");
+    const realFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/worktrees" && opt.method === "POST") {
+        answers.push(JSON.parse(opt.body).pull_base);
+        if (answers.length === 1)
+          throw Error("git pull: fatal: Not possible to fast-forward, aborting.");
+      }
+      return realFetch(url, opt);
+    };
+
+    await ctx.HerdrMobile.createWorktree();
+    await ctx.settle();
+
+    equal(answers.length, 2, "the diverged base re-POSTs once without pulling");
+    deepEqual(answers, [true, false]);
+    equal(ctx.HerdrMobileAppDeps.state.worktreeError, "", "the diverged first attempt does not surface as an error");
+  });
+
+  it("freezes the mobile retry payload while the diverged-base question is pending", async () => {
+    // Shrimp R2 / rooster HIGH regression: the user edits base/path/label
+    // while the first pull POST is pending and the confirm sheet is open.
+    // The no-pull retry must still send the originally submitted fields
+    // with only pull_base changed, and a second create call must be
+    // ignored while the first is pending.
+    const bodies = [];
+    let fail = true;
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      confirm: () => true,
+    });
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/frozen");
+    ctx.HerdrMobile.updateWorktreeField("worktreeBase", "main");
+    ctx.HerdrMobile.updateWorktreeField("worktreePath", "/wt/frozen");
+    ctx.HerdrMobile.updateWorktreeField("worktreeLabel", "frozen-label");
+    const realFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/worktrees" && opt.method === "POST") {
+        bodies.push(JSON.parse(opt.body));
+        if (fail) {
+          fail = false;
+          throw Error("git pull: fatal: Not possible to fast-forward, aborting.");
+        }
+      }
+      return realFetch(url, opt);
+    };
+
+    const submitting = ctx.HerdrMobile.createWorktree();
+    await ctx.settle(3);
+    // Edits while the confirm sheet is open must not reach the retry.
+    ctx.HerdrMobile.updateWorktreeField("worktreeBase", "different-base");
+    ctx.HerdrMobile.updateWorktreeField("worktreePath", "/wt/changed");
+    ctx.HerdrMobile.updateWorktreeField("worktreeLabel", "changed-label");
+    // A duplicate create is ignored while the first is pending.
+    await ctx.HerdrMobile.createWorktree();
+    await submitting;
+    await ctx.settle();
+
+    equal(bodies.length, 2, "the retry POSTs once, duplicate create ignored");
+    const [first, second] = bodies;
+    equal(first.pull_base, true, "first POST pulled");
+    equal(second.pull_base, false, "retry POSTs without pulling");
+    equal(second.base, "main", "retry keeps the submitted base");
+    equal(second.path, "/wt/frozen", "retry keeps the submitted path");
+    equal(second.label, "frozen-label", "retry keeps the submitted label");
+    equal(second.branch, "feature/frozen", "retry keeps the submitted branch");
+  });
+
+  it("keeps a diverged mobile pull-base failure as an error when the user declines", async () => {
+    const answers = [];
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      confirm: () => false,
+    });
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/diverged");
+    const realFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/worktrees" && opt.method === "POST") {
+        answers.push(JSON.parse(opt.body).pull_base);
+        throw Error("git pull: fatal: Not possible to fast-forward, aborting.");
+      }
+      return realFetch(url, opt);
+    };
+
+    await ctx.HerdrMobile.createWorktree();
+    await ctx.settle();
+
+    equal(answers.length, 1, "declining the question stops after the first POST");
+    ok(
+      String(ctx.HerdrMobileAppDeps.state.worktreeError).includes("fast-forward"),
+      "the pull failure surfaces as the create error",
+    );
+  });
+
   it("stores mobile exploration default directory and prefills worktree discovery path", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     runSource(ctx);
@@ -4528,5 +4653,273 @@ describe("mobile bundle load", () => {
       apiDegenerate.contextMeta(byIdDegenerate["ws-x"]).startsWith("wt-x"),
       "contextMeta never renders undefined for degenerate worktree metadata",
     );
+  });
+});
+
+describe("mobile worktrees screen actions", () => {
+  async function bootWorktreesScreen() {
+    const ctx = context("/session/default/workspace/w1");
+    runSource(ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.showScreen("worktrees");
+    await ctx.settle();
+    return ctx;
+  }
+
+  it("openRecent posts the chosen path and navigates to the opened workspace", async () => {
+    const ctx = await bootWorktreesScreen();
+    const fixture = { recent: [{ path: "/tmp/alpha", label: "alpha-recent", kind: "workspace" }] };
+    const fetch = ctx.fetch;
+    ctx.fetch = async (url, opt) => {
+      if (String(url) === "/api/recent-workspaces" && (!opt || !opt.method)) {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: true, status: 200, json: async () => fixture };
+      }
+      return fetch(url, opt);
+    };
+    // Re-enter the screen so loadRecent picks the fixture up.
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    ctx.HerdrMobile.showScreen("worktrees");
+    await ctx.settle();
+    const screenHtmlBefore = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(screenHtmlBefore.includes("alpha-recent"), "recent row rendered before open");
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openRecentWorkspace("/tmp/alpha");
+    await ctx.settle();
+    const posts = ctx.requests.slice(before).filter((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST");
+    equal(posts.length, 1, "one open POST recorded");
+    const body = JSON.parse(posts[0].opt.body);
+    equal(body.path, "/tmp/alpha");
+    equal(body.open_terminal, false, "workspace opens without a terminal by default");
+    equal(ctx.HerdrMobileAppDeps.state.ws, "w1", "navigation applied the server result");
+    ok(ctx.history.calls.some((call) => String(call.path).includes("workspace")), "selection pushed to history");
+  });
+
+  it("openRecent with an unknown path never posts", async () => {
+    const ctx = await bootWorktreesScreen();
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openRecentWorkspace("/not/in/recent");
+    await ctx.settle();
+    equal(
+      ctx.requests.slice(before).filter((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST").length,
+      0,
+      "unknown path never posts",
+    );
+  });
+
+  it("openRecent surfaces the server error on the worktrees screen", async () => {
+    const ctx = await bootWorktreesScreen();
+    const fixture = { recent: [{ path: "/tmp/alpha", label: "alpha-recent" }] };
+    const fetch = ctx.fetch;
+    ctx.fetch = async (url, opt) => {
+      if (String(url) === "/api/recent-workspaces" && (!opt || !opt.method)) {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: true, status: 200, json: async () => fixture };
+      }
+      if (String(url) === "/api/recent-workspaces" && opt.method === "POST") {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: false, status: 500, json: async () => ({ error: "open failed" }) };
+      }
+      return fetch(url, opt);
+    };
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    ctx.HerdrMobile.showScreen("worktrees");
+    await ctx.settle();
+    await ctx.HerdrMobile.openRecentWorkspace("/tmp/alpha");
+    await ctx.settle();
+    equal(ctx.HerdrMobileAppDeps.state.worktreeError, "open failed", "error lands on the screen state");
+    ok(
+      ctx.document.getElementById("mobileScreen").innerHTML.includes("open failed"),
+      "error rendered on the worktrees screen",
+    );
+  });
+
+  it("removeRecent keeps the other entries even when the server remove fails", async () => {
+    const ctx = await bootWorktreesScreen();
+    const fixture = {
+      recent: [
+        { path: "/tmp/alpha", label: "alpha-recent" },
+        { path: "/tmp/beta", label: "beta-recent" },
+      ],
+    };
+    const fetch = ctx.fetch;
+    ctx.fetch = async (url, opt) => {
+      if (String(url) === "/api/recent-workspaces" && (!opt || !opt.method)) {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: true, status: 200, json: async () => fixture };
+      }
+      if (String(url).startsWith("/api/recent-workspaces/remove")) {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: false, status: 500, json: async () => ({ error: "nope" }) };
+      }
+      return fetch(url, opt);
+    };
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    ctx.HerdrMobile.showScreen("worktrees");
+    await ctx.settle();
+    ok(
+      ctx.document.getElementById("mobileScreen").innerHTML.includes("alpha-recent"),
+      "alpha recent row visible before remove",
+    );
+    await ctx.HerdrMobile.removeRecentWorkspace("/tmp/alpha");
+    await ctx.settle();
+    const removePosts = ctx.requests.filter((request) => String(request.url).startsWith("/api/recent-workspaces/remove"));
+    equal(
+      removePosts.length,
+      1,
+      "remove POST attempted, requests were: " + ctx.requests.map((request) => request.url).join(", "),
+    );
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(!html.includes("alpha-recent"), "removed entry gone from the recent section");
+    ok(html.includes("beta-recent"), "beta stays in the list");
+  });
+
+  it("clearRecent empties the recent list after the server confirms", async () => {
+    const ctx = await bootWorktreesScreen();
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.clearRecentWorkspaces();
+    await ctx.settle();
+    ok(
+      ctx.requests.slice(before).some((request) => String(request.url).startsWith("/api/recent-workspaces/clear")),
+      "clear POST sent",
+    );
+    ok(
+      ctx.document.getElementById("mobileScreen").innerHTML.includes("No recent workspaces yet"),
+      "empty recent message rendered",
+    );
+  });
+
+  it("open on a discovered worktree posts the row path with the source pinned", async () => {
+    const ctx = await bootWorktreesScreen();
+    ctx.HerdrMobileAppDeps.state.worktreeDiscoverPath = "/tmp/alpha";
+    await ctx.HerdrMobile.loadWorktrees();
+    await ctx.settle();
+    const rows = ctx.HerdrMobileAppDeps.state.worktreeRows || [];
+    ok(rows.length >= 1, "fixture discovery produced a row");
+    equal(rows[0].path, "/tmp/alpha/mobile-worktree");
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openWorktree(0);
+    await ctx.settle();
+    const opens = ctx.requests.slice(before).filter((request) => String(request.url).startsWith("/api/worktrees/open"));
+    equal(opens.length, 1, "worktree open POST sent");
+    const body = JSON.parse(opens[0].opt.body);
+    equal(body.path, "/tmp/alpha/mobile-worktree");
+    equal(body.workspace_id, "w1", "source workspace pinned from the stamped row");
+    equal(body.cwd, null, "cwd null for rows with a stamped source workspace");
+  });
+
+  it("open on a missing row index is a no-op", async () => {
+    const ctx = await bootWorktreesScreen();
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openWorktree(99);
+    await ctx.settle();
+    equal(
+      ctx.requests.slice(before).filter((request) => String(request.url).startsWith("/api/worktrees/open")).length,
+      0,
+      "no open POST for a missing row",
+    );
+  });
+
+  it("createWorktree validates the branch before posting", async () => {
+    const ctx = await bootWorktreesScreen();
+    ctx.HerdrMobileAppDeps.state.worktreeDiscoverPath = "/tmp/alpha";
+    await ctx.HerdrMobile.loadWorktrees();
+    await ctx.settle();
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.createWorktree();
+    await ctx.settle();
+    const posts = ctx.requests.slice(before).filter((request) => String(request.url).startsWith("/api/worktrees") && request.opt.method === "POST");
+    equal(posts.length, 0, "empty branch never posts");
+    ok(
+      typeof ctx.HerdrMobileAppDeps.state.worktreeError === "string" && ctx.HerdrMobileAppDeps.state.worktreeError.length > 0,
+      "validation error surfaced on the screen state",
+    );
+  });
+
+  it("createWorktree posts the form and navigates to the created worktree", async () => {
+    const ctx = await bootWorktreesScreen();
+    ctx.HerdrMobileAppDeps.state.worktreeDiscoverPath = "/tmp/alpha";
+    await ctx.HerdrMobile.loadWorktrees();
+    await ctx.settle();
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/new");
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.createWorktree();
+    await ctx.settle();
+    const posts = ctx.requests.slice(before).filter((request) => String(request.url).startsWith("/api/worktrees") && request.opt.method === "POST");
+    equal(posts.length, 1, "create POST sent");
+    equal(ctx.HerdrMobileAppDeps.state.ws, "w1", "navigation applied the created result");
+    equal(ctx.HerdrMobileAppDeps.state.worktreeBranch, "", "branch field cleared after create");
+  });
+
+  it("createWorktree surfaces a server error and keeps the form state", async () => {
+    const ctx = await bootWorktreesScreen();
+    const fetch = ctx.fetch;
+    ctx.fetch = async (url, opt) => {
+      if (String(url).startsWith("/api/worktrees") && opt.method === "POST") {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: false, status: 500, json: async () => ({ error: "create boom" }) };
+      }
+      return fetch(url, opt);
+    };
+    ctx.HerdrMobileAppDeps.state.worktreeDiscoverPath = "/tmp/alpha";
+    await ctx.HerdrMobile.loadWorktrees();
+    await ctx.settle();
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/broke");
+    await ctx.HerdrMobile.createWorktree();
+    await ctx.settle();
+    equal(ctx.HerdrMobileAppDeps.state.worktreeError, "create boom", "server error surfaced");
+    equal(ctx.HerdrMobileAppDeps.state.worktreeBranch, "feature/broke", "draft preserved on failure");
+  });
+
+  it("openFolderAsWorkspace posts the folder and auto-closes the empty previous workspace", async () => {
+    const ctx = await bootWorktreesScreen();
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openFolderAsWorkspace("/tmp/other");
+    await ctx.settle();
+    const posts = ctx.requests.slice(before).filter((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST");
+    equal(posts.length, 1, "folder open POST sent");
+    const body = JSON.parse(posts[0].opt.body);
+    equal(body.path, "/tmp/other");
+  });
+
+  it("openFolderAsWorkspace surfaces a server error and clears the wait state", async () => {
+    const ctx = await bootWorktreesScreen();
+    const fetch = ctx.fetch;
+    ctx.fetch = async (url, opt) => {
+      if (String(url) === "/api/recent-workspaces" && opt.method === "POST") {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: false, status: 500, json: async () => ({ error: "folder boom" }) };
+      }
+      return fetch(url, opt);
+    };
+    await ctx.HerdrMobile.openFolderAsWorkspace("/tmp/bad");
+    await ctx.settle();
+    equal(ctx.HerdrMobileAppDeps.state.worktreeError, "folder boom", "folder error surfaced");
+    equal(ctx.HerdrMobileAppDeps.state.worktreeLoading, false, "wait state cleared");
+    equal(ctx.HerdrMobileAppDeps.state.worktreeLoadingLabel, "", "wait label cleared");
+  });
+
+  it("openFolderAsWorkspace with an empty path is a no-op", async () => {
+    const ctx = await bootWorktreesScreen();
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openFolderAsWorkspace("   ");
+    await ctx.settle();
+    equal(
+      ctx.requests.slice(before).filter((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST").length,
+      0,
+      "blank path never posts",
+    );
+  });
+
+  it("setWorktreeCreateExpanded toggles the create disclosure", async () => {
+    const ctx = await bootWorktreesScreen();
+    ctx.HerdrMobile.setWorktreeCreateExpanded(true);
+    ok(ctx.HerdrMobileAppDeps.state.worktreeCreateExpanded === true, "expanded flag set");
+    ctx.HerdrMobile.setWorktreeCreateExpanded(false);
+    ok(ctx.HerdrMobileAppDeps.state.worktreeCreateExpanded === false, "expanded flag cleared");
   });
 });

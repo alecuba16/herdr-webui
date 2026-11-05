@@ -1,6 +1,94 @@
 # Release notes
 
 ## Unreleased
+- Switching between the branch and worktree chip popovers no longer drops
+  the popover into the viewport's top-left corner. Opening one closed the
+  other first, and that close re-rendered the bar and detached the chip
+  the user had just clicked; the anchor then read a zero rect and clamped
+  to the corner. Both openers now measure the chip before closing
+  anything, so the popover always lands under the chip that opened it.
+- Every folder, branch, and worktree popover now shares one implementation:
+  the same row markup, list ordering, and create-form styling, all
+  anchored locally to the chip or field that opened them. Discovery rows
+  reuse the chip popover's row builder (current-branch check, hover
+  metadata, checked-out badges; the delete action stays on the chip
+  popover), the branch list body (filter pinning, remote ordering,
+  load-more, empty states) is one helper for all three popovers, and the
+  discovery popover no longer renders rows with its own hand-rolled
+  markup. Typing in a filter never re-runs git: the popover's own
+  opening probe already delivered the full remote list (the payload
+  has no server-side cap; the preload count is a render cap), so every
+  keystroke is a pure local operation.
+- The diverged-base question (pull requested but the base cannot
+  fast-forward) is one shared helper now: the desktop worktree modal, the
+  location bar create form, and the mobile create sheet all ask the same
+  message through their own confirm surface, and the worktree path
+  builders (root resolution, path join, branch slug) live in the shared
+  helpers instead of being re-implemented per surface.
+- The create form has one Base-ref picker, and the Base input is its
+  only trigger. The old browser datalist plus Load refs / Fetch remotes
+  controls sat next to the controlled dropdown and duplicated its job
+  with a second endpoint; they are gone, and so is the separate chevron
+  button: a caret drawn inside the field shows the dropdown, the input
+  click opens it (and never closes it), the branch create form keeps
+  free-text Base with no dropdown, and both create paths use the same
+  free-text fallback to the current branch as before.
+- Opening a folder that is a plain checkout on a non-default branch now
+  offers the default branch first. The discovery list shows an
+  "Open on main" style row above the branch list naming the current
+  branch; picking it opens the folder and switches to the default
+  branch in one confirmed action, while the regular rows keep the
+  plain open and explicit switch paths.
+- The create view is form-only in both discovery modes, and the Base
+  dropdown got the geometry it needed. The dropdown now anchors to
+  the Base field instead of pushing the form down: it overlays the
+  rows below, caps its own height to the viewport, and flips above
+  the field when the screen has no room under it. The dropdown trigger
+  stays in the worktree create form only, the branch create form keeps its
+  own list, a picker left open never leaks into a re-entered create
+  view, a successful retry puts focus back on the dropdown filter,
+  and cancel after a branch-chip create entry restores the branch
+  list it came from instead of the worktree rows.
+- A failed worktree create keeps the TUI pull prompt open. The prompt
+  closed on a backend error and left the git error in the footer with
+  no retry affordance, so creating again meant re-typing `c` and the
+  whole branch/path/base chain; now the pull question stays up with
+  the error, Enter retries the same draft, and Esc abandons it.
+- The worktree create form and the branch picker share one popover, and
+  the branch picker is now a dropdown on the Base ref field itself. The
+  create view in the worktrees list rendered the form alone, so the
+  base ref had to be typed blind; it now shows just the form, and a
+  click on the Base ref field opens a filter plus local and remote branch
+  rows in a dropdown anchored to the field. Clicking a row fills the
+  Base ref field and closes the dropdown, Escape closes the dropdown
+  before the popover, and the same shape applies when creating from
+  the branches list. A failed branch read names the failure and offers
+  a retry instead of a false empty list.
+- The discovery popover opens from the empty dashboard too. The empty
+  boot state rendered no popover slot, treated two empty working
+  directories as different discovery contexts, and the opening click
+  closed the popover it had just opened, so "Open workspace or
+  worktree" did nothing visible from a fresh app; all three are fixed
+  with regressions.
+- Pull-base stays a fast-forward when the user has `pull.rebase`
+  configured. `git pull --ff-only` alone still rebases and fails on any
+  dirty tree, so the checkbox's "fast-forward" promise was wrong on
+  desktop, TUI and mobile; the pull now passes `--no-rebase`.
+- Every worktree open/create entry now lands in the desktop discovery
+  flow. The workspace strip's worktree chip, the search palette, KeyT,
+  new-workspace/new-panel fallbacks, the worktrees drawer, and git-log
+  branch rows all open the shared discovery popover instead of the old
+  modal, and create entries prefill the base from the selected
+  checkout's branch.
+- Worktree creation can pull the base first, everywhere. The desktop
+  inline form's pull-base checkbox now has TUI and mobile parity: the
+  TUI create prompt asks for the base ref after the checkout path
+  (adding the word `pull` fast-forwards it first), and the mobile
+  worktrees screen shows the same checkbox and sends `pull_base` on the
+  create POST. A base that cannot fast-forward offers creating without
+  the pull on desktop and mobile; the TUI shows the git error.
+- Picking a folder from the desktop location bar now shows its worktrees or branches before opening it. Non-git folders open directly. An "Open folder as workspace" action stays available while discovery loads or fails, and branches checked out elsewhere open that worktree instead of attempting a switch.
+- New branches and worktrees can start from a local or remote ref, with an explicit Fetch remotes action. Worktree creation stays in the discovery dialog with branch-name and base fields, using a generated checkout path. If opening a folder succeeds but switching its branch fails, the folder stays open and the error explains the partial result.
 - Git diff coloring is back in every layout. Unified hunks rendered zero rows since the browser-logic move made the renderer depend on server chunk rows that only side-by-side ever had, so the client now derives unified rows and side-by-side pairs from chunk lines when the server sends none, which also covers large-diff previews that strip server rows. Row backgrounds had been silently invalid since the theme rework wrote color-mix percentages without the percent sign, so 11 tint declarations dropped their backgrounds while borders kept working and hid the bug. The diff color variables also only resolved inside the sidebar panel, while diff rows render in center pane tabs since the split-pane rework, so the variable block now scopes onto the pane mounts too.
 - Brew now runs the WebUI as a service. The tap formula ships a
   `service` block, so `brew services start alecuba16/tap/herdr-webui`

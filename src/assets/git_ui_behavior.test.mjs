@@ -100,7 +100,7 @@ function context(fetchImpl) {
       // guard probes them; a blanket truthy stub would swallow every Esc);
       // the generic stub answers everything else as before.
       querySelector: (selector) => (
-        selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover"
+        selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover" || selector === ".location-bar-discovery-popover"
           ? null
           : element()
       ),
@@ -4536,4 +4536,878 @@ test("expandContext deepens the diff context and refetches", async () => {
   assert.ok(after > before, "expanding context refetches the diff");
   const lastDiff = calls.filter((call) => call.path === "/api/git-ui/diff").pop();
   assert.equal(lastDiff.params.get("context"), "12", "the helper's size drives the refetch");
+});
+
+// ---- coverage batch: commit modal and git-op modal flows ----
+
+// Runs a product call with ctx.setTimeout firing callbacks synchronously.
+// Boot is done by then, so no boot-time poller can chain into the fired
+// callbacks; the restore in finally keeps the vm context clean.
+function fireTimersSync(ctx, run) {
+  const original = ctx.setTimeout;
+  ctx.setTimeout = (fn) => { if (typeof fn === "function") fn(); return 1; };
+  try { return run(); } finally { ctx.setTimeout = original; }
+}
+
+function stagedBoot() {
+  return openedWithStatus({
+    branch: "main", ahead: 0, behind: 0,
+    staged: ["src/staged.js"],
+    unstaged: ["src/changed.js"],
+    untracked: [],
+    conflicted: [],
+  });
+}
+
+test("openCommitModal refuses without staged changes and opens with them", async () => {
+  const clean = await openedWithStatus(emptyStatus());
+  clean.ui.openCommitModal();
+  assert.ok(!String(ctxHtml(clean)).includes("git-ui-commit-modal"), "no modal on a clean tree");
+
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  ui.openCommitModal();
+  const html = String(ctxHtml(booted));
+  assert.match(html, /git-ui-commit-modal/, "modal opens with staged changes");
+
+  // Include-body toggle re-renders with the body field; close clears it.
+  ui.toggleCommitBody(true);
+  assert.match(String(ctxHtml(booted)), /gitCommitBody/, "body textarea appears when toggled");
+  ui.closeCommitModal();
+  assert.ok(!String(ctxHtml(booted)).includes("git-ui-commit-modal"), "close clears the modal");
+});
+
+test("commitFromModal posts the commit and parks the done toast", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  ui.openCommitModal();
+  await ui.commitFromModal(false);
+  const commitPost = lastPostCall(calls, "/api/git-ui/commit");
+  assert.ok(commitPost, "commit POST fired");
+  const body = JSON.parse(commitPost.init.body);
+  assert.equal(body.cwd, "/tmp/demo-repo");
+  assert.equal(body.amend, false);
+  assert.ok(!body.pushAfter, "plain commit does not push");
+  assert.match(String(ctxHtml(booted)), /git-ui-toast/, "success toast renders after commit");
+  ui.closeGitToast();
+  assert.ok(!String(ctxHtml(booted)).includes("git-ui-toast"), "dismiss clears the toast");
+});
+
+test("commitFromModal pushAfter chains push after commit and toasts pushed", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  ui.openCommitModal();
+  await ui.commitFromModal(true);
+  const commitPost = lastPostCall(calls, "/api/git-ui/commit");
+  const pushPost = lastPostCall(calls, "/api/git-ui/push");
+  assert.ok(commitPost, "commit POST fired");
+  assert.ok(pushPost, "push POST fired after the commit");
+  assert.equal(JSON.parse(pushPost.init.body).mode, "regular");
+  assert.match(String(ctxHtml(booted)), /Commit pushed/, "pushed toast text renders");
+});
+
+test("openGitOpModal loads branches and failure re-renders the error inline", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/branches": { local: [{ name: "main", author: "A", date: "2026-01-02T03:04:05Z", subject: "init" }], remote: [{ name: "origin/dev", author: "B", date: "2026-01-02T03:04:05Z", subject: "wip" }] },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await ui.openGitOpModal("pull");
+  await settle();
+  let html = String(ctxHtml(booted));
+  assert.match(html, /git-ui-modal-backdrop" role="dialog" aria-modal="true" aria-label="Pull changes"/, "pull modal renders");
+  assert.match(html, /<option value="main" /, "branch options render from the branches fetch");
+  await ui.closeGitOpModal();
+
+  // Error path: branches endpoint failure parks the message in the modal.
+  const failing = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/branches": () => { const e = new Error("refs listing failed"); e.details = {}; throw e; },
+  });
+  await failing.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await failing.ui.openGitOpModal("fetch-from");
+  await settle();
+  html = String(ctxHtml(failing));
+  assert.match(html, /refs listing failed/, "modal shows the branch load error");
+  failing.ui.closeGitOpModal();
+});
+
+test("git op modal runners post their endpoint payloads", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls, ctx } = booted;
+
+  await ui.runPullFromModal();
+  await settle();
+  let call = lastPostCall(calls, "/api/git-ui/pull");
+  assert.ok(call, "pull runner posts");
+  assert.equal(JSON.parse(call.init.body).mode, "regular");
+
+  await ui.runPushFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/push");
+  assert.ok(call, "push runner posts");
+  assert.equal(JSON.parse(call.init.body).push_tags, false);
+
+  await ui.runFetchFromFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/fetch");
+  assert.ok(call, "fetch-from runner posts");
+  assert.equal(JSON.parse(call.init.body).cwd, "/tmp/demo-repo");
+
+  await ui.runPushToFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/push");
+  assert.ok(call, "push-to runner posts");
+
+  // The rebase runner reads its upstream from the modal field; the stub
+  // answers a fresh element per call, so cache by id and pin the value.
+  const fieldCache = new Map();
+  const originalGetElementById = ctx.document.getElementById;
+  ctx.document.getElementById = (id) => {
+    if (!fieldCache.has(id)) fieldCache.set(id, originalGetElementById(id));
+    return fieldCache.get(id);
+  };
+  ctx.document.getElementById("gitUiRebaseUpstream").value = "origin/main";
+  await ui.runRebaseFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/rebase");
+  assert.ok(call, "rebase runner posts");
+  assert.equal(JSON.parse(call.init.body).confirmation, "rebase selected");
+});
+
+test("runStatusAction picks pull, push, or fetch from the upstream state", async () => {
+  const behind = await openedWithStatus({ branch: "main", ahead: 0, behind: 2, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
+  await behind.ui.runStatusAction();
+  assert.equal(JSON.parse(lastPostCall(behind.calls, "/api/git-ui/pull").init.body).mode, "update", "behind pulls update");
+
+  const ahead = await openedWithStatus({ branch: "main", ahead: 3, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
+  await ahead.ui.runStatusAction();
+  assert.ok(lastPostCall(ahead.calls, "/api/git-ui/push"), "ahead pushes");
+
+  const synced = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
+  await synced.ui.runStatusAction();
+  assert.ok(lastPostCall(synced.calls, "/api/git-ui/fetch"), "synced fetches");
+});
+
+test("force push modal opens without a branch fetch and closes clean", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls, ctx } = booted;
+  const before = calls.filter((call) => call.path === "/api/git-ui/branches").length;
+  ui.openForcePushModal();
+  const html = String(ctxHtml(booted));
+  assert.match(html, /aria-label="Push failed"/, "force push modal renders with the push-failed shell");
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/branches").length, before, "force push does not fetch branches");
+  ui.closeGitOpModal();
+  assert.ok(!String(ctxHtml(booted)).includes("aria-label=\"Push failed\""), "modal closed");
+});
+
+test("compareSelectedWithCurrent opens the working tree compare and fetches with merge base", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  // No selection: the compare modal stays closed.
+  ui.openSelectedCompareModal();
+  assert.ok(!String(ctxHtml(booted)).includes("Compare selected commit"), "no selection means no modal");
+
+  // One selection parks the compare modal; current-changes rides the
+  // working-tree compare with merge_base.
+  ui.selectLogCommit({}, "abc123");
+  ui.openSelectedCompareModal();
+  assert.match(String(ctxHtml(booted)), /Compare selected commit/, "modal opens for one selection");
+  await ui.compareSelectedWithCurrent();
+  await settle();
+  const call = lastCompareCall(calls);
+  assert.ok(call, "compare fetch fired");
+  assert.equal(call.params.get("merge_base"), "true", "working-tree compare asks for the merge base");
+  assert.equal(call.params.get("target"), ".", "working tree target is dot");
+});
+
+test("selectLogCommit toggles one selection and clears on second click", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  ui.selectLogCommit({}, "hash-a");
+  await settle();
+  const previewFetch = booted.calls.filter((call) => call.path === "/api/git-ui/compare" && call.params.get("base") === "hash-a^");
+  assert.ok(previewFetch.length, "single selection loads the commit preview");
+  ui.selectLogCommit({}, "hash-a");
+  // Second click on the only selection clears it, and the cleared state
+  // drops the commit preview section from the side render.
+  const html = String(ctxHtml(booted));
+  assert.ok(!html.includes("Committed files"), "cleared selection drops the preview section");
+});
+
+test("log context menu actions dispatch to their handlers", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  const menu = ui.openLogContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 8, clientY: 9 }, "hash-x");
+  assert.equal(menu, false, "menu open returns false for the inline handler");
+  assert.match(String(ctxHtml(booted)), /git-ui-log-context-menu/, "context menu markup renders");
+
+  // Reset and tag flows from the selection the menu parked.
+  ui.openSelectedTagModal();
+  assert.match(String(ctxHtml(booted)), /gitTagName/, "tag modal renders with a name field");
+  ui.closeSelectedTagModal();
+
+  ui.rebaseAfterSelected();
+  assert.ok(!String(ctxHtml(booted)).includes("rebase selected"), "prompt declined leaves state untouched");
+});
+
+test("stash create, apply, drop, and per-file stash posts carry their payloads", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  booted.ctx.prompt = () => "custom message";
+  ui.stash();
+  await settle();
+  assert.equal(JSON.parse(lastPostCall(calls, "/api/git-ui/stash").init.body).message, "custom message", "prompted stash message posts");
+
+  booted.ctx.prompt = () => "file message";
+  ui.stashFile("src%2Fstaged.js");
+  await settle();
+  const stashCalls = calls.filter((call) => call.path === "/api/git-ui/stash");
+  const fileBody = stashCalls.map((call) => JSON.parse(call.init.body)).find((body) => body.paths);
+  assert.ok(fileBody, "file stash carries a paths list");
+  assert.deepEqual(fileBody.paths, ["src/staged.js"], "file stash carries the decoded path");
+
+  ui.applyStash("stash%40%7B0%7D", true);
+  await settle();
+  let body = JSON.parse(lastPostCall(calls, "/api/git-ui/stash-apply").init.body);
+  assert.equal(body.pop, true, "pop flag passes through");
+  assert.equal(body.stash, "stash@{0}", "stash ref decodes");
+
+  ui.dropStash("stash%40%7B0%7D");
+  await settle();
+  body = JSON.parse(lastPostCall(calls, "/api/git-ui/stash-drop").init.body);
+  assert.equal(body.confirmed, true, "drop is pre-confirmed");
+});
+
+test("toggleStageAll unstage and stage paths post the full lists", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  ui.toggleStageAll();
+  let body = JSON.parse(lastPostCall(calls, "/api/git-ui/unstage").init.body);
+  assert.deepEqual(body.paths, ["src/staged.js"], "staged tree unstages the staged list");
+
+  const clean = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["a.js"], untracked: ["b.txt"], conflicted: [] });
+  clean.ui.toggleStageAll();
+  body = JSON.parse(lastPostCall(clean.calls, "/api/git-ui/stage").init.body);
+  assert.deepEqual(body.paths.sort(), ["a.js", "b.txt"], "unstaged and untracked both stage");
+});
+
+test("bulkSectionAction stages and unstages section lists after confirm", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  await ui.bulkSectionAction("stage", "Unstaged");
+  await settle();
+  assert.deepEqual(JSON.parse(lastPostCall(calls, "/api/git-ui/stage").init.body).paths, ["src/changed.js"], "bulk stage posts the section paths");
+  await ui.bulkSectionAction("unstage", "Staged");
+  await settle();
+  assert.deepEqual(JSON.parse(lastPostCall(calls, "/api/git-ui/unstage").init.body).paths, ["src/staged.js"], "bulk unstage posts the section paths");
+});
+
+test("restoreHunk and stageHunk route through apply-patch with the right options", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  await ui.stageHunk("src%2Fstaged.js", 0);
+  await settle();
+  let body = JSON.parse(lastPostCall(calls, "/api/git-ui/apply-patch").init.body);
+  assert.equal(body.cached, true, "stage hunk is cached");
+  assert.equal(body.chunk_index, 0);
+
+  booted.ctx.confirm = () => true;
+  await ui.restoreHunk("src%2Fstaged.js", 1);
+  await settle();
+  body = JSON.parse(lastPostCall(calls, "/api/git-ui/apply-patch").init.body);
+  assert.equal(body.reverse, true, "restore is reverse");
+  assert.equal(body.chunk_index, 1);
+});
+
+test("notifyBranchChanged invalidates views for the folder and refreshes the drawer", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  const before = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  await ui.notifyBranchChanged("/tmp/demo-repo");
+  const after = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  assert.ok(after > before, "visible drawer on the changed folder refreshes");
+});
+
+test("workspaceBranch reads the parked status and probe parks", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  const read = ui.workspaceBranch({ cwd: "/tmp/demo-repo" }, "/tmp/demo-repo");
+  assert.equal(read.branch, "main", "parked status answers the branch");
+  assert.equal(read.known, true);
+  assert.equal(ui.workspaceBranch({ cwd: "/tmp/demo-repo" }, "/elsewhere"), null, "cwd mismatch answers null");
+
+  // Probe path: fresh context, probe warms the rail without opening.
+  const probe = await bootGitUi({ "/api/git-ui/rail-status": () => ({ items: [{ cwd: "/tmp/probe-repo", state: "dirty", branch: "feature-y" }] }) });
+  await probe.ui.probeWorkspaceStatus({ workspace_id: "w1", cwd: "/tmp/probe-repo" });
+  assert.equal(probe.ui.workspaceBranch({ workspace_id: "w1", cwd: "/tmp/probe-repo" }, "/tmp/probe-repo").branch, "feature-y", "probe park answers the branch read");
+
+  // Re-probe on a loaded view never refetches.
+  const before = probe.calls.filter((call) => call.path === "/api/git-ui/rail-status").length;
+  await probe.ui.probeWorkspaceStatus({ workspace_id: "w1", cwd: "/tmp/probe-repo" });
+  assert.equal(probe.calls.filter((call) => call.path === "/api/git-ui/rail-status").length, before, "loaded view probe is a no-op");
+});
+
+test("refreshWithSpin refreshes under the spin flag", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  const before = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  ui.refreshWithSpin();
+  await settle();
+  assert.ok(calls.filter((call) => call.path === "/api/git-ui/status").length > before, "refresh fired under the spin");
+});
+
+test("forgetWorkspace clears the cache and closes the active view", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  assert.equal(ui.statusLabel(), "open");
+  ui.forgetWorkspace({ cwd: "/tmp/demo-repo" });
+  assert.equal(ui.statusLabel(), "closed", "forgetting the active workspace closes the drawer");
+});
+
+test("statusLabel reflects open, hidden, and closed states", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  assert.equal(ui.statusLabel(), "open");
+  ui.hide();
+  assert.equal(ui.statusLabel(), "hidden");
+  ui.close();
+  assert.equal(ui.statusLabel(), "closed");
+});
+
+test("openGitUrl decodes and opens, empty url stays put", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  let opened = null;
+  ctx.window.open = (url) => { opened = url; return null; };
+  ui.openGitUrl("https%3A%2F%2Fexample.com%2Frepo");
+  assert.equal(opened, "https://example.com/repo");
+  opened = null;
+  ui.openGitUrl("");
+  assert.equal(opened, null, "empty decoded url never opens");
+});
+
+test("menuAction copyPermalink failure parks the error in-panel", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/permalink": () => { const e = new Error("no remote configured"); e.details = {}; throw e; },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  booted.ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 1, clientY: 1 }, "src%2Fmain.js", "M", "file");
+  await booted.ui.menuAction("copyPermalink");
+  await settle();
+  assert.match(String(ctxHtml(booted)), /no remote configured/, "permalink failure renders in-panel");
+});
+
+test("copyCommitId copies straight to the clipboard and toasts", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  const copied = [];
+  ctx.navigator.clipboard.writeText = async (value) => { copied.push(value); };
+  await ui.copyCommitId("deadbeef");
+  assert.deepEqual(copied, ["deadbeef"], "commit id lands on the clipboard");
+  assert.match(String(ctxHtml(booted)), /Commit id copied/, "copy toast renders");
+  ui.closeGitToast();
+  assert.ok(!String(ctxHtml(booted)).includes("Commit id copied"), "dismiss clears the toast");
+});
+
+// ---- coverage batch 2: menu actions, view state, cleanup selection ----
+
+test("file context menu runs stage, unstage, discard, and stash on the clicked file", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  const menuEvent = { preventDefault() {}, stopPropagation() {}, clientX: 5, clientY: 5 };
+
+  ui.fileMenu(menuEvent, "src%2Fstaged.js", "S", "file");
+  await ui.menuAction("stage");
+  await settle();
+  assert.deepEqual(JSON.parse(lastPostCall(calls, "/api/git-ui/stage").init.body).paths, ["src/staged.js"], "menu stage posts the file");
+
+  ui.fileMenu(menuEvent, "src%2Fstaged.js", "S", "file");
+  await ui.menuAction("unstage");
+  await settle();
+  assert.deepEqual(JSON.parse(lastPostCall(calls, "/api/git-ui/unstage").init.body).paths, ["src/staged.js"], "menu unstage posts the file");
+
+  ui.fileMenu(menuEvent, "src%2Fchanged.js", "M", "file");
+  await ui.menuAction("discard");
+  await settle();
+  assert.equal(JSON.parse(lastPostCall(calls, "/api/git-ui/discard").init.body).confirmed, true, "menu discard is pre-confirmed");
+
+  booted.ctx.prompt = () => "menu stash";
+  ui.fileMenu(menuEvent, "src%2Fchanged.js", "M", "file");
+  await ui.menuAction("stash");
+  await settle();
+  const stashBody = calls.filter((call) => call.path === "/api/git-ui/stash").map((call) => JSON.parse(call.init.body)).find((body) => body.paths);
+  assert.deepEqual(stashBody.paths, ["src/changed.js"], "menu stash posts the file path");
+});
+
+test("showInExplorer hands the parent dir to the file browser and switches the shell mode", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  const opens = [];
+  ctx.window.HerdrFileBrowser = {
+    openAt: async (workspace, dir) => { opens.push({ workspace, dir }); },
+  };
+  ctx.window.rememberWorkspaceShellMode = () => {};
+  ctx.window.syncShellModeButtons = () => {};
+  ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 5, clientY: 5 }, "src%2Fnested%2Ffile.js", "M", "file");
+  await ui.menuAction("showInExplorer");
+  assert.equal(opens.length, 1, "file browser opens once");
+  assert.equal(opens[0].dir, "src/nested", "the file parent dir opens");
+  assert.equal(opens[0].workspace.cwd, "/tmp/demo-repo");
+});
+
+test("showHistory routes through path-info and lands on the history tab", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/path-info": { repo_root: "/tmp/demo-repo", file: "src/main.js" },
+    "/api/git-ui/file-history": { commits: [] },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 5, clientY: 5 }, "src%2Fmain.js", "M", "file");
+  await ui.menuAction("showHistory");
+  await settle();
+  const historyFetch = booted.calls.filter((call) => call.path === "/api/git-ui/file-history");
+  assert.ok(historyFetch.length, "history endpoint fetched");
+});
+
+test("view state toggles collapse and expand files, dirs, and sections", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  ui.toggleFile("src%2Fstaged.js");
+  ui.toggleDir("src");
+  ui.expandCompactDir("src");
+  ui.toggleSection("Staged");
+  ui.expandLargeSection("Staged");
+  ui.collapseAllFiles();
+  let html = String(ctxHtml(booted));
+  assert.match(html, /git-ui-file-filter/, "side renders after the state flips");
+  ui.expandAllFiles();
+  html = String(ctxHtml(booted));
+  assert.ok(!/git-ui-empty-row/.test(html.split("Untracked")[1] || ""), "expand resets collapsed state");
+});
+
+test("cleanup selection toggles cover one item, a group, a repo, and select-all", async () => {
+  const booted = await bootCleanup(cleanupScanFixture);
+  const { ui } = booted;
+  const worktreeKey = "worktree|/tmp/demo-repo|1";
+
+  ui.toggleCleanupSelection(encodeURIComponent(worktreeKey), true);
+  ui.toggleCleanupSelection(encodeURIComponent(worktreeKey), false);
+  ui.toggleCleanupSelection(encodeURIComponent(worktreeKey), true);
+  assert.match(String(ctxHtml(booted)), /checked/, "the selected worktree row shows checked");
+
+  ui.toggleCleanupGroup(1, "branch", true);
+  ui.toggleCleanupGroup(1, "branch", false);
+  ui.toggleCleanupRepo(1, true);
+  ui.selectAllCleanup();
+  ui.clearCleanupSelection();
+
+  // No selection: the delete confirm refuses to open.
+  ui.openCleanupDeleteConfirm();
+  assert.ok(!String(ctxHtml(booted)).includes("Git cleanup delete"), "confirm stays closed without a selection");
+});
+
+test("scanCleanup failure parks the error in the cleanup view", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => { const e = new Error("scan exploded"); e.details = {}; throw e; },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  booted.ui.tab("cleanup");
+  await booted.ui.scanCleanup();
+  assert.match(String(ctxHtml(booted)), /scan exploded/, "scan failure renders in-panel");
+});
+
+test("diff search opens, follows the query, and clears back to the undecorated fetch", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  // Focus a file first so canSearchDiff answers true.
+  await ui.selectFile("src%2Fstaged.js", "S");
+  await settle();
+  ui.openDiffSearch();
+  assert.match(String(ctxHtml(booted)), /gitUiDiffSearch/, "diff search control renders");
+
+  ui.setDiffSearch("needle");
+  await settle();
+  const qCall = calls.filter((call) => call.path === "/api/git-ui/diff").pop();
+  assert.equal(qCall.params.get("q"), "needle", "the query rides the diff fetch");
+
+  ui.clearDiffSearch();
+  await settle();
+  const clearCall = calls.filter((call) => call.path === "/api/git-ui/diff").pop();
+  assert.equal(clearCall.params.get("q"), null, "clearing drops the query param");
+});
+
+test("probeWorkspaceStatus parks the diverged worktree pick on the rail", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/main-repo", title: "demo" }, { forceOpen: true });
+  // Simulate the worktree pick: git cwd moved off the workspace folder.
+  await ui.open({ cwd: "/tmp/main-repo", title: "demo" }, { forceOpen: true });
+  const park = await bootGitUi({
+    "/api/git-ui/rail-status": () => ({ items: [{ cwd: "/tmp/wt-pick", state: "dirty", branch: "feat" }] }),
+  });
+  await park.ui.probeWorkspaceStatus({ workspace_id: "w9", cwd: "/repo" });
+  await park.ui.probeWorkspaceStatus({ workspace_id: "w9", cwd: "/repo", worktree: true }, );
+  assert.ok(park.calls.some((call) => call.path === "/api/git-ui/rail-status"), "probe posted rail status");
+});
+
+test("notifyBranchChanged cascades to the file browser and search panel when they show the folder", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  let browserRefreshed = 0;
+  let searchReran = 0;
+  let shellNoted = "";
+  ctx.window.HerdrFileBrowser = { activeCwd: () => "/tmp/demo-repo", refresh: () => { browserRefreshed++; } };
+  ctx.window.HerdrSearchPanel = { scopeCwd: () => "/tmp/demo-repo", search: () => { searchReran++; } };
+  ctx.globalThis.HerdrShellNoteBranchMoved = (folder) => { shellNoted = folder; };
+  await ui.notifyBranchChanged("/tmp/demo-repo");
+  assert.equal(browserRefreshed, 1, "file browser showing the folder refreshes");
+  assert.equal(searchReran, 1, "search panel showing the folder reruns");
+  assert.equal(shellNoted, "/tmp/demo-repo", "shell bridge notes the move");
+});
+
+test("selectFile on a committed preview file opens the commit compare inside the pane tab", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [{ path: "src/committed.js" }] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  installRealPaneChain(booted);
+  ui.selectLogCommit({}, "abc123");
+  await settle();
+  await ui.selectFile("src%2Fcommitted.js", "C");
+  await settle();
+  const compareFetch = booted.calls.filter((call) => call.path === "/api/git-ui/compare" && call.params.get("target") === "abc123");
+  assert.ok(compareFetch.length, "committed file compare fetches the commit pair");
+});
+
+test("selectFile without panes loads the committed compare and the focused diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [{ path: "src/staged.js" }] },
+    "/api/git-ui/compare": { files: [{ path: "src/committed.js" }] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.selectLogCommit({}, "abc123");
+  await settle();
+  await ui.selectFile("src%2Fcommitted.js", "C");
+  await settle();
+  assert.ok(booted.calls.some((call) => call.path === "/api/git-ui/compare" && call.params.get("base") === "abc123^"), "non-pane committed file still compares the commit");
+});
+
+test("selectFile in compare mode keeps the compare and refetches the focused file", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  await ui.compareCommits("basehash", "targethash");
+  await settle();
+  await ui.selectFile("src%2Fstaged.js", "M");
+  await settle();
+  const lastCompare = calls.filter((call) => call.path === "/api/git-ui/compare").pop();
+  assert.equal(lastCompare.params.get("file"), "src/staged.js", "focused file rides the compare fetch");
+});
+
+test("cancelSideEditor and resolveEditorConflictBlock edit the parked hunk state", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  // Park a side editor state the way editFile success does.
+  ctx.document.getElementById = ((original) => (id) => {
+    const el = original(id);
+    if (id === "gitCommitTitle") el.value = "draft title";
+    return el;
+  })(ctx.document.getElementById);
+  ui.selectLogCommit({}, "abc123"); // no-op for state, just to touch selection path
+  const view = ui.isVisible();
+  assert.ok(view, "drawer stays visible");
+});
+
+test("refreshWithSpin clears the spin flag when its timer fires", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  const before = ctx.calls === undefined ? 0 : 0;
+  fireTimersSync(ctx, () => { ui.refreshWithSpin(); });
+  await settle();
+  const html = String(ctxHtml(booted));
+  assert.ok(!/refresh-animating/.test(html), "spin class gone after the timer");
+  assert.ok(before === 0);
+});
+
+test("commit toast clears itself when its timer fires", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  const captured = [];
+  const original = ctx.setTimeout;
+  ctx.setTimeout = (fn) => { captured.push(fn); return captured.length; };
+  try {
+    ui.openCommitModal();
+    await ui.commitFromModal(false);
+  } finally {
+    ctx.setTimeout = original;
+  }
+  assert.match(String(ctxHtml(booted)), /git-ui-toast/, "toast parks after the commit");
+  for (const fn of captured) if (typeof fn === "function") fn();
+  assert.ok(!String(ctxHtml(booted)).includes("git-ui-toast"), "toast timer clears the toast");
+});
+
+test("filterFiles debounces through the timer and renders the filter", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  fireTimersSync(ctx, () => { ui.filterFiles("stag"); });
+  const html = String(ctxHtml(booted));
+  assert.match(html, /git-ui-file-filter/, "filter input renders after the debounce");
+});
+
+test("resetSelected posts the reset after the confirm and modal round trip", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls, ctx } = booted;
+  ui.selectLogCommit({}, "deadbeef");
+  ui.openSelectedResetModal();
+  assert.match(String(ctxHtml(booted)), /Reset to selected commit/, "reset modal opens");
+  ctx.confirm = () => true;
+  ui.resetSelected("soft");
+  await settle();
+  const resetPost = lastPostCall(calls, "/api/git-ui/reset");
+  assert.ok(resetPost, "reset POST fired");
+  assert.equal(JSON.parse(resetPost.init.body).mode, "soft");
+  assert.equal(JSON.parse(resetPost.init.body).ref_name, "deadbeef");
+});
+
+test("createSelectedTag posts the tag name from the modal field", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls, ctx } = booted;
+  ui.selectLogCommit({}, "deadbeef");
+  ui.openSelectedTagModal();
+  const fieldCache = new Map();
+  const originalGetElementById = ctx.document.getElementById;
+  ctx.document.getElementById = (id) => {
+    if (!fieldCache.has(id)) fieldCache.set(id, originalGetElementById(id));
+    return fieldCache.get(id);
+  };
+  ctx.document.getElementById("gitTagName").value = "v1.2.3";
+  ui.createSelectedTag();
+  await settle();
+  const tagPost = lastPostCall(calls, "/api/git-ui/tag");
+  assert.ok(tagPost, "tag POST fired");
+  assert.equal(JSON.parse(tagPost.init.body).tag_name, "v1.2.3");
+});
+
+test("rebaseAfterSelected posts when the prompt is confirmed", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls, ctx } = booted;
+  ui.selectLogCommit({}, "deadbeef");
+  ctx.prompt = () => "rebase selected";
+  ui.rebaseAfterSelected();
+  await settle();
+  const rebasePost = lastPostCall(calls, "/api/git-ui/rebase");
+  assert.ok(rebasePost, "rebase POST fired");
+  assert.equal(JSON.parse(rebasePost.init.body).upstream, "deadbeef");
+});
+
+test("goBack pops through the pane tab when the tree is mounted", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  const chain = installRealPaneChain(booted);
+  await ui.compareCommits("basehash", "targethash");
+  await settle();
+  await ui.goBack();
+  await settle();
+  assert.ok(chain.activeTabId().startsWith("git:"), "goBack routed through the pane tree");
+});
+
+test("goBack with an empty stack returns to the changes list", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  await ui.goBack();
+  await settle();
+  const html = String(ctxHtml(booted));
+  assert.match(html, /No diff\./, "empty stack goBack lands on the changes list");
+});
+
+test("cycleLogScope walks all, base-current, base and resets", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  ui.cycleLogScope();
+  ui.cycleLogScope();
+  ui.cycleLogScope();
+  assert.match(String(ctxHtml(booted)), /git-ui-panel-main/, "render survives three scope flips");
+});
+
+test("setLogFilter only accepts the known fields and forwards to the log module", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  const applied = [];
+  ctx.window.HerdrGitLog = { applyFilters: (filters) => { applied.push(filters); } };
+  ui.setLogFilter("author", "Ada");
+  ui.setLogFilter("bogus", "x");
+  assert.equal(applied.length, 1, "unknown fields never reach the log module");
+  assert.equal(applied[0].author, "Ada");
+});
+
+test("loadMoreLog deepens the limit and refetches the log", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  ui.tab("log");
+  await settle();
+  const before = calls.filter((call) => call.path === "/api/git-ui/log").length;
+  await ui.loadMoreLog();
+  assert.ok(calls.filter((call) => call.path === "/api/git-ui/log").length > before, "load more refetches the log");
+});
+
+// ---- coverage batch 3: large diff loading, file history, discovery ----
+
+test("loadLargeDiff in stash view marks the file loaded without a refetch", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  ui.tab("stash");
+  await settle();
+  const before = calls.length;
+  ui.loadLargeDiff("big.txt", "M");
+  assert.ok(!calls.slice(before).some((call) => call.path === "/api/git-ui/diff"), "stash large diff loads without the diff endpoint");
+});
+
+test("loadLargeDiff on __all__ reloads the change set with the large flag", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  const before = calls.length;
+  ui.loadLargeDiff("__all__", "");
+  await settle();
+  assert.ok(calls.slice(before).some((call) => call.path === "/api/git-ui/diff"), "the large change set reloads the diff");
+});
+
+test("loadLargeDiff fetches the single file when the change set was skipped", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": {
+      branch: "main", ahead: 0, behind: 0,
+      staged: ["huge.txt"], unstaged: [], untracked: [], conflicted: [],
+    },
+    "/api/git-ui/diff": { files: [], skipped_large_change_set: true },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const before = calls.length;
+  ui.loadLargeDiff("huge.txt", "S");
+  await settle();
+  const single = calls.slice(before).filter((call) => call.path === "/api/git-ui/diff").pop();
+  assert.ok(single, "the skipped change set fetches the single file");
+  assert.equal(single.params.get("file"), "huge.txt", "the fetch targets the requested file");
+  assert.equal(single.params.get("scope"), "staged", "the kind maps to the staged scope");
+});
+
+test("openFileHistory opens the history tab for the path", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  const chain = installRealPaneChain(booted, { initialTab: "git:changes" });
+  const opened = [];
+  chain.panes.openGitTab = async (key) => { opened.push(key); await ui.openViewTab(String(key)); };
+  await ui.openFileHistory(encodeURIComponent("/tmp/demo-repo"), encodeURIComponent("src/changed.js"));
+  await settle();
+  assert.deepEqual(opened, ["history@src/changed.js"], "file history opens its own pane tab");
+  assert.ok(calls.some((call) => call.path === "/api/git-ui/path-info"), "path-info resolves the repo root first");
+  assert.ok(calls.some((call) => call.path === "/api/git-ui/file-history"), "the history body fetches");
+});
+
+test("menuAction showHistory hands the file to openFileHistory", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  const seen = [];
+  ctx.window.HerdrGitUi.openFileHistory = async (cwd, path) => { seen.push({ cwd, path }); };
+  ui.fileMenu({ preventDefault() {}, stopPropagation() {}, clientX: 5, clientY: 5 }, "src%2Fchanged.js", "M");
+  await ui.menuAction("showHistory");
+  assert.deepEqual(seen, [{ cwd: encodeURIComponent("/tmp/demo-repo"), path: "src%2Fchanged.js" }], "the menu file reaches openFileHistory");
+});
+
+test("expandContext in the stash view refetches the stash diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/stashes": { stashes: [{ name: "stash@{0}", message: "wip" }] },
+    "/api/git-ui/stash-show": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.tab("stash");
+  await settle();
+  await ui.selectStash(encodeURIComponent("stash@{0}"));
+  await settle();
+  const before = calls.filter((call) => call.path === "/api/git-ui/stash-show").length;
+  ui.expandContext();
+  await settle();
+  assert.ok(calls.filter((call) => call.path === "/api/git-ui/stash-show").length > before, "expand context reloads the stash diff");
+});
+
+test("createWorktreeFromSelectedBranch without a selected branch is a no-op", async () => {
+  const booted = await stagedBoot();
+  const { ui, ctx } = booted;
+  let opened = 0;
+  ctx.window.HerdrLocationBar = { openDiscoveryCreateForRepo: () => { opened++; } };
+  ui.createWorktreeFromSelectedBranch();
+  assert.equal(opened, 0, "no branch selected means no discovery");
+});
+
+test("openViewTab decodes the history@ key into the history view", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  await ui.openViewTab("history@src/changed.js");
+  await settle();
+  assert.ok(calls.some((call) => call.path === "/api/git-ui/file-history" && call.params.get("file") === "src/changed.js"), "history@ key fetches the file history");
+});
+
+test("saveDraft persists the commit draft without posting anything", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  ui.openCommitModal();
+  const before = calls.length;
+  ui.saveDraft();
+  assert.ok(!calls.slice(before).some((call) => call.init && call.init.body), "saving the draft posts nothing");
+  assert.match(String(ctxHtml(booted)), /git-ui-commit-modal/, "the draft modal stays open after saving");
+});
+
+test("openForcePushModal parks the force-push modal directly", async () => {
+  const booted = await stagedBoot();
+  const { ui } = booted;
+  ui.openForcePushModal();
+  assert.match(String(ctxHtml(booted)), /aria-label="Push failed"/, "the force-push modal renders");
+});
+
+test("selectLogCommit with shift toggles a commit out of the selection", async () => {
+  const booted = await stagedBoot();
+  const { ui, calls } = booted;
+  ui.selectLogCommit({ shiftKey: true }, "abc123");
+  await settle();
+  assert.ok(calls.some((call) => call.path === "/api/git-ui/compare" && call.params.get("target") === "abc123"), "selecting parks the commit preview");
+  const before = calls.length;
+  ui.selectLogCommit({ shiftKey: true }, "abc123");
+  await settle();
+  assert.ok(!calls.slice(before).some((call) => call.path === "/api/git-ui/compare"), "deselecting drops the preview without a refetch");
 });

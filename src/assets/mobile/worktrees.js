@@ -37,10 +37,13 @@
         state.worktreeDiscoverPath = explorationDefaultDirectoryOption();
       const createOpen = state.worktreeCreateExpanded ? " open" : "";
       const busy = !!state.worktreeLoading;
+      // Create wait only: discovery and open waits keep the form live,
+      // the create POST freezes it (payload snapshot + duplicate guard).
+      const creating = busy && state.worktreeLoadingLabel === "Creating worktree...";
       const loading = busy ? `<div class="mobile-loading">${escapeHtml(state.worktreeLoadingLabel || "Working...")}</div>` : "";
       const pickFolder = (field, label) => `<button type="button" class="mobile-btn mobile-browse-btn" ${busy ? "disabled" : ""} onclick="HerdrMobile.browseDirectory(${jsArg(field)})" aria-label="Browse ${escapeHtml(label)}">Browse</button>`;
       const discovered = !!(state.worktreeDiscoverPath.trim() && (rows.length || state.worktreeSource));
-      return `<section class="mobile-section mobile-form mobile-worktree-flow"><h2>Worktrees</h2><div class="mobile-settings-group"><h3>Choose folder</h3><p class="mobile-help">Pick any repo or worktrees folder. herdr discovers linked worktrees inside it and offers to open the folder, open a worktree, or create a new checkout.</p><label><span>Repo or worktrees folder</span><input value="${escapeHtml(state.worktreeDiscoverPath)}"${inputAttrs()} oninput="HerdrMobile.updateWorktreeField('worktreeDiscoverPath', this.value)" placeholder="~/Documents/code/repo-or-worktrees">${pickFolder("worktreeDiscoverPath", "repo or worktrees folder")}</label><button class="mobile-btn primary mobile-wide" ${busy ? "disabled" : ""} onclick="HerdrMobile.loadWorktrees()">${busy && state.worktreeLoadingLabel === "Discovering worktrees..." ? "Discovering..." : "Find worktrees"}</button>${loading}${state.worktreeError ? `<div class="mobile-error">${escapeHtml(state.worktreeError)}</div>` : ""}</div>${discovered || state.worktreeError ? `<div class="mobile-settings-group"><h3>Results</h3><div class="mobile-worktree-source"><strong>${escapeHtml(source.repo_name || "Current workspace repo")}</strong><span>${escapeHtml(sourcePath || state.worktreeDiscoverPath)}</span><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.openFolderAsWorkspace(${jsArg(state.worktreeDiscoverPath)})">${busy && state.worktreeLoadingLabel === "Opening workspace..." ? "Opening..." : "Open as workspace"}</button></div><div class="mobile-worktree-list">${rows.length ? rows.map((row, index) => renderRow(row, index)).join("" ) : '<div class="mobile-loading">No linked worktrees found in this folder</div>'}</div></div>` : ""}<details class="mobile-settings-group mobile-disclosure"${createOpen} onchange="HerdrMobile.setWorktreeCreateExpanded(this.open)"><summary>Create new worktree</summary><label><span>Branch name</span><input value="${escapeHtml(state.worktreeBranch)}"${inputAttrs()} oninput="HerdrMobile.updateWorktreeField('worktreeBranch', this.value)" placeholder="feature/my-branch"></label><label><span>Base branch</span><input value="${escapeHtml(state.worktreeBase)}"${inputAttrs()} oninput="HerdrMobile.updateWorktreeField('worktreeBase', this.value)" placeholder="HEAD or main"></label><label><span>Label</span><input value="${escapeHtml(state.worktreeLabel)}"${inputAttrs()} oninput="HerdrMobile.updateWorktreeField('worktreeLabel', this.value)" placeholder="optional"></label><label><span>Checkout path</span><input value="${escapeHtml(state.worktreePath)}"${inputAttrs()} oninput="HerdrMobile.updateWorktreeField('worktreePath', this.value)" placeholder="backend default if blank">${pickFolder("worktreePath", "checkout path")}</label><button class="mobile-btn primary mobile-wide" ${busy ? "disabled" : ""} onclick="HerdrMobile.createWorktree()">${busy && state.worktreeLoadingLabel === "Creating worktree..." ? "Creating..." : "Create and open"}</button></details><details class="mobile-settings-group mobile-disclosure"><summary>Recent workspaces</summary><div class="mobile-worktree-list">${renderRecentSection()}</div></details></section>`;
+      return `<section class="mobile-section mobile-form mobile-worktree-flow"><h2>Worktrees</h2><div class="mobile-settings-group"><h3>Choose folder</h3><p class="mobile-help">Pick any repo or worktrees folder. herdr discovers linked worktrees inside it and offers to open the folder, open a worktree, or create a new checkout.</p><label><span>Repo or worktrees folder</span><input value="${escapeHtml(state.worktreeDiscoverPath)}"${inputAttrs()} oninput="HerdrMobile.updateWorktreeField('worktreeDiscoverPath', this.value)" placeholder="~/Documents/code/repo-or-worktrees">${pickFolder("worktreeDiscoverPath", "repo or worktrees folder")}</label><button class="mobile-btn primary mobile-wide" ${busy ? "disabled" : ""} onclick="HerdrMobile.loadWorktrees()">${busy && state.worktreeLoadingLabel === "Discovering worktrees..." ? "Discovering..." : "Find worktrees"}</button>${loading}${state.worktreeError ? `<div class="mobile-error">${escapeHtml(state.worktreeError)}</div>` : ""}</div>${discovered || state.worktreeError ? `<div class="mobile-settings-group"><h3>Results</h3><div class="mobile-worktree-source"><strong>${escapeHtml(source.repo_name || "Current workspace repo")}</strong><span>${escapeHtml(sourcePath || state.worktreeDiscoverPath)}</span><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.openFolderAsWorkspace(${jsArg(state.worktreeDiscoverPath)})">${busy && state.worktreeLoadingLabel === "Opening workspace..." ? "Opening..." : "Open as workspace"}</button></div><div class="mobile-worktree-list">${rows.length ? rows.map((row, index) => renderRow(row, index)).join("" ) : '<div class="mobile-loading">No linked worktrees found in this folder</div>'}</div></div>` : ""}<details class="mobile-settings-group mobile-disclosure"${createOpen} onchange="HerdrMobile.setWorktreeCreateExpanded(this.open)"><summary>Create new worktree</summary><label><span>Branch name</span><input value="${escapeHtml(state.worktreeBranch)}"${inputAttrs()} ${creating ? "disabled" : ""} oninput="HerdrMobile.updateWorktreeField('worktreeBranch', this.value)" placeholder="feature/my-branch"></label><label><span>Base branch</span><input value="${escapeHtml(state.worktreeBase)}"${inputAttrs()} ${creating ? "disabled" : ""} oninput="HerdrMobile.updateWorktreeField('worktreeBase', this.value)" placeholder="HEAD or main"></label><label class="mobile-worktree-pull"><input type="checkbox" ${busy ? "disabled" : ""} ${state.worktreePullBase ? "checked" : ""} onchange="HerdrMobile.updateWorktreeField('worktreePullBase', this.checked)"><span>Pull base branch before create</span></label><label><span>Label</span><input value="${escapeHtml(state.worktreeLabel)}"${inputAttrs()} ${creating ? "disabled" : ""} oninput="HerdrMobile.updateWorktreeField('worktreeLabel', this.value)" placeholder="optional"></label><label><span>Checkout path</span><input value="${escapeHtml(state.worktreePath)}"${inputAttrs()} ${creating ? "disabled" : ""} oninput="HerdrMobile.updateWorktreeField('worktreePath', this.value)" placeholder="backend default if blank">${pickFolder("worktreePath", "checkout path")}</label><button class="mobile-btn primary mobile-wide" ${busy ? "disabled" : ""} onclick="HerdrMobile.createWorktree()">${busy && state.worktreeLoadingLabel === "Creating worktree..." ? "Creating..." : "Create and open"}</button></details><details class="mobile-settings-group mobile-disclosure"><summary>Recent workspaces</summary><div class="mobile-worktree-list">${renderRecentSection()}</div></details></section>`;
     }
 
     function renderRow(row, index) {
@@ -268,6 +271,15 @@
     }
 
     function updateField(field, value) {
+      // While a create POST is pending the submitted draft is frozen;
+      // edits land only after the outcome resolves. Discovery and open
+      // waits keep the fields live.
+      if (
+        state.worktreeLoading &&
+        state.worktreeLoadingLabel === "Creating worktree..." &&
+        field !== "worktreeDiscoverPath"
+      )
+        return;
       state[field] = value;
     }
 
@@ -308,6 +320,11 @@
     }
 
     async function create() {
+      // Duplicate-submit guard: the rendered button disables while busy,
+      // but create() stays callable (tests, stale taps). One pending
+      // create at a time, matching the desktop inline form's creating
+      // lock.
+      if (state.worktreeLoading) return;
       state.worktreeError = "";
       const helpers = globalThis.HerdrAppHelpers || {},
         source = state.worktreeSource || {},
@@ -338,24 +355,52 @@
         render();
         return;
       }
-      setLoading(true, "Creating worktree...");
-      try {
-        const response = await api("/api/worktrees", {
+      // Desktop inline-form parity: diverged base with pull requested
+      // asks once, then re-POSTs without pulling inside the same pending
+      // frame (the loading lock stays held across the retry). The
+      // submitted fields are snapshotted once, so a no-pull retry sends
+      // the exact same create with only pull_base changed, no matter
+      // what the user edits while the question is pending.
+      const submitted = {
+        base: state.worktreeBase,
+        label: state.worktreeLabel,
+        path: state.worktreePath,
+      };
+      const postCreate = (pullBase) =>
+        api("/api/worktrees", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
             helpers.buildWorktreeCreateBody({
               source: resolved,
               branch,
-              base: state.worktreeBase,
-              label: state.worktreeLabel,
-              path: state.worktreePath,
-              pullBase: false,
+              base: submitted.base,
+              label: submitted.label,
+              path: submitted.path,
+              pullBase,
             }),
           ),
         });
+      setLoading(true, "Creating worktree...");
+      try {
+        let response;
+        if (state.worktreePullBase) {
+          try {
+            response = await postCreate(true);
+          } catch (err) {
+            if (!(worktreeHelpers.pullFastForwardFailed && worktreeHelpers.pullFastForwardFailed(err.message) && await confirmFn(
+              `Git could not fast-forward the base branch before creating the worktree:\n\n${err.message}\n\nCreate the worktree without pulling first?`,
+            ))) {
+              throw err;
+            }
+            response = await postCreate(false);
+          }
+        } else {
+          response = await postCreate(false);
+        }
         state.worktreeBranch = "";
         state.worktreeBase = "";
+        state.worktreePullBase = false;
         state.worktreeLabel = "";
         state.worktreePath = "";
         state.worktreeLoading = false;

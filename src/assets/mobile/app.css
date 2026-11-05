@@ -1239,6 +1239,28 @@ body.mobile-keyboard-open .mobile-location-strip {
   width: 18px;
   height: 18px;
 }
+/* Worktree create disclosure: pull-base checkbox (desktop inline-form
+   parity). Scoped inside .mobile-form so the form's own label/input
+   rules (grid layout, full-width, 44px-min text inputs) cannot flatten
+   the checkbox row; the row keeps a 44px touch target. */
+.mobile-form label.mobile-worktree-pull {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--fg);
+  min-height: 44px;
+  padding: 4px 0;
+}
+.mobile-form label.mobile-worktree-pull input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  flex: none;
+  margin: 0;
+  padding: 0;
+}
 /* Prompt card is a bottom sheet now (same .mobile-sheet chrome as the
    confirm/rename sheets). These rules only tune the question specifics. */
 .mobile-prompt-card {

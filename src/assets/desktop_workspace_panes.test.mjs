@@ -1126,7 +1126,7 @@ test("newTabForPane parks the placement and the sync consumes it once", async ()
 // Standalone harness: the modal and the path resolver come from the rest
 // of the bundle, so inject them on the context the way the full app has
 // them hoisted.
-test("newTabForPane with no workspace opens the worktree modal instead of dying", async () => {
+test("newTabForPane with no workspace opens the seeded discovery flow instead of dying", async () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, null);
   const panes = ctx.HerdrWorkspacePanes;
@@ -1139,14 +1139,13 @@ test("newTabForPane with no workspace opens the worktree modal instead of dying"
     newTabCalls++;
   };
   const opens = [];
-  ctx.openWorktreeOpenModal = (path, discover) => opens.push({ path, discover });
+  ctx.window.HerdrLocationBar = { openDiscoveryForFolder: (path) => opens.push({ path }) };
   ctx.selectedWorkspaceRepoPath = () => "/seed/repo";
 
   await panes.newTabForPane("p1");
   assert.equal(newTabCalls, 0, "no backend panel is created without a workspace");
-  assert.equal(opens.length, 1, "the press opens the worktree modal");
-  assert.equal(opens[0].path, "/seed/repo", "modal seeds the current folder");
-  assert.equal(opens[0].discover, true, "modal starts discovery right away");
+  assert.equal(opens.length, 1, "the press opens the discovery flow");
+  assert.equal(opens[0].path, "/seed/repo", "discovery seeds the current folder");
 });
 
 // Closing a terminal that lives in a non-sync-target leaf must prune it

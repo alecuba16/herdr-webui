@@ -4971,10 +4971,21 @@ fn git_branch_exists(repo: &str, branch: &str) -> Result<bool, String> {
 }
 
 fn pull_base_branch(cwd: &str, base: &str) -> Result<(), String> {
+    // --no-rebase keeps the fast-forward promise even when the user has
+    // pull.rebase configured globally; a rebase on a dirty tree would fail
+    // where a fast-forward would succeed.
     let output = if base == "HEAD" {
-        run_git_capture(&["-C", cwd, "pull", "--ff-only"])?
+        run_git_capture(&["-C", cwd, "pull", "--ff-only", "--no-rebase"])?
     } else {
-        run_git_capture(&["-C", cwd, "pull", "--ff-only", "origin", base])?
+        run_git_capture(&[
+            "-C",
+            cwd,
+            "pull",
+            "--ff-only",
+            "--no-rebase",
+            "origin",
+            base,
+        ])?
     };
     if output.status.success() {
         Ok(())

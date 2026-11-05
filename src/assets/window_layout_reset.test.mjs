@@ -501,4 +501,276 @@ describe("window layout reset integration", () => {
     assert.equal(probe.dashWithGit, false, "git drawer: dashboard stays visible");
     assert.equal(probe.dashWithWorkspace, true, "workspace open: dashboard hides");
   });
+
+  it("state sort ranks grouped workspaces by status, not by list position", async () => {
+    // A linked worktree and its main checkout form one group; workspaceSort
+    // "state" must order the children inside the group by agent status.
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      state.workspaces = [
+        { workspace_id: "main", label: "Main", agent_status: "idle", worktree: { repo_root: "/repo/herdr", repo_name: "herdr", repo_key: "/repo/herdr" } },
+        { workspace_id: "wt-a", label: "feature-a", agent_status: "working", worktree: { repo_root: "/repo/herdr", repo_name: "herdr", repo_key: "/repo/herdr", is_linked_worktree: true } },
+        { workspace_id: "wt-b", label: "feature-b", agent_status: "blocked", worktree: { repo_root: "/repo/herdr", repo_name: "herdr", repo_key: "/repo/herdr", is_linked_worktree: true } },
+      ];
+      state.ws = "main";
+      state.allTabs = [];
+      state.tabs = [];
+      state.panes = [];
+      state.agents = [];
+      options.workspaceSort = "state";
+      const html = renderSpaces();
+      window.__probe = { html };
+    `, ctx);
+    const html = vm.runInContext("window.__probe.html", ctx);
+    // blocked ranks 0 and working ranks 4 in the priority map, so wt-b
+    // renders before wt-a inside the group.
+    const posBlocked = html.indexOf('data-workspace-id="wt-b"');
+    const posWorking = html.indexOf('data-workspace-id="wt-a"');
+    assert.ok(posBlocked > -1 && posWorking > -1, "both children rendered");
+    assert.ok(posBlocked < posWorking, "blocked worktree sorts before working one");
+    assert.ok(html.includes('workspace-group-main'), "main checkout rendered as group parent");
+  });
+
+  it("drag sort falls back to workspaceOrderIndex for unknown ids", async () => {
+    // workspaceOrderIndex returns 999999 for ids missing from the saved
+    // drag order, so grouped children keep a stable position instead of
+    // disappearing from the sidebar.
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      state.workspaces = [
+        { workspace_id: "main", label: "Main", worktree: { repo_root: "/repo/herdr", repo_key: "/repo/herdr" } },
+        { workspace_id: "wt-a", label: "feature-a", worktree: { repo_root: "/repo/herdr", repo_key: "/repo/herdr", is_linked_worktree: true } },
+        { workspace_id: "wt-b", label: "feature-b", worktree: { repo_root: "/repo/herdr", repo_key: "/repo/herdr", is_linked_worktree: true } },
+      ];
+      state.workspaceOrder = ["wt-b", "wt-a"];
+      state.ws = "wt-b";
+      state.allTabs = [];
+      state.tabs = [];
+      state.panes = [];
+      state.agents = [];
+      options.workspaceSort = "drag";
+      const html = renderSpaces();
+      window.__probe = { html, unknownIndex: workspaceOrderIndex("nope") };
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.equal(probe.unknownIndex, 999999, "unknown id lands at the end of the drag order");
+    const posB = probe.html.indexOf('data-workspace-id="wt-b"');
+    const posA = probe.html.indexOf('data-workspace-id="wt-a"');
+    assert.ok(posB > -1 && posA > -1, "both children rendered");
+    assert.ok(posB < posA, "saved drag order puts wt-b first");
+  });
+
+  it("agentAttentionRank without the cache map falls back to order.indexOf", async () => {
+    // Direct 2-arg comparator callers hit the uncached rank path; a
+    // status outside the four known groups ranks after every group in
+    // the configured order.
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      options.agentSortMode = "attention";
+      options.stuckWorkingEnabled = true;
+      options.agentStatusOrder = ["working", "blocked", "idle"];
+      workingDismissals["term-x"] = true;
+      window.__probe = {
+        workingRank: agentAttentionRank({ agent_status: "working" }, ["working", "blocked", "idle", "done"], null),
+        idleRank: agentAttentionRank({ agent_status: "idle" }, ["working", "blocked", "idle", "done"], null),
+        otherRank: agentAttentionRank({ agent_status: "weird" }, ["working", "blocked", "idle", "done"], null),
+        dismissedRank: agentAttentionRank({ agent_status: "working", terminal_id: "term-x" }, ["working", "blocked", "idle", "done"], null),
+      };
+      delete workingDismissals["term-x"];
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.equal(probe.workingRank, 0);
+    assert.equal(probe.idleRank, 2);
+    assert.equal(probe.otherRank, 4, "unknown status ranks after every configured group");
+    assert.equal(probe.dismissedRank, 2, "dismissed working agent ranks as idle");
+  });
+
+  it("runWorkspaceContextAction dispatches every workspace card action", async () => {
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      state.workspaces = [
+        { workspace_id: "ws-a", label: "Alpha", worktree: { repo_root: "/repo/alpha", checkout_path: "/repo/alpha" }, agent_status: "idle" },
+      ];
+      state.worktrees = [
+        { open_workspace_id: "ws-a", path: "/repo/alpha", branch: "trunk" },
+      ];
+      state.ws = "ws-a";
+      window.__actions = [];
+      window.HerdrLocationBar = { openDiscoveryCreateForRepo(root, branch) { window.__actions.push("create:" + root + ":" + branch); } };
+      window.HerdrWorktrees = { openForWorkspace(w, key) { window.__actions.push("open:" + w.workspace_id + ":" + key); } };
+      openWorktreesForWorkspace = function (w, key) { window.__actions.push("open:" + w.workspace_id + ":" + key); };
+      closeWorkspace = function (id) { window.__actions.push("close:" + id); };
+      removeWorktree = function (id) { window.__actions.push("remove:" + id); };
+      runWorkspaceContextAction("create-worktree", null, "ws-a");
+      runWorkspaceContextAction("open-worktrees", { dataset: { key: "tok" } }, "ws-a");
+      runWorkspaceContextAction("close", null, "ws-a");
+      runWorkspaceContextAction("remove-worktree", null, "ws-a");
+      runWorkspaceContextAction("close", null, "missing");
+      window.__probe = { actions: window.__actions };
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.deepEqual(probe.actions, [
+      "create:/repo/alpha:trunk",
+      "open:ws-a:tok",
+      "close:ws-a",
+      "remove:ws-a",
+    ]);
+  });
+
+  it("runWorkspaceContextAction falls back to the selected workspace when no id given", async () => {
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      state.workspaces = [{ workspace_id: "ws-b", label: "Beta" }];
+      state.ws = "ws-b";
+      window.__actions = [];
+      removeWorktree = function (id) { window.__actions.push(id); };
+      runWorkspaceContextAction("remove-worktree", null, "");
+      window.__probe = { actions: window.__actions };
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.deepEqual(probe.actions, ["ws-b"]);
+  });
+
+  it("openWorkspaceGitUi toggles the right sidebar column when git is already visible", async () => {
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      options.gitUiEnabled = true;
+      state.workspaces = [{ workspace_id: "ws-a", label: "Alpha", worktree: { checkout_path: "/repo/alpha" } }];
+      state.ws = "ws-a";
+      state.workspaceShell = { "ws-a": { mode: "git" } };
+      window.__calls = { setCollapsed: [], opens: 0 };
+      window.HerdrGitUi = {
+        isWorkspaceVisible() { return true; },
+        open() { window.__calls.opens++; },
+        hide() {},
+      };
+      let collapsed = true;
+      window.HerdrRightSidebar = {
+        isHosted() { return true; },
+        collapsed() { return collapsed; },
+        setCollapsed(v) { window.__calls.setCollapsed.push(v); collapsed = v; },
+      };
+      workspaceShellKey = function (w) { return "ws-a"; };
+      currentWorkspaceShellMode = function () { return "git"; };
+      window.__probe = { calls: window.__calls };
+    `, ctx);
+    const result = await vm.runInContext("openWorkspaceGitUi(\"ws-a\", {})", ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.deepEqual(probe.calls.setCollapsed, [false], "collapsed column expands");
+    assert.equal(probe.calls.opens, 0, "git ui not re-opened");
+    assert.equal(result, undefined, "toggle branch returns early");
+  });
+
+  it("syncGitWorkspaceToggle removes the rail button when git ui is disabled", async () => {
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      options.gitUiEnabled = false;
+      window.__gitCalls = { hide: 0 };
+      window.HerdrGitUi = { hide() { window.__gitCalls.hide++; } };
+      const button = document.getElementById("rightRailGit");
+      document.getElementById("rail").appendChild(button);
+      syncGitWorkspaceToggle();
+      window.__probe = {
+        gitCalls: window.__gitCalls,
+        railChildren: document.getElementById("rail").children.length,
+        railHasGit: !!Array.from(document.getElementById("rail").children).find((n) => n.id === "rightRailGit"),
+      };
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.equal(probe.gitCalls.hide, 1, "git ui hidden once");
+    assert.equal(probe.railHasGit, false, "rail git button removed");
+  });
+
+  it("syncGitWorkspaceToggle rebuilds the rail when the button is missing", async () => {
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      options.gitUiEnabled = true;
+      state.workspaces = [{ workspace_id: "ws-a", label: "Alpha", worktree: { checkout_path: "/repo/alpha" } }];
+      state.ws = "ws-a";
+      window.__railBuilds = 0;
+      setupRightSidebarRail = function () { window.__railBuilds++; };
+      // el() is document.getElementById: a scoped override that only
+      // hides the rightRailGit lookup makes the real rail look empty.
+      const realGetElementById = document.getElementById;
+      document.getElementById = function (id) {
+        if (id === "rightRailGit") return null;
+        return realGetElementById(id);
+      };
+      syncGitWorkspaceToggle();
+      document.getElementById = realGetElementById;
+      window.__probe = { builds: window.__railBuilds };
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.ok(probe.builds >= 1, "rail rebuilt when git button absent");
+  });
+
+  it("showFileHistoryPath lazy-loads git ui and opens history for the path", async () => {
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      window.__hist = { loadedCss: [], loadedScripts: [], opens: [], alerts: [] };
+      window.HerdrLoadScript = async function (src) { window.__hist.loadedScripts.push(src); };
+      window.HerdrLoadCss = function (href) { window.__hist.loadedCss.push(href); };
+      window.alert = function (msg) { window.__hist.alerts.push(msg); };
+      window.HerdrGitUi = { openFileHistory(cwd, path) { window.__hist.opens.push([cwd, path]); } };
+    `, ctx);
+    await vm.runInContext(`
+      (async () => {
+        await window.HerdrShowFileHistory("/repo/alpha", "src/main.rs");
+        // Missing args bail out before any load.
+        await window.HerdrShowFileHistory("", "src/main.rs");
+      })()
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__hist)", ctx));
+    assert.deepEqual(probe.opens, [["%2Frepo%2Falpha", "src%2Fmain.rs"]], "history opens with encoded cwd and path");
+    assert.equal(probe.loadedScripts.length, 0, "HerdrLoadScript bypasses the tag fallback");
+    assert.equal(probe.alerts.length, 0);
+  });
+
+  it("showFileHistoryPath surfaces load failures through alert", async () => {
+    const ctx = context();
+    try {
+      runLayoutScripts(ctx);
+    } catch (e) {}
+    await vm.runInContext(`
+      window.__hist = { alerts: [] };
+      window.HerdrLoadScript = async function () { throw new Error("script boom"); };
+      window.HerdrLoadCss = function () {};
+      window.alert = function (msg) { window.__hist.alerts.push(msg); };
+    `, ctx);
+    await vm.runInContext(`
+      (async () => {
+        await window.HerdrShowFileHistory("/repo/alpha", "src/main.rs");
+      })()
+    `, ctx);
+    await vm.runInContext("window.__probe = { hist: window.__hist }", ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(window.__probe)", ctx));
+    assert.deepEqual(probe.hist.alerts, ["script boom"]);
+  });
 });

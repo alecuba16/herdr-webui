@@ -27,6 +27,32 @@
     return "/" + parts.join("/");
   }
 
+  // Path join shared by every worktree-create surface: first part keeps
+  // its trailing-slash trimmed only, later parts lose both edge slashes so
+  // joined results never grow double separators.
+  function joinPath(...parts) {
+    const clean = parts.filter(Boolean).map((part, index) => {
+      part = String(part);
+      if (index === 0) return part.replace(/\/+$/g, "");
+      return part.replace(/^\/+|\/+$/g, "");
+    });
+    return clean.join("/");
+  }
+
+  // Worktree checkout root shared by the desktop modal and the location
+  // bar's create form: the user's configured default directory wins, then
+  // the source's own default, then the ../worktrees convention. Relative
+  // roots resolve against the source repo; ~/... and absolute roots stay
+  // verbatim. The caller passes its options default (desktop reads the
+  // shell options object, shared code has none).
+  function worktreeRootForSource(source, defaultDirectory) {
+    source = source || {};
+    let root = String(defaultDirectory || "").trim();
+    if (!root) root = source.default_worktree_directory || "../worktrees";
+    if (root.startsWith("~") || root.startsWith("/")) return root;
+    return normalizeAbsolutePath(joinPath(source.repo_root, root));
+  }
+
   function normalizeOrder(value, allowed) {
     const keys = Array.isArray(allowed) ? allowed : [];
     const seen = new Set();
@@ -280,6 +306,33 @@
     };
   }
 
+  // Diverged-base detection shared by every create surface: the backend
+  // surfaces the raw `git pull --ff-only` error when the base cannot
+  // fast-forward, and clients turn that message into a create-without-pull
+  // continuation question instead of a dead end.
+  function pullFastForwardFailed(message) {
+    const text = String(message || "").toLowerCase();
+    return (
+      text.includes("fast-forward") &&
+      (text.includes("diverging") || text.includes("not possible") || text.includes("fatal"))
+    );
+  }
+
+  // The diverged-base question shared by every create surface (desktop
+  // modal, location bar, mobile sheet): one message contract, the caller
+  // supplies its own ask surface. Returns false unless the error is a
+  // fast-forward failure, so callers can chain it directly after a failed
+  // pull POST.
+  function confirmWorktreePullBaseQuestion(message, ask) {
+    if (!pullFastForwardFailed(message)) return false;
+    if (typeof ask !== "function") return false;
+    return ask({
+      title: "Base branch diverged",
+      message: `Git could not fast-forward the base branch before creating the worktree:\n\n${message}\n\nCreate the worktree without pulling first?`,
+      confirmText: "Create without pull",
+    });
+  }
+
   // Per-session storage keys, shared by desktop core and mobile core. The
   // backend pin used to be a single global `herdr-session-backend` value,
   // which leaked the last-used backend into every other session: reopening
@@ -500,6 +553,8 @@
   const helpers = {
     branchPathSlug,
     normalizeAbsolutePath,
+    joinPath,
+    worktreeRootForSource,
     normalizeOrder,
     normalizeThemeColors,
     resolveTerminalFontFamily,
@@ -514,6 +569,8 @@
     sortWorktreesByRecent,
     validateWorktreeCreate,
     buildWorktreeCreateBody,
+    pullFastForwardFailed,
+    confirmWorktreePullBaseQuestion,
     createFaviconNotifier,
     terminalPasteInput,
     stripTerminalMouseReports,

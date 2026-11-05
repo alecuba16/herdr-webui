@@ -2250,6 +2250,13 @@ impl BuiltinState {
         let branch =
             optional_string(&params, "branch").unwrap_or_else(|| format!("webui-{}", now_ms()));
         let base = optional_string(&params, "base").unwrap_or_else(|| "HEAD".to_string());
+        // Webui inline-form parity: pull the base ref (fast-forward
+        // only) before creating, so the new worktree starts from the
+        // remote tip. Diverged bases surface the git error verbatim
+        // for the client's continue-without-pull path.
+        if optional_bool(&params, "pull_base").unwrap_or(false) {
+            self.pull_base_branch(&cwd, &base)?;
+        }
         let path = optional_string(&params, "path")
             .map(PathBuf::from)
             .unwrap_or_else(|| cwd.parent().unwrap_or_else(|| Path::new(".")).join(&branch));
@@ -2278,6 +2285,18 @@ impl BuiltinState {
                 }
                 value
             })
+    }
+
+    fn pull_base_branch(&self, cwd: &Path, base: &str) -> Result<(), String> {
+        // --no-rebase keeps the fast-forward promise even when the user has
+        // pull.rebase configured globally; a rebase on a dirty tree would fail
+        // where a fast-forward would succeed.
+        let args: Vec<&str> = if base == "HEAD" {
+            vec!["pull", "--ff-only", "--no-rebase"]
+        } else {
+            vec!["pull", "--ff-only", "--no-rebase", "origin", base]
+        };
+        run_git(cwd, &args).map_err(|err| format!("git pull: {err}"))
     }
 }
 

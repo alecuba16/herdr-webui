@@ -48,6 +48,8 @@ impl PromptKind {
             Self::RenamePanel => workspace::WorkspacePrompt::RenamePanel,
             Self::CreateWorktreeBranch => workspace::WorkspacePrompt::CreateWorktreeBranch,
             Self::CreateWorktreePath => workspace::WorkspacePrompt::CreateWorktreePath,
+            Self::CreateWorktreeBase => workspace::WorkspacePrompt::CreateWorktreeBase,
+            Self::ConfirmWorktreePullBase => workspace::WorkspacePrompt::ConfirmWorktreePullBase,
             Self::ConfirmCloseWorkspace => workspace::WorkspacePrompt::ConfirmCloseWorkspace,
             // File/git kinds have no workspace counterpart; map to the
             // harmless no-op closest to their intent.
@@ -491,6 +493,13 @@ pub enum PromptKind {
     RenamePanel,
     CreateWorktreeBranch,
     CreateWorktreePath,
+    /// Third step of the worktree create prompt: the base ref, with an
+    /// explicit pull question after it (webui inline form's pull-base
+    /// checkbox parity). Refs are preserved verbatim.
+    CreateWorktreeBase,
+    /// Fourth step: y fast-forwards the base ref before creating, any
+    /// other answer (or empty Enter) creates without pulling.
+    ConfirmWorktreePullBase,
     ConfirmCloseWorkspace,
     ConfirmCleanupDelete,
     /// Log view: tag name for the selected commit (webui tag modal).
@@ -561,6 +570,8 @@ impl PromptKind {
             Self::RenamePanel => "Rename panel",
             Self::CreateWorktreeBranch => "Create worktree: branch",
             Self::CreateWorktreePath => "Create worktree: checkout path",
+            Self::CreateWorktreeBase => "Create worktree: base ref",
+            Self::ConfirmWorktreePullBase => "Create worktree: pull base first?",
             Self::ConfirmCloseWorkspace => "Close workspace (y)",
             Self::ConfirmCleanupDelete => "Delete cleanup items (y / yb)",
             Self::CreateTag => "Tag commit",
@@ -586,7 +597,11 @@ impl PromptKind {
             Self::NewWorkspaceName => "type the workspace name, Enter creates it",
             Self::RenameWorkspace | Self::RenamePanel => "type the new name, Enter renames",
             Self::CreateWorktreeBranch => "type the branch name, Enter continues",
-            Self::CreateWorktreePath => "type the checkout path, Enter creates",
+            Self::CreateWorktreePath => "type the checkout path, Enter continues",
+            Self::CreateWorktreeBase => "type the base ref (empty = HEAD), Enter continues",
+            Self::ConfirmWorktreePullBase => {
+                "y = fast-forward the base ref first, Enter = create without pulling"
+            }
             Self::CreateTag => "type the tag name, Enter tags the selected commit",
             Self::ResetMode => "type soft, mixed or hard, Enter resets",
             Self::RebaseUpstream => "type the upstream ref, then y + Enter to rebase",
@@ -1368,6 +1383,8 @@ impl TuiApp {
             | PromptKind::RenamePanel
             | PromptKind::CreateWorktreeBranch
             | PromptKind::CreateWorktreePath
+            | PromptKind::CreateWorktreeBase
+            | PromptKind::ConfirmWorktreePullBase
             | PromptKind::ConfirmCloseWorkspace => {
                 let kind = kind.into_workspace_prompt();
                 workspace::run_prompt(self, &kind, text);

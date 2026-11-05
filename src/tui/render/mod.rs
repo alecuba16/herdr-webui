@@ -1629,7 +1629,9 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             .unwrap_or_default(),
         crate::tui::PromptKind::NewWorkspace
         | crate::tui::PromptKind::CreateWorktreeBranch
-        | crate::tui::PromptKind::CreateWorktreePath => String::new(),
+        | crate::tui::PromptKind::CreateWorktreePath
+        | crate::tui::PromptKind::CreateWorktreeBase
+        | crate::tui::PromptKind::ConfirmWorktreePullBase => String::new(),
         // Name step of the new-workspace flow: show the staged folder
         // as the subject (webui modal shows the Folder field above the
         // Workspace name field).

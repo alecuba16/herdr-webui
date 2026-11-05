@@ -1,7 +1,11 @@
 // Desktop location bar: the folder / worktree / branch strip above the
 // workspace panes. Independent shell module (same family as
 // workspace_panes.js): own state, own signature-based sync called from
-// render(), no dependency on the lazily-loaded git_ui drawer. Git facts
+// render(), no dependency on the lazily-loaded git_ui drawer. Shared
+// helpers (escaping, worktree create body, path builders, the diverged-
+// base question) come from HerdrAppHelpers (shared/core.js loads before
+// this bundle module); display helpers keep local fallbacks so bare
+// harnesses still run, the create flow requires the real helpers. Git facts
 // come from cached sources only (rail-status parks, the worktrees list,
 // the server branch attribution); the branch popover is the one surface
 // that fetches on demand (plan phase 3), and it owns its data in bar
@@ -31,10 +35,14 @@
 
   // Popover state (plan phase 3): the shape the row renderer expects
   // (loading, error, local, remote, filter, currentBranch,
-  // remoteLoaded, remoteLoading, remoteRequestId).
+  // remoteLoaded, remoteLoading). discoveryList is the
+  // open-folder surface (open-folder-redesign.md): a fresh probe after
+  // a directory-picker pick decides whether it renders worktree rows,
+  // branch rows, or an error with a fallback footer.
   const bar = {
     branchList: null,
     worktreeList: null,
+    discoveryList: null,
   };
 
   function samePath(left, right) {
@@ -133,7 +141,44 @@
     const worktreeToken = !worktrees
       ? "-"
       : ["open", worktrees.loading ? "l" : "", worktrees.error || "", (worktrees.worktrees || []).length].join(":");
-    return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, branchToken, worktreeToken].join("|");
+    // Discovery token (open-folder-redesign.md): mode plus the fields
+    // that change the rendered popover, so popover-only updates repaint
+    // the bar without a shell-wide render.
+    const discovery = bar.discoveryList;
+    const discoveryToken = !discovery
+      ? "-"
+      : [
+          "open",
+          discovery.loading ? "l" : "",
+          discovery.mode || "",
+          discovery.error || "",
+          (discovery.worktrees || []).length,
+          (discovery.local || []).length,
+          (discovery.remote || []).length,
+          discovery.filter || "",
+          discovery.currentBranch || "",
+          discovery.newBranch || "",
+          discovery.newBase || "",
+          discovery.repoLabel || "",
+          discovery.requestId,
+          discovery.folder,
+          discovery.remoteLoaded,
+          discovery.remoteLoading,
+          discovery.createMode,
+          discovery.creating,
+          discovery.createError,
+          discovery.pullBase,
+          discovery.sourceLoading,
+          discovery.sourceError,
+          !!discovery.source,
+          discovery.branchOptionsLoading,
+          discovery.branchOptionsLoaded,
+          discovery.branchOptionsError,
+          discovery.basePickerOpen ? "picker" : "",
+          discovery.defaultBranch || "",
+          discovery.createOrigin || "",
+        ].join(":");
+    return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, branchToken, worktreeToken, discoveryToken].join("|");
   }
 
   // Chip click handlers: path opens the picker (phase 2), branch and
@@ -159,7 +204,13 @@
     // workspaces) with the one action this state admits: opening the
     // workspace picker, the same modal the palette's open-workspace
     // action and the project dashboard button already open.
-    return `<button class="location-bar-empty" type="button" onclick="runSearchAction('open-workspace')" title="Open a workspace folder" aria-label="Open workspace"><i class="location-bar-chip-icon location-bar-chip-icon-path" aria-hidden="true"></i><span>Open workspace</span></button>`;
+    // The discovery popover belongs here too: its open/create entries
+    // work from the empty app (they seed the default directory), so the
+    // popover must render even while no chip row exists yet.
+    return (
+      `<button class="location-bar-empty" type="button" onclick="runSearchAction('open-workspace')" title="Open a workspace folder" aria-label="Open workspace"><i class="location-bar-chip-icon location-bar-chip-icon-path" aria-hidden="true"></i><span>Open workspace</span></button>` +
+      (bar.discoveryList ? renderDiscoveryPopover() : "")
+    );
   }
 
   function renderBar(workspace, cwd, facts) {
@@ -188,7 +239,8 @@
     return (
       chips.join("") +
       (bar.branchList ? renderBranchPopover() : "") +
-      (bar.worktreeList ? renderWorktreePopover() : "")
+      (bar.worktreeList ? renderWorktreePopover() : "") +
+      (bar.discoveryList ? renderDiscoveryPopover() : "")
     );
   }
 
@@ -215,10 +267,10 @@
     return `${years} year${years === 1 ? "" : "s"} ago`;
   }
 
-  function branchListRow(branch, currentBranch) {
+  function branchListRow(branch, currentBranch, action, checkoutList) {
     const name = String(branch.name || "");
     const isCurrent = !branch.remote && name === currentBranch;
-    const checkout = !branch.remote && !isCurrent ? branchCheckoutPath(bar.branchList, name) : null;
+    const checkout = !branch.remote && !isCurrent ? branchCheckoutPath(checkoutList || bar.branchList, name) : null;
     const author = String(branch.author || "");
     const date = String(branch.date || "");
     const subject = String(branch.subject || "");
@@ -233,13 +285,13 @@
       : checkout
         ? `<i class="git-ui-branch-row-remote" title="Checked out in ${escapeAttr(checkout)}">worktree</i>`
         : "";
-    // Trash only on non-current rows; it stops propagation so the row
-    // switch does not fire.
-    const trash = isCurrent
+    // Trash belongs to the chip popover only: discovery and base-pick rows
+    // reroute to other contracts and must not offer delete.
+    const trash = isCurrent || action
       ? ""
       : `<button class="git-ui-branch-row-trash" title="Delete branch" aria-label="Delete branch ${escapeHtml(name)}" onclick="event.stopPropagation();HerdrLocationBar.deleteBranchFromPopover('${encodeArg(name)}',${branch.remote ? "true" : "false"})"><span></span></button>`;
-    return `<div class="git-ui-branch-row${isCurrent ? " current" : ""}" title="${escapeHtml(hover)}">
-          <button class="git-ui-branch-row-main" onclick="HerdrLocationBar.switchBranchFromPopover('${encodeArg(name)}',${branch.remote ? "true" : "false"})">
+    return `<div class="git-ui-branch-row${isCurrent ? " current" : ""}"${action ? ` data-discovery-focus="branch-${encodeArg(name)}-${branch.remote ? "remote" : "local"}"` : ""} title="${escapeHtml(hover)}">
+          <button class="git-ui-branch-row-main" onclick="${action || `HerdrLocationBar.switchBranchFromPopover('${encodeArg(name)}',${branch.remote ? "true" : "false"}))`}">
             <span class="git-ui-branch-row-name">${icon}<span class="git-ui-branch-row-name-text">${escapeHtml(name)}</span>${badge}</span>
             <span class="git-ui-branch-row-meta">${escapeHtml(meta)}</span>
           </button>${trash}
@@ -302,7 +354,12 @@
     return null;
   }
 
-  function branchPopoverRows(list) {
+  // One list body for every branch popover: the chip popover, discovery's
+  // open/switch view, and the create view's Base-ref picker. Callers pass
+  // their row builder, load-more control, and trailing entries; the
+  // ordering contract (current pinned, preferred remotes first, preload
+  // cap) stays identical everywhere.
+  function branchListBody(list, rowFor, opts = {}) {
     const filter = String(list.filter || "").toLowerCase();
     const currentBranch = String(list.currentBranch || "");
     const matches = (branch) => !filter || String(branch.name || "").toLowerCase().includes(filter);
@@ -319,22 +376,45 @@
     };
     const remoteOrdered = remoteAll.slice().sort((left, right) => preferred(left) - preferred(right));
     const remote = list.remoteLoaded ? remoteAll : remoteOrdered.slice(0, remoteBranchPreload());
-    const rows = (branches, label) => !branches.length ? "" : `<div class="git-ui-branch-list-section">${label}</div>${branches.map((branch) => branchListRow(branch, currentBranch)).join("")}`;
-    const empty = !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">No branches match</div>` : "";
+    const rows = (branches, label) => !branches.length ? "" : `<div class="git-ui-branch-list-section">${label}</div>${branches.map(rowFor).join("")}`;
     const loadingRemote = list.remoteLoading ? `<div class="git-ui-branch-loading">Loading remote branches…</div>` : "";
-    const loadMore = !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
-      ? `<button class="git-ui-branch-load-more" onclick="HerdrLocationBar.loadMoreBranches()">Load more branches (${remoteAll.length - remote.length} more)</button>`
+    const loadMore = opts.loadMore
+      ? !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
+        ? `<button class="git-ui-branch-load-more"${opts.focusKeys ? ` data-discovery-focus="load-more"` : ""} onclick="HerdrLocationBar.${opts.loadMore}()">Load more branches (${remoteAll.length - remote.length} more)</button>`
+        : ""
       : "";
-    return `<div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}${branchPopoverWorktreeRow(list)}</div>`;
+    const emptyText = opts.emptyText || "No branches match";
+    const empty = !opts.suppressEmpty && !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">${escapeHtml(emptyText)}</div>` : "";
+    return `${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${opts.status || ""}${loadMore}${empty}${opts.trailing || ""}`;
+  }
+
+  function branchPopoverRows(list) {
+    return `<div class="git-ui-branch-list-scroll">${branchListBody(list, (branch) => branchListRow(branch, String(list.currentBranch || "")), {
+      loadMore: "loadMoreBranches",
+      trailing: branchPopoverWorktreeRow(list),
+    })}</div>`;
   }
 
   function anchorFromEvent(event, chipSelector) {
     // Keyboard entry (the b shortcut) passes no event: anchor on the
     // chip itself so the popover still hangs off the bar.
-    const target =
-      (event && event.currentTarget) ||
-      (document.querySelector && document.querySelector(chipSelector || ".location-bar-branch-chip:not([disabled])"));
-    const rect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
+    const selector = chipSelector || ".location-bar-branch-chip:not([disabled])";
+    let target = (event && event.currentTarget) || null;
+    // A re-render (opening another popover repaints the bar) detaches the
+    // chip node a held event still points at, and a detached node reads as
+    // a zero rect, which would anchor the popover at the viewport's
+    // top-left corner. Any zero-sized rect means the node is gone: measure
+    // the live chip instead.
+    const rectOf = (node) => {
+      const rect = node && node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+      return rect && (rect.width > 0 || rect.height > 0) ? rect : null;
+    };
+    let rect = rectOf(target);
+    if (!rect && document.querySelector) {
+      const live = document.querySelector(selector);
+      rect = rectOf(live);
+      target = live;
+    }
     if (!rect) return { left: 10, top: 40, width: 360 };
     const viewport = window.innerWidth || 1200;
     const maxWidth = Math.min(420, Math.max(280, viewport - rect.left - 16));
@@ -356,18 +436,6 @@
       throw error;
     }
     return body;
-  }
-
-  function focusPopoverInput(selector, caretValue) {
-    requestAnimationFrame(() => {
-      const input = document.querySelector(selector);
-      if (!input) return;
-      input.focus();
-      try {
-        const length = String(caretValue || "").length;
-        input.setSelectionRange(length, length);
-      } catch (_) {}
-    });
   }
 
   function currentCwd() {
@@ -417,8 +485,14 @@
     const cwd = currentCwd();
     if (!cwd) return;
     if (event && event.stopPropagation) event.stopPropagation();
-    // Only one popover at a time: opening one closes the other.
+    // The chip must be measured before the close-calls below re-render
+    // the bar: sync() replaces the bar's innerHTML, and a rect read from
+    // the detached old chip returns zeros, which anchors the popover at
+    // the viewport's top-left corner.
+    const chipAnchor = anchorFromEvent(event);
+    // Only one popover at a time: opening one closes the others.
     closeWorktreePopover();
+    closeDiscoveryPopover();
     // Re-open toggle: clicking the chip again closes the popover.
     if (bar.branchList && !bar.branchList.loading) {
       closeBranchPopover();
@@ -441,10 +515,9 @@
       currentBranch: facts.branch || "",
       remoteLoaded: false,
       remoteLoading: false,
-      remoteRequestId: 0,
       newBranch: "",
       creating: false,
-      anchor: anchorFromEvent(event),
+      anchor: chipAnchor,
       // Identity of this opening: fetch completions and row actions must
       // belong to the same opening, workspace, and folder. A stale
       // response (closed, reopened, or a workspace switch meanwhile) can
@@ -489,32 +562,12 @@
     const list = bar.branchList;
     if (!list || list.loading) return;
     list.filter = String(value || "");
-    if (list.filter.trim()) {
-      // Typing a filter needs the full remote list, same as the drawer.
-      list.remoteLoaded = true;
-      list.remoteLoading = true;
-      const requestId = Date.now();
-      list.remoteRequestId = requestId;
-      sync();
-      focusPopoverInput(".location-bar-branch-popover .git-ui-branch-list-filter input", list.filter);
-      api(`/api/git-ui/branches?cwd=${encodeURIComponent(currentCwd())}`)
-        .then((data) => {
-          if (!bar.branchList || bar.branchList.remoteRequestId !== requestId) return;
-          const existing = new Map((bar.branchList.remote || []).map((branch) => [branch.name, branch]));
-          (data.remote || []).forEach((branch) => existing.set(branch.name, branch));
-          bar.branchList.remote = [...existing.values()];
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (bar.branchList && bar.branchList.remoteRequestId === requestId) {
-            bar.branchList.remoteLoading = false;
-            sync();
-            focusPopoverInput(".location-bar-branch-popover .git-ui-branch-list-filter input", bar.branchList.filter);
-          }
-        });
-      return;
-    }
-    list.remoteLoading = false;
+    // Pure local operation: the opening fetch already delivered the full
+    // remote list (the payload has no server-side cap; the preload is a
+    // render cap), so typing only lifts that cap. No refetch per keystroke
+    // and none on the first keystroke either.
+    list.remoteLoaded = true;
+    if (!list.filter.trim()) list.remoteLoading = false;
     // Re-render only the popover: a full innerHTML rewrite would drop the
     // filter input's focus and caret.
     const node = barNode();
@@ -716,11 +769,25 @@
   function eventInsideWorktreePopover(event) {
     return eventInsidePopover(event, "location-bar-worktree-popover", "location-bar-worktree-chip");
   }
+  function eventInsideDiscoveryPopover(event) {
+    // The picker selection click can bubble after its change handler opened discovery.
+    return eventInsidePopover(event, "location-bar-discovery-popover", "location-bar-path-chip") ||
+      eventInsidePopover(event, "directory-picker-backdrop", "directory-picker-backdrop");
+  }
 
   if (typeof document !== "undefined" && document.addEventListener) {
     document.addEventListener("click", (event) => {
+      // An entry button (dashboard card, palette row) opens discovery in
+      // its own click handler; that same click then bubbles here. The
+      // just-opened flag lets this one bubble-through pass without
+      // closing what the click itself opened. Any later outside click
+      // closes normally, and the timeout drops the flag for keyboard
+      // opens that no click ever follows.
+      const discoveryJustOpened = bar.discoveryOpenedDuringClick;
+      bar.discoveryOpenedDuringClick = false;
       if (bar.branchList && !eventInsideBranchPopover(event)) closeBranchPopover();
       if (bar.worktreeList && !eventInsideWorktreePopover(event)) closeWorktreePopover();
+      if (bar.discoveryList && !discoveryJustOpened && !eventInsideDiscoveryPopover(event)) closeDiscoveryPopover();
     });
     // Esc closes any open popover from anywhere. Document capture: the
     // drawer's keyboard handler runs on window capture, ahead of this
@@ -729,15 +796,41 @@
     document.addEventListener(
       "keydown",
       (event) => {
-        if (event.key === "Escape" && (bar.branchList || bar.worktreeList)) {
+        if (event.key === "Escape" && (bar.branchList || bar.worktreeList || bar.discoveryList)) {
           event.stopPropagation();
           event.preventDefault();
+          // The Base dropdown is a layer inside the discovery popover:
+          // Escape closes it before the popover itself.
+          if (bar.discoveryList && bar.discoveryList.basePickerOpen && !bar.discoveryList.creating) {
+            bar.discoveryList.basePickerOpen = false;
+            sync();
+            restoreDiscoveryFocus({ id: "locationBarDiscoveryBase" });
+            return;
+          }
           closeBranchPopover();
           closeWorktreePopover();
+          closeDiscoveryPopover();
         }
       },
       true,
     );
+    // The Base picker is viewport-fixed while its field lives in the
+    // popover's scrollable body: a body scroll (or window resize) moves
+    // the field under a panel that stays put. Re-anchor on both, capture
+    // phase, so the panel tracks the field; discoveryPositionBasePicker
+    // early-outs when the picker is closed.
+    document.addEventListener(
+      "scroll",
+      () => {
+        if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
+      },
+      true,
+    );
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("resize", () => {
+        if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
+      });
+    }
   }
 
   // The bar reuses the drawer's chip classes, but git-ui.css lazy-loads
@@ -771,11 +864,24 @@
     if (bar.worktreeList && popoverContextStale(bar.worktreeList)) {
       bar.worktreeList = null;
     }
+    if (bar.discoveryList && discoveryContextStale(bar.discoveryList)) bar.discoveryList = null;
     // Always visible (a stable surface, never appearing mid-session); no
     // workspace or no folder path renders the empty hint instead.
     if (!workspace || !cwd) {
+      // The empty state can host the discovery popover (open/create from
+      // the dashboard); only that popover needs the chip stylesheet, not
+      // every empty-bar render.
+      if (bar.discoveryList) ensureChipCss();
       const html = emptyBar();
-      if (node.innerHTML !== html) node.innerHTML = html;
+      if (node.innerHTML !== html) {
+        const focus = captureDiscoveryFocus();
+        node.innerHTML = html;
+        restoreDiscoveryFocus(focus);
+      }
+      // The repaint recreates the Base picker element and its inline
+      // anchor with it; re-anchor on every repaint so an open picker
+      // never falls back to the stylesheet's 0,0 corner.
+      if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
       if (node.hidden) node.hidden = false;
       lastSignature = null;
       lastHtml = html;
@@ -786,8 +892,13 @@
     const signature = renderSignature(cwd, facts);
     if (signature === lastSignature && node.innerHTML === lastHtml) return;
     const html = renderBar(workspace, cwd, facts);
+    const focus = captureDiscoveryFocus();
     if (node.hidden) node.hidden = false;
     node.innerHTML = html;
+    restoreDiscoveryFocus(focus);
+    // Same re-anchor as the empty-bar path: the picker element is new
+    // after every repaint and needs its field-anchored position back.
+    if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
     lastSignature = signature;
     lastHtml = html;
   }
@@ -799,13 +910,14 @@
   // workspace panels stay open. Create opens the worktree modal prefilled
   // with the current branch.
 
-  function worktreePopoverRow(worktree, currentPath) {
+  function worktreePopoverRow(worktree, currentPath, onclick) {
     const path = String(worktree.path || "");
     const current = samePath(path, currentPath);
     const label = String(worktree.label || pathBasename(path) || "worktree");
     const branch = String(worktree.branch || "detached");
     const check = current ? `<b class="git-ui-worktree-check" role="img" aria-label="Current worktree" title="Current worktree">✓</b>` : "";
-    return `<button class="git-ui-worktree-option${current ? " current" : ""}" onclick="HerdrLocationBar.selectWorktreeFromPopover('${encodeArg(path)}')"><strong>${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
+    const action = onclick || `HerdrLocationBar.selectWorktreeFromPopover('${encodeArg(path)}')`;
+    return `<button class="git-ui-worktree-option${current ? " current" : ""}"${onclick ? ` data-discovery-focus="worktree-${encodeArg(path)}"` : ""} onclick="${action}"><strong>${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
   }
 
   function renderWorktreePopover() {
@@ -835,8 +947,13 @@
     const cwd = currentCwd();
     if (!cwd) return;
     if (event && event.stopPropagation) event.stopPropagation();
-    // Only one popover at a time: opening one closes the other.
+    // Measure before the close-calls re-render the bar (see
+    // openBranchPopover): a detached chip reads as a zero rect and the
+    // popover lands in the top-left corner.
+    const chipAnchor = anchorFromEvent(event, ".location-bar-worktree-chip:not([disabled])");
+    // Only one popover at a time: opening one closes the others.
     closeBranchPopover();
+    closeDiscoveryPopover();
     if (bar.worktreeList && !bar.worktreeList.loading) {
       closeWorktreePopover();
       return;
@@ -850,7 +967,7 @@
       error: "",
       worktrees: [],
       currentPath: cwd,
-      anchor: anchorFromEvent(event, ".location-bar-worktree-chip:not([disabled])"),
+      anchor: chipAnchor,
       // Same identity contract as the branch popover: completions and
       // row actions belong to this opening only.
       requestId: nextPopoverRequestId(),
@@ -900,43 +1017,918 @@
     }
   }
 
-  function createWorktreeFromPopover() {
+  async function createWorktreeFromPopover() {
     const cwd = currentCwd();
     const workspace = selectedWorkspace();
-    const list = bar.worktreeList;
-    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     const facts = workspace ? gitFacts(workspace, cwd) : { branch: "" };
-    closeWorktreePopover();
-    if (typeof openWorktreeCreateFromGitBranch === "function") {
-      openWorktreeCreateFromGitBranch(cwd, facts.branch || "");
-    } else if (typeof openWorktreeOpenModal === "function") {
-      openWorktreeOpenModal(cwd, true);
-    }
+    const branch = String(facts.branch || "");
+    if (!cwd) return;
+    // The current branch is already checked out in this folder, so it
+    // cannot be the new worktree's branch name (Git refuses a second
+    // checkout). Seed it as the base ref only and leave the name empty.
+    await openDiscoveryForFolder(cwd, { createMode: "worktree", prefillBranch: "", prefillBase: branch });
   }
 
-  // Same modal entry the worktree popover uses, prefilled with the row's
-  // branch. Git refuses a second checkout of an already-checked-out branch,
-  // so the modal (discoverWorktrees stamps the checked-out rows) is the one
-  // surface that can catch it before the POST.
-  function createWorktreeFromBranchPopover(encodedName) {
+  // Same inline create form the worktree popover uses, prefilled with the
+  // row's branch. Git refuses a second checkout of an already-checked-out
+  // branch, so the discovery list's checked-out stamps and the backend's
+  // creation error both surface the conflict.
+  async function createWorktreeFromBranchPopover(encodedName) {
     const name = decodeURIComponent(String(encodedName || ""));
     const cwd = currentCwd();
-    const list = bar.branchList;
-    if (!cwd || !name || !list) return;
-    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
-    closeBranchPopover();
-    if (typeof openWorktreeCreateFromGitBranch === "function") {
-      openWorktreeCreateFromGitBranch(cwd, name);
-    } else if (typeof openWorktreeOpenModal === "function") {
-      openWorktreeOpenModal(cwd, true);
+    if (!cwd || !name) return;
+    await openDiscoveryForFolder(cwd, { createMode: "worktree", prefillBranch: localWorktreeBranchName(name), prefillBase: name, createOrigin: "branches" });
+  }
+
+  // Discovery rows capture the picked folder independently of shell navigation.
+
+  function discoveryPopoverClasses() {
+    return "git-ui-branch-list git-ui-worktree-list location-bar-discovery-popover";
+  }
+
+  // The default branch is what a folder is "supposed" to be on: local
+  // main/master first, else the origin-tracking one (git switch's DWIM
+  // creates the local branch from it).
+  function discoveryDefaultBranchName(data) {
+    const localNames = ((data && data.local) || []).map((b) => String((b && b.name) || "")).filter(Boolean);
+    for (const candidate of ["main", "master"]) {
+      if (localNames.includes(candidate)) return candidate;
+    }
+    const remoteNames = ((data && data.remote) || []).map((b) => String((b && b.name) || ""));
+    for (const candidate of ["origin/main", "origin/master"]) {
+      if (remoteNames.includes(candidate)) return candidate.slice("origin/".length);
+    }
+    return "";
+  }
+
+  async function discoveryOpenDefaultBranch() {
+    const list = bar.discoveryList;
+    if (!list || discoveryContextStale(list) || list.creating) return;
+    const branch = String(list.defaultBranch || "");
+    const folder = String(list.folder || "");
+    if (!branch || !folder || branch === String(list.currentBranch || "")) return;
+    await discoveryOpenFolderAndSwitch(folder, branch, false, "");
+  }
+
+  function discoveryContextStale(list) {
+    if (!list) return true;
+    if (String(list.wsId || "") !== String(state.ws || "")) return true;
+    // The empty app opens discovery seeded with the default directory;
+    // two empty cwds are the same context, not a stale one.
+    const origin = String(list.originCwd || "");
+    const now = String(currentCwd() || "");
+    if (!origin && !now) return false;
+    return !samePath(origin, now);
+  }
+
+  function discoveryOpeningActive(list) {
+    return bar.discoveryList === list && !discoveryContextStale(list);
+  }
+
+  function discoveryRequestActive(request) {
+    return bar.discoveryList && bar.discoveryList.requestId === request && !discoveryContextStale(bar.discoveryList);
+  }
+
+  function captureDiscoveryFocus() {
+    const active = document.activeElement;
+    if (!active || !active.closest || !active.closest(".location-bar-discovery-popover")) return null;
+    return { id: active.id, key: active.getAttribute && active.getAttribute("data-discovery-focus"), start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection };
+  }
+
+  function restoreDiscoveryFocus(saved) {
+    if (!saved || !bar.discoveryList) return;
+    const target = (saved.id ? document.getElementById(saved.id) : saved.key && document.querySelector(`[data-discovery-focus="${saved.key}"]`)) || document.querySelector('.location-bar-discovery-popover[data-discovery-focus="dialog"]');
+    if (!target || !target.focus) return;
+    target.focus();
+    if (target.scrollIntoView) target.scrollIntoView({ block: "nearest" });
+    try { if (saved.start != null) target.setSelectionRange(saved.start, saved.end, saved.direction); } catch (_) {}
+  }
+
+  function renderDiscoveryPopover() {
+    const list = bar.discoveryList;
+    if (!list) return "";
+    const anchor = list.anchor || { left: 10, top: 40, width: 360 };
+    const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px;--discovery-top:${anchor.top}px`;
+    const label = escapeHtml(list.repoLabel || pathBasename(list.folder) || list.folder);
+    const head = `<div class="git-ui-branch-list-section">${label}${list.folder ? `<div class="location-bar-discovery-path">${escapeHtml(list.folder)}</div>` : ""}</div>`;
+    const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button"${list.creating ? " disabled" : ""} onclick="HerdrLocationBar.discoveryOpenPlain()">Open folder as workspace</button></div>`;
+    if (list.loading)
+      return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-loading" role="status"><span></span><strong>Discovering folder</strong></div>${footer}</div>`;
+    if (list.error)
+      return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-error" role="alert">${escapeHtml(list.error)}</div>${footer}</div>`;
+    const creating = list.createMode === "worktree";
+    // The create view is form-only in every mode: the branch picker for
+    // Base lives in the field's dropdown, and the rows return on cancel.
+    const body = creating
+      ? discoveryCreateForm(list)
+      : list.mode === "worktrees"
+        ? discoveryWorktreeRows(list)
+        : discoveryBranchBody(list, false);
+    const frozenBody = list.creating ? body.replace(/<(button|input)\b(?![^>]*\sdisabled(?:\s|>|=))/g, '<$1 disabled') : body;
+    // The picker panel renders as a popover-root sibling, not inside the
+    // form: the popover body scrolls, and a panel born inside it would be
+    // clipped to that scroller no matter its z-index.
+    const rawPickerPanel = creating && list.basePickerOpen
+      ? `<div class="location-bar-base-picker" id="locationBarBasePicker">${discoveryBranchBody(list, true)}</div>`
+      : "";
+    // Creation freezing covers the panel too: it renders outside the
+    // frozen body, so its rows and filter need the same pass.
+    const pickerPanel = list.creating ? rawPickerPanel.replace(/<(button|input)\b(?![^>]*\sdisabled(?:\s|>|=))/g, '<$1 disabled') : rawPickerPanel;
+    return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Choose ${list.mode === "worktrees" ? "worktree" : "branch"} in ${escapeHtml(list.folder)}" style="${style}" onclick="event.stopPropagation()">${head}${frozenBody}${footer}${pickerPanel}</div>`;
+  }
+
+  function discoveryWorktreeRows(list) {
+    // Discovery must not read the chip popover's null opening state.
+    const rows = (list.worktrees || [])
+      .map((worktree) => worktreePopoverRow(worktree, list.folder, `HerdrLocationBar.discoveryWorktreeRowOpen('${encodeArg(String(worktree.path || ""))}')`))
+      .join("");
+    const body = rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`;
+    // The create view already shows the form, so the duplicate create
+    // entry disappears until cancel restores the plain rows.
+    const createEntry = list.createMode === "worktree" ? "" : `<button class="git-ui-worktree-create" data-discovery-focus="create-worktree" title="Create a new worktree for this repository" aria-label="Create worktree" onclick="HerdrLocationBar.discoveryCreateWorktree()">＋ Create worktree</button>`;
+    return `<div class="git-ui-branch-list-scroll">${body}${createEntry}</div>`;
+  }
+
+  // Discovery rows reuse the chip popover's row builder: one markup shape
+  // everywhere. The action reroutes discovery's open/switch contract (or
+  // the base-ref pick), and the checkout list stays the opening's own so
+  // checked-out badges reflect the discovery context, not the chip state.
+  function discoveryBranchRow(branch, list, forBasePick = false) {
+    return branchListRow(branch, String(list.currentBranch || ""), discoveryBranchRowAction(branch, list, forBasePick), list);
+  }
+
+  function discoveryBranchRowAction(branch, list, forBasePick) {
+    const name = String(branch.name || "");
+    if (forBasePick) return `HerdrLocationBar.discoveryPickBaseFromRow('${encodeArg(name)}')`;
+    return `HerdrLocationBar.discoveryBranchRowOpen('${encodeArg(name)}',${branch.remote ? "true" : "false"})`;
+  }
+
+  function discoveryBranchBody(list, forBasePick = false) {
+    const create = forBasePick ? "" : discoveryCreateForm(list);
+    // The combined create view owns its own branch probe, so its list
+    // needs the probe's loading and error states rendered, not just
+    // the remote-loading row the branches mode reuses.
+    const basePickStatus = forBasePick
+      ? list.branchOptionsLoading
+        ? `<div class="git-ui-branch-loading" role="status">Loading branches…</div>`
+        : list.branchOptionsError
+          ? `<div class="git-ui-error" role="alert">${escapeHtml(list.branchOptionsError)}</div><button class="git-ui-btn" type="button" data-discovery-focus="retry-branch-options" onclick="HerdrLocationBar.discoveryRetryBranchOptions()">Retry loading branches</button>`
+          : ""
+      : "";
+    const emptyText = list.filter
+      ? "No branches match"
+      : list.branchOptionsError
+        ? "Branches could not load"
+        : "No branches yet";
+    // The shared body renders its own empty row; while the create view's
+    // branch probe is loading, the loading row replaces it.
+    const suppressEmpty = list.branchOptionsLoading;
+    // The default-branch offer rides above the filter: a plain checkout
+    // on another branch shows the expected branch first, one click
+    // switches before the folder opens.
+    const defaultOffer = forBasePick || !list.defaultBranch || String(list.defaultBranch) === String(list.currentBranch || "") ? "" : `<div class="git-ui-branch-row"><button class="git-ui-branch-row-main location-bar-default-branch-offer" data-discovery-focus="default-branch-offer" title="Switch to ${escapeHtml(list.defaultBranch)} and open" onclick="HerdrLocationBar.discoveryOpenDefaultBranch()"><span class="git-ui-branch-row-name"><b class="git-ui-branch-row-icon" aria-hidden="true"></b><span class="git-ui-branch-row-name-text">Open on ${escapeHtml(list.defaultBranch)}</span></span><span class="git-ui-branch-row-meta">current branch: ${escapeHtml(list.currentBranch || "")}</span></button></div>`;
+    const body = branchListBody(list, (branch) => discoveryBranchRow(branch, list, forBasePick), {
+      loadMore: "discoveryLoadMore",
+      focusKeys: true,
+      status: basePickStatus,
+      emptyText,
+      suppressEmpty,
+      trailing: forBasePick ? "" : `<button class="git-ui-worktree-create" data-discovery-focus="create-worktree" title="Create a new worktree for this repository" aria-label="Create worktree" onclick="HerdrLocationBar.discoveryCreateWorktree()">＋ Create worktree</button>`,
+    });
+    return `<label class="git-ui-branch-list-filter"><span>Filter</span><input id="locationBarDiscoveryFilter" value="${escapeHtml(list.filter || "")}" placeholder="Type to filter" aria-label="Filter branches"${inputAttrs("search")} oninput="HerdrLocationBar.discoveryFilter(this.value)"></label><div class="git-ui-branch-list-scroll">${defaultOffer}${body}</div>${forBasePick ? "" : create}`;
+  }
+
+  function discoveryCreateForm(list) {
+    const worktree = list.createMode === "worktree";
+    const unavailable = worktree && (!list.source || list.sourceLoading || !!list.sourceError);
+    // The Base input is the only dropdown trigger: a caret drawn inside
+    // the field shows it opens. In worktree mode the input itself opens
+    // the panel; branch mode keeps free-text Base with no dropdown.
+    const baseCaret = worktree
+      ? `<span class="location-bar-base-picker-indicator" aria-hidden="true">${list.basePickerOpen ? "▾" : "▸"}</span>`
+      : "";
+    const baseInputAttrs = worktree
+      ? ` role="combobox" aria-expanded="${list.basePickerOpen ? "true" : "false"}" aria-controls="locationBarBasePicker" aria-autocomplete="none" onclick="HerdrLocationBar.discoveryBaseInputClick()"`
+      : "";
+    const pullControl = worktree ? `<label class="git-ui-discovery-pull option" for="locationBarDiscoveryPullBase"><input id="locationBarDiscoveryPullBase" type="checkbox" data-discovery-focus="pull-base"${list.pullBase ? " checked" : ""}${list.creating ? " disabled" : ""} onchange="HerdrLocationBar.discoveryTogglePullBase(this.checked)"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first. If the branch diverged, you can continue without pulling.</small></span></label>` : "";
+    const feedback = worktree ? (list.sourceLoading ? `<div role="status">Loading worktree source…</div>` : list.sourceError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.sourceError)}</div><button class="git-ui-btn" type="button" data-discovery-focus="retry-worktree-source" onclick="HerdrLocationBar.discoveryRetryWorktreeSource()">Retry worktree source</button>` : "") + (list.creating ? `<div role="status" data-discovery-focus="worktree-status">Creating worktree</div><div class="git-ui-muted">Closing this dialog does not cancel creation</div>` : list.createError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.createError)}</div>` : "") : "";
+    return `<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field location-bar-base-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")}${baseInputAttrs} oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)">${baseCaret}<button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || unavailable || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.${worktree ? "discoverySubmitWorktree" : "discoveryCreateBranch"}()">${worktree ? (list.creating ? "Creating worktree" : list.createError ? "Retry worktree creation" : "Create worktree") : "Create"}</button>${worktree ? `<button class="git-ui-btn" type="button" data-discovery-focus="cancel-worktree" onclick="HerdrLocationBar.discoveryCancelWorktree()">Cancel worktree</button>` : ""}</div>${pullControl}${feedback}</div>`;
+  }
+
+  // A failed switch leaves the successfully opened folder on its original branch.
+  async function discoveryOpenFolderAndSwitch(folder, branch, create, base) {
+    const list = bar.discoveryList;
+    if (!list || !folder || !branch) return;
+    const label = create ? `Create and switch to "${branch}"${base ? ` from "${base}"` : ""}` : `Switch to "${branch}"`;
+    if (!window.confirm(`${label} when opening "${folder}"?`)) return;
+    if (!discoveryOpeningActive(list)) return;
+    closeDiscoveryPopover();
+    try {
+      if (typeof showBlocking === "function") showBlocking(`Opening ${pathBasename(folder) || folder}`);
+      await openFolderForDiscovery(folder);
+    } catch (err) {
+      alert(err.message || String(err));
+      return;
+    } finally {
+      if (typeof hideBlocking === "function") hideBlocking();
+    }
+    try {
+      if (typeof showBlocking === "function") showBlocking(create ? `Creating ${branch}` : `Switching to ${branch}`);
+      const body = { cwd: folder, branch };
+      if (create) {
+        body.create = true;
+        body.base = base || String(list.currentBranch || "") || "HEAD";
+      }
+      await api("/api/git-ui/switch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (window.HerdrGitUi && window.HerdrGitUi.notifyBranchChanged)
+        window.HerdrGitUi.notifyBranchChanged(folder);
+      else if (typeof window.HerdrShellNoteBranchMoved === "function")
+        window.HerdrShellNoteBranchMoved(folder);
+    } catch (err) {
+      alert(`"${folder}" opened on its current branch. ${create ? "Branch creation" : "Branch switch"} failed: ${err.message || String(err)}`);
+    } finally {
+      if (typeof hideBlocking === "function") hideBlocking();
+    }
+    if (typeof render === "function") render();
+  }
+
+  // Same-folder destinations need no navigation before switching.
+  async function openFolderForDiscovery(folder) {
+    const flow = window.HerdrOpenFolder;
+    if (!flow) throw Error("Folder opening is unavailable");
+    if (samePath(folder, currentCwd())) return;
+    await flow.openFolderAsWorkspace(folder);
+  }
+
+  async function discoveryBranchRowOpen(encodedName, isRemote) {
+    const list = bar.discoveryList;
+    if (!list || discoveryContextStale(list) || list.creating) return;
+    const name = decodeURIComponent(String(encodedName || ""));
+    const folder = String(list.folder || "");
+    if (!name || !folder) return;
+    const localName = isRemote ? name.split("/").slice(1).join("/") : name;
+    if (!localName) return;
+    const row = (list.local || []).concat(list.remote || []).find(
+      (branch) => String(branch.name || "") === name && !!branch.remote === !!isRemote,
+    );
+    const checkout = row && !isRemote ? String(row.worktree_path || "") : "";
+    // Destination 1: the branch is already checked out elsewhere; open
+    // that worktree instead of posting a switch git would refuse.
+    if (checkout && !samePath(checkout, folder)) {
+      if (!window.confirm(`Open worktree "${checkout}" where "${localName}" is checked out?`)) return;
+      if (!discoveryOpeningActive(list)) return;
+      closeDiscoveryPopover();
+      try {
+        await openFolderForDiscovery(checkout);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+      return;
+    }
+    // Destination 2: the picked folder's current branch; a plain open
+    // is the whole action.
+    if (localName === String(list.currentBranch || "")) {
+      closeDiscoveryPopover();
+      try {
+        await openFolderForDiscovery(folder);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+      return;
+    }
+    await discoveryOpenFolderAndSwitch(folder, localName, false, "");
+  }
+
+  async function discoveryCreateBranch() {
+    const list = bar.discoveryList;
+    if (!list || discoveryContextStale(list) || list.creating || list.createMode === "worktree") return;
+    const name = String(list.newBranch || "").trim();
+    const folder = String(list.folder || "");
+    if (!name || !folder) return;
+    const base = String(list.newBase || "").trim() || String(list.currentBranch || "") || "HEAD";
+    await discoveryOpenFolderAndSwitch(folder, name, true, base);
+  }
+
+  function discoveryCreateKeydown(event) {
+    if (event && event.key === "Enter") {
+      event.preventDefault();
+      return bar.discoveryList && bar.discoveryList.createMode === "worktree" ? discoverySubmitWorktree() : discoveryCreateBranch();
     }
   }
 
-  // Path chip: opens the directory picker on the workspace folder. The
-  // picker's selectCurrent dispatches change on the hidden input (the same
-  // contract the worktree selector rows use), and the change
-  // handler runs the shared folder-change flow. A no-op pick (same path)
-  // keeps everything untouched.
+  async function discoveryCreateWorktree() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.loading || list.error || list.creating) return;
+    // Fresh entries start the create view collapsed; a picker left open
+    // in a previous mode must not leak into the new view.
+    list.createMode = "worktree";
+    list.basePickerOpen = false;
+    sync();
+    restoreDiscoveryFocus({ id: "locationBarDiscoveryName" });
+    if (!list.source) await discoveryRetryWorktreeSource();
+    // A previously failed or partial probe must not masquerade as a
+    // loaded list: re-entering the create view refreshes it.
+    return discoveryLoadBranchOptionsForBase(list, !!list.branchOptionsError);
+  }
+
+  // The create view's branch list needs the branch probe the branches
+  // mode already has; worktrees mode never fetched it.
+  // A call while the probe is already in flight awaits THAT request, so
+  // the caller's post-probe positioning does not run against a pending
+  // list.
+  let pendingBranchProbe = null;
+  function discoveryLoadBranchOptionsForBase(list, force = false) {
+    if (!discoveryOpeningActive(list)) return Promise.resolve();
+    if (list.branchOptionsLoading && pendingBranchProbe) return pendingBranchProbe;
+    if (!force && (list.branchOptionsLoaded || (list.local || []).length || (list.remote || []).length)) return Promise.resolve();
+    list.branchOptionsLoading = true;
+    list.branchOptionsError = "";
+    sync();
+    const request = api(`/api/git-ui/branches?cwd=${encodeURIComponent(String(list.folder || ""))}`)
+      .then((data) => {
+        if (!discoveryOpeningActive(list)) return;
+        list.local = data.local || [];
+        list.remote = data.remote || [];
+        list.branchOptionsLoaded = true;
+      })
+      .catch((err) => {
+        if (!discoveryOpeningActive(list)) return;
+        // Keep partial rows (if any) but remember the probe failed, so
+        // the list can offer a retry instead of a silent empty state.
+        list.branchOptionsError = (err && err.message) || String(err);
+      })
+      .finally(() => {
+        if (pendingBranchProbe === request) pendingBranchProbe = null;
+        if (discoveryOpeningActive(list)) {
+          list.branchOptionsLoading = false;
+          sync();
+        }
+      });
+    pendingBranchProbe = request;
+    return request;
+  }
+
+  function discoveryRetryBranchOptions() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    // A successful retry puts focus back inside the still-open chooser
+    // instead of falling to the dialog once the retry button disappears;
+    // a failed retry keeps the button focused.
+    const done = discoveryLoadBranchOptionsForBase(list, true);
+    sync();
+    Promise.resolve(done).then(() => {
+      if (!discoveryOpeningActive(list) || list.creating) return;
+      if (!list.basePickerOpen) return;
+      discoveryPositionBasePicker();
+      if (list.branchOptionsError) restoreDiscoveryFocus({ key: "retry-branch-options" });
+      else restoreDiscoveryFocus({ id: "locationBarDiscoveryFilter" });
+    });
+  }
+
+  function discoveryPickBaseFromRow(encodedName) {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    const name = decodeURIComponent(String(encodedName || ""));
+    if (!name) return;
+    list.newBase = name;
+    // Picking from the Base dropdown fills the field and closes it, so
+    // the next keystroke or Enter goes to the form, not the list.
+    list.basePickerOpen = false;
+    sync();
+    restoreDiscoveryFocus({ id: "locationBarDiscoveryBase" });
+  }
+
+  // The create view keeps only the form; the branch list lives in the
+  // Base ref dropdown, opened by a click on the Base input itself.
+  function discoveryToggleBasePicker(openOnly = false) {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    if (openOnly && list.basePickerOpen) return;
+    list.basePickerOpen = !list.basePickerOpen;
+    sync();
+    if (list.basePickerOpen) {
+      // First open needs the branch probe the create view no longer
+      // fetches on entry; sync() anchors the panel at the field on its
+      // repaint, and the post-probe pass re-anchors against the rows
+      // that just arrived.
+      const done = discoveryLoadBranchOptionsForBase(list);
+      Promise.resolve(done).then(() => {
+        if (!discoveryOpeningActive(list) || list.creating) return;
+        discoveryPositionBasePicker();
+      });
+      restoreDiscoveryFocus({ id: "locationBarDiscoveryFilter" });
+    } else {
+      restoreDiscoveryFocus({ id: "locationBarDiscoveryBase" });
+    }
+  }
+
+  // A click on the Base input opens the panel (never closes it): a second
+  // click lands on the panel area, and focus can return to the input
+  // without collapsing the list the user is reading.
+  function discoveryBaseInputClick() {
+    discoveryToggleBasePicker(true);
+  }
+
+  // The panel anchors to the Base field with fixed coordinates: it lives
+  // outside every clipping ancestor, placed below the field, or above it
+  // when the viewport has more room there. The measure-and-decide pass
+  // runs from the field's rect, never from the panel's current class, so
+  // repeated calls keep the same orientation (idempotent).
+  function discoveryPositionBasePicker() {
+    const list = bar.discoveryList;
+    const panel = document.getElementById("locationBarBasePicker");
+    if (!list || !list.basePickerOpen || !panel) return;
+    if (typeof panel.getBoundingClientRect !== "function" || !panel.style) return;
+    const field = document.getElementById("locationBarDiscoveryBase");
+    if (!field || typeof field.getBoundingClientRect !== "function") return;
+    const viewportHeight = (typeof window !== "undefined" && window.innerHeight) || 0;
+    const viewportWidth = (typeof window !== "undefined" && window.innerWidth) || 0;
+    if (!viewportHeight || !viewportWidth) return;
+    const fieldRect = field.getBoundingClientRect();
+    const gap = 4;
+    const margin = 8;
+    const maxHeight = Math.min(320, viewportHeight - 2 * margin);
+    const spaceBelow = viewportHeight - margin - (fieldRect.bottom + gap);
+    const spaceAbove = fieldRect.top - margin - gap;
+    const belowFirst = spaceBelow >= Math.min(240, spaceAbove);
+    const heightCap = belowFirst ? Math.min(maxHeight, spaceBelow) : Math.min(maxHeight, spaceAbove);
+    const top = belowFirst ? fieldRect.bottom + gap : Math.max(margin, fieldRect.top - gap - heightCap);
+    const width = Math.max(fieldRect.width, 220);
+    const left = Math.min(Math.max(margin, fieldRect.left), Math.max(margin, viewportWidth - width - margin));
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.width = `${Math.round(width)}px`;
+    panel.style.maxHeight = `${Math.round(heightCap)}px`;
+    panel.classList.toggle("flip-up", !belowFirst);
+  }
+
+  function discoveryCancelWorktree() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    list.createMode = "branch";
+    list.basePickerOpen = false;
+    // A branch-chip create entry came from the branch list: cancel
+    // restores that view even when the probe discovered worktree rows.
+    // The worktrees mode never ran the branch probe, so restore also
+    // loads it.
+    if (list.createOrigin === "branches" && list.mode === "worktrees") {
+      list.mode = "branches";
+      discoveryLoadBranchOptionsForBase(list, true);
+    }
+    sync();
+    if (list.createOrigin === "branches") {
+      restoreDiscoveryFocus({ id: "locationBarDiscoveryFilter" });
+    } else {
+      restoreDiscoveryFocus({ key: "create-worktree" });
+    }
+  }
+
+  // Mirrors the worktrees modal's "Update base first": a fast-forward pull of
+  // the base branch in the source repo before the worktree is created.
+  function discoveryTogglePullBase(checked) {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    list.pullBase = !!checked;
+    sync();
+  }
+
+  function localWorktreeBranchName(branch) {
+    const text = String(branch || "").trim();
+    if (text.startsWith("origin/")) return text.slice("origin/".length);
+    if (text.startsWith("upstream/")) return text.slice("upstream/".length);
+    return text;
+  }
+
+  // Shared diverged-base contract (HerdrAppHelpers): the popover asks
+  // through the shell's question card, same message as the worktree modal
+  // and the mobile sheet.
+  async function confirmContinueWithoutPull(message) {
+    const askQuestionShared = helpers.confirmWorktreePullBaseQuestion;
+    if (typeof askQuestionShared !== "function") return false;
+    return (await askQuestionShared(message, askQuestion)) || false;
+  }
+
+  function discoverySourceAvailable(source) {
+    return !!(source && String(source.repo_root || "").trim() && String(source.repo_name || "").trim());
+  }
+
+  async function discoveryRetryWorktreeSource() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating || list.sourceLoading || list.createMode !== "worktree") return;
+    list.sourceLoading = true;
+    list.sourceError = "";
+    sync();
+    try {
+      const data = await api(`/api/worktrees?cwd=${encodeURIComponent(list.folder)}`);
+      if (!discoveryOpeningActive(list)) return;
+      const source = (data.result || {}).source;
+      if (!discoverySourceAvailable(source)) throw Error("Worktree source is unavailable. Retry before creating.");
+      list.source = source;
+    } catch (err) {
+      if (discoveryOpeningActive(list)) list.sourceError = err.message || String(err);
+    } finally {
+      if (discoveryOpeningActive(list)) {
+        list.sourceLoading = false;
+        sync();
+      }
+    }
+  }
+
+  async function discoverySubmitWorktree() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.createMode !== "worktree" || list.creating || list.sourceLoading || !discoverySourceAvailable(list.source) || list.sourceError) return;
+    const branch = String(list.newBranch || "").trim();
+    if (!branch) return;
+    const base = String(list.newBase || "").trim() || String(list.currentBranch || "") || "HEAD";
+    let body;
+    let path;
+    try {
+      // Shared path builders (HerdrAppHelpers): the create form computes
+      // the proposed checkout path client-side so the user sees it before
+      // the POST; the backend falls back to the same convention when path
+      // is omitted.
+      const root = helpers.worktreeRootForSource(list.source, String((typeof options !== "undefined" && options.worktreeDefaultDirectory) || "").trim());
+      path = root && helpers.joinPath(root, list.source.repo_name, helpers.branchPathSlug(branch));
+      if (!path) throw Error("Worktree checkout path is unavailable.");
+      body = helpers.buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: !!list.pullBase });
+    } catch (err) {
+      list.createError = err.message || String(err);
+      sync();
+      revealDiscoveryWorktreeError();
+      return;
+    }
+    list.creating = true;
+    list.createError = "";
+    sync();
+    const postOnce = (withPullBase) =>
+      api("/api/worktrees", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          withPullBase
+            ? body
+            : helpers.buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: false }),
+        ),
+      });
+    try {
+      try {
+        const data = await postOnce(true);
+        if (!discoveryOpeningActive(list)) return;
+        const result = data.result || {};
+        if (!result.workspace || !result.workspace.workspace_id) throw Error("Created worktree response has no workspace.");
+        closeDiscoveryPopover();
+        go(result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
+        return;
+      } catch (err) {
+        const message = err.message || String(err);
+        // Diverged base with pull requested: ask once, then re-POST
+        // without pulling inside this same pending frame. A recursive
+        // submit would hit its own creating guard, and clearing the
+        // flag first would unlock the form while the retry is in
+        // flight, so the second POST lives here under the same lock.
+        if (!(discoveryOpeningActive(list) && list.pullBase && await confirmContinueWithoutPull(message))) {
+          if (discoveryOpeningActive(list)) list.createError = message;
+          return;
+        }
+        // The confirmation wait is user-paced: the workspace can change
+        // or the discovery can close meanwhile. A stale opening must
+        // never fire the retry POST.
+        if (!discoveryOpeningActive(list)) return;
+      }
+      const data = await postOnce(false);
+      if (!discoveryOpeningActive(list)) return;
+      const result = data.result || {};
+      if (!result.workspace || !result.workspace.workspace_id) throw Error("Created worktree response has no workspace.");
+      list.pullBase = false;
+      closeDiscoveryPopover();
+      go(result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
+    } catch (err) {
+      if (discoveryOpeningActive(list)) list.createError = err.message || String(err);
+    } finally {
+      if (discoveryOpeningActive(list)) {
+        list.creating = false;
+        sync();
+        if (list.createError) revealDiscoveryWorktreeError();
+      }
+    }
+  }
+
+  function revealDiscoveryWorktreeError() {
+    restoreDiscoveryFocus({ key: "create" });
+    const alert = document.querySelector('.location-bar-discovery-worktree-form .git-ui-error[role="alert"]');
+    if (alert && alert.scrollIntoView) alert.scrollIntoView({ block: "nearest" });
+  }
+
+  // A discovery worktree row: same contract as the branch rows, minus
+  // the switch (opening the worktree is the whole action).
+  async function discoveryWorktreeRowOpen(encodedPath) {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    const path = decodeURIComponent(String(encodedPath || ""));
+    if (!path) return;
+    if (!window.confirm(`Open worktree "${path}"?`)) return;
+    if (!discoveryOpeningActive(list)) return;
+    closeDiscoveryPopover();
+    try {
+      if (typeof showBlocking === "function") showBlocking(`Opening ${pathBasename(path) || path}`);
+      await openFolderForDiscovery(path);
+    } catch (err) {
+      alert(err.message || String(err));
+    } finally {
+      if (typeof hideBlocking === "function") hideBlocking();
+    }
+  }
+
+  async function discoveryOpenPlain() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    const folder = String(list.folder || "");
+    if (!folder) return;
+    // The footer cancels the probe: bump the requestId so late
+    // completions land on a dead opening.
+    list.requestId = nextPopoverRequestId();
+    closeDiscoveryPopover();
+    try {
+      if (typeof showBlocking === "function") showBlocking(`Opening ${pathBasename(folder) || folder}`);
+      await openFolderForDiscovery(folder);
+    } catch (err) {
+      // Only the specific git-detection failure permits direct plain creation.
+      if (isNotGitRepoError(err) && !discoveryContextStale(list)) {
+        try {
+          await createPlainWorkspaceOnFolder(folder, list);
+        } catch (createErr) {
+          alert(createErr.message || String(createErr));
+        }
+      } else {
+        alert(err.message || String(err));
+      }
+    } finally {
+      if (typeof hideBlocking === "function") hideBlocking();
+    }
+  }
+
+  function isNotGitRepoError(err) {
+    return String((err && err.message) || err || "").toLowerCase().includes("not a git repository");
+  }
+
+  async function createPlainWorkspaceOnFolder(folder, origin) {
+    const flow = window.HerdrOpenFolder;
+    if (!flow || !flow.createPlainWorkspace) throw Error("Folder opening is unavailable");
+    const previous = state.ws;
+    if (flow.focusWorkspaceOnFolder && await flow.focusWorkspaceOnFolder(folder)) {
+      if (flow.autoCloseLeftWorkspace) await flow.autoCloseLeftWorkspace(previous);
+      return;
+    }
+    if (origin && discoveryContextStale(origin)) return;
+    const created = await flow.createPlainWorkspace(folder, previous);
+    return created;
+  }
+
+  function discoveryFilter(value) {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.loading || list.creating) return;
+    list.filter = String(value || "");
+    // Pure local operation, same as the branch popover: every view that
+    // renders this filter (branches mode, the create view's Base picker)
+    // loaded its branch rows from a probe that returned the full remote
+    // list, so typing only lifts the render cap.
+    list.remoteLoaded = true;
+    if (!list.filter.trim()) list.remoteLoading = false;
+    sync();
+  }
+
+  function discoveryLoadMore() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    list.remoteLoaded = true;
+    sync();
+  }
+
+  function discoveryDraft(field, value) {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating || (field !== "newBranch" && field !== "newBase")) return;
+    list[field] = String(value || "");
+    // Typing with the panel open hides it: the draft would otherwise
+    // cover the very text being typed.
+    if (field === "newBase" && list.basePickerOpen) {
+      list.basePickerOpen = false;
+      sync();
+    }
+    const createButton = document.querySelector && document.querySelector('.location-bar-discovery-popover [data-discovery-focus="create"]');
+    if (createButton) createButton.disabled = list.creating || !String(list.newBranch || "").trim() || (list.createMode === "worktree" && (!list.source || list.sourceLoading || !!list.sourceError));
+  }
+
+  function refocusPathChip() {
+    const node = document.querySelector && document.querySelector(".location-bar-path-chip");
+    if (node) {
+      refocusChip(node);
+      return;
+    }
+    // Empty boot state: no path chip exists, return focus to the bar's
+    // own open button so Escape does not strand the keyboard user on
+    // the body.
+    refocusChip(document.querySelector && document.querySelector(".location-bar-empty"));
+  }
+
+  // Centralized create entry for palette actions and keyboard shortcuts:
+  // opens the same discovery create form the popover buttons use, seeded
+  // from the selected workspace's repo and current branch.
+  async function openDiscoveryCreateForRepo(repoPath, branch) {
+    const name = String(branch || "").trim();
+    // No selected repo (empty app, palette create): seed discovery with
+    // the default directory instead of dying silently, matching the
+    // open-workspace fallback.
+    const folder = String(repoPath || "").trim() || explorationDefaultDirectoryOption();
+    await openDiscoveryForFolder(folder, {
+      createMode: "worktree",
+      prefillBranch: name ? localWorktreeBranchName(name) : "",
+      prefillBase: name || "",
+    });
+  }
+
+  function closeDiscoveryPopover() {
+    if (!bar.discoveryList) return;
+    bar.discoveryList = null;
+    sync();
+    refocusPathChip();
+  }
+
+  function isNotGitRepositoryMessage(message) {
+    return String(message || "").toLowerCase().includes("not a git repository");
+  }
+
+  // Both probe completions must still belong to the same opening and shell origin.
+  async function openDiscoveryForFolder(folder, openingOptions) {
+    const target = String(folder || "").replace(/\/+$/, "") || "/";
+    const createMode = String((openingOptions && openingOptions.createMode) || "branch");
+    const prefillBranch = String((openingOptions && openingOptions.prefillBranch) || "");
+    const prefillBase = String((openingOptions && openingOptions.prefillBase) || "");
+    // Chip create entries remember the surface they came from so Cancel
+    // restores it (a branch-chip entry returns to the branch list, not
+    // the worktree rows the probe may have found).
+    const createOrigin = String((openingOptions && openingOptions.createOrigin) || "");
+    // Create entries opened from a chip popover (createWorktreeFromPopover,
+    // createWorktreeFromBranchPopover) must morph that popover in place:
+    // inheriting its anchor keeps the create view where the user clicked,
+    // instead of popping a second popover at the path chip.
+    const inheritedAnchor = (bar.worktreeList && bar.worktreeList.anchor) || (bar.branchList && bar.branchList.anchor) || null;
+    closeBranchPopover();
+    closeWorktreePopover();
+    const anchor = inheritedAnchor || anchorFromEvent(null, ".location-bar-path-chip");
+    bar.discoveryOpenedDuringClick = true;
+    if (typeof setTimeout === "function") setTimeout(() => { bar.discoveryOpenedDuringClick = false; }, 0);
+    bar.discoveryList = {
+      loading: true,
+      error: "",
+      mode: "",
+      folder: target,
+      worktrees: [],
+      local: [],
+      remote: [],
+      filter: "",
+      currentBranch: "",
+      remoteLoaded: false,
+      remoteLoading: false,
+      newBranch: prefillBranch,
+      newBase: prefillBase,
+      pullBase: false,
+      creating: false,
+      createMode,
+      createOrigin,
+      createError: "",
+      basePickerOpen: false,
+      defaultBranch: "",
+      branchOptionsLoading: false,
+      branchOptionsLoaded: false,
+      branchOptionsError: "",
+      source: null,
+      sourceLoading: false,
+      sourceError: "",
+      repoLabel: "",
+      anchor,
+      requestId: nextPopoverRequestId(),
+      wsId: String(state.ws || ""),
+      originCwd: currentCwd(),
+    };
+    const request = bar.discoveryList.requestId;
+    sync();
+    const dialog = document.querySelector && document.querySelector('.location-bar-discovery-popover[data-discovery-focus="dialog"]');
+    if (dialog && dialog.focus) dialog.focus();
+    try {
+      const data = await api(`/api/worktrees?cwd=${encodeURIComponent(target)}`);
+      if (!discoveryRequestActive(request)) return;
+      const rows = ((data && data.result) || {}).worktrees || [];
+      const source = ((data && data.result) || {}).source || {};
+      bar.discoveryList.source = discoverySourceAvailable(source) ? source : null;
+      const repoLabel = String(source.repo_name || source.repo_key || source.repo_root || "");
+      bar.discoveryList.repoLabel = repoLabel;
+      if (rows.length >= 2) {
+        bar.discoveryList = {
+          ...bar.discoveryList,
+          loading: false,
+          mode: "worktrees",
+          worktrees: rows,
+          createMode,
+          currentBranch: String((rows.slice().sort((a, b) => String(b.path || "").length - String(a.path || "").length).find((row) => samePath(row.path, target) || target.startsWith(String(row.path || "").replace(/\/+$/, "") + "/")) || {}).branch || ""),
+          repoLabel,
+        };
+        if (createMode === "worktree" && !bar.discoveryList.source) {
+          discoveryRetryWorktreeSource();
+        }
+        // Direct create entries (createWorktreeFromPopover, seeded
+        // palette openings) arrive with createMode already "worktree",
+        // so the combined view needs its branch probe here, not only in
+        // discoveryCreateWorktree.
+        if (createMode === "worktree") discoveryLoadBranchOptionsForBase(bar.discoveryList);
+        sync();
+        focusDiscoveryAfterLoad();
+        return;
+      }
+    } catch (err) {
+      if (!discoveryRequestActive(request)) return;
+      // A failed worktree probe alone cannot prove the folder is non-git.
+      bar.discoveryList.probe1Error = err.message || String(err);
+    }
+    // Probe 2: single checkout or plain folder.
+    try {
+      const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(target)}`);
+      if (!discoveryRequestActive(request)) return;
+      const currentRow = (data.local || []).find((b) => b && b.current);
+      // A plain checkout on a non-default branch offers the default
+      // branch up front: the user picked the folder, not the branch.
+      const defaultBranch = discoveryDefaultBranchName(data);
+      bar.discoveryList = {
+        ...bar.discoveryList,
+        loading: false,
+        mode: "branches",
+        local: data.local || [],
+        remote: data.remote || [],
+        currentBranch: currentRow && currentRow.name ? String(currentRow.name) : "",
+        defaultBranch,
+      };
+      sync();
+      focusDiscoveryAfterLoad();
+    } catch (err) {
+      if (!discoveryRequestActive(request)) return;
+      if (isNotGitRepositoryMessage(err.message || String(err))) {
+        const origin = bar.discoveryList;
+        bar.discoveryList = null;
+        sync();
+        try {
+          if (typeof showBlocking === "function") showBlocking(`Opening ${pathBasename(target) || target}`);
+          if (!discoveryContextStale(origin)) await createPlainWorkspaceOnFolder(target, origin);
+        } catch (openErr) {
+          alert(openErr.message || String(openErr));
+        } finally {
+          if (typeof hideBlocking === "function") hideBlocking();
+        }
+        return;
+      }
+      bar.discoveryList = {
+        ...bar.discoveryList,
+        loading: false,
+        error: err.message || String(err),
+      };
+      sync();
+    }
+  }
+
+  function focusDiscoveryAfterLoad() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list)) return;
+    requestAnimationFrame(() => {
+      if (!discoveryOpeningActive(list)) return;
+      // If the user already moved into a live field while the discovery
+      // data landed, keep their focus. Autofocus runs only when focus
+      // still sits on the body or the dialog container itself.
+      const active = document.activeElement;
+      const userMoved =
+        active &&
+        active !== document.body &&
+        !(active.getAttribute && active.getAttribute("data-discovery-focus") === "dialog");
+      // Entries that land straight in the create form (chip popovers,
+      // palette, shortcuts) owe the user the name field, not the first
+      // list row; reveal it so it is visible on short viewports too.
+      if (list.createMode === "worktree" && !userMoved) {
+        const nameField = document.querySelector(".location-bar-discovery-popover #locationBarDiscoveryName");
+        if (nameField && nameField.focus) {
+          nameField.focus();
+          if (nameField.scrollIntoView) nameField.scrollIntoView({ block: "nearest" });
+          return;
+        }
+      }
+      if (userMoved) return;
+      const selector = list.mode === "worktrees" ? ".git-ui-worktree-option" : ".git-ui-branch-list-filter input";
+      const target = document.querySelector(`.location-bar-discovery-popover ${selector}`);
+      if (target && target.focus) target.focus();
+    });
+  }
+
+  // Same-folder picks discover too; only the chosen destination can skip navigation.
   let pickerInput = null;
   function openPathPicker() {
     const workspace = selectedWorkspace();
@@ -953,11 +1945,10 @@
       const target = String(pickerInput.value || "").trim();
       if (pickerInput.parentNode) pickerInput.remove();
       pickerInput = null;
-      if (!target || samePath(target, cwd)) return;
-      if (!window.HerdrOpenFolder) return;
-      window.HerdrOpenFolder.openFolderAsWorkspace(target).catch((error) =>
-        alert(error.message || String(error)),
-      );
+      if (!target) return;
+      // Routed through the exported namespace so harness stubs and the
+      // real bundle resolve the same entry point.
+      window.HerdrLocationBar.openDiscoveryForFolder(target);
     });
     document.body.appendChild(pickerInput);
     picker.open(pickerInput);
@@ -966,6 +1957,22 @@
   window.HerdrLocationBar = {
     sync,
     openPathPicker,
+    openDiscoveryForFolder,
+    openDiscoveryCreateForRepo,
+    closeDiscoveryPopover,
+    discoveryOpenPlain,
+    discoveryWorktreeRowOpen,
+    discoveryBranchRowOpen,
+    discoveryOpenDefaultBranch,
+    discoveryCreateBranch,
+    discoveryCreateWorktree,
+    discoverySubmitWorktree,
+    discoveryCancelWorktree,
+    discoveryRetryWorktreeSource,
+    discoveryFilter,
+    discoveryLoadMore,
+    discoveryDraft,
+    discoveryCreateKeydown,
     openBranchPopover,
     closeBranchPopover,
     branchPopoverFilter,
@@ -980,5 +1987,10 @@
     selectWorktreeFromPopover,
     createWorktreeFromPopover,
     createWorktreeFromBranchPopover,
+    discoveryTogglePullBase,
+    discoveryPickBaseFromRow,
+    discoveryToggleBasePicker,
+    discoveryBaseInputClick,
+    discoveryRetryBranchOptions,
   };
 })();

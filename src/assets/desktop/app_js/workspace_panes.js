@@ -1657,12 +1657,13 @@ function maximizePaneFor(encodedPaneId) {
 // action starts.
 async function newTabForPane(encodedPaneId) {
   if (!state.ws) {
-    // Same typeof guard as the go() references: standalone harnesses
-    // load this file alone, without the worktree modal in scope.
-    if (typeof openWorktreeOpenModal === "function")
-      openWorktreeOpenModal(
-        typeof selectedWorkspaceRepoPath === "function" ? selectedWorkspaceRepoPath() : "",
-        true,
+    // Routed through the exported namespace so standalone harnesses
+    // and the real bundle resolve the same discovery entry.
+    if (window.HerdrLocationBar && window.HerdrLocationBar.openDiscoveryForFolder)
+      window.HerdrLocationBar.openDiscoveryForFolder(
+        typeof selectedWorkspaceRepoPath === "function"
+          ? selectedWorkspaceRepoPath() || explorationDefaultDirectoryOption()
+          : explorationDefaultDirectoryOption(),
       );
     return;
   }

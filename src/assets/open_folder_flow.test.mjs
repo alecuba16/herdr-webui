@@ -63,6 +63,25 @@ function loadFlow(overrides = {}) {
 }
 
 describe("open folder flow", () => {
+  it("creates a known plain workspace directly with recents, navigation and cleanup", async () => {
+    const closed = [];
+    const { ctx, calls } = loadFlow({
+      state: { ws: "cur", workspaces: [{ workspace_id: "cur", cwd: "/old" }], workspaceCounts: { cur: { tabs: 0 } } },
+      api: {
+        "/api/worktrees?cwd=%2Fnotes": () => { throw Error("not a git repository"); },
+        "/api/workspaces": () => ({ result: { workspace: { workspace_id: "notes" }, tab: { tab_id: "tab" }, root_pane: { pane_id: "pane" } } }),
+      },
+      go: () => { ctx.state.ws = "notes"; },
+      extra: { HerdrWorkspaces: { closeWorkspaceById: async (id) => closed.push(id) } },
+    });
+    await ctx.HerdrOpenFolder.createPlainWorkspace("/notes", "cur");
+    equal(calls.api.length, 2);
+    equal(calls.api[0].url, "/api/workspaces");
+    equal(calls.api[1].url, "/api/recent-workspaces/record");
+    assert.deepEqual(calls.go, [["notes", "tab", "pane"]]);
+    assert.deepEqual(closed, ["cur"]);
+  });
+
   it("exposes HerdrOpenFolder with openFolderAsWorkspace", () => {
     const { ctx } = loadFlow();
     equal(typeof ctx.HerdrOpenFolder.openFolderAsWorkspace, "function");

@@ -869,9 +869,16 @@ impl TuiApp {
 
     /// Webui `createWorktree` (prefix Shift+T): create a worktree from
     /// the selected workspace at `branch` checked out into `path`.
-    pub fn create_worktree(&mut self, branch: &str, path: &str) -> WorkspaceResult {
+    pub fn create_worktree(
+        &mut self,
+        branch: &str,
+        path: &str,
+        base: &str,
+        pull_base: bool,
+    ) -> WorkspaceResult {
         let branch = branch.trim();
         let path = path.trim();
+        let base = base.trim();
         if branch.is_empty() || path.is_empty() {
             return Err("type branch and checkout path".to_string());
         }
@@ -883,7 +890,14 @@ impl TuiApp {
             return Err("no workspace folder selected".to_string());
         };
         self.client
-            .create_worktree(&cwd, branch, path, None)
+            .create_worktree_from_base_with_pull(
+                &cwd,
+                branch,
+                if base.is_empty() { "HEAD" } else { base },
+                path,
+                None,
+                pull_base,
+            )
             .map_err(|err| err.to_string())?;
         self.refresh().map_err(|err| err.to_string())?;
         Ok(format!("worktree created: {branch} -> {path}"))
@@ -922,6 +936,8 @@ pub(crate) enum WorkspacePrompt {
     RenamePanel,
     CreateWorktreeBranch,
     CreateWorktreePath,
+    CreateWorktreeBase,
+    ConfirmWorktreePullBase,
     ConfirmCloseWorkspace,
 }
 
@@ -972,10 +988,56 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
             }
         }
         WorkspacePrompt::CreateWorktreePath => {
-            let Some(WorktreeCreateStage::Branch(branch)) = app.worktree_create_stage.take() else {
+            let path = text.trim();
+            if path.is_empty() {
+                app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreePath));
+                Err("type the checkout path".to_string())
+            } else {
+                // Stage the path and chain into the base-ref prompt
+                // (webui inline form: name, base, pull-base, create).
+                let Some(WorktreeCreateStage::Branch(branch)) = app.worktree_create_stage.take()
+                else {
+                    return;
+                };
+                app.worktree_create_stage =
+                    Some(WorktreeCreateStage::Path(branch, path.to_string()));
+                app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBase));
+                Ok("type the base ref (empty = HEAD), Enter continues".to_string())
+            }
+        }
+        WorkspacePrompt::CreateWorktreeBase => {
+            // The base ref is taken verbatim (no substring magic that
+            // would corrupt refs like feature/pull-requests). A separate
+            // y/n step decides the webui pull-base checkbox parity, and
+            // the staged draft survives a failed create so the user can
+            // retry instead of retyping the whole chain.
+            let base = text.trim().to_string();
+            let Some(WorktreeCreateStage::Path(branch, path)) = app.worktree_create_stage.take()
+            else {
                 return;
             };
-            app.create_worktree(&branch, text)
+            app.worktree_create_stage = Some(WorktreeCreateStage::Base(branch, path, base));
+            app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
+            Ok("pull the base ref first? (y = fast-forward it, Enter = skip)".to_string())
+        }
+        WorkspacePrompt::ConfirmWorktreePullBase => {
+            let pull_base = text.trim().eq_ignore_ascii_case("y");
+            let Some(WorktreeCreateStage::Base(branch, path, base)) =
+                app.worktree_create_stage.take()
+            else {
+                return;
+            };
+            let result = app.create_worktree(&branch, &path, &base, pull_base);
+            if result.is_err() {
+                // A failed create (backend error, diverged pull) keeps the
+                // staged branch/path/base and reopens the confirm prompt:
+                // the error shows in the footer while the prompt stays
+                // up, so Enter retries and Esc abandons (webui keeps the
+                // inline error plus its retry button on the form).
+                app.worktree_create_stage = Some(WorktreeCreateStage::Base(branch, path, base));
+                app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
+            }
+            result
         }
     };
     match result {
@@ -988,6 +1050,8 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeCreateStage {
     Branch(String),
+    Path(String, String),
+    Base(String, String, String),
 }
 /// Two-step workspace creation prompt: the webui modal collects folder
 /// and name at once; the TUI asks path first (validated, tilde-expanded),
