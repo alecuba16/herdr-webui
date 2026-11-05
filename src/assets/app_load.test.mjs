@@ -9541,3 +9541,358 @@ describe("notes rail static pins", () => {
     ok(guards >= 5, "every notes route checks auth: " + guards);
   });
 });
+
+describe("desktop search palette flows", () => {
+  function bootPalette() {
+    const ctx = context();
+    ctx.fetch = async (url, opt) => {
+      if (String(url).startsWith("/api/recent-workspaces")) {
+        return { status: 200, json: async () => ({ recent: [] }) };
+      }
+      return { status: 200, json: async () => ({}) };
+    };
+    ctx.window.HerdrWorkspaceSearch = {
+      settings() {
+        return { searchSectionOrder: ["workspaces", "files", "content"], searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, contentMinChars: 2, contextLines: 2 };
+      },
+      createContentState() {
+        return { query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0, contextLines: 2 };
+      },
+      resetContentState(content, query) {
+        Object.assign(content, { query, files: [], loading: false, error: "", done: true, offset: 0 });
+      },
+      applyContentResults(content, data, append) {
+        Object.assign(content, { files: (data.files || []).slice(), total_matches: data.total_matches || 0, done: !data.truncated, offset: (append ? content.offset : 0) + (data.files || []).length });
+      },
+      flattenContentMatches(files) {
+        const rows = [];
+        for (const file of files || []) for (const match of file.matches || []) rows.push({ file, match });
+        return rows;
+      },
+      renderContentPicker() { return "<div>content-picker</div>"; },
+      async searchContent({ query }) {
+        return { files: [{ path: "src/a.rs", matches: [{ id: "m1", line: 1, content: "hit" }] }], total_matches: 1, truncated: false };
+      },
+      async searchPaths() { return { entries: [], truncated: false, visited: 0 }; },
+      workspaceCwd() { return "/repo/alpha"; },
+      pathSearchAvailable() { return true; },
+      normalizePathKind(kind) { return kind; },
+      matchHighlight() { return null; },
+    };
+    runSource(ctx);
+    return { ctx };
+  }
+
+  it("runWorkspaceSearch skips file search for actions-only queries", async () => {
+    const { ctx } = bootPalette();
+    const opened = vm.runInContext("openSearchPalette()", ctx);
+    equal(opened, true, "palette opens");
+    await vm.runInContext(`
+      (async () => {
+        searchPaletteState.query = "alpha";
+        await runWorkspaceSearch(false);
+        globalThis.__probe = { pathEntries: searchPaletteState.pathEntries.length, pathDone: searchPaletteState.pathDone };
+        searchPaletteState.query = ">";
+        await runWorkspaceSearch(false);
+        globalThis.__actionsOnly = { pathEntries: searchPaletteState.pathEntries.length, pathDone: searchPaletteState.pathDone };
+      })()
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(globalThis.__probe)", ctx));
+    const actionsOnly = JSON.parse(vm.runInContext("JSON.stringify(globalThis.__actionsOnly)", ctx));
+    equal(probe.pathEntries, 0, "stubbed path search returns no entries");
+    equal(actionsOnly.pathEntries, 0, "actions-only query clears path entries");
+    equal(actionsOnly.pathDone, true, "actions-only query marks paths done without a request");
+  });
+
+  it("runWorkspaceSearch bails when the query or cwd is empty", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    await vm.runInContext(`
+      (async () => {
+        searchPaletteState.query = "";
+        await runWorkspaceSearch(false);
+        globalThis.__probe = { pathDone: searchPaletteState.pathDone, pathLoading: searchPaletteState.pathLoading };
+      })()
+    `, ctx);
+    const probe = JSON.parse(vm.runInContext("JSON.stringify(globalThis.__probe)", ctx));
+    equal(probe.pathDone, true, "empty query marks paths done without a request");
+    equal(probe.pathLoading, false, "no path request in flight");
+  });
+
+  it("scheduleSearch reads the input and replaces the pending debounce timer", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__cleared = [];
+      const realClearTimeout = clearTimeout;
+      clearTimeout = (handle) => { globalThis.__cleared.push(handle); realClearTimeout(handle); };
+      el("searchPaletteInput").value = "alpha";
+      scheduleSearch();
+      el("searchPaletteInput").value = "alphabet";
+      scheduleSearch();
+      globalThis.__query = searchPaletteState.query;
+      globalThis.__selectionReset = searchPaletteState.selectedIndex;
+    `, ctx);
+    equal(vm.runInContext("globalThis.__query", ctx), "alphabet", "schedule reads the input value");
+    deepEqual(JSON.parse(vm.runInContext("JSON.stringify(globalThis.__cleared)", ctx)), [1], "a second keystroke clears the pending timer");
+    equal(vm.runInContext("globalThis.__selectionReset", ctx), 0, "typing resets the selection");
+  });
+
+  it("runContentSearchForPalette gates on contentMinChars, errors, and stale sequences", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    await vm.runInContext(`
+      (async () => {
+        await runContentSearchForPalette(1, "a", "/repo/alpha", false);
+        globalThis.__shortError = searchPaletteState.content.error;
+        searchPaletteState.requestSeq = 2;
+        HerdrWorkspaceSearch.searchContent = async () => { throw new Error("grep boom"); };
+        await runContentSearchForPalette(2, "alpha", "/repo/alpha", false);
+        globalThis.__searchError = searchPaletteState.content.error;
+        globalThis.__doneAfterError = searchPaletteState.content.done;
+        searchPaletteState.requestSeq = 99;
+        HerdrWorkspaceSearch.searchContent = async () => ({ files: [], truncated: false });
+        await runContentSearchForPalette(2, "alpha", "/repo/alpha", false);
+        globalThis.__staleLoading = searchPaletteState.content.loading;
+      })()
+    `, ctx);
+    match(vm.runInContext("globalThis.__shortError", ctx), /Type at least 2 characters/, "short query shows the minimum hint");
+    equal(vm.runInContext("globalThis.__searchError", ctx), "grep boom", "helper failure lands in the content error slot");
+    equal(vm.runInContext("globalThis.__doneAfterError", ctx), true, "failed search marks content done");
+    equal(vm.runInContext("globalThis.__staleLoading", ctx), true, "a stale sequence never touches the fresh search state");
+  });
+
+  it("openWorkspaceSearchPath alerts when the file browser open fails", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__alerts = [];
+      alert = function (msg) { globalThis.__alerts.push(msg); };
+      window.HerdrFileBrowser = { openAt: async () => { throw new Error("open boom"); } };
+      rememberWorkspaceShellMode = function () {};
+    `, ctx);
+    await vm.runInContext(`
+      (async () => { await openWorkspaceSearchPath("src/a.rs", "file"); })()
+    `, ctx);
+    const alertsOut = JSON.parse(vm.runInContext("JSON.stringify(globalThis.__alerts)", ctx));
+    deepEqual(alertsOut, ["open boom"], "open failure reaches the user");
+  });
+
+  it("openWorkspaceSearchPath routes through the file browser with the row kind", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__openArgs = [];
+      window.HerdrFileBrowser = { openAt: async (workspace, path, options) => { globalThis.__openArgs.push([path, options.kind, options.mode]); } };
+      rememberWorkspaceShellMode = function () {};
+    `, ctx);
+    await vm.runInContext(`
+      (async () => {
+        await openWorkspaceSearchPath("src/a.rs", "file");
+        await openWorkspaceSearchPath("docs", "dir");
+      })()
+    `, ctx);
+    const openArgs = JSON.parse(vm.runInContext("JSON.stringify(globalThis.__openArgs)", ctx));
+    deepEqual(openArgs, [["src/a.rs", "file", "append"], ["docs", "dir", null]], "files append, dirs just open");
+  });
+
+  it("openWorkspaceSearchContent guards a missing file and a failed browser load", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__opens = 0;
+      globalThis.__alerts = [];
+      alert = function (msg) { globalThis.__alerts.push(msg); };
+      window.HerdrFileBrowser = { openAt: async () => { globalThis.__opens++; } };
+      rememberWorkspaceShellMode = function () {};
+    `, ctx);
+    await vm.runInContext(`
+      (async () => {
+        await openWorkspaceSearchContent(null, null);
+        await openWorkspaceSearchContent({ path: "src/a.rs" }, { id: "m1" });
+      })()
+    `, ctx);
+    equal(vm.runInContext("globalThis.__opens", ctx), 1, "only the real file reaches the browser");
+  });
+
+  it("chooseSearchResult routes recent rows through openRecentWorkspace and closes the palette", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    await vm.runInContext(`
+      (async () => {
+        searchPaletteState.query = "";
+        renderSearchPalette();
+        searchPaletteState.results = [{ type: "recent", path: "/repo/alpha", label: "Alpha", isOpen: false }];
+        let posted = null;
+        fetch = async (url, opt) => {
+          if (String(url) === "/api/recent-workspaces" && opt && opt.method === "POST") {
+            posted = JSON.parse(opt.body).path;
+            return { status: 200, ok: true, json: async () => ({ result: { workspace: { workspace_id: "ws-1" }, tab: { tab_id: "t1" }, root_pane: { pane_id: "p1" } } }) };
+          }
+          return { status: 200, json: async () => ({}) };
+        };
+        chooseSearchResult(0);
+        await 1;
+        globalThis.__posted = posted;
+        globalThis.__paletteOpen = el("searchPalette").style.display;
+      })()
+    `, ctx);
+    equal(vm.runInContext("globalThis.__posted", ctx), "/repo/alpha", "recent row posts the open");
+    equal(vm.runInContext("globalThis.__paletteOpen", ctx), "none", "palette closes on open");
+  });
+
+  it("moveSearchSelection skips disabled rows and wraps around", () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      renderSearchPalette();
+      searchPaletteState.results = [
+        { type: "recent", path: "/one", isOpen: true },
+        { type: "recent", path: "/two", isOpen: false },
+        { type: "recent", path: "/three", isOpen: false },
+      ];
+      searchPaletteState.selectedIndex = 0;
+      moveSearchSelection(1);
+      globalThis.__afterDown = searchPaletteState.selectedIndex;
+      moveSearchSelection(-1);
+      globalThis.__afterUpWrap = searchPaletteState.selectedIndex;
+      moveSearchSelection(1);
+      globalThis.__afterWrapDown = searchPaletteState.selectedIndex;
+    `, ctx);
+    equal(vm.runInContext("globalThis.__afterDown", ctx), 1, "down skips the disabled row");
+    equal(vm.runInContext("globalThis.__afterUpWrap", ctx), 0, "up from the middle lands on the disabled head and stays selectable by the render pass");
+    equal(vm.runInContext("globalThis.__afterWrapDown", ctx), 1, "down from the disabled head skips it again");
+  });
+
+  it("searchPaletteKeydown drives navigation, mode toggles, and section jumps", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      renderSearchPalette();
+      globalThis.__key = [];
+      const press = (over) => {
+        const event = Object.assign({ preventDefault() { globalThis.__key.push("prevented"); } }, over);
+        searchPaletteKeydown(event);
+      };
+      press({ key: "ArrowDown" });
+      press({ key: "ArrowUp" });
+      press({ key: "Escape" });
+      press({ altKey: true, key: "1", code: "Digit1" });
+      press({ altKey: true, key: "2", code: "Digit2" });
+      press({ altKey: true, key: "3", code: "Digit3" });
+      press({ altKey: true, key: "f" });
+      globalThis.__kindAfterFile = searchPaletteState.pathKind;
+      press({ altKey: true, key: "d" });
+      globalThis.__kindAfterDir = searchPaletteState.pathKind;
+      press({ altKey: true, key: "c" });
+      press({ altKey: true, key: "r" });
+      press({ altKey: true, key: "ArrowUp" });
+      press({ altKey: true, key: "ArrowDown" });
+      globalThis.__workspacesExpanded = searchPaletteState.sectionsExpanded.workspaces;
+      globalThis.__filesExpanded = searchPaletteState.sectionsExpanded.files;
+      globalThis.__contentExpanded = searchPaletteState.sectionsExpanded.content;
+      globalThis.__matchCase = searchPaletteState.matchCase;
+      globalThis.__regex = searchPaletteState.regex;
+      globalThis.__paletteDisplay = el("searchPalette").style.display;
+    `, ctx);
+    equal(vm.runInContext("globalThis.__workspacesExpanded", ctx), false, "alt+1 toggles the workspaces section");
+    equal(vm.runInContext("globalThis.__filesExpanded", ctx), false, "alt+2 toggles the files section");
+    equal(vm.runInContext("globalThis.__contentExpanded", ctx), false, "alt+3 toggles the content section");
+    equal(vm.runInContext("globalThis.__kindAfterFile", ctx), "file", "alt+f pins the file scope");
+    equal(vm.runInContext("globalThis.__kindAfterDir", ctx), "dir", "alt+d pins the dir scope");
+    equal(vm.runInContext("globalThis.__matchCase", ctx), true, "alt+c flips match case");
+    equal(vm.runInContext("globalThis.__regex", ctx), true, "alt+r flips regex");
+    equal(vm.runInContext("globalThis.__paletteDisplay", ctx), "none", "escape closes the palette");
+    ok(vm.runInContext("globalThis.__key.length", ctx) >= 10, "every mapped key calls preventDefault");
+  });
+
+  it("setPathKind re-runs the search only when the scope is enabled", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__runs = 0;
+      runWorkspaceSearch = async () => { globalThis.__runs++; };
+      HerdrSearchPalette.setPathKind("dir");
+      globalThis.__kindAfterDir = searchPaletteState.pathKind;
+      HerdrSearchPalette.setSearchMode("nonsense");
+      globalThis.__matchCaseAfterBad = searchPaletteState.matchCase;
+      HerdrSearchPalette.setSearchMode("matchCase");
+      globalThis.__matchCaseAfterFlip = searchPaletteState.matchCase;
+    `, ctx);
+    equal(vm.runInContext("globalThis.__kindAfterDir", ctx), "dir", "dir scope accepted");
+    equal(vm.runInContext("globalThis.__runs", ctx), 2, "scope and mode changes each rerun the search");
+    equal(vm.runInContext("globalThis.__matchCaseAfterBad", ctx), false, "unknown mode is ignored");
+    equal(vm.runInContext("globalThis.__matchCaseAfterFlip", ctx), true, "matchCase flips live");
+  });
+
+  it("loadMorePaths and loadMoreContent ignore exhausted or busy searches", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__pathRuns = 0;
+      globalThis.__contentRuns = 0;
+      runPathSearch = async () => { globalThis.__pathRuns++; };
+      runContentSearchForPalette = async () => { globalThis.__contentRuns++; };
+      searchPaletteState.pathLoading = true;
+      HerdrSearchPalette.loadMorePaths();
+      searchPaletteState.pathLoading = false;
+      searchPaletteState.pathDone = true;
+      HerdrSearchPalette.loadMorePaths();
+      searchPaletteState.content.loading = true;
+      HerdrSearchPalette.loadMoreContent();
+      searchPaletteState.content.loading = false;
+      searchPaletteState.content.done = true;
+      HerdrSearchPalette.loadMoreContent();
+    `, ctx);
+    equal(vm.runInContext("globalThis.__pathRuns", ctx), 0, "busy or done path search never appends");
+    equal(vm.runInContext("globalThis.__contentRuns", ctx), 0, "busy or done content search never appends");
+  });
+
+  it("HerdrSearchPaletteTree.select decodes and routes the row path", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__selected = [];
+      openWorkspaceSearchPath = (path, kind) => { globalThis.__selected.push([path, kind]); };
+      searchPaletteState.pathKind = "file";
+      searchPaletteState.pathEntries = [{ path: "src/a.rs", kind: "file" }];
+      HerdrSearchPaletteTree.select(encodeURIComponent("src/a.rs"));
+      searchPaletteState.pathEntries = [{ path: "docs", kind: "dir" }];
+      HerdrSearchPaletteTree.select(encodeURIComponent("docs"));
+    `, ctx);
+    const selected = JSON.parse(vm.runInContext("JSON.stringify(globalThis.__selected)", ctx));
+    deepEqual(selected, [["src/a.rs", "file"], ["docs", "dir"]], "tree select routes the decoded path with its row kind");
+  });
+
+  it("HerdrSearchPaletteContent openFile and openMatch route through the file browser", async () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__contentOpens = [];
+      openWorkspaceSearchPath = (path, kind) => { globalThis.__contentOpens.push([path, kind]); };
+      openWorkspaceSearchContent = (file, match) => { globalThis.__contentOpens.push([file.path, match.id]); };
+      HerdrSearchPaletteContent.openFile(encodeURIComponent("src/a.rs"));
+      searchPaletteState.content.files = [{ path: "src/b.rs", matches: [{ id: "m9" }] }];
+      window.HerdrContentSearch = { findMatch: (file, id) => (file && file.matches && file.matches[0]) || null };
+      HerdrSearchPaletteContent.openMatch(encodeURIComponent("src/b.rs"), encodeURIComponent("m9"));
+    `, ctx);
+    const opens = JSON.parse(vm.runInContext("JSON.stringify(globalThis.__contentOpens)", ctx));
+    deepEqual(opens, [["src/a.rs", "file"], ["src/b.rs", "m9"]], "content rows open files and matches");
+  });
+
+  it("expandSelectedSearchContent only acts on a selected content row", () => {
+    const { ctx } = bootPalette();
+    vm.runInContext("openSearchPalette()", ctx);
+    vm.runInContext(`
+      globalThis.__expands = 0;
+      HerdrSearchPaletteContent.expandSnippet = () => { globalThis.__expands++; };
+      searchPaletteState.results = [];
+      expandSelectedSearchContent("down");
+      searchPaletteState.results = [{ type: "path", path: "src/a.rs" }];
+      expandSelectedSearchContent("down");
+      searchPaletteState.results = [{ type: "content", file: { path: "src/b.rs" }, match: { id: "m1" } }];
+      expandSelectedSearchContent("down");
+    `, ctx);
+    equal(vm.runInContext("globalThis.__expands", ctx), 1, "only the content row expands");
+  });
+});

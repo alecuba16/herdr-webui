@@ -835,3 +835,287 @@ describe("shortcut prefix plumbing (shortcuts.js)", () => {
     assert.equal(action, true);
   });
 });
+
+describe("prefixed shortcut actions (shortcuts.js)", () => {
+  function armedContext(extraSetup = "") {
+    const { ctx, getElement } = boot();
+    vm.runInContext(
+      `options.webuiShortcuts = {};
+      go = (ws, tab, pane) => { (window.__goCalls = window.__goCalls || []).push({ ws, tab, pane }); if (ws) state.ws = ws; if (tab) state.tab = tab; if (pane) state.pane = pane; };
+      newTab = () => { (window.__newTab = (window.__newTab || 0) + 1); };
+      closeWorkspace = (ws) => { (window.__closedWs = window.__closedWs || []).push(ws); };
+      removeWorktree = (ws) => { (window.__removedWt = window.__removedWt || []).push(ws); };
+      focusTerminal = () => { window.__focusedTerminal = true; };
+      splitPaneRight = () => { window.__splitRight = true; return true; };
+      splitPaneDown = () => { window.__splitDown = true; return true; };
+      closeActivePane = () => { window.__closedPane = true; };
+      moveActiveTabToNextPane = () => { window.__movedTab = true; return true; };
+      maximizeActivePane = () => { window.__maximized = true; return true; };
+      activePaneElement = () => null;
+      togglePaneMenu = (btn) => { window.__paneMenu = btn; };
+      isWorkingDismissed = () => false;
+      selectedWorkspace = () => ({ workspace_id: "ws1" });
+      selectedWorkspaceRepoPath = () => "/repo";
+      workspaceBranch = () => "main";
+      explorationDefaultDirectoryOption = () => "/repo";
+      window.HerdrLocationBar = {
+        sync: () => {},
+        openDiscoveryForFolder: (p) => { (window.__discovery = window.__discovery || []).push(p); },
+        openDiscoveryCreateForRepo: (p, b) => { (window.__discoveryCreate = window.__discoveryCreate || []).push({ p, b }); },
+      };
+      state.ws = "ws1";
+      state.pane = "pane1";
+      state.tab = "tab1";
+      state.workspaces = [
+        { workspace_id: "ws1", label: "one" },
+        { workspace_id: "ws2", label: "two" },
+      ];
+      state.workspaceOrder = ["ws1", "ws2"];
+      state.tabs = [
+        { workspace_id: "ws1", tab_id: "tab1", label: "one" },
+        { workspace_id: "ws1", tab_id: "tab2", label: "two" },
+      ];
+      state.agents = [];
+      ${extraSetup}`,
+      ctx,
+    );
+    const arm = () => vm.runInContext(
+      'handleGlobalShortcut({ key: "b", code: "KeyB", ctrlKey: true, preventDefault() {}, stopPropagation() {} })',
+      ctx,
+    );
+    const press = (code) => vm.runInContext(
+      `handleGlobalShortcut({ code: "${code}", key: "${code}", preventDefault() {}, stopPropagation() {} })`,
+      ctx,
+    );
+    return { ctx, getElement, arm, press };
+  }
+
+  it("cycling shortcuts walk workspaces and panels in order", () => {
+    const d = armedContext(`options.webuiShortcuts = { nextWorkspace: "Digit1", prevWorkspace: "Digit2", nextPanel: "Digit3", prevPanel: "Digit4" };`);
+    const fire = (code) => { d.arm(); d.press(code); };
+    fire("Digit1");
+    fire("Digit1");
+    fire("Digit2");
+    fire("Digit3");
+    fire("Digit4");
+    const goes = JSON.parse(vm.runInContext("JSON.stringify(window.__goCalls)", d.ctx));
+    assert.deepEqual(goes, [
+      { ws: "ws2" },
+      { ws: "ws1" },
+      { ws: "ws2" },
+      { ws: "ws2", tab: "tab2" },
+      { ws: "ws2", tab: "tab1" },
+    ], "cycling wraps both lists in order");
+  });
+
+  it("agent cycling sorts by status rank and jumps to the agent", () => {
+    const d = armedContext(`options.webuiShortcuts = { nextAgent: "Digit1", prevAgent: "Digit2" };
+      state.agents = [
+        { workspace_id: "ws1", tab_id: "tab2", pane_id: "pane2", agent_status: "idle" },
+        { workspace_id: "ws1", tab_id: "tab1", pane_id: "pane1", agent_status: "working" },
+      ];`);
+    d.arm();
+    d.press("Digit1");
+    const goes = JSON.parse(vm.runInContext("JSON.stringify(window.__goCalls)", d.ctx));
+    assert.equal(goes[0].tab, "tab2", "the first cycle lands on the front of the sorted list");
+    d.arm();
+    d.press("Digit1");
+    assert.equal(JSON.parse(vm.runInContext("JSON.stringify(window.__goCalls)", d.ctx))[1].tab, "tab1", "cycling wraps to the next agent");
+    d.arm();
+    d.press("Digit2");
+    assert.equal(JSON.parse(vm.runInContext("JSON.stringify(window.__goCalls)", d.ctx))[2].tab, "tab2", "reverse cycling wraps back");
+  });
+
+  it("newPanel without a workspace routes to the open flow", () => {
+    const d = armedContext(`options.webuiShortcuts = { newPanel: "Digit1" };`);
+    vm.runInContext("state.ws = null;", d.ctx);
+    d.arm();
+    d.press("Digit1");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__discovery || [])", d.ctx)), ["/repo"], "no workspace opens discovery");
+    vm.runInContext("state.ws = 'ws1';", d.ctx);
+    d.arm();
+    d.press("Digit1");
+    assert.equal(vm.runInContext("window.__newTab", d.ctx), 1, "with a workspace the panel is created");
+  });
+
+  it("newWorkspace and openWorktrees open discovery for the repo", () => {
+    const d = armedContext(`options.webuiShortcuts = { newWorkspace: "Digit1", openWorktrees: "Digit2" };`);
+    d.arm();
+    d.press("Digit1");
+    d.arm();
+    d.press("Digit2");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__discovery || [])", d.ctx)), ["/repo", "/repo"], "both discovery shortcuts fire");
+  });
+
+  it("createWorktree opens the create flow with the branch", () => {
+    const d = armedContext(`options.webuiShortcuts = { createWorktree: "Digit1" };`);
+    d.arm();
+    d.press("Digit1");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__discoveryCreate || [])", d.ctx)), [{ p: "/repo", b: "main" }], "create carries repo path and branch");
+  });
+
+  it("closePanel and closeWorkspace act on the current selection", () => {
+    const d = armedContext(`options.webuiShortcuts = { closePanel: "Digit1", closeWorkspace: "Digit2" };
+      closeTab = (id) => { (window.__closedTabs = window.__closedTabs || []).push(id); return true; };`);
+    d.arm();
+    d.press("Digit1");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__closedTabs || [])", d.ctx)), ["tab1"], "panel close carries the tab id");
+    d.arm();
+    d.press("Digit2");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__closedWs || [])", d.ctx)), ["ws1"], "workspace close carries the id");
+  });
+
+  it("removeWorktree only fires on a linked worktree", () => {
+    const d = armedContext(`options.webuiShortcuts = { removeWorktree: "Digit1", removeWorktreeAlt: "Digit2" };
+      isLinkedWorktree = () => false;`);
+    d.arm();
+    d.press("Digit1");
+    d.arm();
+    d.press("Digit2");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__removedWt || [])", d.ctx)), [], "plain workspaces never remove");
+    vm.runInContext("isLinkedWorktree = () => true;", d.ctx);
+    d.arm();
+    d.press("Digit1");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__removedWt || [])", d.ctx)), ["ws1"], "a linked worktree removes through the alt too");
+  });
+
+  it("focusTerminal, split, close pane, move tab, and maximize run their actions", () => {
+    const d = armedContext(`options.webuiShortcuts = { focusTerminal: "Digit1", splitRight: "Digit2", splitDown: "Digit3", closePane: "Digit4", moveTabNextPane: "Digit5", maximizePane: "Digit6" };`);
+    for (const code of ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"]) {
+      d.arm();
+      d.press(code);
+    }
+    assert.equal(vm.runInContext("window.__focusedTerminal", d.ctx), true);
+    assert.equal(vm.runInContext("window.__splitRight", d.ctx), true);
+    assert.equal(vm.runInContext("window.__splitDown", d.ctx), true);
+    assert.equal(vm.runInContext("window.__closedPane", d.ctx), true);
+    assert.equal(vm.runInContext("window.__movedTab", d.ctx), true);
+    assert.equal(vm.runInContext("window.__maximized", d.ctx), true);
+  });
+
+  it("togglePaneMenu resolves the active pane strip button", () => {
+    const d = armedContext(`options.webuiShortcuts = { togglePaneMenu: "Digit1" };
+      activePaneElement = () => ({ querySelector: () => "the-button" });`);
+    d.arm();
+    d.press("Digit1");
+    assert.equal(vm.runInContext("window.__paneMenu", d.ctx), "the-button", "the strip button toggles");
+  });
+
+  it("focus cycling walks focusable controls around the document", async () => {
+    const d = armedContext(`options.webuiShortcuts = { focusNext: "Digit1", focusPrev: "Digit2" };
+      const controls = [{}, {}, {}];
+      controls.forEach((c, i) => { c.getBoundingClientRect = () => ({ width: 10, height: 10 }); c.disabled = false; c.getAttribute = () => null; c.focus = () => { window.__focused = i; }; });
+      const realQuerySelectorAll = document.querySelectorAll;
+      document.querySelectorAll = (sel) => (String(sel).includes("[tabindex]") ? controls : realQuerySelectorAll(sel));
+      document.activeElement = controls[1];`);
+    d.arm();
+    d.press("Digit1");
+    assert.equal(vm.runInContext("window.__focused", d.ctx), 2, "next control focuses after the active one");
+    d.arm();
+    d.press("Digit2");
+    assert.equal(vm.runInContext("window.__focused", d.ctx), 0, "prev control wraps to the first");
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  });
+
+  it("prefix Escape dismisses the armed prefix without running actions", () => {
+    const d = armedContext();
+    d.arm();
+    const consumed = d.press("Escape");
+    assert.equal(consumed, true, "the escape is consumed");
+    assert.equal(vm.runInContext("shortcutPrefixUntil", d.ctx), 0, "the prefix disarms");
+  });
+
+  it("the prefix press is ignored inside editable and terminal targets", () => {
+    const d = armedContext();
+    vm.runInContext(
+      `window.__ev = { isContentEditable: false, closest: (sel) => (sel.includes("input") ? { tagName: "INPUT" } : null) };`,
+      d.ctx,
+    );
+    assert.equal(
+      vm.runInContext('handleGlobalShortcut({ key: "b", code: "KeyB", ctrlKey: true, target: window.__ev, preventDefault() {}, stopPropagation() {} })', d.ctx),
+      false,
+      "typing in an input keeps the prefix",
+    );
+    vm.runInContext(
+      `window.__tv = { closest: (sel) => (sel === ".wterm" ? { classList: { contains: (c) => c === "wterm" } } : null) };`,
+      d.ctx,
+    );
+    assert.equal(
+      vm.runInContext('handleGlobalShortcut({ key: "b", code: "KeyB", ctrlKey: true, target: window.__tv, preventDefault() {}, stopPropagation() {} })', d.ctx),
+      true,
+      "the terminal target still arms the prefix",
+    );
+  });
+
+  it("search and settings shortcuts fire through the prefix", () => {
+    const d = armedContext(`options.webuiShortcuts = { search: "Digit1", settings: "Digit2", help: "Digit3", sidebar: "Digit4", rightSidebar: "Digit5" };
+      openSearchPalette = () => { window.__palette = true; };
+      openSettingsModal = () => { window.__settings = true; };
+      window.HerdrSettingsSections = { HELP_SECTION_SELECTOR: "#help", openSettingsModalAt: () => { window.__settings = true; } };`);
+    d.getElement("sidebarToggle").click = function () { this.clicked = true; };
+    d.getElement("rightSidebarToggle").click = function () { this.clicked = true; };
+    d.arm();
+    d.press("Digit1");
+    assert.equal(vm.runInContext("window.__palette", d.ctx), true, "search opens the palette");
+    d.arm();
+    d.press("Digit2");
+    assert.equal(vm.runInContext("window.__settings", d.ctx), true, "settings opens the modal");
+    d.arm();
+    d.press("Digit3");
+    assert.equal(vm.runInContext("window.__settings", d.ctx), true, "help lands on the same modal");
+    d.arm();
+    d.press("Digit4");
+    assert.equal(d.getElement("sidebarToggle").clicked, true, "the sidebar toggle clicks");
+    d.arm();
+    d.press("Digit5");
+    assert.equal(d.getElement("rightSidebarToggle").clicked, true, "the right sidebar toggle clicks");
+  });
+
+  it("closeShortcutKeydown consumes the chord close and nothing else", () => {
+    const d = armedContext(`options.closeShortcut = "altw";
+      removeClosedTabFromState = () => {};`);
+    const passthrough = vm.runInContext(
+      'closeShortcutKeydown({ key: "x", code: "KeyX", preventDefault() {}, stopPropagation() {} })',
+      d.ctx,
+    );
+    assert.equal(passthrough, false, "unrelated keys pass through");
+    const consumed = vm.runInContext(
+      'closeShortcutKeydown({ key: "w", code: "KeyW", altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} })',
+      d.ctx,
+    );
+    assert.equal(consumed, true, "the alt+w close is consumed");
+  });
+
+  it("showShortcutsModal targets the help section when settings sections exist", () => {
+    const d = armedContext(`window.HerdrSettingsSections = { HELP_SECTION_SELECTOR: "#help", openSettingsModalAt: (sel) => { window.__helpSel = sel; } };
+      openSettingsModal = () => { window.__settings = true; };`);
+    vm.runInContext("showShortcutsModal()", d.ctx);
+    assert.equal(vm.runInContext("window.__helpSel", d.ctx), "#help", "the help section opens directly");
+    vm.runInContext("window.HerdrSettingsSections = null;", d.ctx);
+    vm.runInContext("showShortcutsModal()", d.ctx);
+    assert.equal(vm.runInContext("window.__settings", d.ctx), true, "fallback opens the plain settings modal");
+  });
+
+  it("the hint toast hides on demand and respects the option gate", () => {
+    const d = armedContext();
+    vm.runInContext(
+      `options.webuiShortcuts = { search: "Digit1" };
+      openSearchPalette = () => {};
+      shortcutMapFor = (scope) => ({ search: "Digit1" });`,
+      d.ctx,
+    );
+    d.arm();
+    d.press("Digit1");
+    assert.equal(vm.runInContext("shortcutHintToastNode !== null", d.ctx), true, "the toast node exists after the action");
+    vm.runInContext("hideShortcutHintToast()", d.ctx);
+    assert.equal(
+      vm.runInContext("shortcutHintToastNode.classList.contains('shortcut-hint-toast-hidden')", d.ctx),
+      true,
+      "hiding adds the hidden class",
+    );
+    vm.runInContext("options.shortcutHintToasts = false;", d.ctx);
+    vm.runInContext("showShortcutHintToast('webuiShortcuts', 'search')", d.ctx);
+    assert.equal(vm.runInContext("shortcutHintToastTimer", d.ctx), null, "the gate blocks new toasts");
+  });
+});
