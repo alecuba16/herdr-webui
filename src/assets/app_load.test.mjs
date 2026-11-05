@@ -7765,7 +7765,7 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-row\.git-ui-log-search-current/);
     match(gitLogCss, /\.git-ui-log-row\.git-ui-log-nonmatch/);
     match(gitLogCss, /\.git-ui-log-graph svg[^\n]*height: var\(--git-log-row-height\)/);
-    match(gitLogCss, /\.git-ui-log-workbench\[data-has-details="true"\] \.git-ui-log-layout \{ grid-template-columns: minmax\(0,1fr\) 7px var\(--git-log-pane-width, minmax\(240px,28%\)\); grid-template-areas: "browser separator details"; \}/);
+    match(gitLogCss, /\.git-ui-log-workbench\[data-has-details="true"\] \.git-ui-log-layout \{ grid-template-columns: minmax\(0,1fr\) 7px minmax\(0, var\(--git-log-pane-width, minmax\(240px,28%\)\)\); grid-template-areas: "browser separator details"; \}/);
     match(gitLogCss, /@container git-log \(max-width: 780px\) \{[^@]*grid-template-areas: "details" "separator" "browser"/);
     match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /function updateGitLogStickyOffsets\(\)/);
     match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /--git-log-search-sticky-height/);

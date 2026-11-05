@@ -418,8 +418,10 @@ test("details hide for empty and two-commit states, one selection shows them", (
 test("details pane resizes through the separator by pointer and keyboard, clamps to the workbench", () => {
   // Fake DOM mirroring the real wiring: the pane and the separator
   // share the layout parent, whose style object records the size vars
-  // the grid tracks consume. Layout is 460x480 and the pane starts
-  // 300px wide, so the width clamp range is [180, 368].
+  // the grid tracks consume. Layout is 900x480 and the pane starts
+  // 300px wide, so the width clamp range is [180, 900 - 7 - 538] = [180, 355]:
+  // the max keeps the browser column at its 538px min-content width so
+  // dragged rows can never paint their text over the pane.
   const css = {};
   const style = {
     setProperty(name, value) { css[name] = value; },
@@ -427,7 +429,7 @@ test("details pane resizes through the separator by pointer and keyboard, clamps
   };
   const layout = {
     style,
-    getBoundingClientRect() { return { left: 60, top: 30, right: 520, bottom: 510, width: 460, height: 480 }; },
+    getBoundingClientRect() { return { left: 60, top: 30, right: 960, bottom: 510, width: 900, height: 480 }; },
   };
   const pane = {
     getBoundingClientRect() { return { left: 220, top: 30, right: 520, bottom: 510, width: 300, height: 480 }; },
@@ -450,20 +452,21 @@ test("details pane resizes through the separator by pointer and keyboard, clamps
   renderer.moveDetailsResize({ clientX: 186, clientY: 160, preventDefault() {} });
   assert.equal(renderer.detailsState().size.width, 330);
   assert.equal(css["--git-log-pane-width"], "330px");
-  // A jump far beyond the layout clamps to 80% of the workbench width.
+  // A jump far beyond the layout clamps at the max, which never lets the
+  // browser column fall under its min-content width (538px).
   renderer.moveDetailsResize({ clientX: 0, clientY: 700, preventDefault() {} });
-  assert.equal(renderer.detailsState().size.width, 368);
+  assert.equal(renderer.detailsState().size.width, 355);
   renderer.endDetailsResize();
   assert.equal(separator.attributes["data-resizing"], "false");
 
   // Keyboard: left arrow widens by 16px, shift right shrinks by 48px,
   // cross-axis keys do nothing, Home resets to the CSS default.
   renderer.moveDetailsResizeKeyboard({ key: "ArrowLeft", preventDefault() {} });
-  assert.equal(renderer.detailsState().size.width, 368, "keyboard resize also clamps at the max");
+  assert.equal(renderer.detailsState().size.width, 355, "keyboard resize also clamps at the max");
   renderer.moveDetailsResizeKeyboard({ key: "ArrowRight", shiftKey: true, preventDefault() {} });
-  assert.equal(renderer.detailsState().size.width, 320);
+  assert.equal(renderer.detailsState().size.width, 307);
   renderer.moveDetailsResizeKeyboard({ key: "ArrowUp", preventDefault() {} });
-  assert.equal(renderer.detailsState().size.width, 320, "cross-axis keys leave the size alone");
+  assert.equal(renderer.detailsState().size.width, 307, "cross-axis keys leave the size alone");
   renderer.moveDetailsResizeKeyboard({ key: "Home", preventDefault() {} });
   assert.equal(renderer.detailsState().size.width, 0, "Home resets to the CSS default");
   assert.ok(!("--git-log-pane-width" in css), "reset clears the size var");
@@ -477,7 +480,7 @@ test("details pane resizes through the separator by pointer and keyboard, clamps
   assert.equal(renderer.detailsState().size.width, before, "size survives re-renders");
   assert.equal(separator.attributes["aria-orientation"], "vertical");
   assert.equal(separator.attributes["aria-valuemin"], "180");
-  assert.equal(separator.attributes["aria-valuemax"], "368");
+  assert.equal(separator.attributes["aria-valuemax"], "355");
 });
 
 test("separator is keyboard reachable and container queries stack the pane with a row-resize axis", () => {
@@ -496,8 +499,10 @@ test("separator is keyboard reachable and container queries stack the pane with 
   assert.match(narrow, /grid-template-areas: "details" "separator" "browser"/);
   assert.match(narrow, /\.git-ui-log-details \{[^}]*--git-log-pane-height/);
   assert.match(narrow, /\.git-ui-log-separator \{ cursor: row-resize; \}/);
-  // Wide workbench: three columns, separator between list and pane.
-  assert.match(styles, /grid-template-columns: minmax\(0,1fr\) 7px var\(--git-log-pane-width/);
+  // Wide workbench: three columns, separator between list and pane. The
+  // pane track has a 0px floor so a huge saved width can never squeeze the
+  // browser column under its min-content width.
+  assert.match(styles, /grid-template-columns: minmax\(0,1fr\) 7px minmax\(0, var\(--git-log-pane-width/);
   assert.match(styles, /\.git-ui-log-separator \{[^}]*cursor: col-resize/);
 });
 

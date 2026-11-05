@@ -702,25 +702,20 @@ fn git_permalink_url(
     let base = normalize_git_remote_url(remote_url)
         .ok_or_else(|| "remote URL is not a supported HTTP/SSH Git URL".to_string())?;
     let path = encode_git_permalink_path(repo_path);
-    if base.contains("bitbucket.org/") {
-        return Ok((
-            format!("{base}/src/{commit}/{path}"),
-            "bitbucket".to_string(),
-        ));
-    }
-    if base.contains("github.com/") {
-        return Ok((format!("{base}/blob/{commit}/{path}"), "github".to_string()));
-    }
-    if base.contains("gitlab.com/") {
-        return Ok((
-            format!("{base}/-/blob/{commit}/{path}"),
-            "gitlab".to_string(),
-        ));
-    }
-    Err(
-        "unsupported remote host for permalink; supported hosts are Bitbucket, GitHub, and GitLab"
-            .to_string(),
-    )
+    // Exact host match, not substring: a repo path like
+    // example.com/github.com/team/repo must not pick the GitHub blob shape.
+    let (url, service) = match git_remote_host(remote_url).as_deref() {
+        Some("bitbucket.org") => (format!("{base}/src/{commit}/{path}"), "bitbucket"),
+        Some("github.com") => (format!("{base}/blob/{commit}/{path}"), "github"),
+        Some("gitlab.com") => (format!("{base}/-/blob/{commit}/{path}"), "gitlab"),
+        _ => {
+            return Err(
+                "unsupported remote host for permalink; supported hosts are Bitbucket, GitHub, and GitLab"
+                    .to_string(),
+            )
+        }
+    };
+    Ok((url, service.to_string()))
 }
 
 fn git_ui_permalink_blocking(
@@ -2185,6 +2180,26 @@ mod tests {
         assert!(
             git_permalink_url("https://example.com/team/repo.git", "abc123", "src/main.rs")
                 .is_err()
+        );
+        // Lookalike hosts: the forge name must be the URL host, not a
+        // substring anywhere in the remote.
+        assert!(
+            git_permalink_url(
+                "https://example.com/github.com/team/repo.git",
+                "abc123",
+                "src/main.rs"
+            )
+            .is_err(),
+            "accepted a github.com path on another host"
+        );
+        assert!(
+            git_permalink_url(
+                "https://bitbucket.corp/team/repo.git",
+                "abc123",
+                "src/main.rs"
+            )
+            .is_err(),
+            "accepted a bitbucket-prefixed host"
         );
     }
 

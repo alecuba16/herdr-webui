@@ -29,7 +29,12 @@ body.light .git-ui-log-workbench {
   --git-log-lane-7: #a21caf;
 }
 .git-ui-log-layout { display: grid; grid-template-columns: minmax(0,1fr); grid-template-areas: "browser"; min-width: 0; align-items: start; }
-.git-ui-log-workbench[data-has-details="true"] .git-ui-log-layout { grid-template-columns: minmax(0,1fr) 7px var(--git-log-pane-width, minmax(240px,28%)); grid-template-areas: "browser separator details"; }
+/* The pane column shares one grid row with the multi-thousand-px log table,
+   so it cannot size itself against that row. The pane anchors to the
+   scroller's viewport instead: JS measures the scroller and writes its
+   height into --git-log-pane-vh, and sticky keeps the anchor following the
+   scroll. Same trick as the searchbar/table-head stickies above it. */
+.git-ui-log-workbench[data-has-details="true"] .git-ui-log-layout { grid-template-columns: minmax(0,1fr) 7px minmax(0, var(--git-log-pane-width, minmax(240px,28%))); grid-template-areas: "browser separator details"; }
 .git-ui-log-browser { grid-area: browser; }
 .git-ui-log-browser, .git-ui-log-table, .git-ui-log { min-width: 0; max-width: 100%; }
 .git-ui-log-workbench *, .git-ui-log-workbench *::before, .git-ui-log-workbench *::after { box-sizing: border-box; }
@@ -109,7 +114,10 @@ body.light .git-ui-log-workbench {
 .git-ui-log-filter .sr-only { clip: rect(0,0,0,0); border: 0; height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
 .git-ui-log-scope-control { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .git-ui-log-load-more { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; padding: 10px; border-top: 1px solid var(--border); }
-.git-ui-log-details { grid-area: details; position: sticky; top: 0; align-self: start; min-width: 0; max-height: calc(100vh - 120px); overflow: auto; padding: 14px; overflow-wrap: anywhere; background: var(--panel); }
+/* z-index 6: below the searchbar (7) so the pane never covers it, above the
+   table head (5) and every row, so squeezed rows (browser column below its
+   min-content width during a drag) cannot paint their text under the pane. */
+.git-ui-log-details { grid-area: details; position: sticky; top: 0; z-index: 6; align-self: start; min-width: 0; height: var(--git-log-pane-vh, auto); max-height: var(--git-log-pane-vh, 100vh); overflow: auto; padding: 14px; overflow-wrap: anywhere; background: var(--panel); }
 .git-ui-log-separator { grid-area: separator; position: relative; align-self: stretch; justify-self: stretch; cursor: col-resize; touch-action: none; }
 .git-ui-log-separator::before { content: ""; position: absolute; inset: -4px; }
 .git-ui-log-separator::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--border); }
@@ -146,8 +154,10 @@ body.light .git-ui-log-workbench {
 .git-ui-log-hover-card { display: none; }
 .git-ui-scope-copy-toast { background: var(--panel2); border: 1px solid var(--border2); border-radius: 3px; color: var(--fg); font-size: 11px; padding: 5px 8px; pointer-events: none; position: fixed; z-index: 1100; }
 @container git-log (max-width: 780px) {
+  /* Stacked pane: pane height is a drag preference capped by the viewport
+     (40% default), not the giant per-page grid row. */
   .git-ui-log-workbench[data-has-details="true"] .git-ui-log-layout { grid-template-columns: minmax(0,1fr); grid-template-rows: auto 7px minmax(0,1fr); grid-template-areas: "details" "separator" "browser"; }
-  .git-ui-log-details { height: var(--git-log-pane-height, auto); max-height: var(--git-log-pane-height, 40vh); }
+  .git-ui-log-details { height: var(--git-log-pane-height, auto); max-height: var(--git-log-pane-height, 40vh); min-height: 0; }
   .git-ui-log-separator { cursor: row-resize; }
   .git-ui-log-separator::after { top: 3px; bottom: auto; left: 0; right: 0; width: auto; height: 1px; }
   .git-ui-log-workbench[data-has-selection="false"] .git-ui-log-details { display: none; }

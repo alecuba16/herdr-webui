@@ -120,7 +120,16 @@
       return { min, max: Math.max(min, Math.round(layoutRect.height * 0.8)) };
     }
     const min = 180;
-    return { min, max: Math.max(min, Math.round(layoutRect.width * 0.8)) };
+    // The browser column holds a six-track row grid. Its min-content width
+    // is the track floors (86+84+120+84+76+68 = 518) plus 20px row padding
+    // = 538. The clamp keeps that column at or above it: dragging the pane
+    // past layout - browser-min squeezes the rows below their minimum and
+    // their text paints toward the pane, exactly the overlap the resize
+    // bug reports showed.
+    const separator = 7;
+    const browserMin = 538;
+    const max = Math.max(min, Math.round(layoutRect.width - separator - browserMin));
+    return { min, max };
   }
 
   function clampPaneSize(size, axis, layoutRect, detailsRect) {
@@ -221,10 +230,36 @@
     const separator = separatorNode();
     const layout = separator && separator.parentElement && separator.parentElement.style ? separator.parentElement : null;
     if (!layout) return;
+    // A saved width is relative to the workbench it was dragged on. A wider
+    // saved value than the current layout leaves the browser column below
+    // its min-content width and row text paints over the pane, so clamp it
+    // against the live layout instead of trusting the saved number.
+    const bounds = paneSizeBounds("column", layout.getBoundingClientRect());
+    if (detailsPaneSize.width && bounds) {
+      detailsPaneSize = { width: Math.max(bounds.min, Math.min(detailsPaneSize.width, bounds.max)), height: detailsPaneSize.height };
+    }
     if (detailsPaneSize.width) layout.style.setProperty("--git-log-pane-width", `${detailsPaneSize.width}px`);
     else layout.style.removeProperty("--git-log-pane-width");
     if (detailsPaneSize.height) layout.style.setProperty("--git-log-pane-height", `${detailsPaneSize.height}px`);
     else layout.style.removeProperty("--git-log-pane-height");
+    syncPaneViewportHeight(layout);
+  }
+
+  // The pane column shares a grid row with the whole multi-thousand-px log
+  // table, so a percentage or 100vh height never matches the scroller. The
+  // scroller is the nearest ancestor with overflow, and its clientHeight is
+  // the exact viewport the pane should fill; sticky does the follow.
+  function syncPaneViewportHeight(layout) {
+    if (!layout || !layout.style) return;
+    let scroller = layout.parentElement;
+    while (scroller && scroller !== document.body) {
+      const overflow = typeof getComputedStyle === "function" ? getComputedStyle(scroller).overflowY : "";
+      if (/(auto|scroll)/.test(overflow) && scroller.clientHeight > 0) break;
+      scroller = scroller.parentElement;
+    }
+    const height = scroller && scroller !== document.body ? scroller.clientHeight : 0;
+    if (height) layout.style.setProperty("--git-log-pane-vh", `${height}px`);
+    else layout.style.removeProperty("--git-log-pane-vh");
   }
 
   // Runs after every log mount: the separator is re-created by each
