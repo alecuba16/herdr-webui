@@ -5411,3 +5411,181 @@ test("selectLogCommit with shift toggles a commit out of the selection", async (
   await settle();
   assert.ok(!calls.slice(before).some((call) => call.path === "/api/git-ui/compare"), "deselecting drops the preview without a refetch");
 });
+
+// Fake log workbench nodes with layout rects for the capture/restore bodies
+// in git_ui.js. Row rects shift with the owning content's scrollTop like a
+// real viewport, so repeated restores converge instead of re-clamping on
+// stale geometry. The mount serves one content per query per render cycle:
+// capture reads the previous content, restore reads the fresh one.
+function logWorkbenchNode(props = {}) {
+  const node = {
+    tagName: props.tagName || "DIV",
+    dataset: { ...(props.dataset || {}) },
+    attrs: props.attrs || {},
+    hidden: !!props.hidden,
+    disabled: !!props.disabled,
+    isConnected: true,
+    scrollTop: 0,
+    scrollLeft: 0,
+    selectionStart: 0,
+    selectionEnd: 0,
+    selectionDirection: "none",
+    focusOptions: null,
+    focused: 0,
+    getBoundingClientRect: () => props.rect || { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 },
+    getAttribute: (name) => (props.attrs || {})[name] ?? null,
+    matches: () => true,
+    closest: () => null,
+    focus(options) { this.focusOptions = options; this.focused += 1; },
+    setSelectionRange(start, end, direction) { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; },
+  };
+  return node;
+}
+
+function logWorkbenchContent({ withSticky, baseTops = { aaaa: 100, bbbb: 500 }, focusPeers = [] } = {}) {
+  const workbench = logWorkbenchNode({});
+  const browser = logWorkbenchNode({});
+  const table = logWorkbenchNode({});
+  const details = logWorkbenchNode({ rect: { top: 460, bottom: 560, left: 500, right: 800 } });
+  const searchbar = logWorkbenchNode({ rect: { top: 0, bottom: 40, left: 0, right: 900 } });
+  const tableHead = logWorkbenchNode({ rect: { top: 40, bottom: 70, left: 0, right: 900 } });
+  const content = {
+    scrollTop: 320,
+    scrollLeft: 0,
+    innerHTML: "",
+    selectedHashes: [],
+  };
+  const rows = Object.entries(baseTops).map(([hash, baseTop]) => logWorkbenchNode({
+    dataset: { logHash: hash },
+    rect: null,
+  }));
+  rows.forEach((row, index) => {
+    const baseTop = Object.values(baseTops)[index];
+    row.getBoundingClientRect = () => ({ top: baseTop - content.scrollTop, bottom: baseTop + 40 - content.scrollTop, left: 0, right: 900 });
+    row.closest = function (selector) { return selector === ".git-ui-log-row[data-log-hash]" ? this : null; };
+  });
+  const everything = [workbench, browser, table, details, searchbar, tableHead, ...rows, ...focusPeers];
+  content.getBoundingClientRect = () => ({ top: 0, bottom: 600, left: 0, right: 900, width: 900, height: 600 });
+  content.contains = (node) => everything.includes(node);
+  content.querySelector = (selector) => (selector === ".git-ui-log-details" ? details : selector === ".git-ui-log-workbench" ? workbench : null);
+  content.querySelectorAll = (selector) => {
+    if (selector === ".git-ui-log-workbench") return [workbench];
+    if (selector === ".git-ui-log-browser") return [browser];
+    if (selector === ".git-ui-log-table") return [table];
+    if (selector === ".git-ui-log-row[data-log-hash]") return rows;
+    if (selector === ".git-ui-log-row.selected[data-log-hash]") return rows.filter((row) => content.selectedHashes.includes(row.dataset.logHash));
+    if (selector === ".git-ui-log-searchbar, .git-ui-log-table-head, .git-ui-log-details") return withSticky ? [searchbar, tableHead, details] : [details];
+    if (selector === "button, input, select, summary, a[href], .git-ui-log-row[data-log-hash]") return [...focusPeers, ...rows];
+    return [];
+  };
+  content.nodes = { workbench, browser, table, details, rows };
+  return content;
+}
+
+function logFocusPeers() {
+  return [
+    logWorkbenchNode({ tagName: "BUTTON", attrs: { onclick: "HerdrGitUi.cycleLogScope()" } }),
+    logWorkbenchNode({ tagName: "INPUT", attrs: { name: "git-log-search" } }),
+  ];
+}
+
+async function bootedLogWorkbench() {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [{ hash: "aaaa" }, { hash: "bbbb" }], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/commit-details": { message: "msg" },
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  booted.ui.tab("log");
+  await settle();
+  return booted;
+}
+
+function installRichLogMount(booted) {
+  const chain = installRealPaneChain(booted, { initialTab: "git:log" });
+  const mount = booted.ctx.document.getElementById(chain.panes.paneGitMountId("log"));
+  mount.querySelectorAll = () => [];
+  let cycle = [];
+  let cursor = 0;
+  mount.querySelector = (selector) => {
+    if (selector !== ".git-ui-content") return null;
+    const node = cycle[Math.min(cursor, cycle.length - 1)];
+    cursor += 1;
+    return node || null;
+  };
+  return {
+    // One render cycle: capture reads contents[0], restore and later
+    // repaints read the last content.
+    beginCycle: (...contents) => { cycle = contents; cursor = 0; },
+  };
+}
+
+test("Git Log rerender restores nested workbench scroll captured before the swap", async () => {
+  const booted = await bootedLogWorkbench();
+  const rich = installRichLogMount(booted);
+  const previous = logWorkbenchContent();
+  previous.selectedHashes = ["aaaa"];
+  previous.nodes.table.scrollLeft = 37;
+  previous.nodes.browser.scrollTop = 11;
+  previous.nodes.details.scrollTop = 120;
+  previous.nodes.details.scrollLeft = 9;
+  const fresh = logWorkbenchContent();
+  rich.beginCycle(previous, fresh);
+  booted.ctx.document.activeElement = booted.ctx.document.body;
+  booted.ui.selectLogCommit({ shiftKey: false }, "aaaa");
+  assert.equal(fresh.nodes.table.scrollLeft, 37, "table horizontal scroll rides the rerender");
+  assert.equal(fresh.nodes.browser.scrollTop, 11, "browser vertical scroll rides the rerender");
+  assert.equal(fresh.nodes.details.scrollTop, 120, "details scroll survives the same selection");
+  assert.equal(fresh.nodes.details.scrollLeft, 9, "details horizontal scroll survives too");
+  assert.equal(fresh.nodes.workbench.dataset.gitLogSelectionKey, JSON.stringify(["aaaa"]), "workbench carries the selection key for the next capture");
+  assert.equal(fresh.scrollTop, 320, "content scroll restores to the captured offset");
+});
+
+test("Git Log rerender restores focus and the search selection into the new DOM", async () => {
+  const booted = await bootedLogWorkbench();
+  const rich = installRichLogMount(booted);
+  const firstPeers = logFocusPeers();
+  const first = logWorkbenchContent({ focusPeers: firstPeers });
+  first.selectedHashes = ["aaaa"];
+  const secondPeers = logFocusPeers();
+  const second = logWorkbenchContent({ focusPeers: secondPeers });
+  rich.beginCycle(first, second);
+  // The innerHTML swap disconnects the old DOM, which is what lets the
+  // stale-node guard hand the restore its turn.
+  firstPeers[0].isConnected = false;
+  booted.ctx.document.activeElement = firstPeers[0];
+  booted.ui.selectLogCommit({ shiftKey: false }, "aaaa");
+  assert.equal(secondPeers[0].focusOptions && secondPeers[0].focusOptions.preventScroll, true, "the scope control regains focus without scrolling");
+  const thirdPeers = logFocusPeers();
+  const third = logWorkbenchContent({ focusPeers: thirdPeers });
+  secondPeers[1].isConnected = false;
+  secondPeers[1].selectionStart = 2;
+  secondPeers[1].selectionEnd = 5;
+  secondPeers[1].selectionDirection = "backward";
+  // Same disconnect as above: the swap dropped the old search input.
+  secondPeers[1].isConnected = false;
+  rich.beginCycle(second, third);
+  booted.ctx.document.activeElement = secondPeers[1];
+  booted.ui.selectLogCommit({ shiftKey: false }, "bbbb");
+  assert.equal(thirdPeers[1].focused, 1, "the search input regains focus after the repaint");
+  assert.equal(thirdPeers[1].selectionStart, 2, "selection start survives the repaint");
+  assert.equal(thirdPeers[1].selectionEnd, 5, "selection end survives the repaint");
+  assert.equal(thirdPeers[1].selectionDirection, "backward", "selection direction survives the repaint");
+});
+
+test("Git Log restore pushes the anchor row below the sticky searchbar and table head", async () => {
+  const booted = await bootedLogWorkbench();
+  const rich = installRichLogMount(booted);
+  // With scrollTop 320 the aaaa row sits at y 40..80, poking under the
+  // 70px sticky stack; restore must push the viewport down until the row
+  // clears it (40 + 30 = 70).
+  const previous = logWorkbenchContent({ withSticky: true, baseTops: { aaaa: 360, bbbb: 840 } });
+  previous.selectedHashes = ["aaaa"];
+  const fresh = logWorkbenchContent({ withSticky: true, baseTops: { aaaa: 360, bbbb: 840 } });
+  rich.beginCycle(previous, fresh);
+  booted.ctx.document.activeElement = booted.ctx.document.body;
+  booted.ui.selectLogCommit({ shiftKey: false }, "aaaa");
+  assert.equal(fresh.scrollTop, 290, "the overlapped anchor row lands below the 70px sticky stack");
+});
