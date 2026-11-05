@@ -1647,9 +1647,14 @@
     const createMode = String((openingOptions && openingOptions.createMode) || "branch");
     const prefillBranch = String((openingOptions && openingOptions.prefillBranch) || "");
     const prefillBase = String((openingOptions && openingOptions.prefillBase) || "");
+    // Create entries opened from a chip popover (createWorktreeFromPopover,
+    // createWorktreeFromBranchPopover) must morph that popover in place:
+    // inheriting its anchor keeps the create view where the user clicked,
+    // instead of popping a second popover at the path chip.
+    const inheritedAnchor = (bar.worktreeList && bar.worktreeList.anchor) || (bar.branchList && bar.branchList.anchor) || null;
     closeBranchPopover();
     closeWorktreePopover();
-    const anchor = anchorFromEvent(null, ".location-bar-path-chip");
+    const anchor = inheritedAnchor || anchorFromEvent(null, ".location-bar-path-chip");
     bar.discoveryOpenedDuringClick = true;
     if (typeof setTimeout === "function") setTimeout(() => { bar.discoveryOpenedDuringClick = false; }, 0);
     bar.discoveryList = {

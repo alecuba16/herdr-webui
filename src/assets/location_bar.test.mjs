@@ -1058,6 +1058,26 @@ describe("location bar worktree popover", () => {
     ok(bar.innerHTML.includes('id="locationBarDiscoveryPullBase"'), "pull-base checkbox is part of the create form");
   });
 
+  it("create from the worktree popover keeps the popover at the worktree chip position", async () => {
+    const { ctx, bar } = loadWorktreePopover({
+      routes: {
+        "/api/worktrees": { result: { worktrees: WORKTREES } },
+        "/api/git-ui/branches": { local: [{ name: "main", current: true }], remote: [] },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    // Open the chip popover anchored at a worktree chip far from the path
+    // chip: the create entry must inherit that position instead of jumping
+    // back to the path chip's default anchor.
+    const worktreeChip = { getBoundingClientRect: () => ({ left: 500, bottom: 60, width: 80, height: 24 }) };
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: worktreeChip });
+    await ctx.HerdrLocationBar.createWorktreeFromPopover();
+    const style = (bar.innerHTML.match(/location-bar-discovery-popover[^"]*"[^>]*style="([^"]*)"/) || [])[1] || "";
+    ok(style.includes("left:500px"), "discovery create view opens at the worktree chip position");
+    ok(style.includes("top:64px"), "discovery create view sits below the worktree chip");
+    ok(!style.includes("left:10px"), "path chip default position is not used");
+  });
+
   it("keeps a checked-out current branch as the base only, never the prefilled name", async () => {
     const { ctx, bar } = loadWorktreePopover({
       routes: {
