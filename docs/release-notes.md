@@ -9,9 +9,11 @@
 - The worktree create form and the branch list share one popover. The
   create view in the worktrees list rendered the form alone, so the
   base ref had to be typed blind; it now shows the filter input and
-  the local and remote branch rows under the form, and clicking a row
-  fills the Base ref field instead of opening or switching anything.
-  The same shape applies when creating from the branches list.
+  the local and remote branch rows alongside the form, and clicking a
+  row fills the Base ref field instead of opening or switching
+  anything. The same shape applies when creating from the branches
+  list. A failed branch read names the failure and offers a retry
+  instead of a false empty list.
 - The discovery popover opens from the empty dashboard too. The empty
   boot state rendered no popover slot, treated two empty working
   directories as different discovery contexts, and the opening click

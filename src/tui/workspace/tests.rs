@@ -339,17 +339,37 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     assert!(matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))));
 
     // A failed create reopens the pull prompt instead of dropping the
-    // user back to the overlay: the error stays in the footer while the
-    // prompt is up, so Enter retries with the same draft and Esc abandons
-    // (webui parity: the inline form keeps its error and retry button).
+    // user back to the overlay. run_prompt does not consume the prompt
+    // the way the real Enter handler does, so clear it first: the kind
+    // and empty text below can then only come from the failure arm
+    // recreating it (webui parity: the inline form keeps its error and
+    // retry button).
+    app.prompt_input = None;
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "");
+    assert!(app.error.is_some());
     assert!(
         matches!(
             app.prompt_input.as_ref().map(|prompt| prompt.kind),
             Some(PromptKind::ConfirmWorktreePullBase)
         ),
-        "failed create reopens the pull confirm prompt"
+        "failed create recreates the pull confirm prompt"
     );
     assert_eq!(app.prompt_input.as_ref().map(|p| p.text.clone()), Some(String::new()));
+
+    // A plain Enter on the reopened prompt retries the create without
+    // pulling (empty text is not y). The dead socket fails it again, so
+    // the prompt must come back once more, still holding the draft.
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.error.is_some(), "plain Enter on the reopened prompt retries");
+    assert!(
+        matches!(
+            app.prompt_input.as_ref().map(|prompt| prompt.kind),
+            Some(PromptKind::ConfirmWorktreePullBase)
+        ),
+        "the retry prompt survives a persistent failure"
+    );
+    assert!(matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))));
 
     // Esc from the reopened prompt abandons the create; the staged draft
     // stays for the next attempt via the `c` chain.

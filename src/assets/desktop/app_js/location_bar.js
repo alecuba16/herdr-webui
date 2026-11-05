@@ -171,6 +171,9 @@
           discovery.sourceLoading,
           discovery.sourceError,
           !!discovery.source,
+          discovery.branchOptionsLoading,
+          discovery.branchOptionsLoaded,
+          discovery.branchOptionsError,
           JSON.stringify(discovery.baseOptions || []),
         ].join(":");
     return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, branchToken, worktreeToken, discoveryToken].join("|");
@@ -1065,7 +1068,10 @@
       .map((worktree) => worktreePopoverRow(worktree, list.folder, `HerdrLocationBar.discoveryWorktreeRowOpen('${encodeArg(String(worktree.path || ""))}')`))
       .join("");
     const body = rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`;
-    return `<div class="git-ui-branch-list-scroll">${body}<button class="git-ui-worktree-create" data-discovery-focus="create-worktree" title="Create a new worktree for this repository" aria-label="Create worktree" onclick="HerdrLocationBar.discoveryCreateWorktree()">＋ Create worktree</button></div>`;
+    // The create view already shows the form, so the duplicate create
+    // entry disappears until cancel restores the plain rows.
+    const createEntry = list.createMode === "worktree" ? "" : `<button class="git-ui-worktree-create" data-discovery-focus="create-worktree" title="Create a new worktree for this repository" aria-label="Create worktree" onclick="HerdrLocationBar.discoveryCreateWorktree()">＋ Create worktree</button>`;
+    return `<div class="git-ui-branch-list-scroll">${body}${createEntry}</div>`;
   }
 
   // Current-row decoration is shared, but discovery owns opening and switching.
@@ -1101,7 +1107,6 @@
     const remoteOrdered = remoteAll.slice().sort((left, right) => preferred(left) - preferred(right));
     const remote = list.remoteLoaded ? remoteAll : remoteOrdered.slice(0, remoteBranchPreload());
     const rows = (branches, label) => !branches.length ? "" : `<div class="git-ui-branch-list-section">${label}</div>${branches.map((branch) => discoveryBranchRow(branch, list, forBasePick)).join("")}`;
-    const empty = !local.length && !remote.length ? `<div class="git-ui-muted git-ui-branch-list-empty">${filter ? "No branches match" : "No branches yet"}</div>` : "";
     const loadingRemote = list.remoteLoading ? `<div class="git-ui-branch-loading">Loading remote branches…</div>` : "";
     const loadMore = !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
       ? `<button class="git-ui-branch-load-more" data-discovery-focus="load-more" onclick="HerdrLocationBar.discoveryLoadMore()">Load more branches (${remoteAll.length - remote.length} more)</button>`
@@ -1109,7 +1114,20 @@
     const create = discoveryCreateForm(list);
     const worktreeRow = `<button class="git-ui-worktree-create" data-discovery-focus="create-worktree" title="Create a new worktree for this repository" aria-label="Create worktree" onclick="HerdrLocationBar.discoveryCreateWorktree()">＋ Create worktree</button>`;
     const createEntry = forBasePick ? "" : worktreeRow;
-    return `<label class="git-ui-branch-list-filter"><span>Filter</span><input id="locationBarDiscoveryFilter" value="${escapeHtml(list.filter || "")}" placeholder="Type to filter" aria-label="Filter branches"${inputAttrs("search")} oninput="HerdrLocationBar.discoveryFilter(this.value)"></label><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}${createEntry}</div>${forBasePick ? "" : create}`;
+    // The combined create view owns its own branch probe, so its list
+    // needs the probe's loading and error states rendered, not just
+    // the remote-loading row the branches mode reuses.
+    const basePickStatus = forBasePick
+      ? list.branchOptionsLoading
+        ? `<div class="git-ui-branch-loading" role="status">Loading branches…</div>`
+        : list.branchOptionsError
+          ? `<div class="git-ui-error" role="alert">${escapeHtml(list.branchOptionsError)}</div><button class="git-ui-btn" type="button" data-discovery-focus="retry-branch-options" onclick="HerdrLocationBar.discoveryRetryBranchOptions()">Retry loading branches</button>`
+          : ""
+      : "";
+    const empty = !local.length && !remote.length && !list.branchOptionsLoading
+      ? `<div class="git-ui-muted git-ui-branch-list-empty">${filter ? "No branches match" : list.branchOptionsError ? "Branches could not load" : "No branches yet"}</div>`
+      : "";
+    return `<label class="git-ui-branch-list-filter"><span>Filter</span><input id="locationBarDiscoveryFilter" value="${escapeHtml(list.filter || "")}" placeholder="Type to filter" aria-label="Filter branches"${inputAttrs("search")} oninput="HerdrLocationBar.discoveryFilter(this.value)"></label><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${basePickStatus}${loadMore}${empty}${createEntry}</div>${forBasePick ? "" : create}`;
   }
 
   function discoveryCreateForm(list) {
@@ -1238,29 +1256,46 @@
     sync();
     restoreDiscoveryFocus({ id: "locationBarDiscoveryName" });
     if (!list.source) await discoveryRetryWorktreeSource();
-    discoveryLoadBranchOptionsForBase(list);
+    // A previously failed or partial probe must not masquerade as a
+    // loaded list: re-entering the create view refreshes it.
+    discoveryLoadBranchOptionsForBase(list, !!list.branchOptionsError);
   }
 
   // The create view's branch list needs the branch probe the branches
   // mode already has; worktrees mode never fetched it.
-  function discoveryLoadBranchOptionsForBase(list) {
+  function discoveryLoadBranchOptionsForBase(list, force = false) {
     if (!discoveryOpeningActive(list) || list.branchOptionsLoading) return;
-    if ((list.local || []).length || (list.remote || []).length) return;
+    if (!force && (list.branchOptionsLoaded || (list.local || []).length || (list.remote || []).length)) return;
     list.branchOptionsLoading = true;
+    list.branchOptionsError = "";
     sync();
     api(`/api/git-ui/branches?cwd=${encodeURIComponent(String(list.folder || ""))}`)
       .then((data) => {
         if (!discoveryOpeningActive(list)) return;
         list.local = data.local || [];
         list.remote = data.remote || [];
+        list.branchOptionsLoaded = true;
       })
-      .catch(() => {})
+      .catch((err) => {
+        if (!discoveryOpeningActive(list)) return;
+        // Keep partial rows (if any) but remember the probe failed, so
+        // the list can offer a retry instead of a silent empty state.
+        list.branchOptionsError = (err && err.message) || String(err);
+      })
       .finally(() => {
         if (discoveryOpeningActive(list)) {
           list.branchOptionsLoading = false;
           sync();
         }
       });
+  }
+
+  function discoveryRetryBranchOptions() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    discoveryLoadBranchOptionsForBase(list, true);
+    sync();
+    restoreDiscoveryFocus({ key: "retry-branch-options" });
   }
 
   function discoveryPickBaseFromRow(encodedName) {
@@ -1636,6 +1671,9 @@
       creating: false,
       createMode,
       createError: "",
+      branchOptionsLoading: false,
+      branchOptionsLoaded: false,
+      branchOptionsError: "",
       source: null,
       sourceLoading: false,
       sourceError: "",
@@ -1666,16 +1704,21 @@
         bar.discoveryList = {
           ...bar.discoveryList,
           loading: false,
-        mode: "worktrees",
-        worktrees: rows,
-        createMode,
-        currentBranch: String((rows.slice().sort((a, b) => String(b.path || "").length - String(a.path || "").length).find((row) => samePath(row.path, target) || target.startsWith(String(row.path || "").replace(/\/+$/, "") + "/")) || {}).branch || ""),
-        repoLabel,
-      };
-      if (createMode === "worktree" && !bar.discoveryList.source) {
-        discoveryRetryWorktreeSource();
-      }
-      sync();
+          mode: "worktrees",
+          worktrees: rows,
+          createMode,
+          currentBranch: String((rows.slice().sort((a, b) => String(b.path || "").length - String(a.path || "").length).find((row) => samePath(row.path, target) || target.startsWith(String(row.path || "").replace(/\/+$/, "") + "/")) || {}).branch || ""),
+          repoLabel,
+        };
+        if (createMode === "worktree" && !bar.discoveryList.source) {
+          discoveryRetryWorktreeSource();
+        }
+        // Direct create entries (createWorktreeFromPopover, seeded
+        // palette openings) arrive with createMode already "worktree",
+        // so the combined view needs its branch probe here, not only in
+        // discoveryCreateWorktree.
+        if (createMode === "worktree") discoveryLoadBranchOptionsForBase(bar.discoveryList);
+        sync();
         focusDiscoveryAfterLoad();
         return;
       }
@@ -1816,5 +1859,6 @@
     createWorktreeFromBranchPopover,
     discoveryTogglePullBase,
     discoveryPickBaseFromRow,
+    discoveryRetryBranchOptions,
   };
 })();

@@ -1292,10 +1292,62 @@ describe("location bar discovery popover", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     ctx.HerdrLocationBar.discoveryPickBaseFromRow("feature-x");
     ok(bar.innerHTML.includes('id="locationBarDiscoveryBase" value="feature-x"'), "base field holds the picked row");
+    equal(document.activeElement.id, "locationBarDiscoveryBase", "picking a row refocuses the Base field");
+    // Encoded names survive the round trip: quote, slash, space, unicode.
+    ctx.HerdrLocationBar.discoveryPickBaseFromRow(encodeURIComponent("quote'/slash/with spaces/雪"));
+    ok(bar.innerHTML.includes("value=\"quote'/slash/with spaces/雪\""), "encoded pick fills the exact original name");
     // Cancel returns the open/switch rows and the create entry.
     ctx.HerdrLocationBar.discoveryCancelWorktree();
     ok(bar.innerHTML.includes("discoveryPickBaseFromRow") === false, "cancel restores open/switch rows");
     ok(bar.innerHTML.includes("＋ Create worktree"), "cancel restores the create entry");
+  });
+
+  it("loads the branch list for direct create entries seeded with createMode worktree", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [
+        { path: "/repo", branch: "main" },
+        { path: "/repo-wt", branch: "feature-x" },
+      ], source: { cwd: "/repo", repo_root: "/repo" } } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar, calls } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo", { createMode: "worktree" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("Worktree branch name"), "direct entry shows the create form");
+    ok(bar.innerHTML.includes("Local branches"), "combined branch list renders");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter renders");
+    ok(calls.some((call) => call.path === "/api/git-ui/branches"), "direct entry fetched the branch probe");
+  });
+
+  it("renders the branch probe loading and error with a retry in the create view", async () => {
+    const calls = [];
+    const harness = loadDiscovery({
+      deferFetch: (url) => {
+        const path = String(url).split("?")[0];
+        calls.push(path);
+        return new Promise((resolve) => {
+          if (path === "/api/git-ui/branches") resolve({ error: "probe unavailable" });
+          resolve({ result: { worktrees: [
+            { path: "/repo", branch: "main" },
+            { path: "/repo-wt", branch: "feature-x" },
+          ], source: { cwd: "/repo", repo_root: "/repo" } } });
+        });
+      },
+    });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("Branches could not load"), "failed probe names the failure instead of a false empty list");
+    ok(bar.innerHTML.includes("probe unavailable"), "probe error surfaces in the list");
+    ok(bar.innerHTML.includes('HerdrLocationBar.discoveryRetryBranchOptions()'), "retry control renders");
+    // Retry forces a reload even though the rows array stayed empty.
+    const before = calls.filter((path) => path === "/api/git-ui/branches").length;
+    ctx.HerdrLocationBar.discoveryRetryBranchOptions();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    equal(calls.filter((path) => path === "/api/git-ui/branches").length, before + 1, "retry refetches the probe");
   });
 
   it("renders the discovery popover from the empty boot state", async () => {
