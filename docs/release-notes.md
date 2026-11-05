@@ -1,6 +1,20 @@
 # Release notes
 
 ## Unreleased
+- The git log workbench and the open-folder redesign land together. The
+  log tab gained a scroll and focus restore that survives every
+  re-render (nested table, browser and details scroll, the search
+  input's selection, and a clamp that pushes the anchored row below
+  the sticky searchbar and table head), live compare and repo links on
+  log actions, a resizable keyboard-accessible commit details pane, and
+  the PR toast now only fires after pushing a non-default branch. Every
+  worktree open/create entry lands in the shared discovery popover
+  (workspace strip, search palette, drawer, git-log rows), folder,
+  branch and worktree popovers share one implementation anchored to
+  the chip that opened them, the create form's Base ref is a dropdown
+  on the field itself, a failed TUI worktree create keeps its pull
+  prompt open for a same-draft retry, and pull-base passes --no-rebase
+  so the fast-forward promise holds for pull.rebase users.
 - Switching between the branch and worktree chip popovers no longer drops
   the popover into the viewport's top-left corner. Opening one closed the
   other first, and that close re-rendered the bar and detached the chip
