@@ -1277,24 +1277,40 @@ describe("location bar discovery popover", () => {
       ], source: { cwd: "/repo", repo_root: "/repo" } } },
       "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
     } });
-    const { ctx, bar, calls } = harness;
+    const { ctx, bar, calls, listeners } = harness;
     const document = installDiscoveryFocusDOM(harness);
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     ctx.HerdrLocationBar.discoveryCreateWorktree();
     await new Promise((resolve) => setTimeout(resolve, 0));
     ok(bar.innerHTML.includes("Worktree branch name"), "create form renders");
     ok(bar.innerHTML.includes("locationBarDiscoveryPullBase"), "pull checkbox renders");
-    ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter input renders");
-    ok(bar.innerHTML.includes("Local branches"), "local branch section renders");
-    ok(bar.innerHTML.includes("Remote branches"), "remote branch section renders");
-    ok(bar.innerHTML.includes("discoveryPickBaseFromRow"), "branch rows pick the base");
-    ok(!bar.innerHTML.includes('HerdrLocationBar.discoveryBranchRowOpen('), "create view rows do not open/switch");
-    ok(calls.some((call) => call.path === "/api/git-ui/branches"), "branch probe fetched for the create view");
+    ok(!bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter hidden until the Base dropdown opens");
+    ok(bar.innerHTML.includes('data-discovery-focus="base-picker-toggle"'), "chevron toggle renders on the Base field");
     // The rows and the form share one popover: the dialog wrapper wraps both.
     const popoverStart = bar.innerHTML.indexOf("location-bar-discovery-popover");
     const formPos = bar.innerHTML.indexOf("location-bar-discovery-worktree-form");
     const popoverEnd = bar.innerHTML.lastIndexOf("location-bar-discovery-footer");
     ok(popoverStart >= 0 && formPos > popoverStart && formPos < popoverEnd, "form sits inside the discovery popover");
+    // The chevron opens the Base dropdown: filter plus the pick rows.
+    ctx.HerdrLocationBar.discoveryToggleBasePicker();
+    ok(bar.innerHTML.includes('id="locationBarBasePicker"'), "dropdown panel renders");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter input renders");
+    ok(bar.innerHTML.includes("Local branches"), "local branch section renders");
+    ok(bar.innerHTML.includes("Remote branches"), "remote branch section renders");
+    ok(bar.innerHTML.includes("discoveryPickBaseFromRow"), "branch rows pick the base");
+    ok(!bar.innerHTML.includes("HerdrLocationBar.discoveryBranchRowOpen("), "create view rows do not open/switch");
+    equal(document.activeElement.id, "locationBarDiscoveryFilter", "opening the dropdown focuses the filter");
+    ok(calls.some((call) => call.path === "/api/git-ui/branches"), "branch probe fetched for the create view");
+    // Picking a row fills Base and closes the dropdown.
+    ctx.HerdrLocationBar.discoveryPickBaseFromRow("feature-x");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryBase" value="feature-x"'), "base field holds the picked row");
+    ok(!bar.innerHTML.includes('id="locationBarBasePicker"'), "dropdown closes after the pick");
+    // Escape closes the dropdown first, leaving the popover open.
+    ctx.HerdrLocationBar.discoveryToggleBasePicker();
+    ok(bar.innerHTML.includes('id="locationBarBasePicker"'), "dropdown reopens");
+    listeners.keydown({ key: "Escape", stopPropagation() {}, preventDefault() {} });
+    ok(!bar.innerHTML.includes('id="locationBarBasePicker"'), "Escape closes only the dropdown");
+    ok(bar.innerHTML.includes("location-bar-discovery-popover"), "popover survives Escape");
   });
 
   it("fills the Base ref field when a branch row is picked in the create view", async () => {
@@ -1335,6 +1351,8 @@ describe("location bar discovery popover", () => {
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo", { createMode: "worktree" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     ok(bar.innerHTML.includes("Worktree branch name"), "direct entry shows the create form");
+    ok(!bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "list stays closed until the chevron opens it");
+    ctx.HerdrLocationBar.discoveryToggleBasePicker();
     ok(bar.innerHTML.includes("Local branches"), "combined branch list renders");
     ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter renders");
     ok(calls.some((call) => call.path === "/api/git-ui/branches"), "direct entry fetched the branch probe");
@@ -1370,6 +1388,7 @@ describe("location bar discovery popover", () => {
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     ctx.HerdrLocationBar.discoveryCreateWorktree();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    ctx.HerdrLocationBar.discoveryToggleBasePicker();
     ok(bar.innerHTML.includes("Loading branches"), "loading row names the pending probe");
     ok(!bar.innerHTML.includes("No branches yet"), "pending probe is not shown as an empty list");
     releaseBranches();
@@ -1797,8 +1816,12 @@ describe("location bar discovery popover", () => {
     ok(bar.innerHTML.includes("git-ui-worktree-option"));
     match(bar.innerHTML, /<label for="locationBarDiscoveryName">Worktree branch name<\/label>/);
     equal(document.activeElement.id, "locationBarDiscoveryName");
-    equal((bar.innerHTML.match(/<input\b/g) || []).length, 4, "name, base, filter, and pull checkbox in one popover");
-    ok(bar.innerHTML.includes("Local branches"), "branch list renders with the form");
+    equal((bar.innerHTML.match(/<input\b/g) || []).length, 3, "name, base, and pull checkbox in the form popover");
+    ok(!bar.innerHTML.includes("Local branches"), "branch list stays in the Base dropdown until opened");
+    ok(!bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter input stays in the dropdown until opened");
+    ctx.HerdrLocationBar.discoveryToggleBasePicker();
+    equal((bar.innerHTML.match(/<input\b/g) || []).length, 4, "opening the dropdown adds the filter input");
+    ok(bar.innerHTML.includes("Local branches"), "branch list renders inside the dropdown");
     ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter input renders");
     ok(bar.innerHTML.includes("--discovery-top:"));
   });
@@ -2111,7 +2134,7 @@ describe("location bar discovery popover", () => {
     await ctx.HerdrLocationBar.discoveryCreateWorktree();
     equal((bar.innerHTML.match(/id="locationBarDiscoveryName"/g) || []).length, 1);
     equal((bar.innerHTML.match(/id="locationBarDiscoveryBase"/g) || []).length, 1);
-    ok(bar.innerHTML.includes("Local branches"));
+    ok(!bar.innerHTML.includes("Local branches"), "worktree create view shows only the form");
     ok(!bar.innerHTML.includes("New branch name"));
     ok(bar.innerHTML.includes('class="git-ui-branch-list-new location-bar-discovery-worktree-form"'));
     equal(document.activeElement.id, "locationBarDiscoveryName");

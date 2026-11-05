@@ -89,7 +89,8 @@ try {
       style,
       hasForm: !!pop.querySelector("#locationBarDiscoveryName"),
       hasBase: !!pop.querySelector("#locationBarDiscoveryBase"),
-      hasFilter: !!pop.querySelector("#locationBarDiscoveryFilter"),
+      hasToggle: !!pop.querySelector('[data-discovery-focus="base-picker-toggle"]'),
+      filterHidden: !pop.querySelector("#locationBarDiscoveryFilter"),
       hasPull: !!pop.querySelector("#locationBarDiscoveryPullBase"),
       chipPopoverGone: !document.querySelector(".location-bar-worktree-popover, .location-bar-branch-popover"),
     };
@@ -102,9 +103,59 @@ try {
   } else {
     recorder.record("discovery create view morphs the popover in place", false, `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
   }
-  recorder.record("combined form renders in the discovery popover",
-    after && after.hasForm && after.hasBase && after.hasFilter && after.hasPull, JSON.stringify(after));
+  recorder.record("create view renders the form with the Base chevron and no standalone list",
+    after && after.hasForm && after.hasBase && after.hasToggle && after.filterHidden && after.hasPull, JSON.stringify(after));
   recorder.record("old chip popover closed", after && after.chipPopoverGone, "");
+
+  // Open the Base dropdown: chevron shows filter plus branch rows, pick
+  // fills Base and closes the dropdown, Escape closes only the dropdown.
+  const opened = await evalJs(cdp, `(() => {
+    const toggle = document.querySelector('[data-discovery-focus="base-picker-toggle"]');
+    if (!toggle) return "no-toggle";
+    toggle.click();
+    return "toggled";
+  })()`);
+  await sleep(1000);
+  const picked = await evalJs(cdp, `(() => {
+    const pop = document.querySelector(".location-bar-discovery-popover");
+    const panel = pop && pop.querySelector("#locationBarBasePicker");
+    const filter = panel && panel.querySelector("#locationBarDiscoveryFilter");
+    const local = panel && !!panel.textContent.includes("Local branches");
+    const pick = panel && panel.querySelector('[onclick*="discoveryPickBaseFromRow"]');
+    let pickLabel = "";
+    if (pick) {
+      pick.click();
+      const base = document.querySelector("#locationBarDiscoveryBase");
+      pickLabel = base && base.value || "";
+    }
+    return {
+      panel: !!panel,
+      filter: !!filter,
+      localRows: local,
+      pickedBase: pickLabel,
+      panelGoneAfterPick: !document.querySelector("#locationBarBasePicker"),
+      popSurvives: !!document.querySelector(".location-bar-discovery-popover"),
+    };
+  })()`);
+  recorder.record("chevron opens the Base dropdown", opened === "toggled" && picked && picked.panel && picked.filter && picked.localRows, JSON.stringify({ opened, picked }));
+  recorder.record("picking a row fills Base and closes the dropdown",
+    picked && picked.pickedBase && picked.panelGoneAfterPick && picked.popSurvives, JSON.stringify(picked));
+
+  // Reopen and check Escape closes only the dropdown.
+  const escapeCheck = await evalJs(cdp, `(() => {
+    const toggle = document.querySelector('[data-discovery-focus="base-picker-toggle"]');
+    if (!toggle) return { reopened: false };
+    toggle.click();
+    const panel = document.querySelector("#locationBarBasePicker");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return {
+      reopened: !!panel,
+      closedAfterEscape: !document.querySelector("#locationBarBasePicker"),
+      popSurvives: !!document.querySelector(".location-bar-discovery-popover"),
+    };
+  })()`);
+  recorder.record("Escape closes only the Base dropdown",
+    escapeCheck && escapeCheck.reopened && escapeCheck.closedAfterEscape && escapeCheck.popSurvives, JSON.stringify(escapeCheck));
 
   // Cleanup: cancel the draft and dismiss.
   await evalJs(cdp, `(() => {

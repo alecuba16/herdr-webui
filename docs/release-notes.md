@@ -6,14 +6,16 @@
   no retry affordance, so creating again meant re-typing `c` and the
   whole branch/path/base chain; now the pull question stays up with
   the error, Enter retries the same draft, and Esc abandons it.
-- The worktree create form and the branch list share one popover. The
+- The worktree create form and the branch picker share one popover, and
+  the branch picker is now a dropdown on the Base ref field itself. The
   create view in the worktrees list rendered the form alone, so the
-  base ref had to be typed blind; it now shows the filter input and
-  the local and remote branch rows alongside the form, and clicking a
-  row fills the Base ref field instead of opening or switching
-  anything. The same shape applies when creating from the branches
-  list. A failed branch read names the failure and offers a retry
-  instead of a false empty list.
+  base ref had to be typed blind; it now shows just the form, and the
+  chevron next to Base ref opens a filter plus local and remote branch
+  rows in a dropdown anchored to the field. Clicking a row fills the
+  Base ref field and closes the dropdown, Escape closes the dropdown
+  before the popover, and the same shape applies when creating from
+  the branches list. A failed branch read names the failure and offers
+  a retry instead of a false empty list.
 - The discovery popover opens from the empty dashboard too. The empty
   boot state rendered no popover slot, treated two empty working
   directories as different discovery contexts, and the opening click
