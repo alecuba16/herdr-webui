@@ -1,6 +1,22 @@
 # Release notes
 
 ## Unreleased
+- Opening a folder that is a plain checkout on a non-default branch now
+  offers the default branch first. The discovery list shows an
+  "Open on main" style row above the branch list naming the current
+  branch; picking it opens the folder and switches to the default
+  branch in one confirmed action, while the regular rows keep the
+  plain open and explicit switch paths.
+- The create view is form-only in both discovery modes, and the Base
+  dropdown got the geometry it needed. The dropdown now anchors to
+  the Base field instead of pushing the form down: it overlays the
+  rows below, caps its own height to the viewport, and flips above
+  the field when the screen has no room under it. The chevron stays
+  in the worktree create form only, the branch create form keeps its
+  own list, a picker left open never leaks into a re-entered create
+  view, a successful retry puts focus back on the dropdown filter,
+  and cancel after a branch-chip create entry restores the branch
+  list it came from instead of the worktree rows.
 - A failed worktree create keeps the TUI pull prompt open. The prompt
   closed on a backend error and left the git error in the footer with
   no retry affordance, so creating again meant re-typing `c` and the

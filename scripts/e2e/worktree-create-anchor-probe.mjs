@@ -116,6 +116,36 @@ try {
     return "toggled";
   })()`);
   await sleep(1000);
+  // Geometry: the dropdown overlays the form instead of stretching the
+  // popover; the create row, pull checkbox and footer stay visible and
+  // the panel never passes the viewport bottom.
+  const geometry = await evalJs(cdp, `(() => {
+    const pop = document.querySelector(".location-bar-discovery-popover");
+    const panel = pop && pop.querySelector("#locationBarBasePicker");
+    if (!pop || !panel) return null;
+    const view = window.innerHeight;
+    const pr = panel.getBoundingClientRect();
+    const createBtn = pop.querySelector('[data-discovery-focus="create"]');
+    const pull = pop.querySelector("#locationBarDiscoveryPullBase");
+    const footer = pop.querySelector(".location-bar-discovery-footer");
+    const visible = (el) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.bottom <= view && r.height > 0;
+    };
+    return {
+      panelBottom: Math.round(pr.bottom),
+      viewport: view,
+      withinViewport: pr.bottom <= view + 1,
+      createVisible: visible(createBtn),
+      pullVisible: visible(pull),
+      footerVisible: visible(footer),
+      overlay: getComputedStyle(panel).position === "absolute",
+    };
+  })()`);
+  recorder.record("Base dropdown overlays without clipping the form",
+    !!geometry && geometry.withinViewport && geometry.overlay && geometry.createVisible && geometry.pullVisible && geometry.footerVisible,
+    JSON.stringify(geometry));
   const picked = await evalJs(cdp, `(() => {
     const pop = document.querySelector(".location-bar-discovery-popover");
     const panel = pop && pop.querySelector("#locationBarBasePicker");
@@ -166,6 +196,27 @@ try {
   await sleep(400);
   await evalJs(cdp, `(() => { document.dispatchEvent(new MouseEvent("click", { bubbles: true })); return "done"; })()`);
   await sleep(400);
+
+  // Optional default-branch offer check: OFFER_FOLDER must be a plain
+  // checkout on a non-default branch. The discovery list should show an
+  // "Open on <default>" row that names the current branch.
+  if (process.env.OFFER_FOLDER) {
+    await evalJs(cdp, `window.HerdrLocationBar && window.HerdrLocationBar.openDiscoveryForFolder(${JSON.stringify(process.env.OFFER_FOLDER)})`);
+    await sleep(2000);
+    const offer = await evalJs(cdp, `(() => {
+      const pop = document.querySelector(".location-bar-discovery-popover");
+      if (!pop) return null;
+      const row = pop.querySelector(".location-bar-default-branch-offer");
+      const text = row ? row.textContent || "" : "";
+      return {
+        offer: !!row,
+        text: text.trim().replace(/\s+/g, " "),
+        currentNamed: /current branch:/.test(text),
+      };
+    })()`);
+    recorder.record("default-branch offer renders for a checkout on another branch",
+      !!offer && offer.offer && offer.currentNamed, JSON.stringify(offer));
+  }
 
   writeReport(join(tmpdir(), "worktree-create-anchor-report.json"), recorder);
 } finally {

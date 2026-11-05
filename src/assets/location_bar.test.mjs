@@ -1313,6 +1313,132 @@ describe("location bar discovery popover", () => {
     ok(bar.innerHTML.includes("location-bar-discovery-popover"), "popover survives Escape");
   });
 
+  it("ordinary branch create view has no Base dropdown", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [], source: { cwd: "/repo", repo_root: "/repo", repo_name: "repo.git" } } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar } = harness;
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "fresh-branch");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryName"'), "branch create form renders");
+    ok(!bar.innerHTML.includes('data-discovery-focus="base-picker-toggle"'), "no chevron outside the worktree create view");
+    ok(!bar.innerHTML.includes('id="locationBarBasePicker"'), "no dropdown panel in the branch create view");
+    ok(bar.innerHTML.includes("Local branches"), "the branches list stays the view's own list");
+  });
+
+  it("a picker left open does not leak into a new create view", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [
+        { path: "/repo", branch: "main" },
+        { path: "/repo-wt", branch: "feature-x" },
+      ], source: { cwd: "/repo", repo_root: "/repo", repo_name: "repo.git" } } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar } = harness;
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ctx.HerdrLocationBar.discoveryToggleBasePicker();
+    ok(bar.innerHTML.includes('id="locationBarBasePicker"'), "dropdown opens");
+    ctx.HerdrLocationBar.discoveryCancelWorktree();
+    ok(!bar.innerHTML.includes('id="locationBarBasePicker"'), "cancel closes the dropdown");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ok(!bar.innerHTML.includes('id="locationBarBasePicker"'), "re-entering the create view starts collapsed");
+  });
+
+  it("retry success moves focus back to the Base dropdown filter", async () => {
+    let attempts = 0;
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [
+        { path: "/repo", branch: "main" },
+        { path: "/repo-wt", branch: "feature-x" },
+      ], source: { cwd: "/repo", repo_root: "/repo", repo_name: "repo.git" } } },
+      "/api/git-ui/branches": () => {
+        attempts += 1;
+        if (attempts < 3) throw Error("probe failed");
+        return { local: LOCAL, remote: REMOTE };
+      },
+    } });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.createWorktreeFromBranchPopover("feature-x");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The chip entry's create view loads its own branch probe, which
+    // fails on the first attempt: the dropdown shows the retry state.
+    ctx.HerdrLocationBar.discoveryToggleBasePicker();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("Retry loading branches"), "failed probe offers retry");
+    ctx.HerdrLocationBar.discoveryRetryBranchOptions();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("Local branches"), "retry loads the branch list");
+    equal(document.activeElement.id, "locationBarDiscoveryFilter", "retry success focuses the filter");
+  });
+
+  it("offers the default branch for a checkout on another branch", async () => {
+    let onMain = true;
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [], source: { cwd: "/repo", repo_root: "/repo", repo_name: "repo.git" } } },
+      "/api/git-ui/branches": () => onMain
+        ? { local: [
+          { name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial", current: true },
+          { name: "feature-x", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" },
+        ], remote: REMOTE }
+        : { local: [
+          { name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" },
+          { name: "feature-x", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip", current: true },
+        ], remote: REMOTE },
+    } });
+    const { ctx, bar, calls } = harness;
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ok(!bar.innerHTML.includes("location-bar-default-branch-offer"), "no offer when already on the default branch");
+    onMain = false;
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ok(bar.innerHTML.includes('class="git-ui-branch-row-main location-bar-default-branch-offer"'), "offer row renders above the sections");
+    ok(bar.innerHTML.includes("Open on main"), "offer names the default branch");
+    ok(bar.innerHTML.includes("current branch: feature-x"), "offer names the current branch");
+    const switchCalls = calls.filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchCalls.length, 0, "no switch happens before the pick");
+  });
+
+  it("picking the default-branch offer switches before opening", async () => {
+    const harness = loadDiscovery({ confirms: true, routes: {
+      "/api/worktrees": { result: { worktrees: [], source: { cwd: "/repo", repo_root: "/repo", repo_name: "repo.git" } } },
+      "/api/git-ui/branches": { local: [
+        { name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" },
+        { name: "feature-x", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip", current: true },
+      ], remote: REMOTE },
+      "/api/git-ui/switch": { ok: true, message: "switched" },
+    } });
+    const { ctx, bar, calls } = harness;
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ok(bar.innerHTML.includes("location-bar-default-branch-offer"), "offer renders");
+    await ctx.HerdrLocationBar.discoveryOpenDefaultBranch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const switchCalls = calls.filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchCalls.length, 1, "switch posted once");
+  });
+
+  it("cancel after a branch-chip create entry restores the branch view", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [
+        { path: "/repo", branch: "main" },
+        { path: "/repo-wt", branch: "feature-x" },
+      ], source: { cwd: "/repo", repo_root: "/repo", repo_name: "repo.git" } } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.createWorktreeFromBranchPopover("feature-x");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("Worktree branch name"), "create view renders from the chip entry");
+    ok(!bar.innerHTML.includes("git-ui-worktree-option"), "no worktree rows in the chip create view");
+    ctx.HerdrLocationBar.discoveryCancelWorktree();
+    ok(!bar.innerHTML.includes("Worktree branch name"), "cancel leaves the worktree create form");
+    ok(bar.innerHTML.includes("Local branches"), "branch rows restore for the branch-chip origin");
+    ok(bar.innerHTML.includes("Create worktree"), "worktree create entry returns with the restored list");
+    equal(document.activeElement.id, "locationBarDiscoveryFilter", "cancel focuses the restored list's filter");
+  });
+
   it("fills the Base ref field when a branch row is picked in the create view", async () => {
     const harness = loadDiscovery({ routes: {
       "/api/worktrees": { result: { worktrees: [
@@ -1813,7 +1939,7 @@ describe("location bar discovery popover", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     equal(modalCalls.length, 0);
     ok(bar.innerHTML.includes("location-bar-discovery-popover"));
-    ok(bar.innerHTML.includes("git-ui-worktree-option"));
+    ok(!bar.innerHTML.includes("git-ui-worktree-option"), "create view is form-only: rows wait for cancel");
     match(bar.innerHTML, /<label for="locationBarDiscoveryName">Worktree branch name<\/label>/);
     equal(document.activeElement.id, "locationBarDiscoveryName");
     equal((bar.innerHTML.match(/<input\b/g) || []).length, 3, "name, base, and pull checkbox in the form popover");
@@ -1823,6 +1949,9 @@ describe("location bar discovery popover", () => {
     equal((bar.innerHTML.match(/<input\b/g) || []).length, 4, "opening the dropdown adds the filter input");
     ok(bar.innerHTML.includes("Local branches"), "branch list renders inside the dropdown");
     ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter input renders");
+    ctx.HerdrLocationBar.discoveryCancelWorktree();
+    ok(bar.innerHTML.includes("git-ui-worktree-option"), "cancel restores the worktree rows");
+    ok(!bar.innerHTML.includes('id="locationBarDiscoveryName"'), "form leaves on cancel");
     ok(bar.innerHTML.includes("--discovery-top:"));
   });
 
