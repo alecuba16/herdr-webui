@@ -516,28 +516,21 @@ describe("Git log rendering", () => {
     });
 
     const rowsHtml = html.split('class="git-ui-log-row').slice(1);
-    const laneRe = /<span class="(git-ui-lane[^"]*)" style="--lane:([^"]+)">/g;
-    const lanes = rowsHtml.map((rowHtml) => {
-      const cells = [];
-      let m;
-      while ((m = laneRe.exec(rowHtml)) !== null) cells.push({ cls: m[1], lane: m[2] });
-      laneRe.lastIndex = 0;
-      return cells;
-    });
+    const hasPaint = (row, branch) => rowsHtml[row].includes(`var(--git-log-${branch}`);
 
     // Current branch: red on the tip row and the row below; the fold row
     // ends the red run (col 2 is empty there and git re-uses columns
     // below a fold, so painting through would mislabel another branch).
-    assert.match(lanes[0][2].lane, /--git-log-current/, "HEAD tip dot paints red");
-    assert.match(lanes[1][2].lane, /--git-log-current/, "commit below the tip stays red");
-    assert.ok(!lanes[2].some((cell) => /--git-log-current/.test(cell.lane)), "fold row ends the current paint");
-    assert.ok(!lanes[3].some((cell) => /--git-log-current/.test(cell.lane)), "base tip row has no current paint");
+    assert.ok(hasPaint(0, "current"), "HEAD tip paints red");
+    assert.ok(hasPaint(1, "current"), "commit below the tip stays red");
+    assert.ok(!hasPaint(2, "current"), "fold row ends the current paint");
+    assert.ok(!hasPaint(3, "current"), "base tip row has no current paint");
 
     // Base branch: blue from its tip row up through the fold row's own
     // vertical (the '|' of '|/' is the base line), and down while it runs.
-    assert.match(lanes[2][0].lane, /--git-log-main/, "fold row's vertical keeps the base paint");
-    assert.match(lanes[3][0].lane, /--git-log-main/, "base tip dot paints blue");
-    assert.match(lanes[4][0].lane, /--git-log-main/, "commit below the base tip stays blue");
+    assert.ok(hasPaint(2, "main"), "fold row's vertical keeps the base paint");
+    assert.ok(hasPaint(3, "main"), "base tip paints blue");
+    assert.ok(hasPaint(4, "main"), "commit below the base tip stays blue");
   });
 
   it("keeps lane painting quiet when HEAD and the base share a lane or are absent", () => {

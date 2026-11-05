@@ -985,6 +985,145 @@
     return tab === "cleanup" || tab === "log" || tab === "stash";
   }
 
+  const gitLogScrollSelectors = [".git-ui-log-workbench", ".git-ui-log-browser", ".git-ui-log-table"];
+
+  function gitLogSelectionKey(content) {
+    const workbench = content.querySelectorAll(".git-ui-log-workbench")[0];
+    if (workbench && workbench.dataset.gitLogSelectionKey !== undefined) return workbench.dataset.gitLogSelectionKey;
+    return JSON.stringify(Array.from(content.querySelectorAll(".git-ui-log-row.selected[data-log-hash]"))
+      .map((row) => row.dataset.logHash).sort());
+  }
+
+  function gitLogVisibleTop(content, rowRect) {
+    const viewport = content.getBoundingClientRect();
+    let top = viewport.top;
+    const overlays = Array.from(content.querySelectorAll(".git-ui-log-searchbar, .git-ui-log-table-head, .git-ui-log-details"))
+      .filter((node) => !node.hidden && typeof node.getBoundingClientRect === "function")
+      .map((node) => node.getBoundingClientRect())
+      .filter((rect) => rect.right > rowRect.left && rect.left < rowRect.right && rect.bottom > viewport.top && rect.top < viewport.bottom)
+      .sort((a, b) => a.top - b.top);
+    for (const rect of overlays) {
+      if (rect.top <= top + 1) top = Math.max(top, rect.bottom);
+    }
+    return top;
+  }
+
+  function captureGitLogScroll(view, content) {
+    if (!view || view.tab !== "log" || !content || !content.querySelectorAll(".git-ui-log-workbench").length) return;
+    view.contentScrollTop = content.scrollTop;
+    const viewport = content.getBoundingClientRect();
+    const rows = Array.from(content.querySelectorAll(".git-ui-log-row[data-log-hash]"));
+    const visibleTop = rows.length ? gitLogVisibleTop(content, rows[0].getBoundingClientRect()) : viewport.top;
+    const visible = rows.filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return row.dataset.logHash && !row.hidden && rect.bottom > visibleTop && rect.top < viewport.bottom;
+    });
+    const anchor = visible.find((row) => (view.selectedLogCommits || []).includes(row.dataset.logHash)) || visible[0];
+    view.gitLogScrollAnchor = anchor ? { hash: anchor.dataset.logHash, offset: anchor.getBoundingClientRect().top - viewport.top } : null;
+    const details = content.querySelector(".git-ui-log-details");
+    view.gitLogDetailsScroll = details ? { key: gitLogSelectionKey(content), top: details.scrollTop, left: details.scrollLeft } : null;
+    const positions = Object.fromEntries(gitLogScrollSelectors.flatMap((selector) => {
+      const nodes = Array.from(content.querySelectorAll(selector));
+      return nodes.length ? [[selector, nodes.map((node) => ({ top: node.scrollTop, left: node.scrollLeft }))]] : [];
+    }));
+    if (Object.keys(positions).length) view.gitLogScrollPositions = positions;
+  }
+
+  function restoreGitLogScroll(view, content) {
+    if (!view || view.tab !== "log" || !content) return;
+    const selectionKey = JSON.stringify((view.selectedLogCommits || []).slice().sort());
+    const workbench = content.querySelectorAll(".git-ui-log-workbench")[0];
+    if (workbench) workbench.dataset.gitLogSelectionKey = selectionKey;
+    for (const selector of gitLogScrollSelectors) {
+      const nodes = content.querySelectorAll(selector);
+      const positions = (view.gitLogScrollPositions || {})[selector] || [];
+      nodes.forEach((node, index) => {
+        const position = positions[index];
+        if (!position) return;
+        node.scrollTop = position.top;
+        node.scrollLeft = position.left;
+      });
+    }
+    const details = content.querySelector(".git-ui-log-details");
+    const savedDetails = view.gitLogDetailsScroll;
+    if (details) {
+      const sameSelection = savedDetails && savedDetails.key === selectionKey;
+      details.scrollTop = sameSelection ? savedDetails.top : 0;
+      details.scrollLeft = sameSelection ? savedDetails.left : 0;
+    }
+    const anchor = view.gitLogScrollAnchor;
+    if (anchor && !view.pendingLogScrollHash) {
+      const row = Array.from(content.querySelectorAll(".git-ui-log-row[data-log-hash]"))
+        .find((node) => node.dataset.logHash === anchor.hash && !node.hidden);
+      if (row) {
+        content.scrollTop += row.getBoundingClientRect().top - content.getBoundingClientRect().top - anchor.offset;
+        const rect = row.getBoundingClientRect();
+        const visibleTop = gitLogVisibleTop(content, rect);
+        if (rect.top < visibleTop) content.scrollTop -= visibleTop - rect.top;
+      }
+    }
+    if (content.querySelectorAll(".git-ui-log-workbench").length) view.contentScrollTop = content.scrollTop;
+  }
+
+  const gitLogFocusSelector = 'button, input, select, summary, a[href], .git-ui-log-row[data-log-hash]';
+
+  function gitLogFocusKey(node) {
+    const row = node.closest(".git-ui-log-row[data-log-hash]");
+    return JSON.stringify([
+      node.tagName,
+      row ? row.dataset.logHash : "",
+      !!node.closest(".git-ui-log-details"),
+      ...["name", "onclick", "aria-label", "href"].map((name) => node.getAttribute(name) || ""),
+    ]);
+  }
+
+  function captureGitLogFocus(view, content) {
+    if (!view || view.tab !== "log" || !content) return;
+    const focused = document.activeElement;
+    if (!focused || !focused.matches || !focused.matches(gitLogFocusSelector) || !content.contains(focused)) {
+      if (content.querySelector(".git-ui-log-workbench")) view.gitLogFocus = null;
+      return;
+    }
+    const row = focused.closest(".git-ui-log-row[data-log-hash]");
+    const selected = content.querySelector(".git-ui-log-row.selected[data-log-hash]");
+    const key = gitLogFocusKey(focused);
+    const peers = Array.from(content.querySelectorAll(gitLogFocusSelector)).filter((node) => gitLogFocusKey(node) === key);
+    view.gitLogFocus = {
+      key,
+      index: peers.indexOf(focused),
+      fallbackHash: (row || selected)?.dataset.logHash || "",
+      detailsOpen: !!focused.closest("details[open]"),
+      selectionStart: focused.selectionStart,
+      selectionEnd: focused.selectionEnd,
+      selectionDirection: focused.selectionDirection,
+    };
+  }
+
+  function restoreGitLogFocus(view, content) {
+    if (!view || view.tab !== "log" || !content || !view.gitLogFocus || !content.querySelector(".git-ui-log-workbench")) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused.isConnected && !content.contains(focused)) return;
+    const saved = view.gitLogFocus;
+    const available = (node) => !node.disabled && !node.closest('[hidden], details:not([open]) > :not(summary)');
+    const peers = Array.from(content.querySelectorAll(gitLogFocusSelector)).filter((node) => gitLogFocusKey(node) === saved.key);
+    let target = peers[saved.index];
+    if (target && saved.detailsOpen) {
+      const details = target.closest("details");
+      if (details) details.open = true;
+    }
+    if (!target || !available(target)) {
+      target = Array.from(content.querySelectorAll(".git-ui-log-row[data-log-hash]"))
+        .find((row) => row.dataset.logHash === saved.fallbackHash && available(row));
+      if (!target) target = content.querySelector('[name="git-log-search"]');
+    }
+    if (target && available(target)) {
+      target.focus({ preventScroll: true });
+      if (typeof saved.selectionStart === "number" && typeof target.setSelectionRange === "function") {
+        target.setSelectionRange(saved.selectionStart, saved.selectionEnd, saved.selectionDirection);
+      }
+    }
+  }
+
   // Snap the live content scroll before a re-render wipes it, so the
   // restore below can put it back. Runs on every render, covering menu
   // opens, selections, toasts, anything that re-renders while the user
@@ -993,7 +1132,9 @@
     if (!view || !preserveContentScroll(view.tab)) return;
     const container = gitMainContainer() || ensurePanel();
     const content = container && container.querySelector(".git-ui-content");
-    if (content) view.contentScrollTop = content.scrollTop || 0;
+    if (content && view.tab !== "log") view.contentScrollTop = content.scrollTop || 0;
+    captureGitLogScroll(view, content);
+    captureGitLogFocus(view, content);
   }
 
   function setupDiffHunkScrollbars(root) {
@@ -1078,6 +1219,8 @@
     const nextContent = panel.querySelector(".git-ui-content");
     if (nextContent && preserveContentScroll(activeView.tab))
       nextContent.scrollTop = activeView.contentScrollTop || 0;
+    restoreGitLogScroll(activeView, nextContent);
+    restoreGitLogFocus(activeView, nextContent);
     setupDiffHunkScrollbars(panel);
     mountSideEditors();
     if (activeView.tab === "log") renderLog(version).catch((e) => { activeView.error = e.message; render(); });
@@ -1144,6 +1287,8 @@
     const nextContent = container.querySelector(".git-ui-content");
     if (nextContent && preserveContentScroll(view.tab))
       nextContent.scrollTop = view.contentScrollTop || 0;
+    restoreGitLogScroll(view, nextContent);
+    restoreGitLogFocus(view, nextContent);
     setupDiffHunkScrollbars(container);
     mountSideEditors();
     if (view.tab === "log") renderLog(version).catch((e) => { view.error = e.message; render(); });
@@ -1159,9 +1304,17 @@
     const content = (container || ensurePanel()).querySelector(".git-ui-content");
     if (!content) return;
     const view = active() || {};
-    const scrollTop = preserveContentScroll(view.tab) ? (view.contentScrollTop || content.scrollTop || 0) : null;
+    const scrollTop = preserveContentScroll(view.tab)
+      ? (view.tab === "log"
+        ? (content.querySelectorAll(".git-ui-log-workbench").length ? content.scrollTop : (view.contentScrollTop || 0))
+        : (view.contentScrollTop || content.scrollTop || 0))
+      : null;
+    captureGitLogFocus(view, content);
+    captureGitLogScroll(view, content);
     content.innerHTML = html;
     if (scrollTop !== null) content.scrollTop = scrollTop;
+    restoreGitLogScroll(view, content);
+    restoreGitLogFocus(view, content);
   }
 
   function focusDiffSearchIfNeeded() {

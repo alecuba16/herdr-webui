@@ -1849,7 +1849,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /markNoGitRepository\(view\)/);
     match(gitUiSource, /not_git_repository: true/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /cleanupOnly \? "" : renderWorktreeActions/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = view\.tab !== "log" && sideFileCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /disabledReason = "Open a Git repository to use this view"/);
     // Cleanup-only (not a git repo) views hide the diff layout toggle and
@@ -1943,7 +1943,7 @@ describe("app bundle load", () => {
     match(gitDiffCss, /\.git-ui-conflict-diff-actions \{[\s\S]*?border-left: 1px solid var\(--border\);/);
     match(gitDiffCss, /\.git-ui-editor-conflicts \{[\s\S]*?display: grid;/);
     match(gitDiffCss, /\.git-ui-conflict-block-actions \{[\s\S]*?flex-wrap: wrap;/);
-    match(gitLogCss, /\.git-ui-log-head \{[\s\S]*?position: sticky;[\s\S]*?z-index: 7;/);
+    match(gitLogCss, /\.git-ui-log-searchbar \{ position: sticky; top: 0; z-index: 7; \}/);
   });
 
   it("uses a log row context menu with reset and clear rebase wording", () => {
@@ -2012,7 +2012,7 @@ describe("app bundle load", () => {
     match(gitDiffRenderBlameSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
     match(gitDiffRenderBlameSource, /blame unavailable/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function sideFileCount\(view\)/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = view\.tab !== "log" && sideFileCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /status\.conflicted, status\.staged, status\.unstaged, status\.untracked/);
     match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
@@ -7643,7 +7643,7 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8"), /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
   });
 
-  it("renders Git log like a four-column graph table with ref chips", () => {
+  it("renders Git log like a six-column graph table with ref chips and commit details", () => {
     const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
     const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
@@ -7672,9 +7672,9 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes("HerdrGitUi.setLogAll(false)"));
     ok(!gitLogSource.includes("All branches</button>"));
     ok(!gitUiSource.includes("function renderLogLine(line)"));
-    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting \};/);
+    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting, renderDetails, toggleSearchCase, navigateSearch, toggleRefs, setSearch \};/);
     match(gitLogSource, /git-ui-log-table-head/);
-    match(gitLogSource, /<span>Graph<\/span><span>Description<\/span><span>Date<\/span><span>Author<\/span>/);
+    match(gitLogSource, /<span class="git-ui-log-cell-refs">Refs<\/span><span class="git-ui-log-cell-graph">Graph<\/span><span class="git-ui-log-cell-description">Description<\/span><span class="git-ui-log-cell-date">Date<\/span><span class="git-ui-log-cell-author">Author<\/span><span class="git-ui-log-cell-hash">Commit<\/span>/);
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
     match(gitLogSource, /title="\$\{esc\(normalized\)\}"/);
     match(gitLogSource, /class="git-ui-log-copy-hash"/);
@@ -7700,7 +7700,9 @@ describe("app bundle load", () => {
     match(gitLogSource, /function renderFilterRow/);
     match(gitLogSource, /oninput="HerdrGitUi.setLogFilter/);
     match(gitLogSource, /aria-label="Filter \$\{label\}"/);
-    match(gitLogSource, /input\("description", "Description"\)/);
+    match(gitLogSource, /input\("date", "Date"\)/);
+    match(gitLogSource, /input\("author", "Author"\)/);
+    match(gitLogSource, /name="git-log-search" aria-label="Search commits"[^>]*oninput="HerdrGitLog\.setSearch\(this\.value\)"/);
     match(gitLogSource, /name="git-log-filter-\$\{field\}"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /id="gitUiFileFilter"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /name="git-ui-file-filter"/);
@@ -7719,9 +7721,9 @@ describe("app bundle load", () => {
     match(gitLogSource, /field\("Tags"/);
     match(gitLogSource, /field\("Author"/);
     match(gitLogSource, /field\("Date"/);
-    match(gitLogCss, /\.git-ui-log-hover-field-label/);
-    match(gitLogCss, /\.git-ui-log-hover-tag/);
-    match(gitLogCss, /\.git-ui-log-hover-empty/);
+    match(gitLogCss, /\.git-ui-log-details-date/);
+    match(gitLogCss, /\.git-ui-log-details-labels/);
+    match(gitLogCss, /\.git-ui-log-details-error/);
     match(gitLogSource, /if \(label === "HEAD" \|\| label.startsWith\("HEAD -> "\)\) return "current";/);
     match(gitLogSource, /return "main";/);
     match(gitUiSource, /logFilters: \{ description: "", date: "", author: "" \}/);
@@ -7734,7 +7736,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /setLogFilter\(field, value\)/);
     ok(!gitUiSource.includes('"graph", "description"'));
     match(gitUiSource, /HerdrGitLog\.applyFilters\(view\.logFilters\)/);
-    match(gitLogCss, /grid-template-columns: minmax\(96px, max-content\) minmax\(240px, 1fr\) minmax\(90px, 120px\) minmax\(120px, 180px\);/);
+    match(gitLogCss, /--git-log-columns: minmax\(86px, 0\.8fr\) minmax\(48px, var\(--git-log-graph-width, 84px\)\) minmax\(120px, 2\.5fr\) 84px minmax\(76px, 1fr\) 68px;/);
     match(gitLogCss, /\.git-ui-log-ref\.current[\s\S]*?#ef4444/);
     match(gitLogCss, /\.git-ui-log-ref\.main[\s\S]*?#3b82f6/);
     match(gitLogCss, /\.git-ui-log-filter-row/);
@@ -7743,7 +7745,7 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
     match(gitLogCss, /\.git-ui-log-copy-hash/);
-    match(gitLogCss, /\.git-ui-log-hover-card \.git-ui-log-ref \{[\s\S]*?max-width: none;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
+    match(gitLogCss, /\.git-ui-log-details-labels \{ display: flex; flex-wrap: wrap; gap: 4px; \}/);
     match(gitLogSource, /function selectedBranchForHash/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /item\("Worktree", "createWorktreeFromSelectedBranch\(\)", !view \|\| !view\.selectedLogBranch\)/);
     match(gitUiSource, /createWorktreeFromSelectedBranch\(\) \{/);
@@ -7757,11 +7759,15 @@ describe("app bundle load", () => {
     match(gitUiSource, /return tab === "cleanup" \|\| tab === "log" \|\| tab === "stash";/);
     match(gitUiSource, /const scrollTop = preserveContentScroll\(view\.tab\)/);
     match(gitUiSource, /content\.scrollTop = scrollTop;/);
-    match(gitLogCss, /\.git-ui-log-scope-head \{[\s\S]*?position: sticky;[\s\S]*?top: 0;/);
-    match(gitLogCss, /\.git-ui-log-table-head \{[\s\S]*?position: sticky;[\s\S]*?top: var\(--git-log-scope-sticky-height, 58px\);/);
-    match(gitLogCss, /\.git-ui-log-filter-row \{[\s\S]*?position: sticky;[\s\S]*?--git-log-table-head-sticky-height/);
+    match(gitLogCss, /\.git-ui-log-searchbar \{ position: sticky; top: 0; z-index: 7; \}/);
+    match(gitLogCss, /\.git-ui-log-table-head \{[\s\S]*?position: sticky;[\s\S]*?top: var\(--git-log-search-sticky-height, 54px\);/);
+    match(gitLogCss, /\.git-ui-log-ref-overflow\[hidden\] \{ display: none; \}/);
+    match(gitLogCss, /\.git-ui-log-row\.git-ui-log-search-current/);
+    match(gitLogCss, /\.git-ui-log-row\.git-ui-log-nonmatch/);
+    match(gitLogCss, /\.git-ui-log-graph svg[^\n]*height: var\(--git-log-row-height\)/);
+    match(gitLogCss, /\.git-ui-log-layout \{ grid-template-columns: minmax\(0,1fr\); grid-template-areas: "browser" "details"; \}/);
     match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /function updateGitLogStickyOffsets\(\)/);
-    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /--git-log-scope-sticky-height/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /--git-log-search-sticky-height/);
     match(gitLogCss, /border-style: dashed;/);
   });
 

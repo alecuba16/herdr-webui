@@ -76,7 +76,7 @@
       const filter = String(view.fileFilter || "").trim();
       const committedSelection = !!view.committedFile;
       const fileSections = view.tab === "log"
-        ? commitPreviewSection(view, filter)
+        ? ""
         : view.tab === "stash"
           ? stashListHtml(view) + stashFileSection(view, filter)
         : committedSelection && view.file
@@ -90,7 +90,7 @@
       const branchLabel = `${view.titleKind || "Branch"}: ${s.branch || view.title || "No branch"}`;
       const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
       const actions = cleanupOnly ? "" : renderWorktreeActions({ s, esc, commitHint, commitDisabled, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
-      const filterInput = sideFileCount(view)
+      const filterInput = view.tab !== "log" && sideFileCount(view)
         ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" placeholder="Filter files"${inputAttrs("search")} oninput="HerdrGitUi.filterFiles(this.value)"></label>`
         : "";
       const fileList = cleanupOnly ? "" : `${filterInput}${fileSections}`;

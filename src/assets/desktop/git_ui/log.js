@@ -1,15 +1,22 @@
 (function () {
   const LANE_COLORS = [
     "var(--accent)",
-    "#7dd3fc",
-    "#c084fc",
-    "#fbbf24",
-    "#34d399",
-    "#fb7185",
-    "#a3e635",
-    "#f472b6",
+    "var(--git-log-lane-1, #7dd3fc)",
+    "var(--git-log-lane-2, #c084fc)",
+    "var(--git-log-lane-3, #fbbf24)",
+    "var(--git-log-lane-4, #34d399)",
+    "var(--git-log-lane-5, #fb7185)",
+    "var(--git-log-lane-6, #a3e635)",
+    "var(--git-log-lane-7, #f472b6)",
   ];
   const FILTER_FIELDS = ["description", "date", "author"];
+  let searchCaseSensitive = false;
+  let searchPosition = -1;
+  let searchHash = "";
+  let activeFilters = {};
+  const inputAttrs = (hint) => globalThis.HerdrAppHelpers
+    ? globalThis.HerdrAppHelpers.inputAttrs(hint)
+    : ' autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"';
   // "tag: x" decorations git puts in %D; one regex shared by the tag
   // extraction (hover card Tags row) and the chip-row filter that hides tags
   // from the label chips so they do not render twice.
@@ -29,6 +36,7 @@
     const rows = rowsFromData(options.data || {});
     const selected = options.selected || [];
     const filters = normalizeFilters(options.filters || {});
+    activeFilters = filters;
     const baseBranch = options.baseBranch || "master";
     const logScope = normalizeLogScope(options.logScope || (options.logAll ? "all" : "base-current"));
     const esc = options.esc;
@@ -39,13 +47,73 @@
     // findable via its check icon (we use line color instead of an icon).
     const lanePainting = computeLanePainting(rows, baseBranch);
     const scopeButton = `<span class="git-ui-log-scope-control"><span>Scope:</span><button class="git-ui-btn active" title="Toggle history scope: Master + Branch, All, Branch" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${options.filePath ? `<button class="git-ui-btn git-ui-log-file-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">× ${esc(options.filePath)}</button>` : ""}</span>`;
-    const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc, scopeButton)}`;
+    const header = `<div class="git-ui-log-table-head"><span class="git-ui-log-cell-refs">Refs</span><span class="git-ui-log-cell-graph">Graph</span><span class="git-ui-log-cell-description">Description</span><span class="git-ui-log-cell-date">Date</span><span class="git-ui-log-cell-author">Author</span><span class="git-ui-log-cell-hash">Commit</span></div>`;
+    const matches = rows.filter((row) => row.hash && matchesFilters(filterFields(row), filters));
+    searchPosition = matches.findIndex((row) => row.hash === searchHash);
+    if (searchPosition < 0) searchHash = "";
     const renderOptions = Object.assign({}, options, { upstreamRef });
     const body = rows.length
       ? rows.map((row, index) => renderRow(row, index, selected, filters, renderOptions, baseBranch, lanePainting)).join("")
       : `<div class="git-ui-empty-row">No commits found.</div>`;
     const footer = renderLoadMore(options.data || {}, rows, options, esc);
-    return `<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div>`;
+    const count = `${searchPosition >= 0 ? searchPosition + 1 : 0} / ${matches.length}`;
+    const disabled = matches.length ? "" : " disabled";
+    const search = `<div class="git-ui-log-searchbar">${scopeButton}<label class="git-ui-log-search-input"><span>Search commits</span><input name="git-log-search" aria-label="Search commits" value="${esc(filters.description || "")}"${inputAttrs("search")} oninput="HerdrGitLog.setSearch(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();HerdrGitLog.navigateSearch(event.shiftKey?-1:1)}"></label><button type="button" class="git-ui-log-search-case" aria-label="Match case" aria-pressed="${searchCaseSensitive}" onclick="HerdrGitLog.toggleSearchCase()">Aa</button><button type="button" class="git-ui-log-search-previous" aria-label="Previous matching commit" onclick="HerdrGitLog.navigateSearch(-1)"${disabled}>↑</button><button type="button" class="git-ui-log-search-next" aria-label="Next matching commit" onclick="HerdrGitLog.navigateSearch(1)"${disabled}>↓</button><output class="git-ui-log-search-count" aria-live="polite">${count}</output><details class="git-ui-log-advanced-filters"><summary>Filters</summary>${renderFilterRow(filters, esc)}</details></div>`;
+    return `<section class="git-ui-log-workbench" data-git-log-design="zed" data-log-scope="${logScope}" data-has-selection="${selected.length > 0}"><div class="git-ui-log-layout"><div class="git-ui-log-browser">${search}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div></div>${renderDetails(options)}</div></section>`;
+  }
+
+  function renderPerson(size) {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="10" r="5" stroke="currentColor" stroke-width="2"/><path d="M6 28v-3a10 10 0 0 1 20 0v3" stroke="currentColor" stroke-width="2"/></svg>`;
+  }
+
+  function copyButton(value, kind) {
+    return `<button type="button" class="git-ui-log-copy-hash" aria-label="Copy ${kind}" title="Copy ${kind}" onclick="HerdrGitUi.copyScopeValue(event,'${jsArg(value)}','${jsArg(kind)}')">Copy</button>`;
+  }
+
+  function commitWebUrl(value) {
+    if (typeof value !== "string") return "";
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function renderDetails(options) {
+    const selected = options.selected || [];
+    const esc = options.esc;
+    const shell = (body) => `<aside class="git-ui-log-details" aria-label="Commit details">${body}</aside>`;
+    if (!selected.length) return shell(`<h2>Commit details</h2><p class="git-ui-log-details-empty">Select a commit to view its details and changed files.</p>`);
+    const close = `<button type="button" aria-label="Clear commit selection" onclick="HerdrGitUi.clearLogSelection()">Close</button>`;
+    if (selected.length !== 1) return shell(`<div class="git-ui-log-details-header"><h2>Compare commits</h2>${close}</div><p>${esc(String(selected.length))} commits selected</p><div class="git-ui-log-details-actions"><button type="button" onclick="HerdrGitUi.compareSelectedLog()">Compare selected commits</button></div>`);
+    const hash = String(selected[0]);
+    const row = rowsFromData(options.data || {}).find((entry) => entry.hash === hash) || {};
+    const preview = options.preview && options.preview.hash === hash ? options.preview : {};
+    const details = preview.details && preview.details.hash === hash ? preview.details : {};
+    const author = details.author || row.author || "Unknown author";
+    const date = details.date || row.exact_date || row.date || "";
+    const message = typeof details.message === "string" ? details.message : row.title || row.message || "";
+    const labels = renderLabels(row.labels || [], row.current, esc, options.baseBranch);
+    const loading = preview.detailsLoading ? `<p role="status">Loading commit details...</p>` : "";
+    const error = preview.detailsError ? `<p class="git-ui-log-details-error" role="alert">${esc(preview.detailsError)}</p>` : "";
+    const files = preview.diff && Array.isArray(preview.diff.files) ? preview.diff.files : null;
+    let stats = "";
+    if (files) {
+      const totals = files.reduce((total, file) => {
+        if (typeof file.additions === "number" && Number.isFinite(file.additions) && file.additions >= 0) total.additions += file.additions;
+        if (typeof file.deletions === "number" && Number.isFinite(file.deletions) && file.deletions >= 0) total.deletions += file.deletions;
+        return total;
+      }, { additions: 0, deletions: 0 });
+      const hasAdditions = files.some((file) => typeof file.additions === "number" && Number.isFinite(file.additions) && file.additions >= 0);
+      const hasDeletions = files.some((file) => typeof file.deletions === "number" && Number.isFinite(file.deletions) && file.deletions >= 0);
+      stats = `<p class="git-ui-log-details-stats">${files.length} changed ${files.length === 1 ? "file" : "files"}${hasAdditions ? ` · +${totals.additions} additions` : ""}${hasDeletions ? ` · -${totals.deletions} deletions` : ""}</p>`;
+    }
+    const webUrl = commitWebUrl(details.web_url);
+    const link = webUrl ? `<a class="git-ui-log-details-link" href="${esc(webUrl)}" target="_blank" rel="noopener noreferrer">View on remote</a>` : "";
+    const fileState = preview.loading ? `<p role="status">Loading changed files...</p>` : preview.error ? `<p class="git-ui-log-details-error" role="alert">${esc(preview.error)}</p>` : "";
+    const filesHtml = options.preview && options.preview.hash === hash ? options.commitFilesHtml || "" : "";
+    return shell(`<div class="git-ui-log-details-header"><h2>Commit details</h2>${close}</div><div class="git-ui-log-details-avatar" title="Author placeholder">${renderPerson(32)}</div><div class="git-ui-log-details-author">${esc(author)}</div>${date ? `<div class="git-ui-log-details-date">${esc(date)}</div>` : ""}${details.email ? `<div class="git-ui-log-details-email">${esc(details.email)}</div>` : ""}<div class="git-ui-log-details-hash"><code>${esc(hash)}</code>${copyButton(hash, "Commit id")}</div><div class="git-ui-log-details-labels">${labels}</div>${loading}${error}<pre class="git-ui-log-details-message">${esc(message)}</pre>${stats}<div class="git-ui-log-details-files">${filesHtml || fileState}</div><div class="git-ui-log-details-actions"><button type="button" onclick="HerdrGitUi.compareSelectedLog()">View Commit</button>${link}</div>`);
   }
 
   function upstreamRefFromStatus(status) {
@@ -75,7 +143,7 @@
 
   function renderFilterRow(filters, esc, scopeButton) {
     const input = (field, label) => `<label class="git-ui-log-filter" title="Filter ${label}"><span class="sr-only">Filter ${label}</span><input name="git-log-filter-${field}" aria-label="Filter ${label}" value="${esc(filters[field] || "")}" placeholder="Filter"${inputAttrs("search")} oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
-    return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer">${scopeButton || ""}</span>${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
+    return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer">${scopeButton || ""}</span>${input("date", "Date")}${input("author", "Author")}</div>`;
   }
 
   function normalizeLogScope(scope) {
@@ -117,10 +185,19 @@
       }
       if (seeds.current !== null && seeds.main !== null) break;
     }
-    return rows.map((row) => ({
-      current: seeds.current === null ? null : columnStillActive(row, seeds.current),
-      main: seeds.main === null ? null : columnStillActive(row, seeds.main),
-    }));
+    let currentEnded = false;
+    return rows.map((row) => {
+      const current = seeds.current === null ? null : columnStillActive(row, seeds.current);
+      const main = seeds.main === null ? null : columnStillActive(row, seeds.main);
+      const mainTip = (row.labels || []).some((label) => labelKind(normalizeLabel(label), row.current, baseBranch) === "main");
+      const currentTip = row.current || (row.labels || []).some((label) => {
+        const normalized = normalizeLabel(label);
+        return normalized === "HEAD" || normalized.startsWith("HEAD -> ");
+      });
+      if (currentTip) currentEnded = false;
+      if (mainTip && main !== null && current === main && !currentTip) currentEnded = true;
+      return { current: currentEnded ? null : current, main };
+    });
   }
 
   function laneColumnOf(row) {
@@ -154,7 +231,7 @@
     const esc = options.esc;
     const arg = options.arg;
     const hash = String(row.hash || "");
-    const selectedClass = hash && selected.includes(hash) ? " selected" : "";
+    const selectedClass = (hash && selected.includes(hash) ? " selected" : "") + (hash && hash === searchHash ? " git-ui-log-search-current" : "");
     const graphOnly = hash ? "" : " graph-only";
     const isCurrent = row.current || (Array.isArray(row.labels) && row.labels.some((label) => normalizeLabel(label) === "HEAD" || normalizeLabel(label).startsWith("HEAD -> ")));
     const currentClass = isCurrent ? " current" : "";
@@ -163,11 +240,11 @@
     const color = laneColor(lane);
     const title = row.title || row.message || "";
     const filterText = filterFields(row);
-    const hidden = matchesFilters(filterText, filters) ? "" : " hidden";
+    const nonmatch = !hash || matchesFilters(filterText, filters) ? "" : " git-ui-log-nonmatch";
     const click = hash ? ` role="button" tabindex="0" onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')" onkeydown="if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();HerdrGitUi.selectLogCommit(event,'${arg(hash)}')}" oncontextmenu="HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');return false"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
-    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent, painting)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
+    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${nonmatch}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}><span class="git-ui-log-cell-refs">${renderCompactLabels(row.labels || [], row.current, esc, baseBranch)}</span>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent, painting)}<span class="git-ui-log-cell-description git-ui-log-desc"><span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-cell-date git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-cell-author git-ui-log-author">${hash ? `<span class="git-ui-log-author-avatar">${renderPerson(16)}</span>` : ""}${esc(row.author || "")}</span><span class="git-ui-log-cell-hash">${esc(hash.slice(0, 7))}</span>${hover}</div>`;
   }
 
   function renderHover(row, color, esc, baseBranch) {
@@ -207,7 +284,7 @@
 
   function normalizeFilters(filters) {
     return FILTER_FIELDS.reduce((next, field) => {
-      next[field] = String(filters[field] || "").trim().toLowerCase();
+      next[field] = String(filters[field] || "").trim();
       return next;
     }, {});
   }
@@ -215,19 +292,104 @@
   function matchesFilters(text, filters) {
     return FILTER_FIELDS.every((field) => {
       const needle = filters[field];
-      return !needle || String(text[field] || "").toLowerCase().includes(needle);
+      const value = String(text[field] || "");
+      return !needle || (searchCaseSensitive ? value.includes(needle) : value.toLowerCase().includes(needle.toLowerCase()));
     });
   }
 
   function applyFilters(filters) {
     const normalized = normalizeFilters(filters || {});
+    activeFilters = normalized;
+    searchPosition = -1;
+    searchHash = "";
     for (const row of document.querySelectorAll(".git-ui-log-row")) {
       const text = FILTER_FIELDS.reduce((next, field) => {
         next[field] = row.dataset[`logFilter${field[0].toUpperCase()}${field.slice(1)}`] || "";
         return next;
       }, {});
-      row.hidden = !matchesFilters(text, normalized);
+      const matches = !row.dataset.logHash || matchesFilters(text, normalized);
+      row.hidden = false;
+      row.classList.toggle("git-ui-log-nonmatch", !matches);
+      row.classList.toggle("git-ui-log-search-current", false);
     }
+    updateSearchControls();
+  }
+
+  function matchingSearchRows() {
+    return Array.from(document.querySelectorAll(".git-ui-log-row")).filter((row) => {
+      if (!row.dataset.logHash) return false;
+      const text = FILTER_FIELDS.reduce((fields, field) => {
+        fields[field] = row.dataset[`logFilter${field[0].toUpperCase()}${field.slice(1)}`] || "";
+        return fields;
+      }, {});
+      return matchesFilters(text, activeFilters);
+    });
+  }
+
+  function updateSearchControls() {
+    const matches = matchingSearchRows();
+    for (const count of document.querySelectorAll(".git-ui-log-search-count")) count.textContent = `${searchPosition >= 0 ? searchPosition + 1 : 0} / ${matches.length}`;
+    for (const button of document.querySelectorAll(".git-ui-log-search-previous, .git-ui-log-search-next")) button.disabled = !matches.length;
+    for (const button of document.querySelectorAll(".git-ui-log-search-case")) button.setAttribute("aria-pressed", String(searchCaseSensitive));
+    return matches;
+  }
+
+  function toggleSearchCase() {
+    searchCaseSensitive = !searchCaseSensitive;
+    applyFilters(activeFilters);
+  }
+
+  function setSearch(value) {
+    const query = String(value || "");
+    if (window.HerdrGitUi && typeof window.HerdrGitUi.setLogFilter === "function") {
+      window.HerdrGitUi.setLogFilter("description", query);
+    } else {
+      applyFilters(Object.assign({}, activeFilters, { description: query }));
+    }
+  }
+
+  function navigateSearch(direction) {
+    const matches = matchingSearchRows();
+    if (!matches.length) return;
+    searchPosition = searchPosition < 0 ? (direction < 0 ? matches.length - 1 : 0) : (searchPosition + (direction < 0 ? -1 : 1) + matches.length) % matches.length;
+    searchHash = matches[searchPosition].dataset.logHash;
+    for (const row of document.querySelectorAll(".git-ui-log-row")) row.classList.toggle("git-ui-log-search-current", row === matches[searchPosition]);
+    const target = matches[searchPosition];
+    target.scrollIntoView({ block: "nearest" });
+    const content = target.closest && target.closest(".git-ui-content");
+    if (content) {
+      const viewport = content.getBoundingClientRect();
+      const rect = target.getBoundingClientRect();
+      let visibleTop = viewport.top;
+      const overlays = Array.from(content.querySelectorAll(".git-ui-log-searchbar, .git-ui-log-table-head, .git-ui-log-details"))
+        .filter((node) => !node.hidden)
+        .map((node) => node.getBoundingClientRect())
+        .filter((overlay) => overlay.right > rect.left && overlay.left < rect.right && overlay.bottom > viewport.top && overlay.top < viewport.bottom)
+        .sort((a, b) => a.top - b.top);
+      for (const overlay of overlays) {
+        if (overlay.top <= visibleTop + 1) visibleTop = Math.max(visibleTop, overlay.bottom);
+      }
+      if (rect.top < visibleTop) content.scrollTop -= visibleTop - rect.top;
+    }
+    updateSearchControls();
+  }
+
+  function renderCompactLabels(labels, current, esc, baseBranch) {
+    if (labels.length < 2) return renderLabels(labels, current, esc, baseBranch);
+    const primary = labels.find((label) => labelKind(normalizeLabel(label), current, baseBranch) === "current") || labels[0];
+    const remaining = labels.filter((label, index) => index !== labels.indexOf(primary));
+    return `<span class="git-ui-log-ref-group" onclick="event.stopPropagation()">${renderLabel(primary, current, esc, baseBranch)}<button type="button" class="git-ui-log-ref-toggle" aria-expanded="false" aria-label="Show ${remaining.length} more references" onclick="HerdrGitLog.toggleRefs(this,event)">+${remaining.length}</button><span class="git-ui-log-ref-overflow" hidden>${renderLabels(remaining, current, esc, baseBranch)}</span></span>`;
+  }
+
+  function toggleRefs(button, event) {
+    if (event) event.stopPropagation();
+    const group = button.closest(".git-ui-log-ref-group");
+    const overflow = group && group.querySelector(".git-ui-log-ref-overflow");
+    if (!overflow) return;
+    overflow.hidden = !overflow.hidden;
+    button.setAttribute("aria-expanded", String(!overflow.hidden));
+    button.setAttribute("aria-label", overflow.hidden ? "Show more references" : "Hide additional references");
+    group.classList.toggle("expanded", !overflow.hidden);
   }
 
   function renderLabels(labels, current, esc, baseBranch) {
@@ -289,34 +451,37 @@
   }
 
   function renderGraph(graph, hasCommit, upstreamTip, isCurrent, painting) {
-    const chars = String(graph || "* ").split("");
+    const chars = String(graph || (hasCommit ? "* " : "")).split("");
     const dotClasses = ["git-ui-log-dot"];
     if (upstreamTip) dotClasses.push("origin");
     if (isCurrent) dotClasses.push("head");
     const dotClass = ` class="${dotClasses.join(" ")}"`;
-    const cells = [];
+    const paths = [];
+    const nodes = [];
     for (let i = 0; i < Math.min(chars.length, 24); i++) {
       const ch = chars[i];
-      let cls = "git-ui-lane";
-      let mark = "";
-      if (ch === "*") {
-        cls += " commit";
-        mark = `<i${dotClass}></i>`;
-      } else if (ch === "|") cls += " vertical";
-      else if (ch === "/") cls += " merge-left";
-      else if (ch === "\\") cls += " merge-right";
-      else if (ch === "_" || ch === "-" || ch === ".") cls += " horizontal";
+      const position = 8 + i * 8;
       const lane = laneOverrideFor(painting, i) || laneColor(i);
-      cells.push(`<span class="${cls}" style="--lane:${lane}">${mark}</span>`);
+      let path = "";
+      if (ch === "*") {
+        path = `M${position} 0V26`;
+        nodes.push(`<circle${dotClass} cx="${position}" cy="13" r="3.5" fill="var(--panel)" stroke="${lane}" stroke-width="1.5"/>`);
+      } else if (ch === "|") path = `M${position} 0V26`;
+      else if (ch === "/") path = `M${position + 8} 0C${position + 8} 13 ${position - 8} 13 ${position - 8} 26`;
+      else if (ch === "\\") path = `M${position - 8} 0C${position - 8} 13 ${position + 8} 13 ${position + 8} 26`;
+      else if (ch === "_" || ch === "-" || ch === ".") path = `M${position - 8} 13H${position + 8}`;
+      if (path) paths.push(`<path class="git-ui-log-graph-path" d="${path}" stroke="${lane}" stroke-width="1.5" fill="none"/>`);
     }
     if (hasCommit && !String(graph || "").includes("*")) {
-      cells.unshift(`<span class="git-ui-lane commit" style="--lane:var(--accent)"><i${dotClass}></i></span>`);
+      nodes.push(`<circle${dotClass} cx="8" cy="13" r="3.5" fill="var(--panel)" stroke="${laneOverrideFor(painting, 0) || laneColor(0)}" stroke-width="1.5"/>`);
     }
-    return `<span class="git-ui-log-graph" aria-hidden="true">${cells.join("")}</span>`;
+    const width = Math.max(24, Math.min(chars.length, 24) * 8 + 16);
+    return `<span class="git-ui-log-cell-graph git-ui-log-graph" aria-hidden="true"><svg width="${width}" height="26" viewBox="0 0 ${width} 26" preserveAspectRatio="none">${paths.join("")}${nodes.join("")}</svg></span>`;
   }
 
   function laneColor(index) {
-    return LANE_COLORS[Math.max(0, index) % LANE_COLORS.length];
+    const lane = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0;
+    return LANE_COLORS[lane % LANE_COLORS.length];
   }
 
   function scrollToCommit(hash) {
@@ -325,5 +490,5 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting };
+  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting, renderDetails, toggleSearchCase, navigateSearch, toggleRefs, setSearch };
 })();

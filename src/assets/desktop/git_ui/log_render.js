@@ -1,16 +1,27 @@
 (function () {
-  function createGitUiLogRender({active, api, esc, arg, gitLogDefaultBranch, normalizeLogScope, GIT_LOG_PAGE_SIZE, GIT_LOG_MAX_LIMIT, isNoGitRepositoryView, renderFileToolbar, renderCleanup, renderStashDiff, renderConflictResolutionButtons, renderDiff, replaceContent, render}) {
+  function createGitUiLogRender({active, api, esc, arg, gitLogDefaultBranch, normalizeLogScope, GIT_LOG_PAGE_SIZE, GIT_LOG_MAX_LIMIT, isNoGitRepositoryView, renderFileToolbar, renderCleanup, renderStashDiff, renderConflictResolutionButtons, renderDiff, commitPreviewSection, replaceContent, render}) {
+    const logCache = new WeakMap();
+    const logRequests = new WeakMap();
+    let logStickyObserver = null;
     async function renderLog(version) {
       const view = active();
+      const request = (logRequests.get(view) || 0) + 1;
+      logRequests.set(view, request);
       const baseBranch = gitLogDefaultBranch();
       const logLimit = Math.max(1, Math.min(GIT_LOG_MAX_LIMIT, Number(view.logLimit || GIT_LOG_PAGE_SIZE)));
       view.logLimit = logLimit;
       view.logScope = normalizeLogScope(view.logScope || (view.logAll ? "all" : "base-current"));
       view.logAll = view.logScope === "all";
       const fileParam = view.logFilePath ? `&file=${encodeURIComponent(view.logFilePath)}` : "";
-      const data = await api(`/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&scope=${encodeURIComponent(view.logScope)}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}${fileParam}`);
+      const requestKey = `/api/git-ui/log?cwd=${encodeURIComponent(view.cwd)}&all=${view.logAll ? "true" : "false"}&scope=${encodeURIComponent(view.logScope)}&base=${encodeURIComponent(baseBranch)}&max=${logLimit}${fileParam}`;
+      const cached = logCache.get(view);
+      const data = cached && cached.key === requestKey && cached.status === view.status && cached.data === view.logData
+        ? cached.data
+        : await api(requestKey);
+      if (active() !== view || view.tab !== "log" || logRequests.get(view) !== request) return;
       const selected = view.selectedLogCommits || [];
       view.logData = data;
+      logCache.set(view, {key: requestKey, status: view.status, data});
       const selectedBranch = selected.length === 1 && window.HerdrGitLog && window.HerdrGitLog.selectedBranchForHash
         ? window.HerdrGitLog.selectedBranchForHash(data, selected[0], baseBranch)
         : "";
@@ -28,6 +39,8 @@
         filters: view.logFilters || {},
         esc,
         arg,
+        preview: view.selectedCommitPreview,
+        commitFilesHtml: typeof commitPreviewSection === "function" ? commitPreviewSection(view, "") : "",
         status: view.status || {},
       }));
       updateGitLogStickyOffsets();
@@ -40,14 +53,28 @@
 
     function updateGitLogStickyOffsets() {
       requestAnimationFrame(() => {
-        const content = document.querySelector(".git-ui-content");
+        const content = Array.from(document.querySelectorAll(".git-ui-content.git-ui-content-log"))
+          .find((node) => !node.getClientRects || node.getClientRects().length > 0);
         if (!content) return;
-        const scope = content.querySelector(".git-ui-log-scope-head");
+        const searchbar = content.querySelector(".git-ui-log-searchbar");
         const head = content.querySelector(".git-ui-log-table-head");
-        const scopeHeight = scope ? Math.ceil(scope.getBoundingClientRect().height + 10) : 0;
+        const searchHeight = searchbar ? Math.ceil(searchbar.getBoundingClientRect().height) : 0;
         const headHeight = head ? Math.ceil(head.getBoundingClientRect().height) : 0;
-        content.style.setProperty("--git-log-scope-sticky-height", `${scopeHeight}px`);
+        content.style.setProperty("--git-log-search-sticky-height", `${searchHeight}px`);
         content.style.setProperty("--git-log-table-head-sticky-height", `${headHeight}px`);
+        if (searchbar && window.ResizeObserver) {
+          if (!logStickyObserver) {
+            logStickyObserver = new window.ResizeObserver(() => requestAnimationFrame(() => {
+              const currentContent = Array.from(document.querySelectorAll(".git-ui-content.git-ui-content-log"))
+                .find((node) => !node.getClientRects || node.getClientRects().length > 0);
+              const currentSearchbar = currentContent && currentContent.querySelector(".git-ui-log-searchbar");
+              if (!currentContent || !currentSearchbar) return;
+              currentContent.style.setProperty("--git-log-search-sticky-height", `${Math.ceil(currentSearchbar.getBoundingClientRect().height)}px`);
+            }));
+          }
+          logStickyObserver.disconnect();
+          logStickyObserver.observe(searchbar);
+        }
       });
     }
 
@@ -85,7 +112,7 @@
       if (view.tab === "stash") body = renderStashDiff();
       if (view.tab === "cleanup") body = renderCleanup();
       if (view.tab === "history") body = `<div class="git-ui-muted">Loading history...</div>`;
-      return `<main class="git-ui-main"><div class="git-ui-content">${body}</div></main>`;
+      return `<main class="git-ui-main"><div class="git-ui-content${view.tab === "log" ? " git-ui-content-log" : ""}">${body}</div></main>`;
     }
     return {
       renderLog,
