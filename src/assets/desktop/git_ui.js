@@ -418,6 +418,7 @@
     renderStashDiff,
     renderConflictResolutionButtons,
     renderDiff,
+    commitPreviewSection,
     replaceContent,
     render,
   });
@@ -1291,18 +1292,30 @@
     if (!view || !hash) return;
     const current = view.selectedCommitPreview || {};
     if (current.hash === hash && (current.loading || current.diff || current.error)) return;
-    view.selectedCommitPreview = { hash, loading: true, error: "", diff: null };
+    const preview = { hash, loading: true, error: "", diff: null, detailsLoading: true, detailsError: "", details: null };
+    view.selectedCommitPreview = preview;
     const context = 0;
     api(`/api/git-ui/compare?cwd=${encodeURIComponent(view.cwd)}&base=${encodeURIComponent(`${hash}^`)}&target=${encodeURIComponent(hash)}&context=${context}`)
       .then((diff) => {
-        if (!view.selectedCommitPreview || view.selectedCommitPreview.hash !== hash) return;
-        view.selectedCommitPreview = { hash, loading: false, error: "", diff };
-        if (state.visible) render();
+        if (view.selectedCommitPreview !== preview) return;
+        Object.assign(preview, { loading: false, error: "", diff });
+        if (state.visible && active() === view) render();
       })
       .catch((err) => {
-        if (!view.selectedCommitPreview || view.selectedCommitPreview.hash !== hash) return;
-        view.selectedCommitPreview = { hash, loading: false, error: err.message || String(err), diff: null };
-        if (state.visible) render();
+        if (view.selectedCommitPreview !== preview) return;
+        Object.assign(preview, { loading: false, error: err.message || String(err), diff: null });
+        if (state.visible && active() === view) render();
+      });
+    api(`/api/git-ui/commit-details?cwd=${encodeURIComponent(view.cwd)}&hash=${encodeURIComponent(hash)}`)
+      .then((details) => {
+        if (view.selectedCommitPreview !== preview) return;
+        Object.assign(preview, { detailsLoading: false, detailsError: "", details });
+        if (state.visible && active() === view) render();
+      })
+      .catch((err) => {
+        if (view.selectedCommitPreview !== preview) return;
+        Object.assign(preview, { detailsLoading: false, detailsError: err.message || String(err), details: null });
+        if (state.visible && active() === view) render();
       });
   }
 
@@ -2551,7 +2564,7 @@
       hash = decodeURIComponent(hash || "");
       if (!view || !hash) return false;
       view.selectedLogCommits = [hash];
-      view.selectedCommitPreview = null;
+      loadSelectedCommitPreview(view, hash);
       state.contextMenu = null;
       state.headerMenu = null;
       state.logContextMenu = {

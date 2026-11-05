@@ -15,6 +15,7 @@ use crate::{expand_user_path_string, git_failure, require_auth, WebState};
 
 mod branch;
 mod cleanup;
+mod commit_details;
 mod conflict;
 mod diff;
 mod file;
@@ -78,6 +79,10 @@ pub(crate) fn routes() -> Router<WebState> {
             post(cleanup::git_ui_worktree_prune),
         )
         .route("/api/git-ui/log", get(log::git_ui_log))
+        .route(
+            "/api/git-ui/commit-details",
+            get(commit_details::git_ui_commit_details),
+        )
         .route("/api/git-ui/path-info", get(git_ui_path_info))
         .route("/api/git-ui/permalink", get(git_ui_permalink))
         .route("/api/git-ui/blame", get(file::git_ui_blame))
