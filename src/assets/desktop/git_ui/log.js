@@ -33,11 +33,16 @@
     const logScope = normalizeLogScope(options.logScope || (options.logAll ? "all" : "base-current"));
     const esc = options.esc;
     const upstreamRef = upstreamRefFromStatus(options.status || {});
+    // Traceable branch lines: the current branch's lane paints red and the
+    // base branch's lane paints blue down from their tip rows, so the two
+    // lines stay identifiable past the tip chips the way Zed keeps HEAD
+    // findable via its check icon (we use line color instead of an icon).
+    const lanePainting = computeLanePainting(rows, baseBranch);
     const scopeButton = `<span class="git-ui-log-scope-control"><span>Scope:</span><button class="git-ui-btn active" title="Toggle history scope: Master + Branch, All, Branch" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${options.filePath ? `<button class="git-ui-btn git-ui-log-file-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">× ${esc(options.filePath)}</button>` : ""}</span>`;
     const header = `<div class="git-ui-log-table-head"><span>Graph</span><span>Description</span><span>Date</span><span>Author</span></div>${renderFilterRow(filters, esc, scopeButton)}`;
     const renderOptions = Object.assign({}, options, { upstreamRef });
     const body = rows.length
-      ? rows.map((row) => renderRow(row, selected, filters, renderOptions, baseBranch)).join("")
+      ? rows.map((row, index) => renderRow(row, index, selected, filters, renderOptions, baseBranch, lanePainting)).join("")
       : `<div class="git-ui-empty-row">No commits found.</div>`;
     const footer = renderLoadMore(options.data || {}, rows, options, esc);
     return `<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div>`;
@@ -90,7 +95,62 @@
     return Array.isArray(data && data.rows) ? data.rows : [];
   }
 
-  function renderRow(row, selected, filters, options, baseBranch) {
+  // Seed columns from the tip rows, then walk each seed down through the
+  // graph chars while the lane's column still carries a line segment. A
+  // fold row (|/ or |\) ends the run: below it git re-uses the column for
+  // a different branch, so painting through would mislabel that branch.
+  // Returns [{ current: col|null, main: col|null }] indexed by row order.
+  function computeLanePainting(rows, baseBranch) {
+    const seeds = { current: null, main: null };
+    const base = String(baseBranch || "master");
+    for (const row of rows) {
+      if (seeds.current === null && (row.current || (row.labels || []).some((label) => {
+        const normalized = normalizeLabel(label);
+        return normalized === "HEAD" || normalized.startsWith("HEAD -> ");
+      }))) seeds.current = laneColumnOf(row);
+      if (seeds.main === null) {
+        const hasBase = (row.labels || []).some((label) => {
+          const normalized = normalizeLabel(label);
+          return normalized === base || normalized === `origin/${base}` || normalized === "main" || normalized === "origin/main" || normalized === "master" || normalized === "origin/master";
+        });
+        if (hasBase) seeds.main = laneColumnOf(row);
+      }
+      if (seeds.current !== null && seeds.main !== null) break;
+    }
+    return rows.map((row) => ({
+      current: seeds.current === null ? null : columnStillActive(row, seeds.current),
+      main: seeds.main === null ? null : columnStillActive(row, seeds.main),
+    }));
+  }
+
+  function laneColumnOf(row) {
+    const graph = String(row.graph || "");
+    const star = graph.indexOf("*");
+    if (star >= 0) return star;
+    if (typeof row.lane === "number" && row.lane >= 0) return row.lane;
+    const bar = graph.indexOf("|");
+    return bar >= 0 ? bar : 0;
+  }
+
+  function columnStillActive(row, column) {
+    const graph = String(row.graph || "");
+    // Column positions are stable across rows even when git pads them with
+    // trailing spaces, so index into the padded string.
+    const ch = graph[column];
+    if (ch === undefined) return null;
+    if (ch === "*" || ch === "|") return column;
+    return null;
+  }
+
+  function laneOverrideFor(painting, column) {
+    if (!painting) return "";
+    if (painting.current === column) return "var(--git-log-current, #ef4444)";
+    if (painting.main === column) return "var(--git-log-main, #3b82f6)";
+    return "";
+  }
+
+  function renderRow(row, index, selected, filters, options, baseBranch, lanePainting) {
+    const painting = lanePainting ? lanePainting[index] : null;
     const esc = options.esc;
     const arg = options.arg;
     const hash = String(row.hash || "");
@@ -107,7 +167,7 @@
     const click = hash ? ` role="button" tabindex="0" onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')" onkeydown="if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();HerdrGitUi.selectLogCommit(event,'${arg(hash)}')}" oncontextmenu="HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');return false"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
-    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
+    return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${hidden}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent, painting)}<span class="git-ui-log-desc">${renderLabels(row.labels || [], row.current, esc, baseBranch)}<span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-author">${esc(row.author || "")}</span>${hover}</div>`;
   }
 
   function renderHover(row, color, esc, baseBranch) {
@@ -228,7 +288,7 @@
     return labelKind(label, false, baseBranch) !== "tag";
   }
 
-  function renderGraph(graph, hasCommit, upstreamTip, isCurrent) {
+  function renderGraph(graph, hasCommit, upstreamTip, isCurrent, painting) {
     const chars = String(graph || "* ").split("");
     const dotClasses = ["git-ui-log-dot"];
     if (upstreamTip) dotClasses.push("origin");
@@ -246,7 +306,8 @@
       else if (ch === "/") cls += " merge-left";
       else if (ch === "\\") cls += " merge-right";
       else if (ch === "_" || ch === "-" || ch === ".") cls += " horizontal";
-      cells.push(`<span class="${cls}" style="--lane:${laneColor(i)}">${mark}</span>`);
+      const lane = laneOverrideFor(painting, i) || laneColor(i);
+      cells.push(`<span class="${cls}" style="--lane:${lane}">${mark}</span>`);
     }
     if (hasCommit && !String(graph || "").includes("*")) {
       cells.unshift(`<span class="git-ui-lane commit" style="--lane:var(--accent)"><i${dotClass}></i></span>`);
@@ -264,5 +325,5 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash };
+  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting };
 })();

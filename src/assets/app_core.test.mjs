@@ -488,6 +488,95 @@ describe("Git log rendering", () => {
     assert.match(rowMarkup[0], /role="button" tabindex="0"/, "commit row is a tab stop");
     assert.match(rowMarkup[0], /onkeydown="[^"]*event\.preventDefault\(\);[^"]*selectLogCommit\(event,'h1'\)/, "Enter/Space selects the commit, Space does not scroll the log");
   });
+
+  it("paints the current branch lane red and the base branch lane blue down from their tips", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
+    productScript("./desktop/git_ui/log.js").runInNewContext(context);
+
+    // Mirrors this repo's real all-scope payload: HEAD on a side lane,
+    // a fold row, and the base branch below on the leftmost lane.
+    const html = context.window.HerdrGitLog.render({
+      esc(value) { return String(value); },
+      arg: encodeURIComponent,
+      data: { rows: [
+        { graph: "| * ", hash: "h1", labels: ["HEAD -> git_tree"], title: "tip", date: "", author: "", lane: 2 },
+        { graph: "| * ", hash: "h2", labels: [], title: "mid", date: "", author: "", lane: 2 },
+        { graph: "|/", labels: [], title: "", date: "", author: "", lane: 0 },
+        { graph: "*   ", hash: "h3", labels: ["main", "origin/main"], title: "base tip", date: "", author: "", lane: 0 },
+        { graph: "*   ", hash: "h4", labels: [], title: "below base", date: "", author: "", lane: 0 },
+      ] },
+      selected: [],
+      filters: {},
+      baseBranch: "main",
+    });
+
+    const rowsHtml = html.split('class="git-ui-log-row').slice(1);
+    const laneRe = /<span class="(git-ui-lane[^"]*)" style="--lane:([^"]+)">/g;
+    const lanes = rowsHtml.map((rowHtml) => {
+      const cells = [];
+      let m;
+      while ((m = laneRe.exec(rowHtml)) !== null) cells.push({ cls: m[1], lane: m[2] });
+      laneRe.lastIndex = 0;
+      return cells;
+    });
+
+    // Current branch: red on the tip row and the row below; the fold row
+    // ends the red run (col 2 is empty there and git re-uses columns
+    // below a fold, so painting through would mislabel another branch).
+    assert.match(lanes[0][2].lane, /--git-log-current/, "HEAD tip dot paints red");
+    assert.match(lanes[1][2].lane, /--git-log-current/, "commit below the tip stays red");
+    assert.ok(!lanes[2].some((cell) => /--git-log-current/.test(cell.lane)), "fold row ends the current paint");
+    assert.ok(!lanes[3].some((cell) => /--git-log-current/.test(cell.lane)), "base tip row has no current paint");
+
+    // Base branch: blue from its tip row up through the fold row's own
+    // vertical (the '|' of '|/' is the base line), and down while it runs.
+    assert.match(lanes[2][0].lane, /--git-log-main/, "fold row's vertical keeps the base paint");
+    assert.match(lanes[3][0].lane, /--git-log-main/, "base tip dot paints blue");
+    assert.match(lanes[4][0].lane, /--git-log-main/, "commit below the base tip stays blue");
+  });
+
+  it("keeps lane painting quiet when HEAD and the base share a lane or are absent", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
+    productScript("./desktop/git_ui/log.js").runInNewContext(context);
+    const computeLanePainting = context.window.HerdrGitLog.computeLanePainting;
+
+    // HEAD -> main on the same commit: current wins the shared column and
+    // no second, contradictory blue run appears. JSON compare, not
+    // deepEqual: the painting comes from the VM realm.
+    const sameLane = computeLanePainting([
+      { graph: "* ", hash: "h1", labels: ["HEAD -> main", "origin/main"], lane: 0 },
+      { graph: "* ", hash: "h2", labels: [], lane: 0 },
+    ], "main");
+    assert.equal(JSON.stringify(sameLane), JSON.stringify([{ current: 0, main: 0 }, { current: 0, main: 0 }]));
+
+    // Detached HEAD with no base branch in the loaded window: the current
+    // lane still paints, the main lane simply stays unset.
+    const detached = computeLanePainting([
+      { graph: "* ", hash: "h1", labels: ["HEAD"], lane: 0 },
+      { graph: "* ", hash: "h2", labels: [], lane: 0 },
+    ], "main");
+    assert.equal(JSON.stringify(detached), JSON.stringify([{ current: 0, main: null }, { current: 0, main: null }]));
+
+    // Column reuse below a fold: a different branch occupies the same
+    // column afterwards, and the earlier seed must not bleed onto it.
+    const reuse = computeLanePainting([
+      { graph: "| * ", hash: "h1", labels: ["HEAD -> feat"], lane: 2 },
+      { graph: "|/", labels: [], lane: 0 },
+      { graph: "| * ", hash: "h2", labels: [], lane: 2 },
+      { graph: "|/", labels: [], lane: 0 },
+    ], "main");
+    assert.equal(JSON.stringify(reuse), JSON.stringify([{ current: 2, main: null }, { current: null, main: null }, { current: 2, main: null }, { current: null, main: null }]));
+  });
 });
 
 describe("normalizeThemeColors", () => {

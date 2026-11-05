@@ -7672,7 +7672,7 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes("HerdrGitUi.setLogAll(false)"));
     ok(!gitLogSource.includes("All branches</button>"));
     ok(!gitUiSource.includes("function renderLogLine(line)"));
-    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash \};/);
+    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting \};/);
     match(gitLogSource, /git-ui-log-table-head/);
     match(gitLogSource, /<span>Graph<\/span><span>Description<\/span><span>Date<\/span><span>Author<\/span>/);
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
