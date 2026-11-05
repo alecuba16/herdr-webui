@@ -838,8 +838,16 @@
     // Always visible (a stable surface, never appearing mid-session); no
     // workspace or no folder path renders the empty hint instead.
     if (!workspace || !cwd) {
+      // The empty state can host the discovery popover (open/create from
+      // the dashboard); only that popover needs the chip stylesheet, not
+      // every empty-bar render.
+      if (bar.discoveryList) ensureChipCss();
       const html = emptyBar();
-      if (node.innerHTML !== html) node.innerHTML = html;
+      if (node.innerHTML !== html) {
+        const focus = captureDiscoveryFocus();
+        node.innerHTML = html;
+        restoreDiscoveryFocus(focus);
+      }
       if (node.hidden) node.hidden = false;
       lastSignature = null;
       lastHtml = html;
@@ -1520,7 +1528,14 @@
 
   function refocusPathChip() {
     const node = document.querySelector && document.querySelector(".location-bar-path-chip");
-    refocusChip(node);
+    if (node) {
+      refocusChip(node);
+      return;
+    }
+    // Empty boot state: no path chip exists, return focus to the bar's
+    // own open button so Escape does not strand the keyboard user on
+    // the body.
+    refocusChip(document.querySelector && document.querySelector(".location-bar-empty"));
   }
 
   // Centralized create entry for palette actions and keyboard shortcuts:
