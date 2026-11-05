@@ -1,6 +1,12 @@
 # Release notes
 
 ## Unreleased
+- Switching between the branch and worktree chip popovers no longer drops
+  the popover into the viewport's top-left corner. Opening one closed the
+  other first, and that close re-rendered the bar and detached the chip
+  the user had just clicked; the anchor then read a zero rect and clamped
+  to the corner. Both openers now measure the chip before closing
+  anything, so the popover always lands under the chip that opened it.
 - Every folder, branch, and worktree popover now shares one implementation:
   the same row markup, list ordering, and create-form styling, all
   anchored locally to the chip or field that opened them. Discovery rows

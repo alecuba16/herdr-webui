@@ -480,6 +480,11 @@
     const cwd = currentCwd();
     if (!cwd) return;
     if (event && event.stopPropagation) event.stopPropagation();
+    // The chip must be measured before the close-calls below re-render
+    // the bar: sync() replaces the bar's innerHTML, and a rect read from
+    // the detached old chip returns zeros, which anchors the popover at
+    // the viewport's top-left corner.
+    const chipAnchor = anchorFromEvent(event);
     // Only one popover at a time: opening one closes the others.
     closeWorktreePopover();
     closeDiscoveryPopover();
@@ -508,7 +513,7 @@
       remoteRequestId: 0,
       newBranch: "",
       creating: false,
-      anchor: anchorFromEvent(event),
+      anchor: chipAnchor,
       // Identity of this opening: fetch completions and row actions must
       // belong to the same opening, workspace, and folder. A stale
       // response (closed, reopened, or a workspace switch meanwhile) can
@@ -958,6 +963,10 @@
     const cwd = currentCwd();
     if (!cwd) return;
     if (event && event.stopPropagation) event.stopPropagation();
+    // Measure before the close-calls re-render the bar (see
+    // openBranchPopover): a detached chip reads as a zero rect and the
+    // popover lands in the top-left corner.
+    const chipAnchor = anchorFromEvent(event, ".location-bar-worktree-chip:not([disabled])");
     // Only one popover at a time: opening one closes the others.
     closeBranchPopover();
     closeDiscoveryPopover();
@@ -974,7 +983,7 @@
       error: "",
       worktrees: [],
       currentPath: cwd,
-      anchor: anchorFromEvent(event, ".location-bar-worktree-chip:not([disabled])"),
+      anchor: chipAnchor,
       // Same identity contract as the branch popover: completions and
       // row actions belong to this opening only.
       requestId: nextPopoverRequestId(),

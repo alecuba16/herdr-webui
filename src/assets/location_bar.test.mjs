@@ -829,6 +829,30 @@ describe("location bar branch popover", () => {
     ok(left + width <= 900, `popover (left ${left} + width ${width}) fits inside 900px`);
   });
 
+  it("switching chip popovers keeps the anchor on the clicked chip", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+        "/api/worktrees": { result: { worktrees: [], source: null } },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    // A rect that reads as zero exactly when the bar has re-rendered:
+    // the old chip is detached after closeWorktreePopover's sync().
+    let chipDetached = false;
+    const branchChip = { getBoundingClientRect: () => (chipDetached ? { left: 0, top: 0, bottom: 0, width: 0, height: 0, right: 0 } : { left: 700, bottom: 60, right: 780, top: 40, width: 80, height: 20 }) };
+    const originalSync = ctx.HerdrLocationBar.sync.bind(ctx.HerdrLocationBar);
+    ctx.HerdrLocationBar.sync = () => { chipDetached = true; originalSync(); };
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: branchChip });
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: branchChip });
+    const styleMatch = bar.innerHTML.match(/location-bar-branch-popover" role="dialog" aria-label="Branches" style="([^"]*)"/);
+    ok(styleMatch, "popover style renders");
+    const left = Number(/left:(-?\d+(?:\.\d+)?)px/.exec(styleMatch[1])[1]);
+    const top = Number(/top:(-?\d+(?:\.\d+)?)px/.exec(styleMatch[1])[1]);
+    equal(left, 700, "anchor keeps the chip's left position, not the detached 0,0 rect");
+    equal(top, 64, "anchor keeps the chip's bottom offset");
+  });
+
   it("filter keeps matching rows and posts nothing", async () => {
     const { ctx, bar, calls } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
