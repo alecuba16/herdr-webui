@@ -213,6 +213,40 @@ test("search input, case and navigation controls have real handlers and labels",
   assert.match(html, /<details class="git-ui-log-advanced-filters"><summary>Filters<\/summary>/);
 });
 
+for (const logScope of ["all", "base-current", "base"]) {
+  test(`${logScope} row pressed state follows single selection, deselection and multi-selection`, () => {
+    const renderer = bootRenderer();
+    const data = { rows: [{ hash, graph: "* " }, { graph: "|/ " }, { hash: otherHash, graph: "* " }] };
+    for (const selected of [[], [hash], [], [hash, otherHash], [otherHash], []]) {
+      const html = renderer.render(options({ data, selected, logScope }));
+      const rows = html.match(/<div class="git-ui-log-row[^>]*>/g);
+      assert.equal(rows.length, 3);
+      for (const row of rows) {
+        const rowHash = row.match(/data-log-hash="([^"]*)"/)[1];
+        if (!rowHash) {
+          assert.doesNotMatch(row, /role="button"|aria-pressed=/);
+          continue;
+        }
+        assert.match(row, /role="button" tabindex="0"/);
+        assert.match(row, new RegExp(`aria-pressed="${selected.includes(rowHash)}"`));
+        assert.equal(/class="git-ui-log-row selected/.test(row), selected.includes(rowHash));
+        assert.doesNotMatch(row, /aria-selected=/);
+      }
+    }
+  });
+
+  test(`${logScope} advanced filters show distinct Date and Author labels`, () => {
+    const html = bootRenderer().render(options({ logScope }));
+    for (const [field, label] of [["date", "Date"], ["author", "Author"]]) {
+      const filter = html.match(new RegExp(`<label class="git-ui-log-filter"[^>]*><span>${label}<\\/span><input[^>]*name="git-log-filter-${field}"[^>]*><\\/label>`));
+      assert.ok(filter, `${label} is a visible label wrapping its input`);
+      assert.match(filter[0], new RegExp(`aria-label="Filter ${label}"`));
+      assert.match(filter[0], new RegExp(`HerdrGitUi\\.setLogFilter\\('${field}',this\\.value\\)`));
+      assert.doesNotMatch(filter[0], /sr-only|\bhidden\b/);
+    }
+  });
+}
+
 test("search case toggle and advanced filters preserve graph transition rows", () => {
   const { renderer, rows, count, caseButton, navigation } = searchHarness();
   renderer.setSearch("Fix");

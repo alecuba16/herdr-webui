@@ -142,7 +142,7 @@
   }
 
   function renderFilterRow(filters, esc, scopeButton) {
-    const input = (field, label) => `<label class="git-ui-log-filter" title="Filter ${label}"><span class="sr-only">Filter ${label}</span><input name="git-log-filter-${field}" aria-label="Filter ${label}" value="${esc(filters[field] || "")}" placeholder="Filter"${inputAttrs("search")} oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
+    const input = (field, label) => `<label class="git-ui-log-filter" title="Filter ${label}"><span>${label}</span><input name="git-log-filter-${field}" aria-label="Filter ${label}" value="${esc(filters[field] || "")}" placeholder="Filter"${inputAttrs("search")} oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
     return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer">${scopeButton || ""}</span>${input("date", "Date")}${input("author", "Author")}</div>`;
   }
 
@@ -241,7 +241,7 @@
     const title = row.title || row.message || "";
     const filterText = filterFields(row);
     const nonmatch = !hash || matchesFilters(filterText, filters) ? "" : " git-ui-log-nonmatch";
-    const click = hash ? ` role="button" tabindex="0" onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')" onkeydown="if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();HerdrGitUi.selectLogCommit(event,'${arg(hash)}')}" oncontextmenu="HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');return false"` : "";
+    const click = hash ? ` role="button" tabindex="0" aria-pressed="${selected.includes(hash)}" onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')" onkeydown="if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();HerdrGitUi.selectLogCommit(event,'${arg(hash)}')}" oncontextmenu="HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');return false"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
     const tooltip = hoverText(row);
     return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${nonmatch}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}><span class="git-ui-log-cell-refs">${renderCompactLabels(row.labels || [], row.current, esc, baseBranch)}</span>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent, painting)}<span class="git-ui-log-cell-description git-ui-log-desc"><span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-cell-date git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-cell-author git-ui-log-author">${hash ? `<span class="git-ui-log-author-avatar">${renderPerson(16)}</span>` : ""}${esc(row.author || "")}</span><span class="git-ui-log-cell-hash">${esc(hash.slice(0, 7))}</span>${hover}</div>`;
