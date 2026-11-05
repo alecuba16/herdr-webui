@@ -1322,17 +1322,27 @@ describe("location bar discovery popover", () => {
 
   it("renders the branch probe loading and error with a retry in the create view", async () => {
     const calls = [];
+    let releaseBranches = null;
+    let branchCalls = 0;
     const harness = loadDiscovery({
       deferFetch: (url) => {
         const path = String(url).split("?")[0];
         calls.push(path);
-        return new Promise((resolve) => {
-          if (path === "/api/git-ui/branches") resolve({ error: "probe unavailable" });
-          resolve({ result: { worktrees: [
-            { path: "/repo", branch: "main" },
-            { path: "/repo-wt", branch: "feature-x" },
-          ], source: { cwd: "/repo", repo_root: "/repo" } } });
-        });
+        if (path === "/api/git-ui/branches") {
+          branchCalls += 1;
+          // Hold the first probe pending so the loading row is observable,
+          // then fail it; the retry fetch fails immediately.
+          if (branchCalls === 1) {
+            return new Promise((resolve) => {
+              releaseBranches = () => resolve({ error: "probe unavailable" });
+            });
+          }
+          return Promise.resolve({ error: "probe unavailable" });
+        }
+        return Promise.resolve({ result: { worktrees: [
+          { path: "/repo", branch: "main" },
+          { path: "/repo-wt", branch: "feature-x" },
+        ], source: { cwd: "/repo", repo_root: "/repo" } } });
       },
     });
     const { ctx, bar } = harness;
@@ -1340,9 +1350,13 @@ describe("location bar discovery popover", () => {
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     ctx.HerdrLocationBar.discoveryCreateWorktree();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("Loading branches"), "loading row names the pending probe");
+    ok(!bar.innerHTML.includes("No branches yet"), "pending probe is not shown as an empty list");
+    releaseBranches();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     ok(bar.innerHTML.includes("Branches could not load"), "failed probe names the failure instead of a false empty list");
     ok(bar.innerHTML.includes("probe unavailable"), "probe error surfaces in the list");
-    ok(bar.innerHTML.includes('HerdrLocationBar.discoveryRetryBranchOptions()'), "retry control renders");
+    ok(bar.innerHTML.includes("HerdrLocationBar.discoveryRetryBranchOptions()"), "retry control renders");
     // Retry forces a reload even though the rows array stayed empty.
     const before = calls.filter((path) => path === "/api/git-ui/branches").length;
     ctx.HerdrLocationBar.discoveryRetryBranchOptions();
