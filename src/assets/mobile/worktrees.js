@@ -482,7 +482,7 @@
         closeWorktreeSheet();
         return;
       }
-      if (!(await confirmFn(`Open ${pathBasename(path)}?`))) return;
+      // Opening the worktree is a plain navigation; no confirm sheet.
       closeWorktreeSheet();
       try {
         await openFolderAsWorkspace(path);

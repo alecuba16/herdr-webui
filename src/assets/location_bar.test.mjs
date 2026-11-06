@@ -78,7 +78,7 @@ describe("location bar module", () => {
     ctx.HerdrLocationBar.sync();
     equal(bar.hidden, false, "the strip never hides");
     match(bar.innerHTML, /<button[^>]*class="location-bar-empty"[^>]*>/, "empty state renders the Open workspace button");
-    ok(bar.innerHTML.includes("onclick=\"runSearchAction('open-workspace')\""), "button opens the workspace picker");
+    ok(bar.innerHTML.includes("onclick=\"HerdrLocationBar.openPathPicker()\""), "button opens the folder picker");
     ok(bar.innerHTML.includes('location-bar-chip-icon location-bar-chip-icon-path'), "button carries the folder icon");
     ok(!bar.innerHTML.includes("location-bar-path-chip"), "no chips without a workspace");
   });
@@ -1064,22 +1064,25 @@ describe("location bar worktree popover", () => {
     ok(!bar.innerHTML.includes("location-bar-worktree-chip"), "plain checkout keeps path + branch chips only");
   });
 
-  it("row select routes through the folder-change flow after the confirm", async () => {
+  it("row select routes through the folder-change flow with no confirm in between", async () => {
     const opened = [];
+    let confirmCalls = 0;
     const { ctx, bar } = loadWorktreePopover({
       routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
       openFolder: async (path) => {
         opened.push(path);
       },
     });
+    ctx.confirm = () => { confirmCalls++; return false; };
     ctx.HerdrLocationBar.sync();
     await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
     await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent("/repo-lane"));
     equal(JSON.stringify(opened), JSON.stringify(["/repo-lane"]), "select runs the shared folder-change flow");
+    equal(confirmCalls, 0, "opening consults no confirm dialog");
     ok(!bar.innerHTML.includes("location-bar-worktree-popover"), "popover closes after the select");
   });
 
-  it("row select refuses the current checkout and a declined confirm", async () => {
+  it("row select refuses the current checkout", async () => {
     const opened = [];
     const { ctx } = loadWorktreePopover({
       routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
@@ -1091,21 +1094,6 @@ describe("location bar worktree popover", () => {
     await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
     await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent("/repo"));
     equal(opened.length, 0, "current checkout select is a no-op");
-  });
-
-  it("declined confirm keeps the workspace untouched", async () => {
-    const opened = [];
-    const { ctx, bar } = loadWorktreePopover({
-      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
-      confirms: false,
-      openFolder: async (path) => {
-        opened.push(path);
-      },
-    });
-    ctx.HerdrLocationBar.sync();
-    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
-    await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent("/repo-lane"));
-    equal(opened.length, 0, "declined confirm never runs the flow");
   });
 
   it("create from the worktree popover opens the inline discovery form", async () => {
@@ -2114,6 +2102,25 @@ describe("location bar discovery popover", () => {
     ok(!bar.innerHTML.includes("location-bar-discovery-popover"));
   });
 
+  it("a seeded non-git folder opens the plain ladder with no extra confirm step", async () => {
+    // Picker-first removed the seeded openings from the Open workspace
+    // entries; the remaining seeded callers keep decision 6: a
+    // confirmed non-git folder opens immediately, no confirm popover.
+    const { ctx, bar } = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [] } },
+      "/api/git-ui/branches": { error: "fatal: not a git repository (or any of the parent directories): .git" },
+    } });
+    const flowCalls = [];
+    ctx.HerdrOpenFolder = {
+      createPlainWorkspace: async (dir) => { flowCalls.push(dir); return true; },
+      openFolderUnchecked: async () => ({}),
+    };
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/notes");
+    ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "no confirm popover for a plain folder");
+    equal(flowCalls.length, 1, "the plain ladder runs immediately");
+    equal(flowCalls[0], "/notes");
+  });
+
   it("focuses an existing plain workspace instead of creating a duplicate", async () => {
     const { ctx, calls } = loadDiscovery({
       state: { ws: "ws1", workspaces: [workspaceOf("/repo"), { workspace_id: "notes", cwd: "/notes" }], worktrees: [] },
@@ -2163,20 +2170,31 @@ describe("location bar discovery popover", () => {
     ok(bar.innerHTML.includes("Load more branches") === false, "no reload prompt after the list was already fully revealed");
   });
 
-  it("cancel preserves both discovery and branch drafts", async () => {
-    const { ctx, bar, calls } = loadDiscovery({ confirms: false, routes: {
+  it("create branch opens the folder immediately and posts the switch with no confirm", async () => {
+    let confirmCalls = 0;
+    const { ctx, bar, calls } = loadDiscovery({ state: { ws: "ws1", workspaces: [workspaceOf("/elsewhere")], worktrees: [] }, routes: {
       "/api/worktrees": { result: { worktrees: [] } },
       "/api/git-ui/branches": { local: LOCAL, remote: [] },
+      "/api/git-ui/switch": { ok: true },
     } });
+    ctx.confirm = () => { confirmCalls++; return false; };
+    const flowCalls = [];
+    ctx.HerdrOpenFolder = {
+      openFolderAsWorkspace: async (dir) => { flowCalls.push(dir); return true; },
+      openFolderUnchecked: async () => ({}),
+      createPlainWorkspace: async () => ({}),
+      focusWorkspaceOnFolder: async () => null,
+    };
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     ctx.HerdrLocationBar.discoveryDraft("newBranch", "draft-name");
     ctx.HerdrLocationBar.discoveryDraft("newBase", "custom/base");
     await ctx.HerdrLocationBar.discoveryCreateBranch();
-    ctx.HerdrLocationBar.sync();
-    ok(bar.innerHTML.includes("location-bar-discovery-popover"));
-    ok(bar.innerHTML.includes('value="draft-name"'));
-    ok(bar.innerHTML.includes('value="custom/base"'));
-    equal(calls.filter((call) => call.path === "/api/git-ui/switch").length, 0);
+    equal(confirmCalls, 0, "no confirm gates the open+switch");
+    deepEqual(flowCalls, ["/repo"], "folder opened first");
+    const switchCall = calls.filter((call) => call.path === "/api/git-ui/switch").map((call) => JSON.parse(call.init.body))[0];
+    equal(switchCall.branch, "draft-name");
+    equal(switchCall.base, "custom/base");
+    ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "popover closed by the action");
   });
 
   it("invalidates a pending discovery after origin cwd changes without opening old plain folder", async () => {

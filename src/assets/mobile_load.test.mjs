@@ -4201,9 +4201,10 @@ describe("mobile bundle load", () => {
     );
   });
 
-  it("declining the confirm cancels the worktree sheet open", async () => {
+  it("a worktree sheet row opens directly with no confirm in between", async () => {
     const ctx = context("/session/default/workspace/w1");
-    ctx.confirm = () => false;
+    let confirmCalls = 0;
+    ctx.confirm = () => { confirmCalls++; return false; };
     runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
@@ -4214,11 +4215,12 @@ describe("mobile bundle load", () => {
     const before = ctx.requests.length;
     await ctx.HerdrMobile.openWorktreeFromSheet(0);
     await ctx.settle();
+    equal(confirmCalls, 0, "the open consults no confirm");
     ok(
-      !ctx.requests.slice(before).some((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST"),
-      "declining the confirm never posts the open flow",
+      ctx.requests.slice(before).some((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST"),
+      "row tap posts the open flow",
     );
-    equal(sheet.hidden, false, "sheet stays open on decline");
+    equal(sheet.hidden, true, "sheet closed by the open");
   });
 
   it("re-renders the worktree sheet only when its html changes", async () => {

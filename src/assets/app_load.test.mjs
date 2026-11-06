@@ -789,7 +789,8 @@ describe("app bundle load", () => {
     match(dashboard, /Actions menu/);
     ok(!dashboard.includes("runSearchAction('temp-terminal')"));
     ok(!dashboard.includes("runSearchAction('sessions')"));
-    match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) window\.HerdrLocationBar\.openDiscoveryForFolder\(selectedWorkspaceRepoPath\(\) \|\| explorationDefaultDirectoryOption\(\)\);/);
+    match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) \{\n\s*window\.HerdrLocationBar\.openPathPicker\(\);\n\s*\}/);
+    ok(!source.includes("openDiscoveryForFolder(selectedWorkspaceRepoPath())"), "no entry seeds a repo folder by itself");
     match(source, /else if \(action === "create-worktree"\) \{\n\s*const w = selectedWorkspace\(\);\n\s*window\.HerdrLocationBar\.openDiscoveryCreateForRepo\(selectedWorkspaceRepoPath\(\), w \? workspaceBranch\(w\) : ""\);/);
     match(source, /else if \(action === "sessions"\) showSessionManager\(\);/);
     match(source, /else if \(action === "files"\) openWorkspaceFileBrowser\(state\.ws\);/);
@@ -3005,26 +3006,24 @@ describe("app bundle load", () => {
     match(panesCss, /\.search-head \.search-mode-toggle/);
   });
 
-  it("prefix-P without a workspace opens the seeded discovery flow instead of dying", () => {
+  it("prefix-P without a workspace opens the folder picker instead of dying", () => {
     const ctx = context();
     runSource(ctx);
     // The strip + and prefix-P share one contract: with a workspace the
-    // press creates a panel, without one it routes to the discovery open
-    // flow seeded with the default folder. selectedWorkspaceRepoPath() is
-    // "" in this state by design; the redirect falls back to the default
-    // folder, so pin that chain end to end.
+    // press creates a panel, without one it hands the user the folder
+    // picker: the pick decides what opens, the shortcut never opens a
+    // seeded folder on its own.
     vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
     // location_bar.js is served after this bundle; the shortcut must
     // resolve the entry through the exported namespace so the real
-    // popover opens once that module loads.
-    vm.runInContext("window.__opens = []; window.HerdrLocationBar = window.HerdrLocationBar || { sync: () => {} }; window.HerdrLocationBar.sync = window.HerdrLocationBar.sync || (() => {}); window.HerdrLocationBar.openDiscoveryForFolder = (path) => { window.__opens.push({ path }); }; newTab = async () => { throw new Error('newTab must not run without a workspace'); };", ctx);
+    // picker opens once that module loads.
+    vm.runInContext("window.__pickers = 0; window.HerdrLocationBar = window.HerdrLocationBar || { sync: () => {} }; window.HerdrLocationBar.sync = window.HerdrLocationBar.sync || (() => {}); window.HerdrLocationBar.openPathPicker = () => { window.__pickers++; }; newTab = async () => { throw new Error('newTab must not run without a workspace'); };", ctx);
     const handled = vm.runInContext("runPrefixedShortcut({ code: 'KeyP', key: 'p', shiftKey: false })", ctx);
     equal(handled, true, "prefix-P is still a consumed shortcut");
-    const opens = vm.runInContext("window.__opens", ctx);
-    equal(opens.length, 1, "the press opens the discovery flow");
-    equal(opens[0].path, "/Users/alejandro.blanco", "discovery seeds the default folder");
+    const pickers = vm.runInContext("window.__pickers", ctx);
+    equal(pickers, 1, "the press opens the folder picker");
     const shortcutSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
-    match(shortcutSource, /window\.HerdrLocationBar\.openDiscoveryForFolder\(selectedWorkspaceRepoPath\(\) \|\| explorationDefaultDirectoryOption\(\)\)/);
+    match(shortcutSource, /newWorkspace: \(\) => \{\n\s*\/\/ Same contract as the location bar's Open workspace button and\n\s*\/\/ the dashboard card: the folder picker decides what opens\.\n\s*window\.HerdrLocationBar\.openPathPicker\(\);\n\s*return true;\n\s*\},/);
   });
 
   it("uses shared search settings to skip disabled APIs and clamp query params", async () => {

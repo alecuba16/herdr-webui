@@ -365,18 +365,22 @@ function runPrefixedShortcut(e) {
       return true;
     },
     newWorkspace: () => {
-      window.HerdrLocationBar.openDiscoveryForFolder(explorationDefaultDirectoryOption());
+      // Same contract as the location bar's Open workspace button and
+      // the dashboard card: the folder picker decides what opens.
+      window.HerdrLocationBar.openPathPicker();
       return true;
     },
     newPanel: () => {
       // With no workspace the panel cannot exist yet: route the press to
       // the open flow instead, mirroring the strip + fallback.
       if (state.ws) newTab();
-      else window.HerdrLocationBar.openDiscoveryForFolder(selectedWorkspaceRepoPath() || explorationDefaultDirectoryOption());
+      else window.HerdrLocationBar.openPathPicker();
       return true;
     },
     openWorktrees: () => {
-      window.HerdrLocationBar.openDiscoveryForFolder(selectedWorkspaceRepoPath() || explorationDefaultDirectoryOption());
+      // Same picker contract as open-workspace: every entry hands the
+      // user the folder selector.
+      window.HerdrLocationBar.openPathPicker();
       return true;
     },
     createWorktree: () => {
