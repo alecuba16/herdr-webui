@@ -860,6 +860,7 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
       explorationDefaultDirectoryOption = () => "/repo";
       window.HerdrLocationBar = {
         sync: () => {},
+        openPathPicker: () => { (window.__pickers = (window.__pickers || 0) + 1); },
         openDiscoveryForFolder: (p) => { (window.__discovery = window.__discovery || []).push(p); },
         openDiscoveryCreateForRepo: (p, b) => { (window.__discoveryCreate = window.__discoveryCreate || []).push({ p, b }); },
       };
@@ -926,25 +927,27 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     assert.equal(JSON.parse(vm.runInContext("JSON.stringify(window.__goCalls)", d.ctx))[2].tab, "tab2", "reverse cycling wraps back");
   });
 
-  it("newPanel without a workspace routes to the open flow", () => {
+  it("newPanel without a workspace opens the folder picker", () => {
     const d = armedContext(`options.webuiShortcuts = { newPanel: "Digit1" };`);
     vm.runInContext("state.ws = null;", d.ctx);
     d.arm();
     d.press("Digit1");
-    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__discovery || [])", d.ctx)), ["/repo"], "no workspace opens discovery");
+    assert.equal(vm.runInContext("window.__pickers || 0", d.ctx), 1, "no workspace hands the user the picker");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__discovery || [])", d.ctx)), [], "nothing opens without a pick");
     vm.runInContext("state.ws = 'ws1';", d.ctx);
     d.arm();
     d.press("Digit1");
     assert.equal(vm.runInContext("window.__newTab", d.ctx), 1, "with a workspace the panel is created");
   });
 
-  it("newWorkspace and openWorktrees open discovery for the repo", () => {
+  it("newWorkspace and openWorktrees hand the user the folder picker", () => {
     const d = armedContext(`options.webuiShortcuts = { newWorkspace: "Digit1", openWorktrees: "Digit2" };`);
     d.arm();
     d.press("Digit1");
     d.arm();
     d.press("Digit2");
-    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__discovery || [])", d.ctx)), ["/repo", "/repo"], "both discovery shortcuts fire");
+    assert.equal(vm.runInContext("window.__pickers || 0", d.ctx), 2, "both shortcuts open the picker, mirroring the Open workspace button");
+    assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__discovery || [])", d.ctx)), [], "no shortcut seeds a folder on its own");
   });
 
   it("createWorktree opens the create flow with the branch", () => {

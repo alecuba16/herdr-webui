@@ -1,6 +1,15 @@
 # Release notes
 
 ## Unreleased
+- Every surface that opens a workspace or worktree goes straight to
+  the folder picker: location bar handoffs, dashboard cards, search
+  modal rows, and the Ctrl+B chords dropped their confirmation
+  dialogs. Destructive confirms stay (delete branch, create branch,
+  close session, discard, stash, reset, pull-base continuation).
+- Test coverage for the web assets now sits above 90% statement
+  coverage on every file (39 files were under), measured with merged
+  V8 coverage over the full JS suite; the suite grew by 404 tests and
+  a covcheck helper reads per-file numbers from a merged report.
 - The git log workbench and the open-folder redesign land together. The
   log tab gained a scroll and focus restore that survives every
   re-render (nested table, browser and details scroll, the search
@@ -78,6 +87,28 @@
   before the popover, and the same shape applies when creating from
   the branches list. A failed branch read names the failure and offers
   a retry instead of a false empty list.
+- Open workspace no longer silently opens the seeded default folder.
+  The button (empty location bar, project dashboard, palette, prefix
+  shortcut) seeded the configured default folder straight into
+  discovery, and when that folder is not a git checkout discovery's
+  plain-folder rule opened it immediately: one click created and
+  selected a workspace on whatever the default folder is, usually the
+  home directory, with no folder ever chosen by the user. These
+  entries now open the folder picker first (same selector the path
+  chip uses, seeded with the default folder): the pick decides what
+  opens. Every folder reaching discovery keeps the immediate open.
+- Every entry to open a folder or workspace behaves the same. The
+  project dashboard card, the search palette row, and the newWorkspace
+  and openWorktrees prefix shortcuts all call the same folder picker
+  the location bar's Open workspace button uses, instead of the
+  dashboard and palette branching to a seeded discovery popover.
+- Opening a folder or workspace asks no questions. Six confirm dialogs
+  that gated opens are gone: the branch popover's worktree handoff,
+  the worktree popover row, the discovery popover's open-and-switch,
+  branch-row worktree handoff, and worktree row (desktop), and the
+  mobile worktree sheet's row open. Destructive confirms (delete
+  branch, close session, discard, create-branch switch) keep their
+  dialogs; the open itself runs straight through.
 - The discovery popover opens from the empty dashboard too. The empty
   boot state rendered no popover slot, treated two empty working
   directories as different discovery contexts, and the opening click

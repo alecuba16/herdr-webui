@@ -65,6 +65,12 @@ only, with no base picker.
    the existing 3-step ladder runs to completion (focus, else open
    checkout, else create workspace + recents record). This keeps the
    common "just open my notes folder" path exactly as fast as today.
+   Entries that merely seed a folder the user never chose (Open
+   workspace button, palette action, newWorkspace shortcut) no longer
+   seed discovery at all: they open the folder picker first, because
+   silently opening the seeded folder would pick the workspace for
+   the user (2026-11-05 regression fix). The pick then follows this
+   rule.
 7. **The bar's in-workspace chips keep working.** Branch chip and
    worktree chip popovers are unchanged. The new discovery popover is a
    third surface with its own state key (`bar.discoveryList`), opened
@@ -110,14 +116,16 @@ pick folder F
      chip popover already has), no switch posted.
   2. row is the picked folder's current branch -> plain ladder on F,
      no switch.
-  3. otherwise -> confirm, open F through the plain ladder, then POST
-     /api/git-ui/switch {cwd: F, branch}. The switch captures F at row
+  3. otherwise -> open F through the plain ladder, then POST
+     /api/git-ui/switch {cwd: F, branch}. No confirmation gates the
+     open (2026-11-06: every open flow runs confirm-free; destructive
+     actions keep theirs). The switch captures F at row
      render time, never reads currentCwd() after navigation. If the open
      succeeds but the switch fails, the blocking overlay drops and an
      alert states the folder opened on its original branch with the git
      error. Partial success is honest, never silent.
 - **New branch in a possibly-unopened folder.** Create branch from the
-  discovery popover: confirm, open F through the plain ladder first,
+  discovery popover: open F through the plain ladder first (no confirm),
   then POST /api/git-ui/switch {cwd: F, branch: name, create: true,
   base}. On switch failure the same partial-success alert fires. On
   success the drawer is notified (notifyBranchChanged(F)) and the

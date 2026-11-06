@@ -784,7 +784,13 @@ function runSearchAction(action) {
     "toggle-sidebar": "sidebar",
   }[action];
   if (hintAction) showShortcutHintToast("webuiShortcuts", hintAction);
-  if (action === "open-workspace" || action === "discover-worktrees") window.HerdrLocationBar.openDiscoveryForFolder(selectedWorkspaceRepoPath() || explorationDefaultDirectoryOption());
+  // Open-workspace and discover-worktrees share the location bar's Open
+  // workspace contract: every surface (dashboard card, palette row,
+  // shortcut) hands the user the same folder picker. The pick decides
+  // what opens; the entry never seeds a folder on its own.
+  if (action === "open-workspace" || action === "discover-worktrees") {
+    window.HerdrLocationBar.openPathPicker();
+  }
   else if (action === "create-worktree") {
     const w = selectedWorkspace();
     window.HerdrLocationBar.openDiscoveryCreateForRepo(selectedWorkspaceRepoPath(), w ? workspaceBranch(w) : "");

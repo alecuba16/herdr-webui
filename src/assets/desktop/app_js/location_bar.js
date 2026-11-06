@@ -202,13 +202,12 @@
     // Boot shape: no workspace selected. The strip stays visible as a
     // stable surface (it never appears or disappears while opening
     // workspaces) with the one action this state admits: opening the
-    // workspace picker, the same modal the palette's open-workspace
-    // action and the project dashboard button already open.
-    // The discovery popover belongs here too: its open/create entries
-    // work from the empty app (they seed the default directory), so the
-    // popover must render even while no chip row exists yet.
+    // folder picker, the same selector the path chip uses. The pick
+    // decides what opens, so the button never opens a folder by itself.
+    // The discovery popover belongs here too: a picked folder renders
+    // it even while no chip row exists yet.
     return (
-      `<button class="location-bar-empty" type="button" onclick="runSearchAction('open-workspace')" title="Open a workspace folder" aria-label="Open workspace"><i class="location-bar-chip-icon location-bar-chip-icon-path" aria-hidden="true"></i><span>Open workspace</span></button>` +
+      `<button class="location-bar-empty" type="button" onclick="HerdrLocationBar.openPathPicker()" title="Open a workspace folder" aria-label="Open workspace"><i class="location-bar-chip-icon location-bar-chip-icon-path" aria-hidden="true"></i><span>Open workspace</span></button>` +
       (bar.discoveryList ? renderDiscoveryPopover() : "")
     );
   }
@@ -619,7 +618,8 @@
     // opens one.
     const checkout = branchCheckoutPath(list, localName);
     if (checkout) {
-      if (!window.confirm(`Switch to branch "${localName}" in its worktree "${checkout}"?`)) return;
+      // Opening the worktree is the whole action: it runs the same
+      // folder-change flow the worktree popover rows use, no confirm.
       if (!window.HerdrOpenFolder || !window.HerdrOpenFolder.openFolderAsWorkspace) {
         alert("Folder switching is unavailable");
         return;
@@ -1005,7 +1005,8 @@
     if (!path || !cwd || samePath(path, cwd)) return;
     if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     closeWorktreePopover();
-    if (!window.confirm(`Switch workspace to worktree folder "${path}"?`)) return;
+    // Row select opens the worktree folder directly: same folder-change
+    // flow as every other open, no confirm in between.
     if (!window.HerdrOpenFolder || !window.HerdrOpenFolder.openFolderAsWorkspace) {
       alert("Folder switching is unavailable");
       return;
@@ -1219,9 +1220,8 @@
   async function discoveryOpenFolderAndSwitch(folder, branch, create, base) {
     const list = bar.discoveryList;
     if (!list || !folder || !branch) return;
-    const label = create ? `Create and switch to "${branch}"${base ? ` from "${base}"` : ""}` : `Switch to "${branch}"`;
-    if (!window.confirm(`${label} when opening "${folder}"?`)) return;
     if (!discoveryOpeningActive(list)) return;
+    // Open the folder, then switch: no confirm dialogs in the open flow.
     closeDiscoveryPopover();
     try {
       if (typeof showBlocking === "function") showBlocking(`Opening ${pathBasename(folder) || folder}`);
@@ -1279,7 +1279,6 @@
     // Destination 1: the branch is already checked out elsewhere; open
     // that worktree instead of posting a switch git would refuse.
     if (checkout && !samePath(checkout, folder)) {
-      if (!window.confirm(`Open worktree "${checkout}" where "${localName}" is checked out?`)) return;
       if (!discoveryOpeningActive(list)) return;
       closeDiscoveryPopover();
       try {
@@ -1630,7 +1629,6 @@
     if (!discoveryOpeningActive(list) || list.creating) return;
     const path = decodeURIComponent(String(encodedPath || ""));
     if (!path) return;
-    if (!window.confirm(`Open worktree "${path}"?`)) return;
     if (!discoveryOpeningActive(list)) return;
     closeDiscoveryPopover();
     try {
@@ -1931,8 +1929,10 @@
   // Same-folder picks discover too; only the chosen destination can skip navigation.
   let pickerInput = null;
   function openPathPicker() {
-    const workspace = selectedWorkspace();
-    const cwd = workspaceCwd(workspace);
+    // With no selected workspace the picker still opens, seeded with the
+    // configured default folder: the empty app's Open workspace button
+    // must hand the user the folder selector, never a seeded open.
+    const cwd = workspaceCwd(selectedWorkspace()) || explorationDefaultDirectoryOption();
     if (!cwd) return;
     const picker = window.HerdrDirectoryPicker;
     if (!picker || typeof picker.open !== "function") return;
