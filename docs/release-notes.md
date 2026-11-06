@@ -1,6 +1,15 @@
 # Release notes
 
 ## Unreleased
+- Every surface that opens a workspace or worktree goes straight to
+  the folder picker: location bar handoffs, dashboard cards, search
+  modal rows, and the Ctrl+B chords dropped their confirmation
+  dialogs. Destructive confirms stay (delete branch, create branch,
+  close session, discard, stash, reset, pull-base continuation).
+- Test coverage for the web assets now sits above 90% statement
+  coverage on every file (39 files were under), measured with merged
+  V8 coverage over the full JS suite; the suite grew by 404 tests and
+  a covcheck helper reads per-file numbers from a merged report.
 - The git log workbench and the open-folder redesign land together. The
   log tab gained a scroll and focus restore that survives every
   re-render (nested table, browser and details scroll, the search
