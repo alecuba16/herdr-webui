@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.7.37 Release Notes
 - Every desktop shortcut surface now covers its actions, and the hint
   toast always names the configured binding. Git sync (pull/push/fetch,
   pull-rebase), the cleanup tab, stash push/apply/pop/drop, conflict
@@ -594,6 +594,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.37 | 2026-11-07 | [v0.7.37](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.37) |
 | 0.7.36 | 2026-11-07 | [v0.7.36](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.36) |
 | 0.7.35 | 2026-11-06 | [v0.7.35](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.35) |
 | 0.7.34 | 2026-11-05 | [v0.7.34](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.34) |
