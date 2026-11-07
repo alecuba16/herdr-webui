@@ -4,15 +4,34 @@
 
 - `Cargo.toml`: Rust crate manifest for `herdr-webui`.
 - `src/main.rs`: WebUI server, auth, JSON proxy, WebSockets, terminal bridge, install helpers.
+- `src/auth.rs`: cookie-session authentication primitives: session-token generation and LRU set, constant-time credential comparison, the localhost auth bypass, the login rate limiter, and logout scoping. Axum handlers stay in `main.rs` and delegate here.
+- `src/password_hashing.rs`: Argon2id PHC hashing and verification for the login credential, plus the plaintext-migration check.
+- `src/server_settings.rs`: server settings persistence, validation, and merge, the `session-token` sidecar, and the `set-password` command.
 - `src/assets.rs`: embedded frontend asset responses.
 - `src/compat.rs`: backend compatibility checks.
-- `src/file_browser.rs`: authenticated file-browser API for trees, file read/write, rename, and delete.
-- `src/git_ui/mod.rs` and `src/git_ui/`: embedded Git UI API split into modules (cleanup, diff, branch, stash, conflict, file, log) for maintainability.
+- `src/socket_paths.rs`: shared socket-path plumbing for the built-in backend (lib crate; consumed by `backend_client` and the server).
+- `src/blame.rs`: shared `git blame --line-porcelain` parser (lib crate) used by the web `/api/git-ui/blame` endpoint and the TUI git panel.
+- `src/markdown.rs`: dependency-free markdown helpers shared by the TUI outline and the web outline endpoint (lib crate).
+- `src/prompt_cards.rs`: blocked-agent question-card parser (lib crate) backing `/api/panes/{id}/prompt` for the web card and mobile sheet.
+- `src/file_browser.rs`: authenticated file-browser API for trees, file read/write, rename, delete, search ranking (fzf probe plus built-in ranker), content search, and the markdown outline endpoint.
+- `src/git_ui/mod.rs` and `src/git_ui/`: embedded Git UI API split into modules (cleanup, diff, branch, stash, conflict, file, log, commit_details, permalink) for maintainability.
+- `src/git_bin.rs`: git binary resolution for the webui process and its built-in backend.
 - `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
 - `src/backend_client.rs`: reusable Rust client over built-in backend sockets for TUI and smoke tools.
-- `src/tui/`: first-party TUI client split into modules: `mod.rs` (app state, screens, refresh), `model.rs`, `keys.rs` (key mapping), `lens.rs`, `search.rs` (palette), `theme.rs`, `web_api.rs` (WebUI HTTP API client), `panels/` (files/git screens), `render/`, `terminal/`, and `workspace/`. Keep this independent from built-in backend internals.
+- `src/terminal_hub.rs`: shared terminal attach hub: one backend attach per pane fanned out to browser and TUI clients.
+- `src/builtin_backend.rs`: built-in backend runtime: workspaces, tabs, panes, terminals, worktree helpers, local socket listeners, and request dispatch (detailed in `docs/technical-details.md`).
+- `src/builtin_detection/`: agent identity and screen-status detection for the built-in backend (argv labels, process trees, screen markers).
+- `src/builtin_events.rs`: built-in backend event hub that snapshots state and fans events out to subscribers.
+- `src/terminal_text.rs`: shared plain-text terminal rewrite handling consumed by backend snapshots and the TUI.
+- `src/notes.rs`: server-owned notes API (list/create/update/delete/clear) with the `notes.json` sidecar and `notes_changed` broadcasts.
+- `src/lsp.rs`: language server bridge (per-language spawn, diagnostics on the events socket, whitelisted request proxy).
+- `src/chat_lens.rs`: chat-lens wire layer: agent gating and conversation/tool-output payloads for `pane.conversation` / `pane.tool_output`.
+- `src/jcode_transcript.rs`: read-only reader over jcode native session files (resolution, snapshot+journal replay, turn shaping) feeding the chat lens.
+- `src/tui/`: first-party TUI client split into modules: `mod.rs` (app state, screens, refresh), `model.rs`, `keys.rs` (key mapping), `lens.rs`, `search.rs` (palette), `theme.rs`, `web_api.rs` (WebUI HTTP API client), `sessions/` (session manager overlay), `panels/` (files/git screens), `render/`, `terminal/`, and `workspace/`. Keep this independent from built-in backend internals.
 - `src/bin/herdr-webui-tui.rs`: thin TUI binary wrapper for CLI parsing, terminal raw mode, event loop, and live attach worker wiring.
 - `src/service.rs`: OS service helpers.
+- `scripts/covcheck.mjs`: per-file coverage gate helper reading the merged V8 coverage report for the JS suite.
+- `docs/ux/`: dated design docs (chat transcript design, UX flow proposals) referenced by the chat-lens and dashboard implementations.
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
 - `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
 - `src/assets/desktop/app_css/`: desktop shell CSS modules concatenated into `/assets/desktop/app.css`.

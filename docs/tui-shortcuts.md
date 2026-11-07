@@ -115,7 +115,7 @@ answered from the webui's chat lens card. The server-side parser
 | `Shift+C` | chat composer |
 | `e`, `E` | edit the current file (Files preview or Git Changes selection) |
 | `s` | settings overlay (t cycles the theme) |
-| `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new) |
+| `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |
 | `i` | git: focus the file list (webui `KeyI` parity) |
 | `I` | git cwd: type a repo path |
@@ -135,16 +135,28 @@ The Files, Git, and edit surfaces own in-screen keys (not prefix
 combinations). The complete list lives in the in-app help overlay;
 `docs/features.md` (Terminal UI section) documents the behavior in
 prose. Highlights: Files `Enter` enters/opens, `e` edits (Ctrl-S save,
-Ctrl-R reload, Ctrl-F find, Ctrl-H replace), `R`/`x` rename/delete,
+Ctrl-R reload, Ctrl-F find, Ctrl-H replace), `a`/`A` new file/new
+directory under the cursor (`A` writes a `.gitkeep` marker: the API
+has no mkdir endpoint), `R`/`x` rename/delete, `w` reveals the
+Git-panel selected file in the tree (expanding its ancestors),
 `/` filter with `t` scope cycle, `M` markdown outline. While a
 committed filter shows results, the matched substring of every file
 name is highlighted in yellow (same token as the webui tree marks)
 and the selection jumps to the first match; `j`/`k` and arrows then
-walk the all-matches list, Enter opens the selected match. Git: `Tab`
+walk the all-matches list, Enter opens the selected match. Content
+search results: `Enter` jumps to the match line in the preview, `+`
+loads more results, `A` toggles match case, `X` toggles regex (both
+rerun the search), `Esc` clears the results. Git: `Tab`
 cycles views, `s`/`d` stage/discard, `G` toggles stage all in the
 Changes view (webui `KeyG` parity), `Space`/`c` mark and compare
 commits, `J`/`K`/`H` hunk cursor and apply, `D` delete branch or drop
 stash, `t`/`R`/`b` tag/reset/rebase.
+
+## Help overlay
+
+`Ctrl+B ?` opens the help overlay. Typing filters the shortcut list
+against key and description; `Ctrl+U` clears the query, `j`/`k` and
+arrows scroll the list while no filter is active, `Esc` closes.
 
 ## Overlay key rules (shared)
 
