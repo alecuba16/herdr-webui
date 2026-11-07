@@ -11,7 +11,7 @@ BUILD_BIN := $(CURDIR)/$(TARGET_DIR)/release/herdr-webui
 BUILD_TUI_BIN := $(CURDIR)/$(TARGET_DIR)/release/herdr-webui-tui
 INSTALL_LOG_DIR := $(HOME)/Library/Logs/herdr-webui
 
-.PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac start-mac stop-mac restart-mac uninstall-mac install-linux update-linux start-linux stop-linux restart-linux uninstall-linux build-markdown
+.PHONY: build check check-rust fmt run-web run-web-local test test-js coverage clean install-mac update-mac start-mac stop-mac restart-mac uninstall-mac set-password install-linux update-linux start-linux stop-linux restart-linux uninstall-linux build-markdown
 
 build:
 	$(CARGO) build --release --bins --target-dir $(TARGET_DIR)
@@ -53,58 +53,19 @@ clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)
 
 install-mac: build
-	mkdir -p "$(HOME)/Library/LaunchAgents" "$(INSTALL_LOG_DIR)" "$(LOCAL_BIN_DIR)"
-	# Stop the agent before touching the binary, and overwrite it in place
-	# (cat >) so the file identity is preserved: macOS re-prompts for
-	# permissions when the installed binary is replaced by a new file.
-	launchctl bootout "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
-	cat "$(BUILD_BIN)" > "$(INSTALL_BIN)"
-	chmod 755 "$(INSTALL_BIN)"
-	cat "$(BUILD_TUI_BIN)" > "$(INSTALL_TUI_BIN)"
-	chmod 755 "$(INSTALL_TUI_BIN)"
-	@{ \
-		echo '<?xml version="1.0" encoding="UTF-8"?>'; \
-		echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'; \
-		echo '<plist version="1.0">'; \
-		echo '<dict>'; \
-		echo '  <key>Label</key>'; \
-		echo '  <string>$(INSTALL_LABEL)</string>'; \
-		echo '  <key>ProgramArguments</key>'; \
-		echo '  <array>'; \
-		echo '    <string>$(INSTALL_BIN)</string>'; \
-		echo '    <string>--bind</string>'; \
-		echo '    <string>$(BIND)</string>'; \
-		echo '  </array>'; \
-		echo '  <key>RunAtLoad</key>'; \
-		echo '  <true/>'; \
-		echo '  <key>KeepAlive</key>'; \
-		echo '  <true/>'; \
-		echo '  <key>StandardOutPath</key>'; \
-		echo '  <string>$(INSTALL_LOG_DIR)/stdout.log</string>'; \
-		echo '  <key>StandardErrorPath</key>'; \
-		echo '  <string>$(INSTALL_LOG_DIR)/stderr.log</string>'; \
-		echo '</dict>'; \
-		echo '</plist>'; \
-	} > "$(INSTALL_PLIST)"
-	launchctl bootstrap "gui/$$(id -u)" "$(INSTALL_PLIST)"
-	launchctl kickstart -k "gui/$$(id -u)/$(INSTALL_LABEL)"
-	@echo "Installed $(INSTALL_LABEL) at $(INSTALL_PLIST)"
-	@echo "Installed binary at $(INSTALL_BIN)"
-	@echo "Installed TUI binary at $(INSTALL_TUI_BIN)"
-	@if ! printf '%s' ":$$PATH:" | grep -q ":$(LOCAL_BIN_DIR):"; then echo "Note: $(LOCAL_BIN_DIR) is not in PATH for this shell"; fi
-	@echo "Open http://$(BIND)"
+	# Delegate to the binary's own installer: it copies in place
+	# (preserving the file identity for TCC), re-signs, and writes the
+	# plist. BIND is forwarded as an explicit --bind only when the
+	# operator overrode it (the default value means "honor the saved
+	# webui-settings.json"); otherwise the service runs bare.
+	$(TARGET_DIR)/release/herdr-webui install-mac $(if $(filter $(BIND),127.0.0.1:8787),,--bind $(BIND))
 
 update-mac: build
-	mkdir -p "$(LOCAL_BIN_DIR)"
-	# Overwrite in place (cat >) so the file identity is preserved: macOS
-	# re-prompts for permissions when the installed binary is replaced by a
-	# new file. Stop the agent first so its running image is not truncated.
-	launchctl bootout "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
-	cat "$(BUILD_BIN)" > "$(INSTALL_BIN)"
-	chmod 755 "$(INSTALL_BIN)"
-	cat "$(BUILD_TUI_BIN)" > "$(INSTALL_TUI_BIN)"
-	chmod 755 "$(INSTALL_TUI_BIN)"
-	$(MAKE) start-mac
+	# The binary's updater owns the stop-first, in-place copy, re-sign,
+	# and start sequence. No bind flag: an update must not re-pin the
+	# saved bind into the service; the plist keeps whatever the last
+	# install wrote (bare, or --bind when the operator pinned it).
+	$(TARGET_DIR)/release/herdr-webui update-mac
 	@echo "Updated binary at $(INSTALL_BIN)"
 	@echo "Updated TUI binary at $(INSTALL_TUI_BIN)"
 
@@ -132,37 +93,23 @@ uninstall-mac:
 	rm -f "$(INSTALL_PLIST)"
 	@echo "Uninstalled $(INSTALL_LABEL)"
 
+set-password: build
+	# Set or clear the WebUI login password without running the server.
+	# No password flag forwarding here: the binary prompts with echo off so
+	# the secret never lands in shell history or process listings.
+	$(TARGET_DIR)/release/herdr-webui set-password
+
 install-linux: build
-	mkdir -p "$(LOCAL_BIN_DIR)" "$$(dirname "$(LINUX_SERVICE)")"
-	install -m 755 "$(BUILD_BIN)" "$(INSTALL_BIN)"
-	install -m 755 "$(BUILD_TUI_BIN)" "$(INSTALL_TUI_BIN)"
-	@{ \
-		echo '[Unit]'; \
-		echo 'Description=Herdr WebUI'; \
-		echo 'After=network.target'; \
-		echo; \
-		echo '[Service]'; \
-		echo 'Type=simple'; \
-		echo 'ExecStart=$(INSTALL_BIN) --bind $(BIND)'; \
-		echo 'Restart=always'; \
-		echo 'RestartSec=2'; \
-		echo; \
-		echo '[Install]'; \
-		echo 'WantedBy=default.target'; \
-	} > "$(LINUX_SERVICE)"
-	systemctl --user daemon-reload
-	systemctl --user enable --now "$(INSTALL_LABEL).service"
-	@echo "Installed $(INSTALL_LABEL) at $(LINUX_SERVICE)"
-	@echo "Installed binary at $(INSTALL_BIN)"
-	@echo "Installed TUI binary at $(INSTALL_TUI_BIN)"
-	@echo "Open http://$(BIND)"
+	# Delegate to the binary's installer (in-place copy + unit write).
+	# BIND is forwarded as an explicit --bind only when the operator
+	# overrode it; the default value means "honor the saved
+	# webui-settings.json", so the service runs bare.
+	$(TARGET_DIR)/release/herdr-webui install-linux $(if $(filter $(BIND),127.0.0.1:8787),,--bind $(BIND))
 
 update-linux: build
-	mkdir -p "$(LOCAL_BIN_DIR)"
-	install -m 755 "$(BUILD_BIN)" "$(INSTALL_BIN)"
-	install -m 755 "$(BUILD_TUI_BIN)" "$(INSTALL_TUI_BIN)"
-	systemctl --user daemon-reload
-	$(MAKE) restart-linux
+	# The binary's updater owns the stop-first copy and restart. No bind
+	# flag: an update must not re-pin the saved bind into the unit.
+	$(TARGET_DIR)/release/herdr-webui update-linux
 	@echo "Updated binary at $(INSTALL_BIN)"
 	@echo "Updated TUI binary at $(INSTALL_TUI_BIN)"
 

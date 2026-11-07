@@ -14,6 +14,11 @@ use std::thread;
 use tower::ServiceExt;
 
 fn test_state() -> WebState {
+    // ONE hash shared by auth and server_settings: a fresh salt per
+    // hash_password call means two separate hashes of "pass" differ as
+    // strings, and the identity-change detector compares stored strings,
+    // so a mismatched pair would falsely rotate sessions on every save.
+    let password_hash = crate::password_hashing::hash_password("pass").unwrap();
     let bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
     let (rebind_tx, _) = tokio::sync::watch::channel(ListenEndpoint {
         bind,
@@ -35,7 +40,9 @@ fn test_state() -> WebState {
         herdr_install_cache: Arc::new(Mutex::new(None)),
         auth: Arc::new(Mutex::new(AuthConfig {
             user: Some("user".to_string()),
-            password: Some("pass".to_string()),
+            // Stored form is a PHC hash of "pass", the same shape a real
+            // deployment persists; login tests submit the plaintext.
+            password: Some(password_hash.clone()),
             localhost_no_auth: false,
             sessions: vec![crate::auth::SessionRecord {
                 token: "token-123".to_string(),
@@ -50,7 +57,7 @@ fn test_state() -> WebState {
             bind,
             tls_mode: TlsMode::Auto,
             user: Some("user".to_string()),
-            password: Some("pass".to_string()),
+            password: Some(password_hash),
             localhost_no_auth: false,
             session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
             no_sleep_auto_cooldown_seconds: 60,
@@ -583,6 +590,7 @@ fn help_lists_macos_service_commands() {
     assert!(text.contains("herdr-webui stop-linux | stop"));
     assert!(text.contains("herdr-webui restart-linux | restart"));
     assert!(text.contains("herdr-webui uninstall-linux"));
+    assert!(text.contains("herdr-webui set-password"));
     assert!(text.contains("--backend-mode <external-herdr|builtin|auto>"));
     assert!(text.contains("Default backend mode for fresh settings is builtin"));
 }
@@ -1130,7 +1138,7 @@ fn existing_runtime_settings_file_backfills_missing_keys() {
     assert!(raw.contains("session_expiration_minutes"));
     assert!(raw.contains("tls_mode"));
     assert!(raw.contains("user"));
-    assert!(raw.contains("password"));
+    assert!(raw.contains("password_hash"));
     assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
     assert!(raw.contains("backend_mode"));
     assert!(raw.contains(r#""backend_mode": "builtin""#));
@@ -1185,7 +1193,7 @@ fn loads_auth_from_runtime_settings() {
         bind: "0.0.0.0:8787".parse().unwrap(),
         tls_mode: TlsMode::Auto,
         user: Some("test-user".to_string()),
-        password: Some("test-password".to_string()),
+        password: Some(crate::password_hashing::hash_password("test-password").unwrap()),
         localhost_no_auth: false,
         session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         no_sleep_auto_cooldown_seconds: 60,
@@ -1202,7 +1210,18 @@ fn loads_auth_from_runtime_settings() {
     .unwrap();
 
     assert_eq!(auth.user.as_deref(), Some("test-user"));
-    assert_eq!(auth.password.as_deref(), Some("test-password"));
+    assert!(
+        crate::password_hashing::verify_password(
+            auth.password.as_deref().unwrap_or_default(),
+            "test-password"
+        ),
+        "the stored PHC hash must verify the plaintext"
+    );
+    assert_ne!(
+        auth.password.as_deref(),
+        Some("test-password"),
+        "from_settings must carry the hash through, never the plaintext"
+    );
     assert!(!auth.localhost_no_auth);
     assert!(
         auth.sessions.is_empty(),
@@ -3773,14 +3792,6 @@ async fn web_api_client_authenticates_against_real_authed_server() {
     ));
     std::fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
-    // The persisted settings the TUI reads: the authed server's
-    // user/password. bind is present too so the file shape matches
-    // a real deployment.
-    std::fs::write(
-        config_home.join("herdr-webui").join("webui-settings.json"),
-        json!({ "bind": "127.0.0.1:0", "user": "user", "password": "pass" }).to_string(),
-    )
-    .unwrap();
     // GET /api/recent-workspaces prunes entries whose folder is gone,
     // so the recorded path must exist on disk.
     let recorded_dir = std::env::temp_dir().join(format!(
@@ -3796,6 +3807,21 @@ async fn web_api_client_authenticates_against_real_authed_server() {
     // test_state() has auth on: user/pass, localhost_no_auth false,
     // so only a valid session cookie passes require_auth.
     let state = test_state();
+    // The session sidecar as the server writes it: the live session
+    // token the TUI replays. Written before the server starts, the same
+    // way a previous server run leaves it on disk.
+    let sidecar_token = state
+        .auth
+        .lock()
+        .unwrap()
+        .current_session()
+        .map(|session| session.token.clone())
+        .unwrap();
+    std::fs::write(
+        config_home.join("herdr-webui").join("session-token"),
+        json!({ "sessions": [ { "token": sidecar_token } ] }).to_string(),
+    )
+    .unwrap();
     let app = test_app_with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3812,14 +3838,14 @@ async fn web_api_client_authenticates_against_real_authed_server() {
     let port = addr.port();
     let outcome = tokio::task::spawn_blocking(move || {
         let client = herdr_webui::tui::web_api::WebApiClient::new("127.0.0.1", port);
-        // First call: 401, then the client logs in with the persisted
-        // credentials and retries. recent-workspaces returns [] with a
-        // 200 once authorized.
+        // First call: 401, then the client replays the sidecar session
+        // token and retries. recent-workspaces returns [] with a 200 once
+        // authorized.
         let value = client
             .recent_workspaces()
-            .expect("401 triggers login and the retry succeeds");
+            .expect("401 triggers session replay and the retry succeeds");
         assert_eq!(value["recent"], json!([]), "authorized list is empty");
-        // Second call: the cached cookie authorizes without login.
+        // Second call: the cached cookie authorizes without replay.
         let value = client
             .recent_workspaces()
             .expect("cached session cookie authorizes");
@@ -3836,22 +3862,19 @@ async fn web_api_client_authenticates_against_real_authed_server() {
     })
     .await;
 
-    // Also pin the wrong-password path: the 401 must surface, not hang
-    // or loop.
+    // Also pin the no-live-sidecar path: a sidecar whose only token was
+    // dropped server-side must surface the 401, not hang or loop.
     let wrong_port = addr.port();
     let wrong_config_home = config_home.clone();
     let wrong = tokio::task::spawn_blocking(move || {
         std::fs::write(
-            wrong_config_home
-                .join("herdr-webui")
-                .join("webui-settings.json"),
-            json!({ "bind": "127.0.0.1:0", "user": "user", "password": "WRONG" }).to_string(),
+            wrong_config_home.join("herdr-webui").join("session-token"),
+            json!({ "sessions": [ { "token": "dropped-server-side" } ] }).to_string(),
         )
         .unwrap();
         let client = herdr_webui::tui::web_api::WebApiClient::new("127.0.0.1", wrong_port);
         match client.recent_workspaces() {
             Err(herdr_webui::tui::web_api::WebApiError::Http { status: 401, .. }) => 401,
-            Err(herdr_webui::tui::web_api::WebApiError::Api(_)) => 401,
             other => panic!("expected surfaced 401, got {other:?}"),
         }
     })
@@ -3859,7 +3882,7 @@ async fn web_api_client_authenticates_against_real_authed_server() {
 
     server_handle.abort();
     outcome.expect("authed e2e client flow");
-    assert_eq!(wrong.expect("wrong-password flow"), 401);
+    assert_eq!(wrong.expect("stale-sidecar flow"), 401);
 
     let _ = std::fs::remove_dir_all(&recorded_dir);
     let _ = std::fs::remove_dir_all(&config_home);
@@ -3879,11 +3902,6 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
     ));
     std::fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
-    std::fs::write(
-        config_home.join("herdr-webui").join("webui-settings.json"),
-        json!({ "bind": "127.0.0.1:0", "user": "user", "password": "pass" }).to_string(),
-    )
-    .unwrap();
 
     // Real authed router (auth on, no localhost bypass). Keep the auth
     // Arc so the test can rotate the session token live, which is what
@@ -3896,6 +3914,13 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
         .current_session()
         .map(|session| session.token.clone())
         .unwrap();
+    // Sidecar seeded with the server's live token, the way a previous
+    // run leaves it.
+    std::fs::write(
+        config_home.join("herdr-webui").join("session-token"),
+        json!({ "sessions": [ { "token": old_token } ] }).to_string(),
+    )
+    .unwrap();
     let app = test_app_with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3911,10 +3936,10 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
     let port = addr.port();
     let outcome = tokio::task::spawn_blocking(move || {
         let client = herdr_webui::tui::web_api::WebApiClient::new("127.0.0.1", port);
-        // Login + authorized call: cookie for the old token.
+        // Replay + authorized call: cookie for the old token.
         let value = client
             .recent_workspaces()
-            .expect("initial login and authorized call");
+            .expect("initial replay and authorized call");
         assert_eq!(value["recent"], json!([]));
         client
             .recent_workspaces()
@@ -3926,32 +3951,38 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
 
     // Simulate the multi-session world the same way a restart does: keep
     // credentials, drop the old session, restore a fresh live session set.
-    // The client's cached cookie is now stale.
+    // The server's persist path then writes the NEW token to the sidecar,
+    // so the TUI can replay it on its next 401.
+    let new_token;
     {
         let mut auth = auth.lock().unwrap();
-        let rotated = crate::auth::AuthConfig::from_parts_with_expiration(
+        let mut rotated = crate::auth::AuthConfig::from_parts_with_expiration(
             auth.user.clone(),
             auth.password.clone(),
             auth.localhost_no_auth,
             DEFAULT_SESSION_EXPIRATION_MINUTES,
         );
-        assert!(
-            rotated
-                .current_session()
-                .map(|session| session.token.as_str())
-                != Some(old_token.as_str()),
+        let record = rotated.issue_session();
+        new_token = record.token;
+        assert_ne!(
+            new_token, old_token,
             "rotation must not keep the old token live"
         );
         *auth = rotated;
     }
+    std::fs::write(
+        config_home.join("herdr-webui").join("session-token"),
+        json!({ "sessions": [ { "token": new_token } ] }).to_string(),
+    )
+    .unwrap();
 
-    // The same client instance (stale cookie) must re-login through the
-    // real /api/login route, replace the cookie, and recover. The old
-    // `cookie.is_none()` guard surfaces 401 forever here.
+    // The same client instance (stale cookie) must replay the new sidecar
+    // token, replace the cookie, and recover. The old `cookie.is_none()`
+    // guard surfaces 401 forever here.
     let recovered = tokio::task::spawn_blocking(move || {
         let value = client
             .recent_workspaces()
-            .expect("stale cookie re-logins and the call recovers");
+            .expect("stale cookie replays and the call recovers");
         assert_eq!(value["recent"], json!([]));
         // And the new cookie is cached again.
         client.recent_workspaces().expect("new cookie authorizes");
@@ -4244,7 +4275,8 @@ async fn runtime_settings_persist_recent_workspaces_round_trip() {
         bind: Some(settings.bind.to_string()),
         tls_mode: Some(settings.tls_mode),
         user: settings.user.clone(),
-        password: settings.password.clone(),
+        password_hash: settings.password.clone(),
+        password: None,
         localhost_no_auth: Some(settings.localhost_no_auth),
         session_expiration_minutes: Some(settings.session_expiration_minutes),
         session_expiration_migrated: None,
@@ -9768,10 +9800,16 @@ async fn update_server_settings_identity_change_rotates_sessions_and_cookie() {
 
     {
         let auth = auth.lock().unwrap();
+        let stored = auth.password.as_deref().unwrap_or_default();
+        assert!(
+            crate::password_hashing::verify_password(stored, "new-pass"),
+            "the new credential must be live as a PHC hash, not plaintext"
+        );
+        assert_ne!(stored, "new-pass", "never store the plaintext");
         assert_eq!(
-            auth.password.as_deref(),
-            Some("new-pass"),
-            "the new credentials must be live"
+            auth.user.as_deref(),
+            Some("user"),
+            "the username change must be live too"
         );
         assert_eq!(
             auth.sessions.len(),

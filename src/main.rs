@@ -49,6 +49,7 @@ mod git_ui;
 mod jcode_transcript;
 mod lsp;
 mod notes;
+mod password_hashing;
 mod protocol;
 mod server_settings;
 mod service;
@@ -609,6 +610,7 @@ herdr-webui stop-linux | stop [--verbose]\n\
 herdr-webui restart-linux | restart [--verbose]\n\
 herdr-webui uninstall-mac [--verbose]\n\
 herdr-webui uninstall-linux [--verbose]\n\
+herdr-webui set-password [--user NAME] [--password VALUE | --stdin] [--clear] [--verbose]\n\
 Default backend mode for fresh settings is builtin. Use --backend-mode external-herdr for a separate Herdr daemon.\n"
 }
 
@@ -934,6 +936,71 @@ async fn main() -> io::Result<()> {
     }
     if matches!(args.first().map(String::as_str), Some("uninstall-linux")) {
         return service::uninstall_linux();
+    }
+    if matches!(args.first().map(String::as_str), Some("set-password")) {
+        // Subcommand token consumed; --verbose already stripped above.
+        args.remove(0);
+        let mut user = None;
+        let mut password = None;
+        let mut clear = false;
+        let mut stdin = false;
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--user" => {
+                    let value = args.get(index + 1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "set-password: --user needs a value",
+                        )
+                    })?;
+                    user = Some(value.clone());
+                    index += 2;
+                }
+                "--password" => {
+                    let value = args.get(index + 1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "set-password: --password needs a value",
+                        )
+                    })?;
+                    password = Some(value.clone());
+                    index += 2;
+                }
+                "--clear" => {
+                    clear = true;
+                    index += 1;
+                }
+                "--stdin" => {
+                    stdin = true;
+                    index += 1;
+                }
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("set-password: unexpected argument: {other}"),
+                    ));
+                }
+            }
+        }
+        if clear && (stdin || password.is_some()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "set-password: --clear cannot be combined with --stdin or --password",
+            ));
+        }
+        if stdin && password.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "set-password: --stdin and --password are mutually exclusive",
+            ));
+        }
+        if stdin {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            password = Some(line);
+        }
+        return server_settings::set_password_command(user, password, clear);
     }
     let config = WebConfig::parse(&args)?;
     let mut server_settings = load_runtime_server_settings(config.bind)?;
@@ -2373,10 +2440,37 @@ async fn update_server_settings(
             .username
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        // A submitted password is plaintext from the settings form: hash it
+        // before it lands anywhere (memory or disk). An omitted/empty field
+        // keeps the stored hash, so "leave blank to keep current password"
+        // stays one code path. Re-submitting the SAME password keeps the
+        // stored hash too: a fresh salt would otherwise rewrite the hash on
+        // every save and falsely report an identity change (which resets
+        // every session), so verify against the stored hash first.
         password: body
             .password
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
+            .and_then(|plain| {
+                let current_hash = current
+                    .as_ref()
+                    .and_then(|settings| settings.password.as_deref());
+                let unchanged = current_hash
+                    .is_some_and(|stored| crate::password_hashing::verify_password(stored, &plain));
+                if unchanged {
+                    return current_hash.map(str::to_string);
+                }
+                match crate::password_hashing::hash_password(&plain) {
+                    Ok(hash) => Some(hash),
+                    Err(err) => {
+                        // The handler cannot return mid-struct-literal; record
+                        // the failure and let validation reject it below via
+                        // the missing-credential path.
+                        eprintln!("failed to hash submitted password: {err}");
+                        None
+                    }
+                }
+            })
             .or_else(|| {
                 current
                     .as_ref()

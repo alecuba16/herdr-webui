@@ -288,12 +288,23 @@ Server access settings are stored in `~/.config/herdr-webui/webui-settings.json`
 
 - Bind address, for example `127.0.0.1:8787` or `0.0.0.0:8787`.
 - Username.
-- Password.
+- Password. Stored as a non-recoverable Argon2id hash (`password_hash` in the file): the plaintext is hashed before it reaches disk and a leaked settings file reveals nothing. Files from older versions that still hold a plaintext `password` key are hashed and rewritten on the next server start.
 - Localhost auth bypass.
 - Session expiration in minutes. `0` (the default) means sessions never expire; only Settings -> Logout or saving server settings invalidates them. A positive value expires sessions after that many minutes.
 - No-sleep Auto cooldown.
 
 Non-localhost binds require both username and password. WebUI rejects `0.0.0.0` or any other non-loopback bind until both credentials are configured.
+
+To set or reset the password from the terminal (locked-out case, scripting), use:
+
+```sh
+make set-password                    # interactive, prompts twice with echo off
+herdr-webui set-password --user NAME  # set the username in the same call
+printf 'secret\n' | herdr-webui set-password --stdin
+herdr-webui set-password --clear     # remove the credential
+```
+
+The command writes the Argon2id hash into `webui-settings.json` and drops the persisted session sidecar, so old tokens die with the old credential. `--stdin` (or any non-terminal stdin) reads one line without a prompt; on a terminal the input is hidden and confirmed twice.
 
 Successful login cookies and their server-side tokens expire after the configured session duration when it is positive. With `0` (never expire, the default) a session lives until an explicit logout (`POST /api/logout`, exposed as the Logout button in Settings) or until server settings are saved (which rotates the token and invalidates existing sessions); it also survives WebUI restarts, because the never-expiring token is persisted to `~/.config/herdr-webui/session-token` (owner-only) and restored on boot. The allowed range is 0 through 525,600 minutes (365 days). Existing installs that saved the old 24-hour default are migrated to 0 on load.
 
