@@ -19,6 +19,22 @@
     branch: "KeyV",
     focusFile: "KeyI",
     help: "Digit0",
+    // Keep in sync with DEFAULT_GIT_SHORTCUTS in desktop/app_js/core.js:
+    // the editor blocks cross-scope duplicates, so defaults must be
+    // collision-free out of the box.
+    cleanup: "Digit5",
+    pull: "F2",
+    push: "F3",
+    fetch: "F4",
+    pullRebase: "Shift+KeyT",
+    stashPush: "Shift+KeyK",
+    stashApply: "F5",
+    stashPop: "F6",
+    stashDrop: "Shift+KeyQ",
+    conflictOurs: "F7",
+    conflictBase: "F8",
+    conflictTheirs: "Shift+F9",
+    conflictMark: "Shift+KeyN",
   };
 
   function createGitUiShortcuts({
@@ -135,6 +151,9 @@
       );
       if (!targetInGitUi && !targetInTerminal) consume();
       if (handleDiffSearchShortcut(event, view)) { consume(); return; }
+      // Production prefix presses never reach this listener (the webui
+      // dispatcher delegates through handleChordActionKey instead); only
+      // direct feeds like tests land here, so re-arm for the next key.
       if (isGitShortcutPrefix(event)) {
         consume();
         state.shortcutPrefixUntil = Date.now() + 5000;
@@ -248,6 +267,23 @@
         },
         focusFile: () => focusFirstGitFile(),
         help: () => showGitKeyboardHelp(),
+        cleanup: () => getGitUi().tab("cleanup"),
+        pull: () => getGitUi().pullUpdateFromUpstream(),
+        push: () => getGitUi().pushNow(),
+        fetch: () => getGitUi().fetchOrigin(),
+        pullRebase: () => getGitUi().pullWithRebase(),
+        // Stash entry actions reuse the row buttons' contract: they act on
+        // the selected stash, so the stash view must host a selection.
+        stashPush: () => getGitUi().stash(),
+        stashApply: () => selectedStashAction((name) => getGitUi().applyStash(encodeURIComponent(name), false)),
+        stashPop: () => selectedStashAction((name) => getGitUi().applyStash(encodeURIComponent(name), true)),
+        stashDrop: () => selectedStashAction((name) => getGitUi().dropStash(encodeURIComponent(name))),
+        // Conflict resolution mirrors the row buttons: act on the focused
+        // conflict file row, else the view's selected file.
+        conflictOurs: () => conflictFileAction("ours"),
+        conflictBase: () => conflictFileAction("base"),
+        conflictTheirs: () => conflictFileAction("theirs"),
+        conflictMark: () => conflictFileAction("mark"),
       };
       const match = Object.entries(shortcutMap).find(([, value]) => value === key);
       const action = match && actions[match[0]];
@@ -313,6 +349,26 @@
       return (row && row.dataset.gitPath) || (view && view.file) || "";
     }
 
+    function selectedStashAction(run) {
+      const view = active() || {};
+      const name = view.selectedStash || ((view.stashData && view.stashData.stashes || [])[0]);
+      if (!name) return;
+      run(name);
+    }
+
+    function conflictFileAction(mode) {
+      const view = active() || {};
+      const files = ((view.status || {}).conflicted) || [];
+      if (!files.length) return;
+      const row = typeof document !== "undefined" && document.querySelector
+        ? document.querySelector(".git-ui-file[data-git-path]")
+        : null;
+      const path = (row && row.dataset && row.dataset.gitPath)
+        || (view.file && files.includes(view.file) ? view.file : "")
+        || files[0];
+      getGitUi().resolve(encodeURIComponent(path), mode);
+    }
+
     function focusFirstGitFile() {
       const node = document.querySelector(".git-ui-file[role='treeitem'], .git-ui-btn, .git-ui-file-action");
       if (node && node.focus) node.focus();
@@ -320,7 +376,7 @@
 
     function showGitKeyboardHelp() {
       const map = gitShortcutMap();
-      alertFn(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Branch popover in the location bar\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\n\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nEsc Back / hide`);
+      alertFn(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.cleanup)} Cleanup tab\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Branch popover in the location bar\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.pull)} Pull update\n${shortcutDisplay(map.push)} Push\n${shortcutDisplay(map.fetch)} Fetch origin\n${shortcutDisplay(map.pullRebase)} Pull with rebase\n${shortcutDisplay(map.stashPush)} Stash push\n${shortcutDisplay(map.stashApply)} Apply selected stash\n${shortcutDisplay(map.stashPop)} Pop selected stash\n${shortcutDisplay(map.stashDrop)} Drop selected stash\n${shortcutDisplay(map.conflictOurs)} Conflict: use HEAD\n${shortcutDisplay(map.conflictBase)} Conflict: use parent\n${shortcutDisplay(map.conflictTheirs)} Conflict: use remote\n${shortcutDisplay(map.conflictMark)} Conflict: mark resolved\n${shortcutDisplay(map.help)} Git shortcut help\n\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nEsc Back / hide`);
     }
 
     function shortcutDisplay(value) {
@@ -344,8 +400,27 @@
       return label ? `${title} (${label})` : title;
     }
 
+    // Entry point the webui prefix dispatcher calls with an armed chord
+    // key. The webui owns the prefix window; this arms its own gate around
+    // the single call so handleGitShortcut sees a live arming without a
+    // timeout. Returns true only when a git action matched, so the webui
+    // keeps the key for its own map otherwise.
+    function handleChordActionKey(event) {
+      if (!visible() || !event || event.key === "Escape") return false;
+      if (locationBarPopoverOpen() || globalModalOpen()) return false;
+      if (!active()) return false;
+      const until = state.shortcutPrefixUntil;
+      state.shortcutPrefixUntil = Date.now() + 5000;
+      try {
+        return handleGitShortcut(event, active());
+      } finally {
+        state.shortcutPrefixUntil = until;
+      }
+    }
+
     return {
       handleKeydown,
+      handleChordActionKey,
       titleWithGitShortcut,
     };
   }

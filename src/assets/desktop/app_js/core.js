@@ -202,6 +202,16 @@ const DEFAULT_WEBUI_SHORTCUTS = {
   moveTabNextPane: "KeyM",
   maximizePane: "Shift+KeyM",
   togglePaneMenu: "F10",
+  // Shift+letter keys: the plain letters are Git chord keys (u/g/y/r/i/
+  // c/z answer the git drawer first), so cross-scope duplicates here
+  // would be ambiguous after the shared prefix and the editor blocks them.
+  sessions: "Shift+KeyU",
+  terminalTail: "End",
+  lensToggle: "Shift+KeyY",
+  rightRail: "Shift+KeyV",
+  markdownView: "Shift+KeyI",
+  notesNew: "Shift+KeyC",
+  notesBack: "Shift+KeyZ",
 };
 const DEFAULT_GIT_SHORTCUTS = {
   changes: "Digit1",
@@ -223,6 +233,22 @@ const DEFAULT_GIT_SHORTCUTS = {
   branch: "KeyV",
   focusFile: "KeyI",
   help: "Digit0",
+  // Newer actions avoid every key the WebUI and Git chord maps already
+  // use; the editor blocks cross-scope duplicates, so defaults must be
+  // collision-free out of the box.
+  cleanup: "Digit5",
+  pull: "F2",
+  push: "F3",
+  fetch: "F4",
+  pullRebase: "Shift+KeyT",
+  stashPush: "Shift+KeyK",
+  stashApply: "F5",
+  stashPop: "F6",
+  stashDrop: "Shift+KeyQ",
+  conflictOurs: "F7",
+  conflictBase: "F8",
+  conflictTheirs: "Shift+F9",
+  conflictMark: "Shift+KeyN",
 };
 // Bare keys, no prefix: these fire only while the file browser pane is the
 // active view, so they can stay single-key unlike the prefixed maps.
@@ -796,6 +822,12 @@ function workspaceCreateModalHtml() {
     </div>`;
 }
 function helpAndShortcutsBodyHtml() {
+  // Reference rows derive from the configured maps, so a remap in the
+  // shortcut editor (or a rebound prefix) never leaves stale key text
+  // here next to the editor's own configured rows (audit W1).
+  const wkeys = shortcutMapFor("webuiShortcuts");
+  const chord = (action) => escapeHtml(shortcutLabel("webuiShortcuts", action));
+  const pair = (a, b) => `${escapeHtml(globalShortcutPrefixLabel())} then ${escapeHtml(shortcutDisplay(wkeys[a]))} / ${escapeHtml(shortcutDisplay(wkeys[b]))}`;
   return `
         <div class="help-shortcut-mount-inner">
         <section class="help-section">
@@ -819,31 +851,38 @@ function helpAndShortcutsBodyHtml() {
         <div class="shortcuts-list">
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())}</kbd><span>Open WebUI shortcut prefix overlay. Next shortcut key is handled by WebUI and not sent to terminal. Esc cancels.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then /</kbd><span>Open unified header search for workspaces, repos, agents, panels, files, folders, and file-content matches. Use Alt+F/Alt+D inside the palette to switch file or folder search, Alt+1/2/3 to collapse or expand search sections, and Alt+↑/↓ to expand selected content-match context. In editor find, Enter moves next and Shift+Enter moves previous.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this help and shortcuts reference.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then S</kbd><span>Open Settings.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Q</kbd><span>Show or hide the workspace views sidebar.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then N</kbd><span>Open or create workspace.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then P</kbd><span>Create panel in current workspace.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then W</kbd><span>Open workspace/worktrees browser. Without an open workspace, it starts from the configured default folder.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then T</kbd><span>Create worktree from current workspace.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then X</kbd><span>Close current panel.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+X</kbd><span>Close current workspace or linked worktree.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Delete/Backspace</kbd><span>Remove current linked worktree from disk.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then A</kbd><span>Jump agents by status priority: blocked, done, idle, working.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+A</kbd><span>Jump agents in reverse priority order.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then J / K</kbd><span>Jump to next or previous workspace.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ] / [</kbd><span>Jump to next or previous panel.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then F</kbd><span>Focus the main terminal.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then V</kbd><span>In Git UI, open the location bar's branch popover. The popover switches, creates, and deletes branches in the workspace folder.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then . / ,</kbd><span>Focus next or previous visible UI control.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then D</kbd><span>Split the active pane to the right.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+D</kbd><span>Split the active pane downward.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then E</kbd><span>Close the active pane and promote its sibling.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then M</kbd><span>Move the active editor or git tab to the next pane.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+M</kbd><span>Maximize the active pane, or restore the layout when already maximized.</span></div>
-          <div class="shortcut-row"><kbd>F10</kbd><span>Open the pane actions menu for the active pane. Inside the menu, arrows move between items, Esc closes and returns focus to the [⋮] button.</span></div>
+          <div class="shortcut-row"><kbd>${chord("search")}</kbd><span>Open unified header search for workspaces, repos, agents, panels, files, folders, and file-content matches. Use Alt+F/Alt+D inside the palette to switch file or folder search, Alt+1/2/3 to collapse or expand search sections, and Alt+↑/↓ to expand selected content-match context. In editor find, Enter moves next and Shift+Enter moves previous.</span></div>
+          <div class="shortcut-row"><kbd>${chord("help")}</kbd><span>Open this help and shortcuts reference.</span></div>
+          <div class="shortcut-row"><kbd>${chord("settings")}</kbd><span>Open Settings.</span></div>
+          <div class="shortcut-row"><kbd>${chord("sidebar")}</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
+          <div class="shortcut-row"><kbd>${chord("rightSidebar")}</kbd><span>Show or hide the workspace views sidebar.</span></div>
+          <div class="shortcut-row"><kbd>${chord("newWorkspace")}</kbd><span>Open or create workspace.</span></div>
+          <div class="shortcut-row"><kbd>${chord("newPanel")}</kbd><span>Create panel in current workspace.</span></div>
+          <div class="shortcut-row"><kbd>${chord("openWorktrees")}</kbd><span>Open workspace/worktrees browser. Without an open workspace, it starts from the configured default folder.</span></div>
+          <div class="shortcut-row"><kbd>${chord("createWorktree")}</kbd><span>Create worktree from current workspace.</span></div>
+          <div class="shortcut-row"><kbd>${chord("closePanel")}</kbd><span>Close current panel.</span></div>
+          <div class="shortcut-row"><kbd>${chord("closeWorkspace")}</kbd><span>Close current workspace or linked worktree.</span></div>
+          <div class="shortcut-row"><kbd>${pair("removeWorktree", "removeWorktreeAlt")}</kbd><span>Remove current linked worktree from disk.</span></div>
+          <div class="shortcut-row"><kbd>${chord("nextAgent")}</kbd><span>Jump agents by status priority: blocked, done, idle, working.</span></div>
+          <div class="shortcut-row"><kbd>${chord("prevAgent")}</kbd><span>Jump agents in reverse priority order.</span></div>
+          <div class="shortcut-row"><kbd>${pair("nextWorkspace", "prevWorkspace")}</kbd><span>Jump to next or previous workspace.</span></div>
+          <div class="shortcut-row"><kbd>${pair("nextPanel", "prevPanel")}</kbd><span>Jump to next or previous panel.</span></div>
+          <div class="shortcut-row"><kbd>${chord("focusTerminal")}</kbd><span>Focus the main terminal.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(shortcutLabel("gitShortcuts", "branch"))}</kbd><span>In Git UI, open the location bar's branch popover. The popover switches, creates, and deletes branches in the workspace folder.</span></div>
+          <div class="shortcut-row"><kbd>${pair("focusNext", "focusPrev")}</kbd><span>Focus next or previous visible UI control.</span></div>
+          <div class="shortcut-row"><kbd>${chord("splitRight")}</kbd><span>Split the active pane to the right.</span></div>
+          <div class="shortcut-row"><kbd>${chord("splitDown")}</kbd><span>Split the active pane downward.</span></div>
+          <div class="shortcut-row"><kbd>${chord("closePane")}</kbd><span>Close the active pane and promote its sibling.</span></div>
+          <div class="shortcut-row"><kbd>${chord("moveTabNextPane")}</kbd><span>Move the active editor or git tab to the next pane.</span></div>
+          <div class="shortcut-row"><kbd>${chord("maximizePane")}</kbd><span>Maximize the active pane, or restore the layout when already maximized.</span></div>
+          <div class="shortcut-row"><kbd>${chord("togglePaneMenu")}</kbd><span>Open the pane actions menu for the active pane. Inside the menu, arrows move between items, Esc closes and returns focus to the [⋮] button.</span></div>
+          <div class="shortcut-row"><kbd>${chord("sessions")}</kbd><span>Open the session manager.</span></div>
+          <div class="shortcut-row"><kbd>${chord("terminalTail")}</kbd><span>Jump the terminal back to the latest output and resume follow, same as the strip's Follow button.</span></div>
+          <div class="shortcut-row"><kbd>${chord("lensToggle")}</kbd><span>Toggle the chat/terminal lens over the active pane.</span></div>
+          <div class="shortcut-row"><kbd>${chord("rightRail")}</kbd><span>Cycle the right rail through Files, Git, Search, and Notes; a collapsed rail reopens on Files.</span></div>
+          <div class="shortcut-row"><kbd>${chord("markdownView")}</kbd><span>Switch a markdown editor tab between rendered preview, source, and edit, same as the strip eye.</span></div>
+          <div class="shortcut-row"><kbd>${chord("notesNew")}</kbd><span>Create a new note; opens the Notes rail first when it is closed.</span></div>
+          <div class="shortcut-row"><kbd>${chord("notesBack")}</kbd><span>In Notes, go back to the notes list.</span></div>
           <div class="shortcut-row"><kbd>Enter/Space</kbd><span>Activate the focused control: sidebar workspace close/remove actions, agent Undo/Dismiss, pane tab ✕, file tree rows, session lines, Git stash entries, Git log commits, and the zero-terminal New terminal card all respond to the focused key press. On file tree folder rows, Enter/Space expands or collapses the folder in place.</span></div>
           <div class="shortcut-row"><kbd>Esc</kbd><span>Cancel the confirmation dialog; Enter confirms it.</span></div>
           <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send the configured newline sequence to the main terminal when Shift+Enter newline is enabled.</span></div>
@@ -893,6 +932,13 @@ const shortcutEditorGroups = [
       ["moveTabNextPane", "Move tab to next pane"],
       ["maximizePane", "Maximize or restore active pane"],
       ["togglePaneMenu", "Open pane actions menu"],
+      ["sessions", "Open session manager"],
+      ["terminalTail", "Jump terminal to latest output"],
+      ["lensToggle", "Toggle chat/terminal lens"],
+      ["rightRail", "Cycle right rail view"],
+      ["markdownView", "Cycle markdown preview/source/edit"],
+      ["notesNew", "Create a note"],
+      ["notesBack", "Back to notes list"],
     ],
   },
   {
@@ -918,6 +964,19 @@ const shortcutEditorGroups = [
       ["branch", "Branch switch"],
       ["focusFile", "Focus file list"],
       ["help", "Git shortcut help"],
+      ["cleanup", "Cleanup tab"],
+      ["pull", "Pull update"],
+      ["push", "Push"],
+      ["fetch", "Fetch origin"],
+      ["pullRebase", "Pull with rebase"],
+      ["stashPush", "Stash push"],
+      ["stashApply", "Apply selected stash"],
+      ["stashPop", "Pop selected stash"],
+      ["stashDrop", "Drop selected stash"],
+      ["conflictOurs", "Resolve conflict: use HEAD"],
+      ["conflictBase", "Resolve conflict: use parent"],
+      ["conflictTheirs", "Resolve conflict: use remote"],
+      ["conflictMark", "Resolve conflict: mark resolved"],
     ],
   },
   {

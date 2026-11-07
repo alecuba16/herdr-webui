@@ -775,11 +775,14 @@ async function openRecentWorkspace(path, label) {
 function runSearchAction(action) {
   closeSearchPalette();
   // Palette rows mirror prefix actions; echo the matching chord so the
-  // same learn-by-use toast covers palette-triggered actions.
+  // same learn-by-use toast covers palette-triggered actions. Only rows
+  // whose behavior equals a configured prefix action toast its chord
+  // (files/git/theme have no prefix twin, so no toast claims one).
   const hintAction = {
     "open-workspace": "newWorkspace",
     "discover-worktrees": "openWorktrees",
     "create-worktree": "createWorktree",
+    sessions: "sessions",
     settings: "settings",
     "toggle-sidebar": "sidebar",
   }[action];

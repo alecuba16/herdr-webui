@@ -1606,8 +1606,54 @@ describe("app bundle load", () => {
 
   it("keeps Git prefix shortcuts collision-free with WebUI prefix keys", () => {
     const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
-    const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
+    const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "KeyP", "KeyT", "KeyK", "KeyA", "KeyQ", "Digit0"];
     equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
+  });
+
+  it("help modal shortcut rows derive from the configured maps", () => {
+    const ctx = context();
+    runSource(ctx);
+    const html = ctx.helpAndShortcutsBodyHtml();
+    // Every prefix action taught in the help modal reads its key through
+    // shortcutLabel/shortcutDisplay at render time, so a remap in the
+    // editor is reflected here on the next open (audit W1).
+    const webuiIds = [...source.matchAll(/chord\("([a-zA-Z]+)"\)/g)].map((m) => m[1]);
+    for (const id of ["search", "help", "settings", "sidebar", "rightSidebar", "newWorkspace", "newPanel", "openWorktrees", "createWorktree", "closePanel", "closeWorkspace", "nextAgent", "prevAgent", "focusTerminal", "splitRight", "splitDown", "closePane", "moveTabNextPane", "maximizePane", "togglePaneMenu", "sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) ok(webuiIds.includes(id), `help renders a derived chord row for ${id}`);
+    // Remapping a key changes the rendered text on the next open.
+    vm.runInContext('options.webuiShortcuts = Object.assign({}, options.webuiShortcuts, { settings: "F9" });', ctx);
+    const remapped = ctx.helpAndShortcutsBodyHtml();
+    match(remapped, /Ctrl\+B then F9<\/kbd><span>Open Settings\.<\/span>/);
+    ok(!/Ctrl\+B then S<\/kbd><span>Open Settings\.<\/span>/.test(remapped), "the default chord text is gone after the remap");
+    match(remapped, /Ctrl\+B then V<\/kbd><span>In Git UI, open the location bar's branch popover/, "the git branch row still renders its configured chord");
+  });
+
+  it("help modal rows cover the new git and webui actions", () => {
+    const ctx = context();
+    runSource(ctx);
+    const html = ctx.helpAndShortcutsBodyHtml();
+    for (const text of [
+      "Open the session manager.",
+      "Jump the terminal back to the latest output",
+      "Toggle the chat/terminal lens",
+      "Cycle the right rail through Files, Git, Search, and Notes",
+      "Switch a markdown editor tab between rendered preview, source, and edit",
+      "Create a new note; opens the Notes rail first when it is closed.",
+      "In Notes, go back to the notes list.",
+    ]) ok(html.includes(text), `help documents: ${text}`);
+  });
+
+  it("exposes the new webui actions in the editor, defaults, and dispatch", () => {
+    const coreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
+    for (const id of ["sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) {
+      match(coreSource, new RegExp(`^  ${id}: "[A-Za-z+]+",$`, "m"), `${id} has a default key`);
+      match(coreSource, new RegExp(`\["${id}", "[^"]+"\]`), `${id} appears in the editor groups`);
+    }
+    // The dispatcher recognizes each new default key through the action map.
+    const shortcutsOnly = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
+    for (const id of ["sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) {
+      match(shortcutsOnly, new RegExp(`^    ${id}: \\(\\) => \\{`, "m"), `${id} has a dispatch handler`);
+    }
+    match(shortcutsOnly, /window\.HerdrGitUi && window\.HerdrGitUi\.handleChordActionKey[\s\S]*?runPrefixedShortcut\(e\);/, "prefix keys delegate to the git bundle first");
   });
 
   it("boots the right sidebar collapsed unless the stored flag says expanded", () => {

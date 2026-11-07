@@ -718,3 +718,92 @@ test("treeRowKeydown left/right on a folder row toggles the group", async () => 
   keydown("ArrowLeft");
   assert.equal(context.HerdrFileBrowser.isFilterCollapsedForTest("src"), false, "file rows ignore left/right");
 });
+
+test("treeRowKeydown honors the remapped nextMatch key from options", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = await openNestedFilterResults(loaded);
+  const html = panelHtml(nodes);
+  const order = filterRowsFromHtml(html).map((row) => ({
+    title: row.title,
+    kind: row.kind,
+    classList: { contains: (token) => row.classes.split(/\s+/).includes(token) || row.kind === token },
+    getAttribute: (name) => (name === "title" ? row.title : null),
+    getBoundingClientRect: () => ({ top: 0 }),
+  }));
+  const side = {
+    querySelectorAll: (selector) => (String(selector).includes("herdr-tree-row") ? order : []),
+    querySelector: () => null,
+    scrollTop: 0,
+    getBoundingClientRect: () => ({ top: 0 }),
+  };
+  loaded.context.document.querySelector = () => side;
+  context.HerdrOptions.read = () => ({ fileBrowserShortcuts: { nextMatch: "KeyN" } });
+
+  const keydown = (event) => context.HerdrFileBrowser.treeRowKeydown(event);
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui/a.js");
+  keydown({ key: "n", code: "KeyN", shiftKey: false, preventDefault() {}, stopPropagation() {} });
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/core", "remapped nextMatch walks down from the row surface");
+  keydown({ key: "N", code: "KeyN", shiftKey: true, preventDefault() {}, stopPropagation() {} });
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui/a.js", "Shift+remapped key walks back up");
+  keydown({ key: "j", code: "KeyJ", shiftKey: false, preventDefault() {}, stopPropagation() {} });
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui/a.js", "an unmapped key leaves the selection alone");
+});
+
+test("filterKeydown honors the remapped nextMatch key from options", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = await openNestedFilterResults(loaded);
+  context.HerdrOptions.read = () => ({ fileBrowserShortcuts: { nextMatch: "KeyN" } });
+
+  const keydown = (event) => context.HerdrFileBrowser.filterKeydown(event);
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui/a.js");
+  keydown({ key: "n", code: "KeyN", shiftKey: false, preventDefault() {}, stopPropagation() {} });
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/core/b.js", "remapped nextMatch cycles matches from the input");
+  keydown({ key: "N", code: "KeyN", shiftKey: true, preventDefault() {}, stopPropagation() {} });
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui/a.js", "Shift+remapped key cycles back");
+});
+
+test("Menu and Shift+F10 open the row context menu", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = await openNestedFilterResults(loaded);
+  const html = panelHtml(nodes);
+  const order = filterRowsFromHtml(html).map((row) => ({
+    title: row.title,
+    kind: row.kind,
+    classList: { contains: (token) => row.classes.split(/\s+/).includes(token) || row.kind === token },
+    getAttribute: (name) => (name === "title" ? row.title : null),
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 200 }),
+  }));
+  const side = {
+    querySelectorAll: (selector) => (String(selector).includes("herdr-tree-row") ? order : []),
+    querySelector: () => null,
+    scrollTop: 0,
+    getBoundingClientRect: () => ({ top: 0 }),
+  };
+  loaded.context.document.querySelector = () => side;
+
+  const row = order[0];
+  const before = panelHtml(nodes);
+  assert.ok(!before.includes("file-browser-menu"), "no menu before the key");
+  let prevented = false;
+  context.HerdrFileBrowser.treeRowKeydown({
+    key: "ContextMenu",
+    currentTarget: row,
+    preventDefault() { prevented = true; },
+    stopPropagation() {},
+  });
+  assert.ok(prevented, "Menu is prevented");
+  assert.ok(panelHtml(nodes).includes("file-browser-menu"), "the context menu renders after Menu");
+
+  let f10Prevented = false;
+  context.HerdrFileBrowser.treeRowKeydown({
+    key: "F10",
+    shiftKey: true,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    currentTarget: order[1],
+    preventDefault() { f10Prevented = true; },
+    stopPropagation() {},
+  });
+  assert.ok(f10Prevented, "Shift+F10 is prevented");
+});

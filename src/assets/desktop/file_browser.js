@@ -263,21 +263,55 @@
     return Array.prototype.slice.call(side.querySelectorAll(".herdr-tree-row"));
   }
 
+  // Menu / Shift+F10 opens the row's context menu, mirroring the
+  // right-click path: same state, same render, keyboard-reachable items.
+  function menuKeyOpensContextMenu(event) {
+    return event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey);
+  }
+
+  function openRowContextMenu(event) {
+    const row = event.currentTarget || event.target;
+    const path = row && row.getAttribute && row.getAttribute("title");
+    if (!path) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = row.getBoundingClientRect ? row.getBoundingClientRect() : null;
+    state.contextMenu = {
+      x: rect ? rect.left + Math.min(rect.width - 8, 120) : (event.clientX || 0),
+      y: rect ? rect.top + 16 : (event.clientY || 0),
+      path,
+      kind: row.classList && row.classList.contains("dir") ? "dir" : "file",
+    };
+    renderPreservingScroll();
+  }
+
   // Keyboard tree navigation: Up/Down select the previous/next visible row,
   // Left/Right collapse/expand the focused folder, Enter opens the file.
   // Runs on the row's own keydown so the filter input keeps its arrows (the
   // up/down matcher walk) and the tree rows keep theirs.
   function treeRowKeydown(event) {
     if (!event) return;
+    if (menuKeyOpensContextMenu(event)) {
+      openRowContextMenu(event);
+      return;
+    }
     if (!filterActive()) return;
     const rows = visibleFilterRows();
     if (!rows.length) return;
     const current = rows.findIndex((row) => row.getAttribute("title") === state.filterSelected);
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    // The editor's nextMatch key drives the down walk too, so a remap
+    // moves both surfaces; the arrow stays as a plain tree control and
+    // never conflicts with a remapped nextMatch.
+    const nextMatchKey = fileBrowserShortcutMap().nextMatch;
+    const eventKey = `${event.shiftKey ? "Shift+" : ""}${event.code || event.key}`;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp"
+      || (nextMatchKey && (eventKey === nextMatchKey || eventKey === `Shift+${nextMatchKey}`))) {
       event.preventDefault();
       event.stopPropagation();
       const at = current >= 0 ? current : 0;
-      const next = event.key === "ArrowDown"
+      const isDown = event.key === "ArrowDown"
+        || (event.key !== "ArrowUp" && !event.shiftKey);
+      const next = isDown
         ? Math.min(rows.length - 1, at + 1)
         : Math.max(0, at - 1);
       if (next === at && current < 0) return;
@@ -373,9 +407,19 @@
       event.preventDefault();
       clearFilter();
     }
+    // Arrows always walk; the configured nextMatch key joins the down walk
+    // with Shift+ walking up, so a remap in the editor moves this surface
+    // too (F1: the recorded key used to be ignored here).
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       cycleMatch(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    const nextMatchKey = fileBrowserShortcutMap().nextMatch;
+    const eventKey = `${event.shiftKey ? "Shift+" : ""}${event.code || event.key}`;
+    if (nextMatchKey && (eventKey === nextMatchKey || eventKey === `Shift+${nextMatchKey}`)) {
+      event.preventDefault();
+      cycleMatch(eventKey === nextMatchKey ? 1 : -1);
     }
   }
 
@@ -1569,7 +1613,7 @@
     const currentRow = filtering ? "" : Tree.renderCurrentDirectoryRow({ callback: "HerdrFileBrowser", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
     const sideBody = filtering
       ? renderFilteringBody()
-      : `${currentRow}${Tree.renderEntries(entries, { callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
+      : `${currentRow}${Tree.renderEntries(entries, { callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", activateMethod: "treeRowKeydown", shiftSelectMode: true })}`;
     const sideHtml = `<aside class="file-browser-side" tabindex="0" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${renderFilterRow()}${renderAccessError()}${sideBody}</aside>`;
     panel.innerHTML = `${sideHtml}${renderContextMenu()}`;
     markFilterActiveRow(panel);
