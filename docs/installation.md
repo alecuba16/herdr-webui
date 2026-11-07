@@ -205,7 +205,17 @@ brew services start alecuba16/tap/herdr-webui
 
 Logs land in `$(brew --prefix)/var/log/herdr-webui.log` and `herdr-webui.err.log` (WebUI logs to stderr, so the err file carries most output). The service runs the binary without flags; set bind, TLS, and credentials in `~/.config/herdr-webui/webui-settings.json` instead of command-line arguments.
 
-If you prefer the built-in per-user installers (they copy the brew-poured binaries into `~/.local/bin` and manage the LaunchAgent/systemd unit themselves), they still work:
+If you brew-installed the formula, `install-mac`/`update-mac` detect it and
+delegate to `brew services` instead of maintaining a second LaunchAgent:
+brew already restarts its own service on upgrade, and the keg binary is
+managed by brew, so there is nothing to copy. On a tarball-only machine (no
+brew formula present) they keep the private layout unchanged. On the brew
+path `update-mac` after `brew upgrade` just restarts the service, and
+`uninstall-mac` stops it and points you to `brew uninstall`.
+
+If you prefer the built-in per-user installers on a machine without the
+formula (they copy binaries into `~/.local/bin` and manage the
+LaunchAgent/systemd unit themselves), they still work:
 
 ```sh
 herdr-webui install-mac    # after brew upgrade: herdr-webui update-mac

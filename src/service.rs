@@ -117,8 +117,77 @@ enum CopyOutcome {
     SameFile,
 }
 
+/// Whether herdr-webui is installed via Homebrew on this machine.
+///
+/// When the brew formula is present, install-mac/update-mac delegate to
+/// `brew services` instead of maintaining a private LaunchAgent: brew
+/// already restarts its own service on upgrade, so a second agent would
+/// fight over the port. Tarball-only machines (no brew formula) keep the
+/// private-layout path unchanged.
+fn brew_formula_present() -> bool {
+    if let Ok(cellar) = std::env::var("HERDR_WEBUI_BREW_CELLAR") {
+        return Path::new(&cellar).exists();
+    }
+    Path::new("/opt/homebrew/Cellar/herdr-webui").exists()
+        || Path::new("/usr/local/Cellar/herdr-webui").exists()
+}
+
+/// Run `brew services <verb> herdr-webui` for the delegated brew path.
+fn brew_services(verb: &str) -> io::Result<()> {
+    let brew = [
+        "/opt/homebrew/bin/brew",
+        "/usr/local/bin/brew",
+        "/home/linuxbrew/.linuxbrew/bin/brew",
+    ]
+    .into_iter()
+    .find(|p| Path::new(p).exists())
+    .unwrap_or("brew");
+    let status = Command::new(brew)
+        .args(["services", verb, "herdr-webui"])
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "brew services {verb} herdr-webui failed with {status}"
+        )));
+    }
+    Ok(())
+}
+
+/// install-mac with the brew formula present: no private files, the brew
+/// service owns the run. Starting an already-started brew service is an
+/// idempotent restart, which is exactly the refresh upgrade-mac needs.
+fn install_macos_brew() -> io::Result<()> {
+    println!("brew install detected: managing {INSTALL_LABEL} via brew services");
+    brew_services("start")?;
+    println!("Started {INSTALL_LABEL} via brew services; brew upgrade restarts it automatically");
+    Ok(())
+}
+
+/// update-mac with the brew formula present: brew upgraded the keg, the
+/// running service still executes the old binary, so one restart moves it
+/// to the new one. `brew services run` would not stop the old instance;
+/// `start` on a running service restarts it.
+fn update_macos_brew() -> io::Result<()> {
+    println!("brew install detected: restarting {INSTALL_LABEL} via brew services");
+    brew_services("start")?;
+    println!("Restarted {INSTALL_LABEL} on the upgraded keg");
+    Ok(())
+}
+
+/// uninstall-mac with the brew formula present: only stop the service. The
+/// formula itself belongs to brew; removing it is `brew uninstall`, not
+/// our job.
+fn uninstall_macos_brew() -> io::Result<()> {
+    brew_services("stop")?;
+    println!("Stopped {INSTALL_LABEL}; run `brew uninstall herdr-webui` to remove the formula");
+    Ok(())
+}
+
 pub fn install_macos(config: WebConfig) -> io::Result<()> {
     ensure_macos_user_context()?;
+    if brew_formula_present() {
+        return install_macos_brew();
+    }
     let plist = mac_plist_path()?;
     let domain = mac_domain();
     let service = mac_service_target();
@@ -154,6 +223,9 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
 
 pub fn update_macos() -> io::Result<()> {
     ensure_macos_user_context()?;
+    if brew_formula_present() {
+        return update_macos_brew();
+    }
     log_macos_context("update", mac_plist_path().ok().as_deref());
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
     // Stop the service before touching the binary: an in-place refresh
@@ -215,6 +287,9 @@ pub fn restart_macos_service() -> io::Result<()> {
 
 pub fn uninstall_macos() -> io::Result<()> {
     ensure_macos_user_context()?;
+    if brew_formula_present() {
+        return uninstall_macos_brew();
+    }
     let plist = mac_plist_path()?;
     log_macos_context("uninstall", Some(&plist));
     let service = mac_service_target();
@@ -897,6 +972,23 @@ unsafe fn libc_geteuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brew_env_var_overrides_detection() {
+        let _guard = crate::tests::env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("herdr-brew-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HERDR_WEBUI_BREW_CELLAR", &dir);
+        assert!(brew_formula_present());
+        std::env::set_var(
+            "HERDR_WEBUI_BREW_CELLAR",
+            "/nonexistent/herdr-webui-brew-cellar",
+        );
+        assert!(!brew_formula_present());
+        std::env::remove_var("HERDR_WEBUI_BREW_CELLAR");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn parse_identity_picks_first_valid_quoted_name() {
