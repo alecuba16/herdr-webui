@@ -1,5 +1,13 @@
 # Release notes
 
+## 0.7.39 Release Notes
+- install-mac/update-mac/uninstall-mac now detect a Homebrew install
+  (the herdr-webui Cellar, or HERDR_WEBUI_BREW_CELLAR) and delegate to
+  brew services instead of maintaining a private LaunchAgent next to
+  it: update-mac just restarts the brew service, uninstall-mac stops
+  it and leaves the formula to brew uninstall. Machines without the
+  formula keep the private layout unchanged.
+
 ## 0.7.38 Release Notes
 - Dependency refresh: interprocess 2.4.5 to 2.4.7, tokio 1.53 to
   1.54.1, unicode-width 0.2.2 to 0.2.3, and syn 2 to 3 (the
@@ -600,6 +608,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.39 | 2026-11-07 | [v0.7.39](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.39) |
 | 0.7.38 | 2026-11-07 | [v0.7.38](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.38) |
 | 0.7.37 | 2026-11-07 | [v0.7.37](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.37) |
 | 0.7.36 | 2026-11-07 | [v0.7.36](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.36) |
