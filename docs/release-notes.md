@@ -1,5 +1,11 @@
 # Release notes
 
+## 0.7.38 Release Notes
+- Dependency refresh: interprocess 2.4.5 to 2.4.7, tokio 1.53 to
+  1.54.1, unicode-width 0.2.2 to 0.2.3, and syn 2 to 3 (the
+  test_env_guard test-support module follows the new syn::TypePath
+  initializer shape). No behavior changes; full CI passes on macOS.
+
 ## 0.7.37 Release Notes
 - Every desktop shortcut surface now covers its actions, and the hint
   toast always names the configured binding. Git sync (pull/push/fetch,
@@ -594,6 +600,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.38 | 2026-11-07 | [v0.7.38](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.38) |
 | 0.7.37 | 2026-11-07 | [v0.7.37](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.37) |
 | 0.7.36 | 2026-11-07 | [v0.7.36](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.36) |
 | 0.7.35 | 2026-11-06 | [v0.7.35](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.35) |
