@@ -12,6 +12,7 @@ default-run = "herdr-webui"
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
+argon2 = { version = "0.5", features = ["std"] }
 bincode = { version = "2", features = ["serde"] }
 crossterm = "0.29"
 interprocess = "2.4.2"

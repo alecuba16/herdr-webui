@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::builtin_detection::JcodeDetectionVariant;
+use crate::password_hashing::{hash_password, is_password_hash};
 use crate::{
     auth::{
         AuthConfig, DEFAULT_SESSION_EXPIRATION_MINUTES, LEGACY_DEFAULT_SESSION_EXPIRATION_MINUTES,
@@ -26,6 +27,14 @@ pub struct PersistedServerSettings {
     pub bind: Option<String>,
     pub tls_mode: Option<TlsMode>,
     pub user: Option<String>,
+    /// Argon2id PHC hash of the login password. Every save writes this and
+    /// never the plaintext. The legacy `password` key is still deserialized
+    /// (read-only, below) so an old file migrates on the next load.
+    pub password_hash: Option<String>,
+    /// Legacy plaintext password from files written by older versions.
+    /// Never written back: the loader hashes it into `password_hash` and
+    /// rewrites the file, so the plaintext dies on first boot after upgrade.
+    #[serde(skip_serializing)]
     pub password: Option<String>,
     pub localhost_no_auth: Option<bool>,
     pub session_expiration_minutes: Option<u64>,
@@ -128,6 +137,8 @@ pub struct RuntimeServerSettings {
     pub bind: SocketAddr,
     pub tls_mode: TlsMode,
     pub user: Option<String>,
+    /// Argon2id PHC hash of the login password, never the plaintext.
+    /// Verification goes through `password_hashing::verify_password`.
     pub password: Option<String>,
     pub localhost_no_auth: bool,
     pub session_expiration_minutes: u64,
@@ -403,13 +414,10 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Drop the persisted token when it must not be resurrected later (for
-/// example when credentials were cleared or the record on disk is stale).
-/// Best effort, like the save. Currently only exercised by tests: every
-/// production path re-persists the newest token instead of removing the
-/// sidecar, but the primitive stays because the cleanup is part of the
-/// sidecar contract (and future credential-drop flows will need it).
-#[allow(dead_code)]
+/// Drop the persisted token when it must not be resurrected later. Called
+/// when credentials change from the CLI (`set-password`): old sessions
+/// must die with the old credential, not survive it. Best effort, like
+/// the save.
 pub fn remove_persisted_session_token() {
     let _ = fs::remove_file(session_token_path());
 }
@@ -445,7 +453,7 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
         "bind",
         "tls_mode",
         "user",
-        "password",
+        "password_hash",
         "localhost_no_auth",
         "session_expiration_minutes",
         "no_sleep_auto_cooldown_seconds",
@@ -478,8 +486,26 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
     if persisted.user.is_some() {
         settings.user = persisted.user.filter(|value| !value.is_empty());
     }
-    if persisted.password.is_some() {
-        settings.password = persisted.password.filter(|value| !value.is_empty());
+    // Credential source: `password_hash` (PHC string) from newer files,
+    // or the legacy plaintext `password` key hashed in place. Either way
+    // a legacy file gets marked for an immediate rewrite, which drops the
+    // plaintext key (never serialized) and persists only the hash.
+    let mut password_migrated = false;
+    match persisted.password_hash.as_deref().map(str::trim) {
+        Some(hash) if !hash.is_empty() => settings.password = Some(hash.to_string()),
+        _ => match persisted.password.as_deref().map(str::trim) {
+            Some(plain) if !plain.is_empty() && !is_password_hash(plain) => {
+                settings.password = Some(hash_password(plain)?);
+                password_migrated = true;
+            }
+            // A PHC hash sitting in the legacy key (hand-edited file):
+            // adopt it as-is; the rewrite moves it to `password_hash`.
+            Some(hash) if !hash.is_empty() => {
+                settings.password = Some(hash.to_string());
+                password_migrated = true;
+            }
+            _ => settings.password = None,
+        },
     }
     if let Some(localhost_no_auth) = persisted.localhost_no_auth {
         settings.localhost_no_auth = localhost_no_auth;
@@ -524,7 +550,7 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
         settings.recent_workspaces = recent;
     }
     validate_runtime_server_settings(&settings)?;
-    if missing_keys || expiration_migrated {
+    if missing_keys || expiration_migrated || password_migrated {
         save_runtime_server_settings(&settings)?;
     }
     Ok(settings)
@@ -563,7 +589,8 @@ pub fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
         bind: Some(settings.bind.to_string()),
         tls_mode: Some(settings.tls_mode),
         user: settings.user.clone(),
-        password: settings.password.clone(),
+        password_hash: settings.password.clone(),
+        password: None,
         localhost_no_auth: Some(settings.localhost_no_auth),
         session_expiration_minutes: Some(settings.session_expiration_minutes),
         session_expiration_migrated: Some(true),
@@ -580,6 +607,158 @@ pub fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
     })?;
     atomic_write(&path, content.as_bytes())?;
     Ok(())
+}
+
+/// CLI: `herdr-webui set-password [--user NAME] [--stdin] [--clear]`.
+///
+/// Sets or clears the login password without running the server, for the
+/// locked-out case (password forgotten, settings file hand-edited).
+/// Interactive terminals prompt twice with echo off; `--stdin` (or a
+/// non-TTY stdin) reads one line instead, so scripts and `printf | herdr-webui
+/// set-password --stdin` work without a prompt.
+///
+/// The stored value is always an Argon2id PHC hash; the plaintext never
+/// touches disk. A change also drops the persisted session sidecar: the
+/// running server (if any) keeps its in-memory sessions until restart, but
+/// every persisted token dies with the old credential so a leaked sidecar
+/// cannot outlive a password reset. Same rule as the settings-save path.
+pub fn set_password_command(
+    user: Option<String>,
+    password: Option<String>,
+    clear: bool,
+) -> io::Result<()> {
+    let mut settings =
+        load_runtime_server_settings(crate::DEFAULT_BIND.parse().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid default bind: {err}"),
+            )
+        })?)?;
+    if let Some(user) = user {
+        let user = user.trim().to_string();
+        if user.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "username cannot be empty",
+            ));
+        }
+        settings.user = Some(user);
+    }
+    if clear {
+        if !settings.bind.ip().is_loopback() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cannot clear the password while bound to non-loopback {}: \
+                     non-loopback binds require credentials. Rebind to a loopback \
+                     address first or set a new password instead.",
+                    settings.bind
+                ),
+            ));
+        }
+        settings.password = None;
+        if !settings.localhost_no_auth {
+            // Keep the settings bootable: no password + strict localhost
+            // auth is a validation error, so flip the bypass on like the
+            // settings form does when the operator clears credentials.
+            settings.localhost_no_auth = true;
+        }
+        save_runtime_server_settings(&settings)?;
+        remove_persisted_session_token();
+        println!(
+            "password cleared (username: {})",
+            settings.user.as_deref().unwrap_or("<none>")
+        );
+        return Ok(());
+    }
+    let plain = match password {
+        Some(password) => password,
+        None => read_password_interactive()?,
+    };
+    let plain = plain.trim_end_matches(['\r', '\n']);
+    if plain.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "password cannot be empty",
+        ));
+    }
+    settings.password = Some(crate::password_hashing::hash_password(plain)?);
+    if settings.user.is_none() {
+        // Non-loopback binds need a username too; the local default does
+        // not, but asking once here beats a boot failure later.
+        settings.user = Some("user".to_string());
+        println!("no username set; defaulting to 'user' (change with --user)");
+    }
+    // Strict localhost auth with a password set is fine; the bypass flag
+    // stays whatever the operator chose.
+    save_runtime_server_settings(&settings)?;
+    remove_persisted_session_token();
+    println!(
+        "password set (username: {})",
+        settings.user.as_deref().unwrap_or("<none>")
+    );
+    Ok(())
+}
+
+/// Read the password from stdin: hidden prompt on a TTY (stty -echo),
+/// single line read otherwise. Two identical entries on the TTY path;
+/// the piped path takes the one line it gets.
+fn read_password_interactive() -> io::Result<String> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        return Ok(line);
+    }
+    let first = prompt_hidden("New password: ")?;
+    let second = prompt_hidden("Confirm password: ")?;
+    if first != second {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "passwords do not match",
+        ));
+    }
+    Ok(first)
+}
+
+/// One hidden-input line on the terminal: disable echo around the read so
+/// the password never lands on screen or in the shell scrollback.
+#[cfg(unix)]
+fn prompt_hidden(prompt: &str) -> io::Result<String> {
+    use std::io::Write as _;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let silence = std::process::Command::new("stty")
+        .args(["-echo"])
+        .stdin(std::process::Stdio::inherit())
+        .status();
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    if let Ok(status) = &silence {
+        let _ = std::process::Command::new("stty")
+            .args(["echo"])
+            .stdin(std::process::Stdio::inherit())
+            .status();
+        if !status.success() {
+            // stty -echo itself failed: nothing was silenced, nothing to do.
+        }
+    }
+    read?;
+    println!();
+    Ok(line)
+}
+
+#[cfg(not(unix))]
+fn prompt_hidden(prompt: &str) -> io::Result<String> {
+    // No portable hidden-input primitive without a dependency; a visible
+    // prompt is a worse leak than a clear warning on this path.
+    use std::io::Write as _;
+    eprintln!("warning: hidden input unavailable on this platform; input will be visible");
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line)
 }
 
 pub fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
@@ -685,12 +864,194 @@ mod tests {
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 
+    /// The CLI password setter writes a PHC hash, changes the username
+    /// when asked, and kills the persisted session sidecar.
+    #[test]
+    fn set_password_command_stores_hash_and_drops_sidecar() {
+        let _guard = lock_env();
+        let (dir, _dir_guard) = crate::tests::temp_guard("herdr-set-pass-test");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let settings = valid_settings();
+        save_runtime_server_settings(&settings).unwrap();
+        save_persisted_session_token(&PersistedSessionToken {
+            sessions: vec![PersistedSessionRecord {
+                token: "old-live-token".to_string(),
+                expires_at: None,
+            }],
+            token: None,
+            expires_at: None,
+        })
+        .unwrap();
+        assert!(session_token_path().exists());
+
+        set_password_command(
+            Some("  op  ".to_string()),
+            Some("brand-new".to_string()),
+            false,
+        )
+        .unwrap();
+
+        let stored = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap())
+            .unwrap()
+            .password
+            .expect("password stored");
+        assert!(
+            is_password_hash(&stored),
+            "stored value is a PHC hash: {stored}"
+        );
+        assert!(crate::password_hashing::verify_password(
+            &stored,
+            "brand-new"
+        ));
+        assert!(
+            !fs::read_to_string(server_settings_path())
+                .unwrap()
+                .contains("brand-new"),
+            "plaintext must never reach the settings file"
+        );
+        let reloaded = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
+        assert_eq!(
+            reloaded.user.as_deref(),
+            Some("op"),
+            "--user trimmed and stored"
+        );
+        assert!(
+            !session_token_path().exists(),
+            "the sidecar must die with the old credential"
+        );
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// `--clear` drops the credential, flips the loopback bypass on to
+    /// keep the settings bootable, and also drops the sidecar.
+    #[test]
+    fn set_password_command_clear_drops_credential_and_sidecar() {
+        let _guard = lock_env();
+        let (dir, _dir_guard) = crate::tests::temp_guard("herdr-clear-pass-test");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let mut settings = valid_settings();
+        settings.user = Some("op".to_string());
+        settings.password = Some(crate::password_hashing::hash_password("x").unwrap());
+        settings.localhost_no_auth = false;
+        save_runtime_server_settings(&settings).unwrap();
+        save_persisted_session_token(&PersistedSessionToken {
+            sessions: vec![PersistedSessionRecord {
+                token: "old-live-token".to_string(),
+                expires_at: None,
+            }],
+            token: None,
+            expires_at: None,
+        })
+        .unwrap();
+
+        set_password_command(None, None, true).unwrap();
+
+        let cleared = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
+        assert_eq!(cleared.password, None);
+        assert!(
+            cleared.localhost_no_auth,
+            "bypass flipped on to stay bootable"
+        );
+        assert!(!session_token_path().exists());
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// `--clear` must refuse instead of writing settings that fail
+    /// validation at next boot (non-loopback bind requires credentials).
+    #[test]
+    fn set_password_command_clear_refuses_non_loopback_bind() {
+        let _guard = lock_env();
+        let (dir, _dir_guard) = crate::tests::temp_guard("herdr-clear-refuse-test");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let mut settings = valid_settings();
+        settings.bind = "0.0.0.0:8787".parse().unwrap();
+        settings.user = Some("op".to_string());
+        settings.password = Some(crate::password_hashing::hash_password("x").unwrap());
+        save_runtime_server_settings(&settings).unwrap();
+
+        let err = set_password_command(None, None, true).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("non-loopback"));
+        // The stored credential stays untouched.
+        assert!(
+            load_runtime_server_settings("127.0.0.1:8787".parse().unwrap())
+                .unwrap()
+                .password
+                .is_some()
+        );
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
     #[test]
     fn rejects_local_bind_without_credentials_or_bypass() {
         let mut settings = valid_settings();
         settings.localhost_no_auth = false;
         let err = validate_runtime_server_settings(&settings).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    /// The legacy plaintext `password` key must die on the first load:
+    /// the loader hashes it into `password_hash`, rewrites the file, and
+    /// the plaintext never appears in the rewritten JSON. A stored PHC
+    /// hash under `password_hash` passes through untouched (no re-hash,
+    /// no rewrite loop on every boot).
+    #[test]
+    fn legacy_plaintext_password_migrates_to_hash_on_load() {
+        let _guard = lock_env();
+        let (dir, _dir_guard) = crate::tests::temp_guard("herdr-pass-migration-test");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let path = server_settings_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // An old-version file: every key present, plaintext password.
+        let legacy = serde_json::json!({
+            "bind": "127.0.0.1:8788",
+            "tls_mode": "auto",
+            "user": "op",
+            "password": "plain-secret",
+            "localhost_no_auth": false,
+            "session_expiration_minutes": 0,
+            "no_sleep_auto_cooldown_seconds": 60,
+            "backend_mode": "builtin",
+            "builtin_shell": null,
+            "default_folder": "/tmp",
+            "builtin_backend_enabled": true,
+            "external_herdr_backend_enabled": true,
+            "log_level": "info"
+        });
+        fs::write(&path, legacy.to_string()).unwrap();
+
+        let settings = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
+
+        let stored = settings.password.expect("password survived the migration");
+        assert!(
+            is_password_hash(&stored),
+            "stored value is a PHC hash: {stored}"
+        );
+        assert!(
+            crate::password_hashing::verify_password(&stored, "plain-secret"),
+            "the hash verifies the original plaintext"
+        );
+        assert_ne!(stored, "plain-secret");
+
+        // The rewrite dropped the plaintext and moved the hash to
+        // password_hash; a reload must be a no-op (no second migration).
+        let raw = fs::read_to_string(&path).unwrap();
+        let rewritten: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            rewritten.get("password").is_none(),
+            "the plaintext key must not be serialized back: {raw}"
+        );
+        assert_eq!(
+            rewritten
+                .get("password_hash")
+                .and_then(serde_json::Value::as_str),
+            Some(stored.as_str()),
+            "the hash lands in password_hash"
+        );
+        let reloaded = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
+        assert_eq!(reloaded.password.as_deref(), Some(stored.as_str()));
+
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]

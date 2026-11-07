@@ -564,17 +564,22 @@ fn mac_plist_xml(config: &WebConfig, install_bin: &Path) -> io::Result<String> {
             ));
         }
     }
-    let mut args = vec![
-        format!(
-            "    <string>{}</string>",
-            xml_escape(&install_bin.display().to_string())
-        ),
-        "    <string>--bind</string>".to_string(),
-        format!(
+    let mut args = vec![format!(
+        "    <string>{}</string>",
+        xml_escape(&install_bin.display().to_string())
+    )];
+    // Only bake the bind address into the service when the operator passed
+    // --bind to install: an explicit flag must keep beating the saved file
+    // (the preview-instance contract). Without it, the service runs bare and
+    // the server honors webui-settings.json, so a bind edited in the WebUI
+    // settings (or hand-edited in the file) actually applies on every start.
+    if config.bind_explicit {
+        args.push("    <string>--bind</string>".to_string());
+        args.push(format!(
             "    <string>{}</string>",
             xml_escape(&config.bind.to_string())
-        ),
-    ];
+        ));
+    }
     if let Some(session) = &config.session {
         args.push("    <string>--session</string>".to_string());
         args.push(format!("    <string>{}</string>", xml_escape(session)));
@@ -625,11 +630,14 @@ fn linux_service_path() -> io::Result<PathBuf> {
 }
 
 fn linux_service_unit(config: &WebConfig, install_bin: &Path) -> String {
-    let mut exec = format!(
-        "{} --bind {}",
-        systemd_escape_arg(&install_bin.display().to_string()),
-        systemd_escape_arg(&config.bind.to_string())
-    );
+    let mut exec = systemd_escape_arg(&install_bin.display().to_string()).to_string();
+    // Same contract as the macOS plist: only pin --bind when the operator
+    // passed it explicitly at install time; otherwise the bare service
+    // honors the persisted webui-settings.json bind on every start.
+    if config.bind_explicit {
+        exec.push_str(" --bind ");
+        exec.push_str(&systemd_escape_arg(&config.bind.to_string()));
+    }
     if let Some(session) = &config.session {
         exec.push_str(" --session ");
         exec.push_str(&systemd_escape_arg(session));
@@ -938,7 +946,7 @@ mod tests {
     fn linux_service_unit_contains_binary_and_flags() {
         let config = WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
-            bind_explicit: false,
+            bind_explicit: true,
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,
@@ -962,7 +970,7 @@ mod tests {
     fn linux_service_unit_quotes_shell_sensitive_args() {
         let config = WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
-            bind_explicit: false,
+            bind_explicit: true,
             session: Some("work session's path".to_string()),
             api_socket: None,
             client_socket: None,
@@ -981,10 +989,53 @@ mod tests {
     }
 
     #[test]
+    fn service_files_honor_persisted_bind_without_explicit_flag() {
+        // No --bind at install time: the service must run bare so the
+        // persisted webui-settings.json stays authoritative on every start.
+        let config = test_config(crate::TlsConfig {
+            mode: TlsMode::Off,
+            cert_path: None,
+            key_path: None,
+        });
+        assert!(!config.bind_explicit);
+
+        let unit = linux_service_unit(&config, Path::new("/tmp/herdr-webui"));
+        assert!(
+            unit.contains("ExecStart=/tmp/herdr-webui --session work"),
+            "systemd unit must not pin --bind: {unit}"
+        );
+        assert!(!unit.contains("--bind"));
+
+        let plist = mac_plist_xml(&config, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(
+            !plist.contains("--bind"),
+            "plist must not pin --bind: {plist}"
+        );
+    }
+
+    #[test]
+    fn service_files_pin_bind_when_flag_explicit() {
+        let mut config = test_config(crate::TlsConfig {
+            mode: TlsMode::Off,
+            cert_path: None,
+            key_path: None,
+        });
+        config.bind = "0.0.0.0:9001".parse().unwrap();
+        config.bind_explicit = true;
+
+        let unit = linux_service_unit(&config, Path::new("/tmp/herdr-webui"));
+        assert!(unit.contains("ExecStart=/tmp/herdr-webui --bind 0.0.0.0:9001 --session work"));
+
+        let plist = mac_plist_xml(&config, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(plist.contains("<string>--bind</string>"));
+        assert!(plist.contains("<string>0.0.0.0:9001</string>"));
+    }
+
+    #[test]
     fn mac_plist_contains_binary_and_flags() {
         let config = WebConfig {
             bind: "127.0.0.1:8787".parse().unwrap(),
-            bind_explicit: false,
+            bind_explicit: true,
             session: Some("work".to_string()),
             api_socket: None,
             client_socket: None,

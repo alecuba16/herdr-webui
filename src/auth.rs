@@ -17,6 +17,8 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::password_hashing::verify_password;
+
 pub(crate) const COOKIE_NAME: &str = "herdr_web_session";
 /// `"herdr_web_session="` precomputed so the per-request cookie scan
 /// allocates nothing: the hot auth path only compares byte slices.
@@ -62,6 +64,9 @@ impl SessionRecord {
 /// a login no longer invalidates the other sessions.
 pub(crate) struct AuthConfig {
     pub(crate) user: Option<String>,
+    /// Argon2id PHC hash of the password (never the password itself, so a
+    /// stolen settings file cannot reveal the original). Kept as the PHC
+    /// string; verification re-parses it per attempt.
     pub(crate) password: Option<String>,
     pub(crate) localhost_no_auth: bool,
     /// Live sessions. Order doubles as the LRU clock: index 0 is the
@@ -273,13 +278,16 @@ impl AuthConfig {
     }
 
     /// True when this remote matches the stored username and password.
+    /// The stored value is an Argon2id PHC hash, so the comparison is a
+    /// hash verification (constant-time inside Argon2's final compare),
+    /// never a plaintext equality check.
     pub(crate) fn verify_credentials(&self, username: &str, password: &str) -> bool {
         self.user
             .as_deref()
             .zip(self.password.as_deref())
             .is_some_and(|(user, stored)| {
                 constant_time_eq(username.as_bytes(), user.as_bytes())
-                    && constant_time_eq(password.as_bytes(), stored.as_bytes())
+                    && verify_password(stored, password)
             })
     }
 
@@ -507,7 +515,9 @@ mod tests {
         (
             Mutex::new(AuthConfig::from_parts_with_expiration(
                 Some("user".to_string()),
-                Some("pass".to_string()),
+                // Stored form is a PHC hash of "pass"; verify_credentials
+                // runs the Argon2 check against the plaintext attempts.
+                Some(crate::password_hashing::hash_password("pass").unwrap()),
                 localhost_no_auth,
                 DEFAULT_SESSION_EXPIRATION_MINUTES,
             )),
