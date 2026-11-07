@@ -38,6 +38,8 @@ Disabled backends are never silently rerouted to. A request or WebSocket that ta
 - Built-in sessions are stored in a small handle registry keyed by session name. The registry keeps each in-process built-in backend alive while it is running and allows the browser WebUI and TUI/smoke clients to attach in parallel. Closing a built-in session removes its handle; the handle drop unblocks socket listeners and cleans sockets.
 - Built-in sessions do not seed a default workspace during `BuiltinState::new`. A fresh backend socket returns an empty `session.snapshot`; UI surfaces must handle zero workspaces and use `default_folder` for Files, Git, and workspace/worktree pickers until the user explicitly opens or creates a workspace. Client-side default-folder resolution prefers the browser `explorationDefaultDirectory` option over the server `default_folder` setting; the desktop app bundle exports `defaultFolderPath()` on `window` so the separately served directory picker and Git UI resolve the same value.
 - `GET /api/session-snapshot?workspace_id=` narrows the returned tabs/panes to one workspace. The response also carries derived maps computed from the unfiltered arrays before the filter runs: `workspaces_by_id` replaces the clients' `Object.fromEntries(workspaces.map(...))` and `workspace_counts` (`{id: {tabs, panes}}`) replaces their per-workspace tab/pane loops, so background workspaces keep accurate totals under filtering. Clients fall back to local derivation when the maps are absent (older servers, legacy multi-call path). The same enrichment path parses blame, git log rows, side-by-side diff pairing, markdown outlines, and worktree workmeta server-side. Embedded asset responses carry an ETag with `If-None-Match` 304 revalidation, and the conversation endpoint serves a weak ETag (with `Cache-Control: no-store`) so lens polls collapse to 304 when nothing changed.
+- Recent-workspace and workspace-order state lives server-side: `GET/POST /api/recent-workspaces` lists and records opened workspaces/worktrees, `POST /api/recent-workspaces/clear` and `POST /api/recent-workspaces/remove` manage entries, and `GET/PUT /api/workspace-order` persists the shared drag-and-drop workspace order in `webui-settings.json`. `GET /api/versions` also reports `fzf_available`, the boot-time `fzf --version` probe result the path-search ranker and the Settings search hint read.
+- Notes are server-owned with hard caps (`src/notes.rs`): at most 200 notes, 200-character titles, 32 KiB of content per note, persisted to the `notes.json` sidecar next to `webui-settings.json` with atomic writes, and every mutation fans a `notes_changed` snapshot over the events socket. Routes: `GET/POST /api/notes`, `PUT/DELETE /api/notes/{note_id}`, `POST /api/notes/clear`.
 - `GET /api/panes/{pane_id}/prompt` returns the server-side parse of a pane's question dialog (same tail source and parser the server already runs for the web prompt card). HTTP-only; reserved for the prompt-card parity work that will consume it.
 - `pane.read` returns terminal text after common TUI rewrites: carriage return, clear-line/display, cursor movement, OSC title skipping, and ANSI/control stripping. This keeps cleared Jcode toolbars/status cards from becoming stale plain text.
 - Agent detection first inspects known argv labels, then scans terminal child process trees with a short process-table cache, then falls back to terminal-screen markers. The screen fallback mirrors Herdr screen-manifest rules for visible `blocked`, `working`, and `idle` states in Amp, Antigravity, Claude, Claurst, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, Qoder CLI, and Qwen. Jcode status follows the Herdr `jcode-support` manifest bottom-line rules plus active background-task markers so running tasks remain `working` even when an input prompt is visible. Jcode detection supports variants through `src/builtin_detection/jcode.rs`: vanilla jcode (upstream `master`) and the info_fields variant (`fix/info_fields` branch Overview panel), selected by the persisted `JcodeDetectionVariant` setting (`auto` default, `vanilla`, `info_fields`; `alecuba16` remains as a legacy alias for older settings files). TEMPORARY: the selector exists only while the jcode branches diverge, and merges back into a single detector once jcode ships a final output format. The built-in backend also captures jcode OSC 9 payloads (`jcode:working`, `jcode:blocked`, `jcode:idle`, emitted only by the herdr_detectable jcode branch, not jcode master) as a structured side-channel that takes precedence over screen-scrape. Payloads are retained without a TTL for the pane lifetime (agents on this channel emit on state change only); staleness is handled structurally, by resetting the tracker on terminal exit, so a crashed agent does not freeze a status. The payload prefix identifies the agent even through wrapper scripts that hide the binary name. On terminal exit the tracker is reset and a final `done` status is published so stale screen-scrape patterns in the scrollback do not keep the pane stuck in `working` or `idle`. Jcode's own status on master rides on the terminal title (` · work ~<dur>` while a turn runs, ` · last ~<dur>` after it finished; the `last` suffix maps to `idle` in the OSC title rules) plus the screen-scrape fallback.
@@ -51,7 +53,7 @@ Disabled backends are never silently rerouted to. A request or WebSocket that ta
 The TUI is intentionally separated from backend internals:
 
 - `src/backend_client.rs` is the reusable client boundary. It knows socket paths, JSON request/response wrapping, terminal frame IO, and error types. It does not render UI.
-- `src/tui/` owns the TUI: `mod.rs` (app state, refresh flow, screens), `model.rs` (DTOs and backend snapshot parsing), `keys.rs` (key mapping and prefix state machine), `lens.rs`, `search.rs` (palette), `theme.rs`, `web_api.rs` (WebUI HTTP API client), `panels/` (files/git screens), `render/` (Ratatui widgets), `terminal/` (attach, input, styled ANSI SGR parsing for color spans, with parser tests), and `workspace/`. It consumes `BackendClient` and backend JSON, but does not know `BuiltinBackendInner` internals.
+- `src/tui/` owns the TUI: `mod.rs` (app state, refresh flow, screens), `model.rs` (DTOs and backend snapshot parsing), `keys.rs` (key mapping and prefix state machine), `lens.rs`, `search.rs` (palette), `theme.rs`, `web_api.rs` (WebUI HTTP API client), `panels/` (files/git screens), `render/` (Ratatui widgets), `sessions/` (session manager overlay), `terminal/` (attach, input, styled ANSI SGR parsing for color spans, with parser tests), and `workspace/`. It consumes `BackendClient` and backend JSON, but does not know `BuiltinBackendInner` internals.
 - `src/bin/herdr-webui-tui.rs` is a thin binary shell for CLI parsing, terminal raw mode, the event loop, and the live terminal reader/writer thread.
 - Terminal text parsing is split by responsibility. `src/terminal_text.rs` provides shared plain-text terminal rewrite handling for backend snapshots, consumed by the TUI. TUI regression coverage lives under `src/tui/tests/` and the per-module `tests.rs` files, kept out of the production modules.
 - TUI theme selection is isolated in `src/tui/theme.rs`. The CLI accepts `dark`, `light`, or `system`, with `system` querying the terminal background before raw mode and falling back to dark for unsupported terminals or non-interactive smoke runs.
@@ -181,6 +183,7 @@ Content search uses backend-owned repository traversal and matching. Results ren
   readonly files without prebuilt markup show a size hint.
 - `GET /api/file-browser/content-search`: bounded breadth-first scan from the current file tree root, grouped by file.
 - `GET /api/file-browser/content-search/file`: lazy full match load for one file when the group is expanded.
+- `GET /api/file-browser/outline`: heading list for a markdown file, parsed with the shared `herdr_webui::markdown` module (the same parser the TUI `M` outline toggle uses, so the two outlines cannot drift). Same root confinement and size caps as the file read path; returns headings only, never file content.
 
 Both search routes return pre-merged line chunks per file: adjacent or
 overlapping match context windows are merged server-side and every row
@@ -210,8 +213,8 @@ Browser-local configurable values:
 Performance limits:
 
 - dependency/build folders such as `.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, and `venv` are skipped,
-- traversal is capped by `MAX_CONTENT_SEARCH_VISITS`,
-- file reads are skipped above `MAX_CONTENT_SEARCH_FILE_BYTES`,
+- traversal is capped at 20,000 directory visits (`MAX_CONTENT_SEARCH_VISITS`, `src/file_browser.rs:37`),
+- file reads are skipped above 1 MiB (`MAX_CONTENT_SEARCH_FILE_BYTES`, `src/file_browser.rs:36`),
 - binary/NUL content is skipped,
 - result page size, context lines, and matches per file are clamped server-side,
 - invalid regex queries return HTTP 400 before traversal.
@@ -277,7 +280,15 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options` an
 | Setting | Default | Notes |
 | --- | --- | --- |
 | `overflow` | `false` | Browser terminal overflow opt-in. |
+| `terminalOverflowOptIn` | `false` | Explicit overflow opt-in flag; stored `overflow: true` without it migrates back to off. |
+| `fitToBrowser` | `false` | Fit terminal grid to the browser viewport instead of scrolling. |
+| `sound` | `true` | Local attention tone toggle; `Notification volume` scales the tone gain only. |
+| `soundScope` | `current` | Attention tone scope: `current` tab or `all` tabs. |
 | `notificationVolume` | `0.24` | Clamped 0 to 1. |
+| `workspaceOpenTerminal` | `false` | Start a terminal automatically when a workspace opens. |
+| `closeWorkspaceOnLastTerminal` | `true` | Close the workspace with its last terminal (with a confirm step). |
+| `terminalFontSize` | `14` | Terminal font size in px, clamped 10 to 22. |
+| `paneTabMaxChars` | `20` | Panel tab label character budget, clamped 4 to 60. |
 | `browserNotifications` | `false` | Browser notification permission still applies. |
 | `shiftEnterNewline` | `true` | Terminal input newline behavior. |
 | `closeShortcut` | `off` | Optional close shortcut mode. |
@@ -304,6 +315,18 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options` an
 | `treeIndentPx` | `14` | File tree indent, clamped 0 to 40. |
 | `fileBrowserGitStatus` | `true` | Show backend-provided Git colors. |
 | `fileBrowserLineNumbers` | `true` | Show line numbers in file previews. |
+| `headerSearchEnabled` | `true` | Header magnifier button and direct search shortcut. |
+| `editorEnabled` | `true` | CodeMirror editing enhancements; files stay editable when off. |
+| `editorWordWrap` | `true` | Editor word wrap. |
+| `editorTabSize` | `2` | Editor tab size, clamped 1 to 8. |
+| `editorIndentUnit` | `2` | Editor indent unit. |
+| `editorBracketMatching` | `true` | Editor bracket matching. |
+| `editorFolding` | `true` | Editor code folding. |
+| `editorActiveLine` | `true` | Editor active line highlight. |
+| `editorWhitespace` | `false` | Editor whitespace markers. |
+| `editorLargeFileBytes` | `1048576` | Size above which the editor falls back to a plain preview. |
+| `editorFindShortcutEnabled` | `true` | Let editors capture Cmd/Ctrl-F for in-editor search. |
+| `promptCardsEnabled` | `true` | Blocked-agent question cards in the chat lens. |
 | `searchWorkspacesEnabled` | `true` | Show workspace/worktree/panel results in unified header search. |
 | `searchFilesEnabled` | `true` | Show backend file-name results in unified header search. |
 | `searchFoldersEnabled` | `true` | Show backend folder-name results in unified header search. |
@@ -336,6 +359,13 @@ Runtime server settings include:
 Disabling a backend mid-session is safe for tabs that already target it: the settings save broadcasts `server_settings_changed` (with `enabled_backends` and `default_backend`) to every connected events socket, and browser tabs retarget to the server's default backend (then built-in, then whichever remains enabled) instead of silently rerouting. Explicit requests for the disabled backend keep failing with a clear error until it is re-enabled.
 
 Validation rejects configurations where both backend types are disabled.
+
+### Authentication
+
+- Credentials live in `webui-settings.json`. Since 0.7.36 the password is stored as an Argon2id PHC string under `password_hash` (`src/password_hashing.rs`): Argon2 crate defaults, which sit at the OWASP baseline of m=19456 (19 MiB), t=2, p=1, with a random salt per hash. Loading a settings file that still holds a plaintext `password` migrates it to the hash and rewrites the file without the plaintext; saves always write the hash.
+- Login sessions are random tokens held in memory as an LRU-ordered set (`src/auth.rs`): each browser cookie maps to one session, a login does not invalidate other browsers' sessions, and eviction drops the least recently used session first. Sessions persist to an owner-only `session-token` sidecar next to `webui-settings.json` (`src/server_settings.rs`) and restore on boot, so sessions survive restarts. Older sidecar formats (multi-session array, single-record JSON, legacy raw token) are also understood.
+- `POST /api/login` verifies the attempt against the stored hash (constant-time comparison; an unparsable stored hash never authorizes a login) and issues a session cookie. A per-IP rate limiter blocks an IP after 5 failed attempts inside 300 seconds (`src/auth.rs` `LoginRateLimiter`). `localhost_no_auth` (default on) bypasses auth for loopback requests; non-loopback binds require both username and password, and `POST /api/logout` revokes only the caller's session. Saving server settings rotates the session token.
+- `herdr-webui set-password [--user NAME] [--password VALUE | --stdin] [--clear] [--verbose]` writes the hash (or clears the credential) offline and drops the persisted session sidecar, so old tokens die with the old credential. Clearing refuses non-loopback binds.
 
 Other modules can contribute defaults through the settings module registry.
 
@@ -463,10 +493,12 @@ When a visible feature is added, update `shortcutsModalHtml()` and tests in `src
 
 ## Git log implementation
 
-- `/api/git-ui/log` asks Git for one more commit than the requested limit, returns `has_more` and `limit`, accepts an optional `file` path that is sanitized with `safe_repo_path`, and emits structured graph rows for the Zed-style Git log.
-- `src/git_ui/log.rs` prepares structured log rows, ref ordering, branch colors, pagination metadata, and compare/reset/rebase routes.
+- `/api/git-ui/log` asks Git for one more commit than the requested limit, returns `has_more` and `limit`, accepts an optional `file` path that is sanitized with `safe_repo_path`, and emits structured graph rows for the desktop log workbench.
+- `/api/git-ui/commit-details` returns the selected commit's details payload (author, email, dates, message, labels, stats, changed files) for the commit details pane.
+- `/api/git-ui/permalink` builds a live repository permalink URL for a file at the selected commit.
+- `src/git_ui/log.rs` prepares structured log rows, ref ordering, branch colors, pagination metadata, and compare/reset/rebase routes. `src/git_ui/commit_details.rs` backs the details endpoint.
 - `src/git_ui/log_graph.rs` parses `git log --graph` output into row data while preserving a legacy text line for compatibility.
-- `src/assets/desktop/git_ui/log.js` owns log rendering, local filtering, hover cards, sticky-header offsets, selection, scroll preservation, file-history scope display, and load-more state.
+- `src/assets/desktop/git_ui/log.js` owns the workbench layout: commit search (Enter/Shift+Enter navigation with match count and case toggle), the scope control, the resizable commit details pane with its separator, hover cards, compact ref groups, sticky headers, selection, scroll and focus preservation, and load-more state.
 - Selected-commit actions live in the row-level right-click context menu rendered by `src/assets/desktop/git_ui.js` (`renderLogContextMenu`), covering compare, tag, worktree, reset, rebase, and clear-selection.
-- `src/assets/desktop/git_ui/log.css` owns log table, lane, chip, hover-card, sticky-header, and load-more styling.
+- `src/assets/desktop/git_ui/log.css` owns log table, lane, chip, hover-card, details-pane, separator, sticky-header, and load-more styling.
 - Worktree creation stays in the existing workspace/worktree flow (`openWorktreeCreateFromGitBranch`) so Git log does not duplicate worktree creation logic. Selected-commit file previews reuse the existing compare endpoint with `commit^` versus `commit`, keeping diff rendering and side-list behavior centralized.

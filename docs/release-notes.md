@@ -1,6 +1,29 @@
 # Release notes
 
 ## Unreleased
+- Every desktop shortcut surface now covers its actions, and the hint
+  toast always names the configured binding. Git sync (pull/push/fetch,
+  pull-rebase), the cleanup tab, stash push/apply/pop/drop, conflict
+  resolution (use HEAD/parent/remote, mark resolved), the session
+  manager, terminal jump-to-latest, the chat lens toggle, the right
+  rail view cycle, markdown view cycle, and notes new/back all carry
+  prefix chords, sit in the shortcut editor, and toast the remapped key.
+  Context menus (file browser rows, git file rows, log rows) open with
+  the Menu key or Shift+F10, Enter submits the commit modal, and arming
+  the prefix lets git chords answer first while the drawer is visible.
+  Two bugs went with them: a remapped file-browser nextMatch key is
+  honored now (it was hardcoded to the arrows), and the help modal
+  derives every displayed chord from the configured maps instead of
+  hardcoding defaults.
+- Documentation caught up with the code: the parity matrix reflects
+  the real desktop/mobile/TUI state (content search TUI scope, mobile
+  LSP/layout sections, browsable TUI worktree overlays, plus rows for
+  Kitty graphics, attention alerts, no-sleep, hint toasts, and the
+  other asymmetric features), the git log workbench replaces the stale
+  four-column description, settings/endpoints/caps tables list the
+  keys and limits the code actually enforces, Argon2id auth and the
+  session-token sidecar are documented, and the release notes carry a
+  full version history table.
 - The installed service no longer bakes a bind into the LaunchAgent
   plist. A bare `make install-mac` (and the brew service) starts
   without `--bind` and honors `webui-settings.json` on every start, so
@@ -563,6 +586,51 @@
   CSS vars the grid template reads, the terminal grid re-fits on every
   change, and Reset window layout restores the stock widths. The width
   drag commit no longer flashes the settings "Applied" badge.
+
+## Release history
+
+Dates come from the release tags in this repository (`git log -1 --format=%ai vX.Y.Z`).
+Each version links to its GitHub release for the full changelog.
+
+| Version | Date | Release |
+| --- | --- | --- |
+| 0.7.36 | 2026-11-07 | [v0.7.36](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.36) |
+| 0.7.35 | 2026-11-06 | [v0.7.35](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.35) |
+| 0.7.34 | 2026-11-05 | [v0.7.34](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.34) |
+| 0.7.33 | 2026-11-02 | [v0.7.33](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.33) |
+| 0.7.32 | 2026-11-02 | [v0.7.32](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.32) |
+| 0.7.31 | 2026-11-02 | [v0.7.31](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.31) |
+| 0.7.30 | 2026-11-02 | [v0.7.30](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.30) |
+| 0.7.29 | 2026-11-01 | [v0.7.29](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.29) |
+| 0.7.28 | 2026-11-01 | [v0.7.28](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.28) |
+| 0.7.27 | 2026-10-31 | [v0.7.27](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.27) |
+| 0.7.26 | 2026-10-31 | [v0.7.26](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.26) |
+| 0.7.25 | 2026-10-31 | [v0.7.25](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.25) |
+| 0.7.24 | 2026-10-31 | [v0.7.24](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.24) |
+| 0.7.23 | 2026-10-29 | [v0.7.23](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.23) |
+| 0.7.22 | 2026-10-29 | [v0.7.22](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.22) |
+| 0.7.21 | 2026-10-28 | [v0.7.21](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.21) |
+| 0.7.20 | 2026-10-22 | [v0.7.20](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.20) |
+| 0.7.19 | 2026-10-21 | [v0.7.19](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.19) |
+| 0.7.18 | 2026-10-20 | [v0.7.18](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.18) |
+| 0.7.17 | 2026-10-19 | [v0.7.17](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.17) |
+| 0.7.16 | 2026-10-19 | [v0.7.16](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.16) |
+| 0.7.15 | 2026-10-19 | [v0.7.15](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.15) |
+| 0.7.14 | 2026-10-16 | [v0.7.14](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.14) |
+| 0.7.13 | 2026-10-16 | [v0.7.13](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.13) |
+| 0.7.12 | 2026-10-16 | [v0.7.12](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.12) |
+| 0.7.11 | 2026-10-16 | [v0.7.11](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.11) |
+| 0.7.10 | 2026-10-15 | [v0.7.10](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.10) |
+| 0.7.9 | 2026-10-14 | [v0.7.9](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.9) |
+| 0.7.8 | 2026-10-13 | [v0.7.8](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.8) |
+| 0.7.7 | 2026-10-13 | [v0.7.7](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.7) |
+| 0.7.6 | 2026-10-13 | [v0.7.6](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.6) |
+| 0.7.5 | 2026-10-13 | [v0.7.5](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.5) |
+| 0.7.4 | 2026-10-12 | [v0.7.4](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.4) |
+| 0.7.3 | 2026-10-12 | [v0.7.3](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.3) |
+| 0.7.2 | 2026-10-12 | [v0.7.2](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.2) |
+| 0.7.1 | 2026-10-11 | [v0.7.1](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.1) |
+| 0.7.0 | 2026-10-11 | [v0.7.0](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.0) |
 
 ## 0.7.9 Release Notes
 - Chat lens panes no longer bind to the wrong jcode session or

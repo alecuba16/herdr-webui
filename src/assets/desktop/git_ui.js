@@ -211,6 +211,7 @@
   const lineIndexesToRanges = conflicts.lineIndexesToRanges;
 
   const handleKeydown = shortcuts.handleKeydown;
+  const handleChordActionKey = shortcuts.handleChordActionKey;
   const titleWithGitShortcut = shortcuts.titleWithGitShortcut;
   window.addEventListener("keydown", handleKeydown, true);
 
@@ -1492,6 +1493,10 @@
     open,
     hide,
     close,
+    // Webui prefix dispatcher delegates armed chord keys here while the
+    // drawer is on screen; the shortcuts module gates and runs the
+    // matched git action, returning true when it consumed the key.
+    handleChordActionKey,
     openViewTab,
     releaseViewTab,
     forgetWorkspace(workspace) {
@@ -1858,7 +1863,21 @@
       render();
     },
     activateTreeItem(event) {
-      if (!event || !["Enter", " ", "Spacebar"].includes(event.key)) return;
+      if (!event) return;
+      // Menu / Shift+F10 opens the row's context menu, mirroring the
+      // right-click path so the file menu is keyboard-reachable.
+      if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey)) {
+        const row = event.currentTarget || event.target;
+        const path = row && row.dataset && row.dataset.gitPath;
+        const kind = row && row.dataset && row.dataset.gitKind;
+        if (path) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.fileMenu(event, encodeURIComponent(path), kind);
+        }
+        return;
+      }
+      if (!["Enter", " ", "Spacebar"].includes(event.key)) return;
       event.preventDefault();
       event.currentTarget.click();
     },

@@ -454,6 +454,66 @@ function runPrefixedShortcut(e) {
       togglePaneMenu(button);
       return true;
     },
+    sessions: () => {
+      showSessionManager();
+      return true;
+    },
+    terminalTail: () => {
+      // Tail = jump to latest output and resume follow, the same as the
+      // strip's Follow button; focus lands on the terminal afterwards.
+      scrollTerminalToBottom(true);
+      return true;
+    },
+    lensToggle: () => {
+      if (!window.HerdrLens || !window.HerdrLens.toggle) return false;
+      window.HerdrLens.toggle();
+      return true;
+    },
+    // Cycle the four rail views; a collapsed or foreign column reopens on
+    // files first. Openers live in render.js (loads before this file) and
+    // as globals for the search.js host, which loads first.
+    rightRail: () => {
+      const modes = ["files", "git", "search", "notes"];
+      const openers = {
+        files: () => openWorkspaceFileBrowser(state.ws, { forceOpen: true }),
+        git: () => openWorkspaceGitUi(state.ws, { forceOpen: true }),
+        search: () => window.HerdrOpenWorkspaceSearchPanel(state.ws, { forceOpen: true }),
+        notes: () => window.HerdrOpenWorkspaceNotesPanel(state.ws, { forceOpen: true }),
+      };
+      const collapsed = !!(window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed
+        && window.HerdrRightSidebar.collapsed());
+      const current = collapsed ? "" : currentWorkspaceShellMode();
+      const index = modes.indexOf(current);
+      const next = modes[index >= 0 ? (index + 1) % modes.length : 0];
+      void openers[next]();
+      return true;
+    },
+    markdownView: () => {
+      // Cycle the active editor tab's markdown view the same way the
+      // strip eye does: preview -> source -> edit -> preview.
+      const pane = activePaneElement();
+      const button = pane && pane.querySelector ? pane.querySelector(".pane-md-button") : null;
+      if (button) { button.click(); return true; }
+      return false;
+    },
+    notesNew: () => {
+      // The panel lazy-loads on first use; the open path mounts it when
+      // the column is collapsed, so createNote has a panel to render into.
+      if (!window.HerdrNotesPanel || !window.HerdrNotesPanel.createNote) return false;
+      if (!window.HerdrNotesPanel.isOpen()) {
+        void window.HerdrOpenWorkspaceNotesPanel(state.ws, { forceOpen: true })
+          .then(() => window.HerdrNotesPanel.createNote());
+        return true;
+      }
+      void window.HerdrNotesPanel.createNote();
+      return true;
+    },
+    notesBack: () => {
+      if (!window.HerdrNotesPanel || !window.HerdrNotesPanel.isOpen()) return false;
+      const back = document.getElementById("notesBack");
+      if (back) { back.click(); return true; }
+      return false;
+    },
   };
   const key = shortcutKey(e);
   const entry = Object.entries(options.webuiShortcuts || {}).find(([, value]) => value === key);
@@ -500,6 +560,14 @@ function handleGlobalShortcut(e) {
   if (prefixActive) {
     hideShortcutPrefixOverlay();
     if (e.key === "Escape") return consumeShortcutEvent(e);
+    // Git chord keys answer first while its drawer is on screen. The git
+    // bundle's own window listener registered after this one never sees
+    // the prefix (consumeShortcutEvent above stopped it), so its chord
+    // keys arrive here by delegation; the entry point gates on its own
+    // visibility and returns true only when a git action matched.
+    if (window.HerdrGitUi && window.HerdrGitUi.handleChordActionKey
+      && window.HerdrGitUi.handleChordActionKey(e))
+      return consumeShortcutEvent(e);
     runPrefixedShortcut(e);
     return consumeShortcutEvent(e);
   }

@@ -626,3 +626,203 @@ describe("git_ui shortcuts: prefix dispatch", () => {
     equal(shortcuts.titleWithGitShortcut("Commit", "missing"), "Commit", "unknown actions keep the bare title");
   });
 });
+
+describe("git_ui shortcuts: webui chord delegation", () => {
+  it("handleChordActionKey runs a git action without a prior arm", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const actions = [];
+    const { shortcuts, state } = makeShortcuts(ctx, {
+      getGitUi() { return { showChangesList: () => actions.push("changes") }; },
+    });
+    equal(state.shortcutPrefixUntil, 0, "no arming before the call");
+    const consumed = shortcuts.handleChordActionKey(keyEvent({
+      key: "1", code: "Digit1", target: { closest: () => null },
+    }));
+    equal(consumed, true, "the delegated key dispatches");
+    equal(actions.length, 1, "the changes action ran");
+    equal(state.shortcutPrefixUntil, 0, "the arm restores after the call");
+  });
+
+  it("handleChordActionKey returns false for unmatched keys so webui keeps them", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts } = makeShortcuts(ctx);
+    const consumed = shortcuts.handleChordActionKey(keyEvent({
+      key: "9", code: "Digit9", target: { closest: () => null },
+    }));
+    equal(consumed, false, "unmapped keys are not consumed");
+  });
+
+  it("handleChordActionKey returns false while hidden or in overlays", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const actions = [];
+    const hiddenState = Object.assign(Object.create(null), {
+      visible: false, shortcutPrefixUntil: 0,
+    });
+    const made = makeShortcuts(ctx, {
+      state: hiddenState,
+      getGitUi() { return { showChangesList: () => actions.push("changes") }; },
+    });
+    equal(made.shortcuts.handleChordActionKey(keyEvent({
+      key: "1", code: "Digit1", target: { closest: () => null },
+    })), false, "hidden drawer declines the key");
+    equal(actions.length, 0, "nothing ran while hidden");
+
+    const ctx2 = makeContext();
+    loadShortcuts(ctx2);
+    const visible = makeShortcuts(ctx2, {
+      getGitUi() { return { showChangesList: () => actions.push("changes") }; },
+    });
+    ctx2.document.querySelectorAll = (sel) => (
+      sel === ".modal-backdrop" ? [{ style: { display: "block" } }] : []
+    );
+    equal(visible.shortcuts.handleChordActionKey(keyEvent({
+      key: "1", code: "Digit1", target: { closest: () => null },
+    })), false, "an open app modal declines the key");
+    equal(actions.length, 0, "nothing ran behind the modal");
+  });
+
+  it("handleChordActionKey respects configured remaps", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const actions = [];
+    const { shortcuts } = makeShortcuts(ctx, {
+      gitUiOptions: () => ({ gitShortcuts: { changes: "F9" } }),
+      getGitUi() { return { showChangesList: () => actions.push("changes") }; },
+    });
+    equal(shortcuts.handleChordActionKey(keyEvent({
+      key: "1", code: "Digit1", target: { closest: () => null },
+    })), false, "the default key no longer dispatches after remap");
+    equal(shortcuts.handleChordActionKey(keyEvent({
+      key: "F9", code: "F9", target: { closest: () => null },
+    })), true, "the remapped key dispatches");
+    equal(actions.length, 1, "the changes action ran once");
+  });
+});
+
+describe("git_ui shortcuts: new git actions", () => {
+  function actionHarness(overrides = {}) {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const actions = [];
+    const gitUi = {
+      showChangesList: () => actions.push("changes"),
+      tab: (name) => actions.push(`tab:${name}`),
+      pullUpdateFromUpstream: () => actions.push("pull"),
+      pushNow: () => actions.push("push"),
+      fetchOrigin: () => actions.push("fetch"),
+      pullWithRebase: () => actions.push("pullRebase"),
+      stash: () => actions.push("stashPush"),
+      applyStash: (name, pop) => actions.push(`applyStash:${name}:${pop}`),
+      dropStash: (name) => actions.push(`dropStash:${name}`),
+      resolve: (path, mode) => actions.push(`resolve:${path}:${mode}`),
+      goBack() {},
+    };
+    const view = {
+      tab: "changes",
+      navigationStack: [],
+      file: "src/a.js",
+      sideEditor: null,
+      selectedStash: "stash@{0}",
+      stashData: { stashes: ["stash@{0}", "stash@{1}"] },
+      status: { conflicted: ["src/conflict.js", "other.txt"] },
+    };
+    const made = makeShortcuts(ctx, {
+      active: () => view,
+      getGitUi: () => gitUi,
+      ...overrides,
+    });
+    const fire = (key, code, extra = {}) => shortcuts2Fire(made.shortcuts, key, code, extra);
+    return { ...made, actions, fire, view, gitUi, ctx };
+  }
+  function shortcuts2Fire(shortcuts, key, code, extra = {}) {
+    return shortcuts.handleChordActionKey(keyEvent({
+      key, code, target: { closest: () => null }, ...extra,
+    }));
+  }
+
+  it("maps the sync actions to their default keys", () => {
+    const d = actionHarness();
+    equal(d.fire("5", "Digit5"), true);
+    equal(d.actions.pop(), "tab:cleanup", "Digit5 opens the cleanup tab");
+    equal(d.fire("F2", "F2"), true);
+    equal(d.actions.pop(), "pull", "F2 pulls");
+    equal(d.fire("F3", "F3"), true);
+    equal(d.actions.pop(), "push", "F3 pushes");
+    equal(d.fire("F4", "F4"), true);
+    equal(d.actions.pop(), "fetch", "F4 fetches");
+    equal(d.fire("T", "KeyT", { shiftKey: true }), true);
+    equal(d.actions.pop(), "pullRebase", "Shift+T pulls with rebase");
+  });
+
+  it("maps the stash entry actions to the selected stash", () => {
+    const d = actionHarness();
+    equal(d.fire("K", "KeyK", { shiftKey: true }), true);
+    equal(d.actions.pop(), "stashPush", "Shift+K stashes");
+    equal(d.fire("F5", "F5"), true);
+    equal(d.actions.pop(), "applyStash:stash%40%7B0%7D:false", "F5 applies the selected stash");
+    equal(d.fire("F6", "F6"), true);
+    equal(d.actions.pop(), "applyStash:stash%40%7B0%7D:true", "F6 pops the selected stash");
+    equal(d.fire("Q", "KeyQ", { shiftKey: true }), true);
+    equal(d.actions.pop(), "dropStash:stash%40%7B0%7D", "Shift+Q drops the selected stash");
+  });
+
+  it("stash actions fall back to the first stash without a selection", () => {
+    const d = actionHarness();
+    d.view.selectedStash = "";
+    equal(d.fire("F5", "F5"), true);
+    equal(d.actions.pop(), "applyStash:stash%40%7B0%7D:false", "the first stash applies");
+    const none = actionHarness();
+    none.view.selectedStash = "";
+    none.view.stashData = { stashes: [] };
+    equal(none.fire("F5", "F5"), true);
+    equal(none.actions.length, 0, "no stashes means no action target");
+  });
+
+  it("maps conflict resolution to the selected conflict file", () => {
+    const d = actionHarness();
+    d.view.file = "src/conflict.js";
+    equal(d.fire("F7", "F7"), true);
+    equal(d.actions.pop(), "resolve:src%2Fconflict.js:ours", "F7 resolves with HEAD");
+    equal(d.fire("F8", "F8"), true);
+    equal(d.actions.pop(), "resolve:src%2Fconflict.js:base", "F8 resolves with parent");
+    equal(d.fire("Shift+F9", "F9", { shiftKey: true }), true);
+    equal(d.actions.pop(), "resolve:src%2Fconflict.js:theirs", "Shift+F9 resolves with remote");
+    equal(d.fire("N", "KeyN", { shiftKey: true }), true);
+    equal(d.actions.pop(), "resolve:src%2Fconflict.js:mark", "Shift+N marks resolved");
+  });
+
+  it("conflict resolution falls back to the first conflicted file", () => {
+    const d = actionHarness();
+    d.view.file = "";
+    equal(d.fire("F7", "F7"), true);
+    equal(d.actions.pop(), "resolve:src%2Fconflict.js:ours", "the first conflicted file resolves");
+    const none = actionHarness();
+    none.view.status = { conflicted: [] };
+    equal(none.fire("F7", "F7"), true);
+    equal(none.actions.length, 0, "no conflicts means no action target");
+  });
+
+  it("the help alert lists every new action", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const alerts = [];
+    const { shortcuts } = makeShortcuts(ctx, {
+      alertFn(text) { alerts.push(text); },
+      getGitUi() { return {}; },
+    });
+    shortcuts.handleChordActionKey(keyEvent({ key: "0", code: "Digit0", target: { closest: () => null } }));
+    equal(alerts.length, 1, "help fires once");
+    for (const line of [
+      "5 Cleanup tab", "F2 Pull update", "F3 Push", "F4 Fetch origin",
+      "Shift+T Pull with rebase", "Shift+K Stash push", "F5 Apply selected stash",
+      "F6 Pop selected stash", "Shift+Q Drop selected stash",
+      "F7 Conflict: use HEAD", "F8 Conflict: use parent",
+      "Shift+F9 Conflict: use remote", "Shift+N Conflict: mark resolved",
+    ]) {
+      ok(alerts[0].includes(line), `help lists "${line}"`);
+    }
+  });
+});

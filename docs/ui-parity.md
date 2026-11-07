@@ -1,7 +1,7 @@
 # UI parity: desktop vs mobile vs TUI
 
-State of the three frontends after the keyboard accessibility and
-draggable-modal work on branch `fix_keyboard_shortucts`. The matrix records
+State of the three frontends after the keyboard accessibility,
+draggable-modal, and git log workbench work. The matrix records
 what each surface ships and the deliberate gaps. A gap listed here is a
 known difference, not a bug filed against the desktop build.
 
@@ -21,7 +21,7 @@ known difference, not a bug filed against the desktop build.
 | Search palette (prefix `/`) | Full (modal, keyboard-first) | Full (screen, keyboard handler on input) | Full |
 | Recent workspaces (server-persisted) | Full (palette section, per-row remove, clear) | Full (Worktrees screen, per-entry open/remove, clear) | Full (palette, `Ctrl+X` remove, `Ctrl+Shift+X` clear) |
 | File browser (tree, preview, edit, find/replace) | Full | Full (without find/replace bar; per-platform editor) | Full (edit buffer, Ctrl-F/Ctrl-H) |
-| Content search with snippet expansion | Full | Full | Full |
+| Content search with snippet expansion | Full (↑/↓ context arrows per match) | Full (Alt+arrows expand context) | Partial (matched lines with context and `+` load more; no per-match context arrows) |
 | Git: changes, per-file diff, stage/discard | Full | Full (files + diff + actions; stage-all toggle, amend commit, pull/push/fetch; conflicts shown as a file section, no resolution UI) | Full (plus hunk staging via `H`) |
 | Git: log, two-commit compare, file history | Full | No | Full |
 | Git: branches (create, switch, delete) | Full | Full (bottom sheet + inline delete) | Full |
@@ -31,18 +31,38 @@ known difference, not a bug filed against the desktop build.
 | Git: conflict resolution UI | Full | No (conflicted files listed only) | Full (conflicts panel) |
 | Git: tag/reset/rebase actions | Full | No | Full |
 | Notes panel | Full (right sidebar view) | Full (Notes screen) | No |
-| Session manager (built-in/external session picker) | Full (overlay) | Full (Sessions screen with create/cleanup) | Full (Shift+P overlay: switch, launch, close, cleanup, create) |
+| Session manager (built-in/external session picker) | Full (overlay; prefix `Shift+U` or footer button) | Full (Sessions screen with create/cleanup) | Full (Shift+P overlay: switch, launch, close, cleanup, create, reload) |
 | Directory/cwd picker | Full (directory_picker.js modal) | Full (directory_picker.js sheet) | No (paths typed in prompts) |
 | Settings | Full (merged modal + sections rail + search) | Full (screen, rollback chips) | Partial (read-only overlay, theme cycle only) |
-| Worktree create/open flows | Full | Full | Full (prompts) |
+| Worktree create/open flows | Full | Full | Full (prefix `N` folder-path prompts; prefix `W` browsable worktree overlay with type-to-filter) |
 | Prompt/question cards for blocked agents | Full (draggable card) | Full (bottom sheet) | No (answered in-pane) |
 | Keyboard: prefix chord system (Ctrl+B default) | Full | Partial (no prefix overlay; screen-based navigation) | Full |
 | Keyboard: arrow/Enter navigation in search | Full (palette + sidebar search panel) | Full (input keydown handler) | Full (j/k + Enter) |
 | Keyboard: Tab trap in modals | Full (static modals, git modals, directory picker, session manager) | n/a (no Tab trap; sheets close on backdrop) | n/a |
 | Keyboard: Escape closes topmost overlay | Full (cascade incl. session manager, directory picker) | Full (sheets/modals) | Full (Esc backs out) |
 | Draggable modals | Full (all desktop modals; disabled on bottom-sheet widths) | No (bottom sheets drag-handle to close, not move) | n/a |
+| LSP diagnostics under editor | Full (opt-in, per-language, hover/completion proxy) | Full (opt-in toggle, list under editor) | No |
+| Chat composer (per-pane drafts) | Full | Full (docks in lens, Keys toolbar) | Full |
+| Terminal image protocol (Kitty graphics) | Full (Ghostty core inline; wterm placeholder) | Full (same adapter) | No (Kitty/Sixel payloads skipped) |
+| Attention sounds, browser notifications, alert card | Full | Full (sound + notifications, volume/scope) | No |
+| No-sleep control | Full (header dropdown) | Full (Energy section) | No |
+| Theme customizer + density | Full (customizer, 10 pickers, profiles, density) | Partial (auto/dark/light select, no customizer or density) | Partial (dark/light/system cycle via `t`) |
+| Shortcut hint toasts | Full | No | No |
+| Agent next/prev chords | Full (prefix `A` / `Shift+A`) | Partial (tap-to-select only) | Full (prefix `a`/`A`) |
+| Search Actions section | Full (HerdrActionRegistry) | Full (mobileActionCandidates) | No |
+| Edit locked/read-only files | Full (lock toggle flips editable back and forth) | Partial (readonly only for truncated/binary/markdown) | Partial (dirty guard blocks switching; no lock toggle) |
+| Stuck-working dismiss | Full | Full | No |
+| Connection-state banner | Partial (footer backend status) | Full (header dot + retry banner) | Partial (footer status, inflight spinner) |
+| Temporary terminal overlay | No (removed) | No (removed) | No (removed) |
 | Keyboard shortcuts editor (remap) | Full | No | No |
-| LSP/window-layout/layout settings | Full | No | No |
+| LSP/layout settings sections | Full (per-language LSP scan, Layout, Window layout, Git UI sections) | Partial (LSP diagnostics toggle + Layout mode section; no window-layout or per-language LSP scan) | No |
+
+Rows the audit verified as accurate stay unchanged: workspace tabs/panes
+and agents, search palette, recent workspaces, file browser and editor
+find/replace, the Git surface split (mobile keeps status, commit, branches,
+remote ops; log, stash, cleanup, conflicts, tag/reset/rebase stay
+desktop/TUI), notes, prompt cards, the keyboard contract matrix rows,
+and draggable modals.
 
 ## Known intentional gaps
 
@@ -61,6 +81,26 @@ known difference, not a bug filed against the desktop build.
   itself there.
 - The TUI answers blocked-agent questions inside the pane itself; desktop
   renders the draggable prompt card, mobile renders a bottom sheet.
+- Desktop-only: pane split/maximize/move-tab/F10 pane menu, the shortcut
+  remap editor, the theme customizer with named profiles plus the density
+  toggle, shortcut hint toasts, the Window layout settings section, the
+  Git UI settings section, the git drawer status-split pull/push flow
+  with force modes, the in-diff hunk content editor with conflict-block
+  controls, the per-language LSP scan with hover/completion/definition/
+  formatting proxy, and the file lock toggle.
+- Desktop and mobile, missing from the TUI: notes, prompt/question cards,
+  attention sounds and browser notifications and the alert card,
+  stuck-working dismiss, no-sleep control, Kitty graphics rendering,
+  the search Actions section, and LSP diagnostics under the editor.
+- Desktop and TUI, missing from mobile: the deeper Git views (log,
+  compare, file history, blame, stash, cleanup, tag/reset/rebase, conflict
+  resolution, hunk staging, diff search), editor find/replace, agent
+  next/prev chords, and the user lock toggle for files.
+- Mobile has no unique feature: every mobile surface has a desktop
+  counterpart. The TUI adds no unique feature (its Shift+P session
+  manager and Shift+S/Shift+R renames all have desktop chords now). The
+  temporary terminal overlay and its promote flow are removed from every
+  surface.
 
 ## Keyboard contract (desktop)
 
@@ -92,6 +132,16 @@ known difference, not a bug filed against the desktop build.
   (delegated for spans, inline for tree rows). The live probe walks the
   shell, git drawer, and settings modal and fails on any clickable
   element a keyboard cannot reach.
+- Context menus open from the keyboard: the Menu key or `Shift+F10` on
+  file browser rows, git file rows, and git log rows opens the same menu
+  right-click does. The git sync buttons (pull/push/fetch, cleanup tab,
+  stash actions, conflict resolution) all carry remappable prefix chords
+  and toasts with the configured key.
+- Remaining pointer gestures without chords: pane divider drag, sidebar
+  resize drag, worktree popover chips, theme auto-cycle triple-click,
+  workspace reorder drag. Each has a keyboard alternate (arrow-key pane
+  resize via F10 menu actions, sidebar arrow keys, rail cycle chord,
+  theme dropdown) or is a pure pointer gesture.
 
 ## Shortcut parity notes (TUI chord table)
 
@@ -99,8 +149,9 @@ known difference, not a bug filed against the desktop build.
   and `DEFAULT_GIT_SHORTCUTS` chord for chord: `G` stage-all, `i`
   focus-file (previously unbound; the cwd picker keeps `Shift+I`), and
   the 5s prefix arm window matches the desktop prefix overlay timeout.
-- `Shift+P` opens the TUI session manager. The desktop has no chord for
-  it (the footer button opens the surface), so the chord is additive.
+- `Shift+P` opens the TUI session manager. The desktop's default chord is
+  prefix then `Shift+U` (remappable), so the surfaces meet in the middle:
+  both have a chord plus a click entry.
 - Pane-grid chords (`D`/`Shift+D` split, `E` close pane, `M` move tab
   to next pane, `Shift+M` maximize, `F10` pane menu) are
   N/A-by-architecture in the TUI: it renders one pane at a time, so

@@ -5,6 +5,8 @@ document originally inventoried the desktop feature set, audited the TUI,
 and laid out a modular implementation so each TUI subfeature lives in its
 own module inside `src/tui/`. It is kept as the record of what was built;
 the user-facing summary lives in `docs/features.md` (Terminal UI section).
+Later changes and corrections are marked inline where the plan
+text no longer matches what shipped.
 
 Implementation notes beyond the plan text:
 
@@ -113,6 +115,12 @@ Panel/workspace management:
    is unchanged. Remaining caveat: when the settings file has no
    credentials the 401 surfaces as an error, consistent with every
    other WebUI-API failure mode.
+
+   Superseded (0.7.36): the settings file no longer stores a plaintext
+   password, so login replay is gone. A 401 now replays live session
+   tokens from the `session-token` sidecar, LRU-coldest first, and
+   surfaces the 401 only when no token works. See the TUI auth bullet
+   under `Server authentication` in `docs/features.md`.
    Recent rows list above the local candidates, filter with the
    query, dim already-open paths (`(already open)` hint) and refuse
    navigation on them.
@@ -299,6 +307,12 @@ src/tui/
                         api base, theme mode, refresh interval)
   tests/              ← tui_tests.rs, tui_terminal_tests.rs moved here
 ```
+
+As shipped, three lines of this diagram drifted: `settings.rs` was
+never created (settings state lives in `mod.rs`, the overlay renders
+from `render/mod.rs`), `files/` ended up as `mod.rs` + `find.rs` +
+`content_search.rs` (no `editor.rs`), and the session manager
+landed in `sessions/mod.rs`.
 
 Rules for the split (mechanical, no behavior change):
 
