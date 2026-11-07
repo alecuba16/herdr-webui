@@ -514,6 +514,7 @@ fn ty_contains_unit_mutex(ty: &syn::Type, aliases: &HashMap<String, syn::Path>) 
                 let name = last.ident.to_string();
                 if let Some(target) = aliases.get(&name) {
                     let resolved = syn::TypePath {
+                        attrs: Vec::new(),
                         qself: None,
                         path: target.clone(),
                     };
@@ -580,6 +581,7 @@ fn resolves_to_unit(
             };
             visiting.push(name);
             let resolved = syn::TypePath {
+                attrs: Vec::new(),
                 qself: None,
                 path: target.clone(),
             };
