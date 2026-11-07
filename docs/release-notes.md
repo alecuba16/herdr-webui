@@ -1,6 +1,32 @@
 # Release notes
 
 ## Unreleased
+- The installed service no longer bakes a bind into the LaunchAgent
+  plist. A bare `make install-mac` (and the brew service) starts
+  without `--bind` and honors `webui-settings.json` on every start, so
+  a port or TLS change in the settings takes effect on restart without
+  reinstalling. Only an explicit `--bind` at install time pins the
+  port; preview instances keep their own. Linux units get the same
+  treatment for `--https`.
+- The plaintext password in `webui-settings.json` is replaced by a
+  non-recoverable Argon2id PHC hash (`password_hash`). Loading a file
+  with the old plaintext key migrates it in place and rewrites the
+  file without the plaintext, saves always write the hash, and the
+  settings form verifies a same-password resubmission against the
+  stored hash so identical credentials no longer rotate the session.
+- New `herdr-webui set-password` subcommand (--user NAME, --password
+  VALUE | --stdin, --clear) sets or clears the credential offline,
+  with a hidden double prompt on a TTY. Clearing refuses non-loopback
+  binds and drops the persisted session sidecar, so old tokens die
+  with the old credential.
+- The TUI can no longer log in with the stored password (the file
+  only holds a hash now), so on a 401 it replays live session tokens
+  from the session-token sidecar, LRU-coldest first, and surfaces the
+  401 only when no token works.
+- The live jcode detection e2e skips its working-flip assertions when
+  the isolated home has no usable provider (the turn errors in ~16ms,
+  under the 500ms detector sample); boot and idle detection stay
+  asserted.
 - Every surface that opens a workspace or worktree goes straight to
   the folder picker: location bar handoffs, dashboard cards, search
   modal rows, and the Ctrl+B chords dropped their confirmation
