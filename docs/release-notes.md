@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.7.40 Release Notes
 - Browser terminals forward OSC 10/11/12 color query replies to the
   PTY instead of filtering them, matching native terminals. Terminal
   apps that query the background color (jcode, Neovim, Helix, fzf, bat)
@@ -622,6 +622,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.40 | 2026-11-08 | [v0.7.40](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.40) |
 | 0.7.39 | 2026-11-07 | [v0.7.39](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.39) |
 | 0.7.38 | 2026-11-07 | [v0.7.38](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.38) |
 | 0.7.37 | 2026-11-07 | [v0.7.37](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.37) |
