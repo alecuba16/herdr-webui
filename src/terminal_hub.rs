@@ -965,8 +965,17 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let server = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
-            let mut hello = [0u8; 512];
-            let _ = conn.read(&mut hello);
+            // Drain the full length-prefixed hello frame before dropping:
+            // the frame header and payload go out in separate writes, and a
+            // single raw read can return after just the header. Dropping
+            // then would race the payload write into EPIPE, turning the
+            // expected EOF-on-read into a SendHandshake failure.
+            let mut header = [0u8; 4];
+            if conn.read_exact(&mut header).is_ok() {
+                let len = u32::from_le_bytes(header) as usize;
+                let mut payload = vec![0u8; len];
+                let _ = conn.read_exact(&mut payload);
+            }
             // Drop the connection without ever replying.
             drop(conn);
         });
