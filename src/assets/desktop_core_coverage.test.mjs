@@ -1347,14 +1347,13 @@ describe("desktop terminal surface helpers", () => {
     assert.equal(vm.runInContext("window.__lines.length", ctx), 1);
   });
 
-  it("sendInputData chunks large payloads and strips reports", () => {
+  it("sendInputData chunks large payloads and strips mouse reports", () => {
     const { ctx } = boot();
     vm.runInContext(
       `window.__sends = [];
        window.__queue = [];
        termWs = { readyState: 1, bufferedAmount: 0, send(x) { window.__sends.push(x); } };
-       globalThis.HerdrAppHelpers.stripTerminalMouseReports = (d, on) => (on ? "" : d);
-       globalThis.HerdrAppHelpers.stripTerminalQueryReplies = (d, st) => d;`,
+       globalThis.HerdrAppHelpers.stripTerminalMouseReports = (d, on) => (on ? "" : d);`,
       ctx,
     );
     vm.runInContext('sendInputData("hi")', ctx);

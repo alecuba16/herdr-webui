@@ -171,7 +171,6 @@ function loadTerminalModule() {
     let inputFlushTimer = null;
     let inputQueue = [];
     let inputQueueMaxBufferedAmount = 65536;
-    let terminalQueryReplyState = {};
     let pasteChunkTimer = null;
     let pasteProgressHideTimer = null;
     let pasteJob = null;

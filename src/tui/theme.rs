@@ -70,21 +70,25 @@ enum TerminalTheme {
 }
 
 fn detect_terminal_theme() -> Option<TerminalTheme> {
-    // The query writes OSC 10/11 + DA1 to stdout and blocking-reads stdin,
+    // The query writes OSC 11 + DA1 to stdout and blocking-reads stdin,
     // so it must run at most once per process: a second run (for example
     // when the user cycles the theme to `system`) would swallow the next
     // keypress as a query response and stall the event loop.
+    //
+    // OSC 11 (background) alone, never OSC 10+11: the two replies can
+    // arrive split far apart, and the query consumes one while the event
+    // reader decodes the other as ordinary key input.
     static DETECTED: std::sync::OnceLock<Option<TerminalTheme>> = std::sync::OnceLock::new();
     *DETECTED.get_or_init(|| {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return None;
         }
         let mut options = terminal_colorsaurus::QueryOptions::default();
-        options.timeout = Duration::from_millis(400);
-        match terminal_colorsaurus::theme_mode(options).ok() {
-            Some(terminal_colorsaurus::ThemeMode::Dark) => Some(TerminalTheme::Dark),
-            Some(terminal_colorsaurus::ThemeMode::Light) => Some(TerminalTheme::Light),
-            None => None,
+        options.timeout = Duration::from_millis(120);
+        match terminal_colorsaurus::background_color(options) {
+            Ok(background) if background.perceived_lightness() > 0.5 => Some(TerminalTheme::Light),
+            Ok(_) => Some(TerminalTheme::Dark),
+            Err(_) => None,
         }
     })
 }

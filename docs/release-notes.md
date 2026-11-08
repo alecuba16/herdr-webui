@@ -1,5 +1,17 @@
 # Release notes
 
+## Unreleased
+- Browser terminals forward OSC 10/11/12 color query replies to the
+  PTY instead of filtering them, matching native terminals. Terminal
+  apps that query the background color (jcode, Neovim, Helix, fzf, bat)
+  now detect the WebUI light/dark theme automatically, because the
+  renderer core answers with the live theme colors. Mouse-report
+  filtering is unchanged.
+- The TUI theme query now asks only OSC 11 (background) with a 120 ms
+  budget, instead of OSC 10+11 with 400 ms: fewer bytes, and no second
+  reply that can leak into the input stream when a terminal answers
+  slowly.
+
 ## 0.7.39 Release Notes
 - install-mac/update-mac/uninstall-mac now detect a Homebrew install
   (the herdr-webui Cellar, or HERDR_WEBUI_BREW_CELLAR) and delegate to

@@ -11,7 +11,6 @@
       inputQueue = [],
       writeQueue = [],
       writeFlushPending = false,
-      terminalQueryReplyState = {},
       inputEncoder = new TextEncoder(),
       terminalAttachPending = false,
       terminalInputGate = null,
@@ -471,7 +470,6 @@
       pendingTerminalResize = null;
       setConnectionState(false);
       inputQueue = [];
-      terminalQueryReplyState = {};
       writeQueue = [];
       writeFlushPending = false;
       terminalAttachPending = false;
@@ -569,8 +567,6 @@
       if (!termWs || termWs.readyState !== 1 || !data) return;
       if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
         data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
-      if (!inputOptions.allowTerminalReplies && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalQueryReplies)
-        data = globalThis.HerdrAppHelpers.stripTerminalQueryReplies(data, terminalQueryReplyState);
       if (!data) return;
       const bytes = inputEncoder.encode(data);
       const chunkSize = inputOptions.chunkSize || 16 * 1024;
