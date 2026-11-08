@@ -85,12 +85,21 @@ fn detect_terminal_theme() -> Option<TerminalTheme> {
         }
         let mut options = terminal_colorsaurus::QueryOptions::default();
         options.timeout = Duration::from_millis(120);
-        match terminal_colorsaurus::background_color(options) {
-            Ok(background) if background.perceived_lightness() > 0.5 => Some(TerminalTheme::Light),
-            Ok(_) => Some(TerminalTheme::Dark),
-            Err(_) => None,
-        }
+        terminal_colorsaurus::background_color(options)
+            .ok()
+            .map(classify_background)
     })
+}
+
+/// Classify a terminal background color as light or dark by perceptual
+/// lightness. 0.5 is perceptual middle gray, the same threshold jcode and
+/// colorsaurus' own docs use, so both tools agree on any given background.
+fn classify_background(background: terminal_colorsaurus::Color) -> TerminalTheme {
+    if background.perceived_lightness() > 0.5 {
+        TerminalTheme::Light
+    } else {
+        TerminalTheme::Dark
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +173,32 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_real_terminal_backgrounds_by_perceptual_lightness() {
+        // #eff1f5: the WebUI light theme background, seen live in the
+        // OSC 11 reply during verification. #181825: the dark palette bg.
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0xefef, 0xf1f1, 0xf5f5)),
+            TerminalTheme::Light
+        );
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0x1818, 0x1818, 0x2525)),
+            TerminalTheme::Dark
+        );
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(
+                u16::MAX,
+                u16::MAX,
+                u16::MAX
+            )),
+            TerminalTheme::Light
+        );
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0, 0, 0)),
+            TerminalTheme::Dark
+        );
+    }
 
     #[test]
     fn parses_theme_names_and_aliases() {

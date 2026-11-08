@@ -10,7 +10,9 @@
 - The TUI theme query now asks only OSC 11 (background) with a 120 ms
   budget, instead of OSC 10+11 with 400 ms: fewer bytes, and no second
   reply that can leak into the input stream when a terminal answers
-  slowly.
+  slowly. The light/dark classification is a tested pure function on
+  the background color, using the same perceptual-lightness 0.5
+  threshold jcode uses, so both tools agree on any background.
 
 ## 0.7.39 Release Notes
 - install-mac/update-mac/uninstall-mac now detect a Homebrew install
