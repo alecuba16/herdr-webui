@@ -153,7 +153,6 @@ let term,
   lastTabsHtml = "",
   closeChordUntil = 0,
   inputQueue = [],
-  terminalQueryReplyState = {},
   inputQueueMaxBufferedAmount = 65536,
   inputFlushTimer = null,
   pasteJob = null,
@@ -4179,7 +4178,6 @@ function resetTerminalConnection(clear = false, destroy = false) {
   }
   if (window.HerdrGraphicsBridge) window.HerdrGraphicsBridge.disconnect();
   inputQueue = [];
-  terminalQueryReplyState = {};
   inputQueueMaxBufferedAmount = 65536;
   if (pasteChunkTimer) {
     clearTimeout(pasteChunkTimer);

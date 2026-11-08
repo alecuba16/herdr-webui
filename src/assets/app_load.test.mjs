@@ -3541,22 +3541,35 @@ describe("app bundle load", () => {
     equal(vm.runInContext("state.sessionBackend", ctx), "builtin");
   });
 
-  it("filters OSC color query replies before terminal input reaches the backend", () => {
+  it("passes OSC color query replies through to the PTY so terminal apps detect the theme", () => {
     const ctx = context();
     runSource(ctx);
-    const strip = ctx.HerdrAppHelpers.stripTerminalQueryReplies;
-
-    equal(
-      strip("\x1b]10;rgb:4c4c/4f4f/6969\x07hello\x1b]11;rgb:efef/f1f1/f5f5\x1b\\"),
-      "hello",
+    ctx.WebSocket = class {
+      constructor() {
+        this.readyState = 1;
+        this.bufferedAmount = 0;
+        this.sent = [];
+      }
+      send(frame) {
+        this.sent.push(frame);
+      }
+    };
+    vm.runInContext(
+      `options.terminalMouseReporting = false;
+       termWs = new WebSocket();
+       sendInputData("\\x1b]11;rgb:efef/f1f1/f5f5\\x1b\\\\");`,
+      ctx,
     );
+    const sent = vm.runInContext("termWs.sent", ctx);
+    assert.ok(sent && sent.length === 1, "query reply must reach the socket once");
+    const frame = sent[0];
+    assert.ok(frame instanceof Uint8Array, "input must reach the socket as bytes");
+    const text = new TextDecoder().decode(frame);
     equal(
-      strip("\x1b]4;10;rgb:d7d7/ffff/d6d6\x1b\\prompt"),
-      "prompt",
+      text,
+      "\x1b]11;rgb:efef/f1f1/f5f5\x1b\\",
+      "query replies from the renderer core must reach the PTY verbatim",
     );
-    equal(strip("4;10;rgb:d7d7/ffff/d6d6\\prompt"), "prompt");
-    equal(strip("\x1b]12;rgb:d7d7/ffff/d6d6\x07prompt"), "prompt");
-    equal(strip("normal input"), "normal input");
   });
 
   it("renders default shell panels as numeric panel labels", () => {
@@ -4323,8 +4336,9 @@ describe("app bundle load", () => {
     match(source, /allowMouseReports && globalThis\.HerdrAppHelpers && globalThis\.HerdrAppHelpers\.stripTerminalMouseReports/);
     match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
     match(source, /onWheelMouseReport: \(report\) => sendInputData\(report, \{ allowMouseReports: true \}\)/);
-    match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
-    match(source, /terminalQueryReplyState = \{\}/);
+    doesNotMatch(source, /stripTerminalQueryReplies/);
+    doesNotMatch(source, /allowTerminalReplies/);
+    doesNotMatch(source, /terminalQueryReplyState/);
     match(source, /JetBrainsMono Nerd Font/);
     match(source, /LEGACY_TERMINAL_FONT_FAMILY/);
     match(source, /HerdrAppHelpers\.resolveTerminalFontFamily\(""\)/);

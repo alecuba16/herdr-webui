@@ -1,5 +1,5 @@
 import { describe, it } from "node:test";
-import { deepEqual, doesNotThrow, equal, match, ok } from "node:assert/strict";
+import { deepEqual, doesNotMatch, doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { TextEncoder } from "node:util";
@@ -1779,7 +1779,8 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Terminal font"));
     ok(settingsHtml.includes("Terminal links"));
     ok(settingsHtml.includes("Terminal mouse reporting"));
-    match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
+    doesNotMatch(source, /stripTerminalQueryReplies/);
+    doesNotMatch(source, /terminalQueryReplyState/);
     ok(settingsHtml.includes("Line numbers"));
     ok(settingsHtml.includes("HerdrMobile.setSettingDebounced('terminalFontFamily'"));
     ok(settingsHtml.includes("HerdrMobile.commitSettingFromChange('terminalFontFamily'"));

@@ -70,23 +70,36 @@ enum TerminalTheme {
 }
 
 fn detect_terminal_theme() -> Option<TerminalTheme> {
-    // The query writes OSC 10/11 + DA1 to stdout and blocking-reads stdin,
+    // The query writes OSC 11 + DA1 to stdout and blocking-reads stdin,
     // so it must run at most once per process: a second run (for example
     // when the user cycles the theme to `system`) would swallow the next
     // keypress as a query response and stall the event loop.
+    //
+    // OSC 11 (background) alone, never OSC 10+11: the two replies can
+    // arrive split far apart, and the query consumes one while the event
+    // reader decodes the other as ordinary key input.
     static DETECTED: std::sync::OnceLock<Option<TerminalTheme>> = std::sync::OnceLock::new();
     *DETECTED.get_or_init(|| {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return None;
         }
         let mut options = terminal_colorsaurus::QueryOptions::default();
-        options.timeout = Duration::from_millis(400);
-        match terminal_colorsaurus::theme_mode(options).ok() {
-            Some(terminal_colorsaurus::ThemeMode::Dark) => Some(TerminalTheme::Dark),
-            Some(terminal_colorsaurus::ThemeMode::Light) => Some(TerminalTheme::Light),
-            None => None,
-        }
+        options.timeout = Duration::from_millis(120);
+        terminal_colorsaurus::background_color(options)
+            .ok()
+            .map(classify_background)
     })
+}
+
+/// Classify a terminal background color as light or dark by perceptual
+/// lightness. 0.5 is perceptual middle gray, the same threshold jcode and
+/// colorsaurus' own docs use, so both tools agree on any given background.
+fn classify_background(background: terminal_colorsaurus::Color) -> TerminalTheme {
+    if background.perceived_lightness() > 0.5 {
+        TerminalTheme::Light
+    } else {
+        TerminalTheme::Dark
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +173,32 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_real_terminal_backgrounds_by_perceptual_lightness() {
+        // #eff1f5: the WebUI light theme background, seen live in the
+        // OSC 11 reply during verification. #181825: the dark palette bg.
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0xefef, 0xf1f1, 0xf5f5)),
+            TerminalTheme::Light
+        );
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0x1818, 0x1818, 0x2525)),
+            TerminalTheme::Dark
+        );
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(
+                u16::MAX,
+                u16::MAX,
+                u16::MAX
+            )),
+            TerminalTheme::Light
+        );
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0, 0, 0)),
+            TerminalTheme::Dark
+        );
+    }
 
     #[test]
     fn parses_theme_names_and_aliases() {
