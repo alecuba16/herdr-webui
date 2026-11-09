@@ -305,14 +305,28 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Extract this request's session-cookie token, if any. The logout path
 /// uses it to revoke exactly the caller's session.
+///
+/// Browsers send each cookie as its own `Cookie` header field on HTTP/2
+/// (Chrome since M120 "cookie crumbing"), so a request may carry several
+/// fields and the session cookie can sit in any of them. Scan every field,
+/// not just the first.
 pub(crate) fn cookie_value(headers: &HeaderMap) -> Option<String> {
+    cookie_fields(headers).find_map(|cookie| {
+        cookie
+            .split(';')
+            .find_map(|part| part.trim().strip_prefix(COOKIE_PREFIX).map(str::to_string))
+    })
+}
+
+/// Every `Cookie` header field as `&str`. `get_all` is the only correct
+/// accessor: `get` returns just the first field and misses the session
+/// cookie whenever another cookie shares the host (e.g. grafana on
+/// 127.0.0.1), which showed up as an endless login-page loop.
+fn cookie_fields(headers: &HeaderMap) -> impl Iterator<Item = &str> {
     headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())?
-        .split(';')
-        .filter_map(|part| part.trim().strip_prefix(COOKIE_PREFIX))
-        .map(str::to_string)
-        .next()
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
 }
 
 /// Per-IP failed-login throttle. Without it a remote can hammer
@@ -391,20 +405,19 @@ pub(crate) fn authorized(
     if auth.localhost_bypass(remote) {
         return true;
     }
-    let Some(cookie) = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
+    // Same multi-field scan as `cookie_value`: HTTP/2 cookie crumbing can
+    // put the session cookie in any `Cookie` field. Only matching parts
+    // produce slices, so the hot path stays allocation-free.
     let mut matched = false;
-    for part in cookie.split(';') {
-        let Some(value) = part.trim().strip_prefix(COOKIE_PREFIX) else {
-            continue;
-        };
-        if auth.find_valid_session(value.as_bytes()).is_some() {
-            matched = true;
-            break;
+    'fields: for cookie in cookie_fields(headers) {
+        for part in cookie.split(';') {
+            let Some(value) = part.trim().strip_prefix(COOKIE_PREFIX) else {
+                continue;
+            };
+            if auth.find_valid_session(value.as_bytes()).is_some() {
+                matched = true;
+                break 'fields;
+            }
         }
     }
     // Lapsed sessions the check happened to skip never stay authorized, and
@@ -535,6 +548,26 @@ mod tests {
         headers
     }
 
+    /// Chrome's HTTP/2 cookie crumbing: one `Cookie` field per cookie, in
+    /// jar order. The session cookie can land in any position.
+    fn headers_with_crumbled_cookies(session_token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_str("grafana_session_expiry=2026-11-29T10:45:00Z")
+                .expect("valid cookie"),
+        );
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_str("grafana_session=abc123").expect("valid cookie"),
+        );
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{COOKIE_NAME}={session_token}")).expect("valid cookie"),
+        );
+        headers
+    }
+
     #[test]
     fn constant_time_eq_compares_equal_values() {
         assert!(constant_time_eq(b"same", b"same"));
@@ -601,6 +634,37 @@ mod tests {
         let second = auth.lock().unwrap().issue_session().token;
         assert!(authorized(&auth, &headers_with_cookie(&first), remote));
         assert!(authorized(&auth, &headers_with_cookie(&second), remote));
+    }
+
+    #[test]
+    fn authorized_reads_session_cookie_from_any_cookie_field() {
+        // Regression for the login loop: Chrome sends each cookie as its
+        // own `Cookie` header field over HTTP/2, so with older cookies for
+        // the same host (grafana on 127.0.0.1) the session cookie sits in
+        // a later field and the old single-`get` read never saw it.
+        let (auth, remote) = make_auth(false);
+        let token = auth.lock().unwrap().issue_session().token;
+        assert!(authorized(
+            &auth,
+            &headers_with_crumbled_cookies(&token),
+            remote
+        ));
+        assert!(!authorized(
+            &auth,
+            &headers_with_crumbled_cookies("wrong-token"),
+            remote
+        ));
+    }
+
+    #[test]
+    fn cookie_value_reads_session_cookie_from_any_cookie_field() {
+        // Logout must revoke the right session too, so it reads the token
+        // through the same every-field scan.
+        let token = "later-field-token";
+        assert_eq!(
+            cookie_value(&headers_with_crumbled_cookies(token)),
+            Some(token.to_string())
+        );
     }
 
     #[test]
