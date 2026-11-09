@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.7.41 Release Notes
+- Auth now scans every `Cookie` header field for the session cookie
+  instead of only the first. Chrome sends one field per cookie over
+  HTTP/2 (cookie crumbing, since M120), so when older cookies share the
+  host (for example grafana on 127.0.0.1) the session cookie sat in a
+  later field and every request read as logged out. The visible symptom
+  was an endless login loop: login succeeds, the reload lands back on
+  the login page. Logout reads the token through the same scan, so it
+  still revokes exactly the caller's session.
+
 ## 0.7.40 Release Notes
 - Browser terminals forward OSC 10/11/12 color query replies to the
   PTY instead of filtering them, matching native terminals. Terminal
@@ -622,6 +632,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.41 | 2026-11-09 | [v0.7.41](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.41) |
 | 0.7.40 | 2026-11-08 | [v0.7.40](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.40) |
 | 0.7.39 | 2026-11-07 | [v0.7.39](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.39) |
 | 0.7.38 | 2026-11-07 | [v0.7.38](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.38) |
