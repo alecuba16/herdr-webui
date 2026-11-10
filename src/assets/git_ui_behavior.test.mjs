@@ -859,34 +859,47 @@ test("folder mutations are hidden and refused outside the changes view", async (
   assert.equal(staged.length, 0, "no stage POST may fire outside changes mode");
 });
 
-test("Repo button renders only with a remote and opens the web UI synchronously", async () => {
-  // With a remote: the button sits in the worktree-actions row and its
-  // click handler is the sync openRepoWeb (no fetch, no popup-blocked
-  // window.open chain).
-  const remote = await openedWithStatus({ branch: "feature-x", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true, repo_web_url: "https://github.com/acme/widget/tree/feature-x" });
+test("Repo button opens the repo home page and Branch button opens the current branch page", async () => {
+  // Both buttons sit in the worktree-actions row, gated on the /status
+  // web URL fields: Repo on repo_home_url, Branch on branch_web_url.
+  // Clicks are sync handlers (no fetch, no popup-blocked window.open
+  // chain).
+  const remote = await openedWithStatus({ branch: "feature-x", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true, repo_home_url: "https://github.com/acme/widget", repo_web_url: "https://github.com/acme/widget/tree/feature-x", branch_web_url: "https://github.com/acme/widget/tree/feature-x" });
   let html = String(ctxHtml(remote));
   assert.match(html, /class="git-ui-btn git-ui-repo-open"[^>]*onclick="HerdrGitUi\.openRepoWeb\(event\)">Repo</);
+  assert.match(html, /class="git-ui-btn git-ui-branch-open"[^>]*onclick="HerdrGitUi\.openBranchWeb\(event\)">Branch</);
   let opened = [];
   remote.ctx.window.open = (url) => { opened.push(String(url)); };
   remote.ui.openRepoWeb();
-  assert.equal(opened.length, 1, "click opens exactly one tab");
-  assert.equal(opened[0], "https://github.com/acme/widget/tree/feature-x", "branch on the remote opens the branch page");
+  assert.equal(opened.length, 1, "repo click opens exactly one tab");
+  assert.equal(opened[0], "https://github.com/acme/widget", "repo click opens the repo home page");
+  opened = [];
+  remote.ui.openBranchWeb();
+  assert.equal(opened.length, 1, "branch click opens exactly one tab");
+  assert.equal(opened[0], "https://github.com/acme/widget/tree/feature-x", "branch click opens the current branch page");
 
-  // Branch never pushed: the same click opens the default branch instead.
-  const offRemote = await openedWithStatus({ branch: "feature-y", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: false, repo_web_url: "https://github.com/acme/widget/tree/main" });
+  // Branch never pushed: Repo still opens the repo home, Branch does
+  // not render at all (no branch_web_url for a remote-less branch).
+  const offRemote = await openedWithStatus({ branch: "feature-y", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: false, repo_home_url: "https://github.com/acme/widget", repo_web_url: "https://github.com/acme/widget/tree/main" });
+  html = String(ctxHtml(offRemote));
+  assert.ok(!/git-ui-branch-open/.test(html), "unpushed branch means no Branch button");
   opened = [];
   offRemote.ctx.window.open = (url) => { opened.push(String(url)); };
   offRemote.ui.openRepoWeb();
-  assert.equal(opened[0], "https://github.com/acme/widget/tree/main", "unpushed branch falls back to the default branch");
+  assert.equal(opened[0], "https://github.com/acme/widget", "repo click still opens the repo home");
+  offRemote.ui.openBranchWeb();
+  assert.equal(opened.length, 1, "branch click with no branch_web_url opens nothing");
 
-  // No remote configured: the button does not render at all.
+  // No remote configured: neither button renders.
   const localOnly = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] });
   html = String(ctxHtml(localOnly));
   assert.ok(!/git-ui-repo-open/.test(html), "no remote means no Repo button");
+  assert.ok(!/git-ui-branch-open/.test(html), "no remote means no Branch button");
   opened = [];
   localOnly.ctx.window.open = (url) => { opened.push(String(url)); };
   localOnly.ui.openRepoWeb();
-  assert.equal(opened.length, 0, "no remote means the click opens nothing");
+  localOnly.ui.openBranchWeb();
+  assert.equal(opened.length, 0, "no remote means the clicks open nothing");
 });
 
 test("status button labels Pull/Push/Fetch from sync state and runs the matching action", async () => {
@@ -1329,17 +1342,21 @@ test("branch list module is registered and wired before git_ui.js consumes it", 
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
   assert.match(gitUiSource, /const renderWorktreeActions = branchList\.renderWorktreeActions;/);
-  // The persistent Repo button opens the remote web UI from cached status
-  // data only: it renders only when a remote exists and never posts.
+  // The persistent Repo and Branch buttons open the remote web UI from
+  // cached status data only: they render only when a remote exists and
+  // never post.
   assert.match(branchListSource, /git-ui-repo-open/);
+  assert.match(branchListSource, /git-ui-branch-open/);
   assert.match(branchListSource, /HerdrGitUi\.openRepoWeb\(event\)/);
+  assert.match(branchListSource, /HerdrGitUi\.openBranchWeb\(event\)/);
   assert.match(gitUiSource, /openRepoWeb\(\)/);
+  assert.match(gitUiSource, /openBranchWeb\(\)/);
   // Web/PR URL shapes live in the backend; the toast module only reads
   // the /status fields and gates the PR link on push timing.
   const toastsSource = readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8");
   assert.match(toastsSource, /branch_web_url/);
   assert.match(toastsSource, /pr_create_url/);
-  assert.match(gitUiSource, /status\.repo_web_url/);
+  assert.match(gitUiSource, /status\.repo_home_url/);
   assert.ok(!/normalizeRemoteUrl|bitbucket\.org\//.test(toastsSource), "no host sniffing stays client-side");
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');

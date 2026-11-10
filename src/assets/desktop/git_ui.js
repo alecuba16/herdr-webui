@@ -2460,13 +2460,20 @@
     closeCommitModal() { saveDraftFromDom(); state.commitModal = null; render(); },
     closeGitToast() { state.gitToast = null; render(); },
     openGitUrl(url) { const decoded = decodeURIComponent(url || ""); if (decoded) window.open(decoded, "_blank", "noopener"); },
-    // Persistent Repo button: /status precomputes repo_web_url (branch
-    // page, or the default branch for never-pushed branches), so the
-    // click is synchronous and not subject to popup blocking.
+    // Persistent Repo and Branch buttons: /status precomputes
+    // repo_home_url (repo home) and branch_web_url (current branch page,
+    // empty when the remote lacks the branch), so the clicks are
+    // synchronous and not subject to popup blocking.
     openRepoWeb() {
       const view = active();
       const status = (view && view.status) || {};
-      const url = String(status.repo_web_url || "");
+      const url = String(status.repo_home_url || status.repo_web_url || "");
+      if (url) window.open(url, "_blank", "noopener");
+    },
+    openBranchWeb() {
+      const view = active();
+      const status = (view && view.status) || {};
+      const url = String(status.branch_web_url || "");
       if (url) window.open(url, "_blank", "noopener");
     },
     toggleCommitBody(value) { saveDraftFromDom(); state.commitModal = Object.assign({}, state.commitModal || {}, { includeBody: !!value }); render(); },

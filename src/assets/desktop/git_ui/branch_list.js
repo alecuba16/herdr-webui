@@ -29,14 +29,18 @@
         const menuOpen = state.headerMenu ? "true" : "false";
         const statusButton = `<button class="git-ui-btn git-ui-status-label" data-method="${esc(statusMethod)}" title="${esc(statusHint)}" onclick="HerdrGitUi.runStatusAction()">${esc(statusLabel)}</button>`;
         const statusCaret = `<button class="git-ui-btn git-ui-status-caret" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${menuOpen}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><b class="git-ui-chip-caret">▾</b></button>`;
-        // Repo button: /status hands us repo_web_url (current branch when
-        // the remote has it, default branch otherwise). The gate matches
-        // the click source exactly: no web URL means no button, instead
+        // Repo and Branch buttons: /status hands us repo_home_url (the
+        // repo home page) and branch_web_url (the current branch page,
+        // only when the remote has the branch). The gate matches the
+        // click source exactly: no web URL means no button, instead
         // of a button that silently opens nothing.
-        const repoButton = String(s.repo_web_url || "").trim() && window.HerdrGitUi && typeof window.HerdrGitUi.openRepoWeb === "function"
-          ? `<button class="git-ui-btn git-ui-repo-open" title="Open the repository on the remote" onclick="HerdrGitUi.openRepoWeb(event)">Repo</button>`
+        const repoButton = String(s.repo_home_url || "").trim() && window.HerdrGitUi && typeof window.HerdrGitUi.openRepoWeb === "function"
+          ? `<button class="git-ui-btn git-ui-repo-open" title="Open the repository home on the remote" onclick="HerdrGitUi.openRepoWeb(event)">Repo</button>`
           : "";
-        return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${repoButton}${statusButton}${statusCaret}</div></div>`;
+        const branchButton = String(s.branch_web_url || "").trim() && window.HerdrGitUi && typeof window.HerdrGitUi.openBranchWeb === "function"
+          ? `<button class="git-ui-btn git-ui-branch-open" title="Open the current branch on the remote" onclick="HerdrGitUi.openBranchWeb(event)">Branch</button>`
+          : "";
+        return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${repoButton}${branchButton}${statusButton}${statusCaret}</div></div>`;
       }
 
       // Dropdown next to the status button, exactly seven items: Fetch /
