@@ -18,10 +18,10 @@ mod stash;
 pub(crate) use cleanup::{parse_cleanup_repos, test_support};
 pub use cleanup::{CleanupItem, CleanupItemKind};
 pub use conflicts::{ConflictAction, ConflictResolveMode};
-pub use log::LogScope;
 #[cfg(test)]
 pub(crate) use log::LOG_MAX_LIMIT;
 pub(crate) use log::LOG_PAGE_SIZE;
+pub use log::{LogBaseComparison, LogComparisonCounts, LogScope};
 
 use std::collections::HashMap;
 
@@ -219,6 +219,10 @@ pub struct GitPanel {
     /// File filter for the Log view (webui `logFilePath`); set by the
     /// file explorer "show history" entry.
     pub log_file: Option<String>,
+    /// HEAD vs base comparison from the last log fetch (webui
+    /// `comparison` chip): ahead/behind against the local base branch
+    /// and its `origin/` counterpart when the refs exist.
+    pub log_comparison: Option<LogBaseComparison>,
     /// Webui `selectedLogCommits`: up to two commits marked with Space
     /// in the Log view; `c` compares the pair ordered by log position
     /// (newest = target, like `compareSelectedLog`).
@@ -296,6 +300,7 @@ impl GitPanel {
             log_limit: LOG_PAGE_SIZE,
             log_has_more: false,
             log_file: None,
+            log_comparison: None,
             log_selected: Vec::new(),
             diff_search_active: false,
             diff_search_query: String::new(),

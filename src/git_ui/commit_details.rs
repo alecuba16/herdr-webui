@@ -211,6 +211,11 @@ mod tests {
             format!("https://github.com/owner/repo/commit/{next}")
         );
         assert!(commit_details(cwd, &"f".repeat(40)).is_err());
+        // A missing repo makes git fail; the handler shape is the
+        // BAD_GATEWAY error, not a panic.
+        let missing = commit_details("/nonexistent-repo-dir-for-herdr", &"a".repeat(40));
+        let (status, _) = missing.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
         std::fs::remove_dir_all(repo).unwrap();
     }
 }

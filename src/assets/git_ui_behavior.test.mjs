@@ -5606,3 +5606,60 @@ test("Git Log restore pushes the anchor row below the sticky searchbar and table
   booted.ui.selectLogCommit({ shiftKey: false }, "aaaa");
   assert.equal(fresh.scrollTop, 290, "the overlapped anchor row lands below the 70px sticky stack");
 });
+
+test("log comparison chip renders local and origin base ahead/behind pairs", async () => {
+  // The scope-row chip mirrors the server comparison block. Without the
+  // pane chain the log body renders "Loading log...", so assert on the
+  // real workbench markup via the log render module directly: the same
+  // HerdrGitLog.render the server bundle calls.
+  const renderChip = (comparison) => {
+    const html = booted.ctx.window.HerdrGitLog.render({
+      data: { commits: [], lines: [], rows: [], has_more: false, limit: 80, comparison },
+      selected: [],
+      logScope: "all",
+      baseBranch: (comparison && comparison.base_branch) || "master",
+      filePath: "",
+      filters: {},
+      esc: String,
+      arg: String,
+    });
+    return String(html);
+  };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  const differing = {
+    base_branch: "master",
+    exists: true,
+    local: { ahead: 3, behind: 1 },
+    origin: { ahead: 3, behind: 2 },
+  };
+  const html = renderChip(differing);
+  assert.match(html, /git-ui-log-comparison/, "the comparison chip renders in the scope row");
+  assert.match(html, /master <b class="git-ui-log-comparison-ahead">↑3<\/b>/, "the local master slot shows its ahead count");
+  assert.match(html, /origin\/master <b class="git-ui-log-comparison-ahead">↑3<\/b> <b class="git-ui-log-comparison-behind">↓2<\/b>/, "the origin slot shows its own behind count");
+
+  // Identical local and origin pairs collapse into a single slot.
+  const identicalHtml = renderChip({
+    base_branch: "main",
+    exists: true,
+    local: { ahead: 2, behind: 0 },
+    origin: { ahead: 2, behind: 0 },
+  });
+  assert.match(identicalHtml, /main <b class="git-ui-log-comparison-ahead">↑2<\/b>/, "the identical local pair renders once");
+  assert.doesNotMatch(identicalHtml, /origin\/main/, "the duplicate origin slot is dropped");
+
+  // A missing base ref hides the chip entirely.
+  assert.doesNotMatch(renderChip({ base_branch: "master", exists: false }), /git-ui-log-comparison/, "no chip when the base ref is missing");
+  // An absent comparison block (older server, log error fallback) hides it too.
+  assert.doesNotMatch(renderChip(undefined), /git-ui-log-comparison/, "no chip without a comparison block");
+  // Only the origin ref existing still renders its slot alone.
+  const originOnly = renderChip({ base_branch: "master", exists: true, origin: { ahead: 0, behind: 4 } });
+  assert.match(originOnly, /origin\/master <b class="git-ui-log-comparison-ahead">↑0<\/b> <b class="git-ui-log-comparison-behind">↓4<\/b>/, "an origin-only comparison renders its slot");
+  assert.doesNotMatch(originOnly, />master /, "no local slot when the server sent none");
+});

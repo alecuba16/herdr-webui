@@ -302,4 +302,155 @@ mod tests {
             vec!["blame", "--line-porcelain", "HEAD", "--", "src/main.rs"]
         );
     }
+
+    fn temp_repo(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let repo = std::env::temp_dir().join(format!("herdr-file-{label}-{stamp}"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = crate::git_bin::command()
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.name", "Herdr Test"]);
+        git(&["config", "user.email", "herdr-test@example.invalid"]);
+        repo
+    }
+
+    #[test]
+    fn working_file_read_errors_surface_as_bad_gateway() {
+        let repo = temp_repo("readerr");
+        let cwd = repo.to_string_lossy().to_string();
+        // A directory named like the file makes read_to_string fail while
+        // the existence check passes: the content error arm.
+        std::fs::create_dir_all(repo.join("dirfile")).unwrap();
+        let (status, _) = git_ui_file_blocking(cwd, "dirfile".to_string(), None).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn invalid_ref_tokens_are_rejected_as_bad_request() {
+        let repo = temp_repo("badtoken");
+        let cwd = repo.to_string_lossy().to_string();
+        // Tokens starting with '-' are rejected before git runs.
+        let (status, _) =
+            git_ui_file_blocking(cwd, "a.txt".to_string(), Some("--evil".to_string())).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // A valid token on a repo without that file: git show fails, the
+        // caller sees BAD_GATEWAY.
+        let repo2 = temp_repo("badtoken2");
+        let cwd2 = repo2.to_string_lossy().to_string();
+        let (status2, _) =
+            git_ui_file_blocking(cwd2, "a.txt".to_string(), Some("HEAD".to_string())).unwrap_err();
+        assert_eq!(
+            status2,
+            StatusCode::BAD_GATEWAY,
+            "valid token, missing file fails via git"
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(repo2).unwrap();
+    }
+
+    #[test]
+    fn write_file_conflict_and_directory_paths_are_rejected() {
+        let repo = temp_repo("write");
+        let cwd = repo.to_string_lossy().to_string();
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        // Stale expected hash: CONFLICT without touching disk.
+        let (status, _) = git_ui_write_file_blocking(
+            cwd.clone(),
+            "a.txt".to_string(),
+            "two\n".to_string(),
+            Some("0".repeat(40)),
+        )
+        .unwrap_err();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "one\n"
+        );
+        // Directory target: hash-object on it fails first, surfacing
+        // BAD_GATEWAY before the is_dir guard runs.
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        let (status2, _) =
+            git_ui_write_file_blocking(cwd.clone(), "sub".to_string(), "x".to_string(), None)
+                .unwrap_err();
+        // hash-object on a directory fails first, surfacing BAD_GATEWAY
+        // before the is_dir guard; that error path is the real behavior.
+        assert_eq!(status2, StatusCode::BAD_GATEWAY);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn write_file_creates_parent_directories_and_reports_hash() {
+        let repo = temp_repo("writeok");
+        let cwd = repo.to_string_lossy().to_string();
+        let out = git_ui_write_file_blocking(
+            cwd,
+            "nested/dir/b.txt".to_string(),
+            "body\n".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(out["ok"], serde_json::json!(true));
+        assert!(out["hash"].as_str().unwrap().len() >= 40);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("nested/dir/b.txt")).unwrap(),
+            "body\n"
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn file_history_lists_commits_and_fails_gracefully_off_repo() {
+        let repo = temp_repo("history");
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        let git = |args: &[&str]| {
+            let output = crate::git_bin::command()
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+        git(&["add", "a.txt"]);
+        git(&["-c", "commit.gpgsign=false", "commit", "-m", "first"]);
+        let out =
+            git_ui_file_history_blocking(repo.to_string_lossy().to_string(), "a.txt".to_string())
+                .unwrap();
+        let commits = out["commits"].as_array().unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0]["message"], serde_json::json!("first"));
+        let (status, _) = git_ui_file_history_blocking(
+            "/nonexistent-repo-dir-for-herdr".to_string(),
+            "a.txt".to_string(),
+        )
+        .unwrap_err();
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn working_hash_of_missing_file_is_empty() {
+        let repo = temp_repo("hashmissing");
+        let hash =
+            git_ui_working_file_hash(repo.to_string_lossy().to_string().as_str(), "gone.txt")
+                .unwrap();
+        assert_eq!(hash, "");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
 }

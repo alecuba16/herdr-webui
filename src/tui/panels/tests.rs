@@ -7,7 +7,8 @@ use super::files::parse_entries;
 use super::git::{
     parse_blame_authors, parse_branch, parse_cleanup_repos, parse_commit,
     parse_diff_lines_with_meta, parse_git_files, test_support, CleanupItem, CleanupItemKind,
-    CleanupRepo, CleanupWorktree, LogScope, LOG_MAX_LIMIT, LOG_PAGE_SIZE,
+    CleanupRepo, CleanupWorktree, LogBaseComparison, LogComparisonCounts, LogScope, LOG_MAX_LIMIT,
+    LOG_PAGE_SIZE,
 };
 use super::*;
 use crate::tui::web_api::WebApiClient;
@@ -1817,6 +1818,58 @@ fn markdown_outline_parses_headings_and_skips_fences() {
     );
     // No headings: empty outline.
     assert!(parse_markdown_outline("plain text only").is_empty());
+}
+
+#[test]
+fn log_comparison_parses_and_deduplicates_slots() {
+    let parse = |json: serde_json::Value| {
+        LogBaseComparison::from_log_data(&json)
+            .unwrap_or_else(|| panic!("comparison must parse: {json}"))
+    };
+
+    // Both slots present with different pairs: both render.
+    let comparison = parse(serde_json::json!({
+        "comparison": {
+            "base_branch": "master",
+            "exists": true,
+            "local": { "ahead": 3, "behind": 1 },
+            "origin": { "ahead": 3, "behind": 2 },
+        }
+    }));
+    assert_eq!(comparison.base_branch, "master");
+    assert_eq!(
+        comparison.local,
+        Some(LogComparisonCounts {
+            ahead: 3,
+            behind: 1
+        })
+    );
+    assert_eq!(
+        comparison.origin,
+        Some(LogComparisonCounts {
+            ahead: 3,
+            behind: 2
+        })
+    );
+    assert_eq!(comparison.label(), "master ↑3 ↓1 · origin/master ↑3 ↓2");
+
+    // Identical pairs collapse: the origin slot disappears from the label.
+    let identical = parse(serde_json::json!({
+        "comparison": {
+            "base_branch": "main",
+            "exists": true,
+            "local": { "ahead": 2, "behind": 0 },
+            "origin": { "ahead": 2, "behind": 0 },
+        }
+    }));
+    assert_eq!(identical.label(), "main ↑2 ↓0");
+
+    // Missing refs or payload answer None so the title shows no pair.
+    assert!(LogBaseComparison::from_log_data(&serde_json::json!({
+        "comparison": { "base_branch": "master", "exists": false }
+    }))
+    .is_none());
+    assert!(LogBaseComparison::from_log_data(&serde_json::json!({})).is_none());
 }
 
 #[test]
