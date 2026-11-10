@@ -332,7 +332,9 @@ pub(super) fn git_ui_log_blocking(
     // Caller's base when it resolves, else detected default so main-based
     // repos show the chip despite the webui option defaulting to master.
     let base_branch = default_log_base(base)
-        .filter(|branch| git_ref_exists(&cwd, branch) || git_ref_exists(&cwd, &format!("origin/{branch}")))
+        .filter(|branch| {
+            git_ref_exists(&cwd, branch) || git_ref_exists(&cwd, &format!("origin/{branch}"))
+        })
         .or_else(|| detected_log_base(&cwd))
         .unwrap_or_default();
     let query_limit = limit.saturating_add(1);

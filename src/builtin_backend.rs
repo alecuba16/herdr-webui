@@ -9295,6 +9295,15 @@ mod tests {
             ),
             "working"
         );
+        // Kilo: unmatched text falls through to unknown.
+        assert_eq!(
+            detect_agent_status(
+                Some("kilo"),
+                "no markers here",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "unknown"
+        );
         // Pi: only the literal spinner text counts.
         assert_eq!(
             detect_agent_status(Some("pi"), "working...", JcodeDetectionVariant::Vanilla),
@@ -9392,6 +9401,25 @@ mod tests {
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
+        );
+        // Antigravity: the tab-amend + edit-command permission variant
+        // blocks without the "do you want to proceed?" line.
+        assert_eq!(
+            detect_agent_status(
+                Some("agy"),
+                "requesting permission for:\ntab amend\nedit command",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Antigravity: text with no manifest markers stays unknown.
+        assert_eq!(
+            detect_agent_status(
+                Some("agy"),
+                "plain prompt text",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "unknown"
         );
         // Hermes: dangerous command approval.
         assert_eq!(

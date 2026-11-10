@@ -416,3 +416,291 @@ pub(super) async fn git_ui_worktree_prune(
     let cwd = body.cwd;
     git_spawn(move || git_ui_worktree_prune_blocking(cwd, args)).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_repo(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let repo = std::env::temp_dir().join(format!("herdr-cleanup-{label}-{stamp}"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = crate::git_bin::command()
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.name", "Herdr Test"]);
+        git(&["config", "user.email", "herdr-test@example.invalid"]);
+        repo
+    }
+
+    #[test]
+    fn scan_errors_on_missing_root_and_lists_simple_repos() {
+        let err = match git_cleanup_scan("/nonexistent-root-dir-for-herdr") {
+            Err(err) => err,
+            Ok(_) => unreachable!("missing root must error"),
+        };
+        assert_eq!(err, "root directory does not exist");
+
+        let repo = temp_repo("scan");
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        let git = |args: &[&str]| {
+            let output = crate::git_bin::command()
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+        git(&["add", "a.txt"]);
+        git(&["-c", "commit.gpgsign=false", "commit", "-m", "first"]);
+
+        // Root itself being a repo: one repo row, no truncation.
+        let (repos, truncated) =
+            git_cleanup_scan(repo.to_string_lossy().to_string().as_str()).unwrap();
+        assert!(!truncated);
+        assert_eq!(repos.len(), 1, "the root repo is discovered");
+        assert!(repos[0].error.is_none(), "clean repo reports no error");
+        assert_eq!(repos[0].worktrees.len(), 1, "primary worktree listed");
+
+        // Nested repos under the root are discovered too.
+        let nested = repo.join("nested/inner");
+        std::fs::create_dir_all(&nested).unwrap();
+        let output = crate::git_bin::command()
+            .arg("-C")
+            .arg(&nested)
+            .args(["init"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let (repos2, truncated2) =
+            git_cleanup_scan(repo.to_string_lossy().to_string().as_str()).unwrap();
+        assert!(!truncated2);
+        // The scan stops descending into a found repo (the .git marker
+        // short-circuits the queue), so only the root itself is listed.
+        // The scanner reports paths as built from the root argument, so the
+        // expectation is the temp dir as std::env::temp_dir() spells it, not
+        // the canonicalized /private prefix macOS resolves /var through.
+        assert_eq!(repos2.len(), 1, "scan does not descend into the root repo");
+        assert_eq!(repos2[0].path, repo.to_string_lossy().to_string());
+        // A nested repo inside a found repo stays hidden: the scanner
+        // never descends into a repo. A sibling next to it is found.
+        let holder = std::env::temp_dir().join(format!(
+            "herdr-cleanup-holder-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&holder).unwrap();
+        let moved = holder.join("moved");
+        std::fs::rename(&repo, &moved).unwrap();
+        let sibling = holder.join("sibling");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let output = crate::git_bin::command()
+            .arg("-C")
+            .arg(&sibling)
+            .args(["init"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let (repos3, truncated3) =
+            git_cleanup_scan(holder.to_string_lossy().to_string().as_str()).unwrap();
+        assert!(!truncated3);
+        assert_eq!(
+            repos3.len(),
+            2,
+            "holder scan finds the moved repo and the sibling"
+        );
+        assert!(
+            repos3.iter().any(|r| r.path.ends_with("sibling")),
+            "sibling repo is discovered"
+        );
+        assert!(
+            !repos3
+                .iter()
+                .any(|r| r.path.ends_with("nested/inner") || r.path.ends_with("nested\\inner")),
+            "nested repo inside a repo stays hidden"
+        );
+        std::fs::remove_dir_all(holder).unwrap();
+    }
+
+    #[test]
+    fn repo_details_report_worktrees_branches_and_errors() {
+        let repo = temp_repo("details");
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        let git = |args: &[&str]| {
+            let output = crate::git_bin::command()
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["add", "a.txt"]);
+        git(&["-c", "commit.gpgsign=false", "commit", "-m", "first"]);
+        git(&["branch", "topic"]);
+        let wt = repo.parent().unwrap().join(format!(
+            "{}-wt",
+            repo.file_name().unwrap().to_string_lossy()
+        ));
+        let output = crate::git_bin::command()
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "add", wt.to_string_lossy().as_ref(), "topic"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "worktree add failed");
+
+        let cwd = repo.to_string_lossy().to_string();
+        let (branches, worktrees) = cleanup_repo_details(&cwd).unwrap();
+        // topic is checked out in the linked worktree: not listed as a
+        // removable branch.
+        assert!(!branches.iter().any(|b| b.name == "topic"));
+        let linked = worktrees.iter().find(|w| !w.primary).unwrap();
+        assert_eq!(linked.branch.as_deref(), Some("topic"));
+        assert_eq!(
+            linked.path,
+            fs::canonicalize(&wt).unwrap().to_string_lossy().to_string()
+        );
+
+        // Removal of the linked worktree succeeds and reports ok.
+        let out = git_ui_worktree_remove_blocking(
+            cwd.clone(),
+            fs::canonicalize(&wt).unwrap().to_string_lossy().to_string(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(out["ok"], serde_json::json!(true));
+
+        // Removing the primary worktree is refused.
+        let primary = git_ui_text(&cwd, &["rev-parse", "--show-toplevel"]).unwrap();
+        let (status, _) = git_ui_worktree_remove_blocking(
+            cwd.clone(),
+            fs::canonicalize(primary.trim())
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // A missing worktree path fails through git as BAD_GATEWAY.
+        let (status2, _) = git_ui_worktree_remove_blocking(
+            cwd,
+            repo.parent()
+                .unwrap()
+                .join("no-such-worktree")
+                .to_string_lossy()
+                .to_string(),
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(status2, StatusCode::BAD_GATEWAY);
+        std::fs::remove_dir_all(repo).unwrap();
+        if wt.exists() {
+            std::fs::remove_dir_all(wt).unwrap();
+        }
+    }
+
+    #[test]
+    fn prune_reports_candidates_on_dry_run_and_prunes_for_real() {
+        let repo = temp_repo("prune");
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        let git = |args: &[&str]| {
+            let output = crate::git_bin::command()
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["add", "a.txt"]);
+        git(&["-c", "commit.gpgsign=false", "commit", "-m", "first"]);
+        git(&["branch", "topic"]);
+        let wt = repo.parent().unwrap().join(format!(
+            "{}-pwt",
+            repo.file_name().unwrap().to_string_lossy()
+        ));
+        let output = crate::git_bin::command()
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "add", wt.to_string_lossy().as_ref(), "topic"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        std::fs::remove_dir_all(&wt).unwrap();
+
+        let cwd = repo.to_string_lossy().to_string();
+        // Dry run: candidates reported, nothing pruned.
+        let dry = git_ui_worktree_prune_blocking(
+            cwd.clone(),
+            vec![
+                "worktree".to_string(),
+                "prune".to_string(),
+                "--verbose".to_string(),
+                "--dry-run".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(dry["ok"], serde_json::json!(true));
+        // Real prune: pruned rows named, second run is a no-op.
+        let real = git_ui_worktree_prune_blocking(
+            cwd.clone(),
+            vec![
+                "worktree".to_string(),
+                "prune".to_string(),
+                "--verbose".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(real["ok"], serde_json::json!(true));
+        let again = git_ui_worktree_prune_blocking(
+            cwd,
+            vec![
+                "worktree".to_string(),
+                "prune".to_string(),
+                "--verbose".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(again["pruned"], serde_json::json!([]));
+        // A bad cwd surfaces the spawn error as BAD_GATEWAY.
+        let (status, _) = git_ui_worktree_prune_blocking(
+            "/nonexistent-repo-dir-for-herdr".to_string(),
+            vec![
+                "worktree".to_string(),
+                "prune".to_string(),
+                "--verbose".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+}

@@ -217,8 +217,7 @@ a.item {
   mask: url("/assets/icons/refresh.svg") center / contain no-repeat;
   width: 15px;
 }
-.app-refresh-icon.spinning span,
-.app-refresh-icon.refreshing span {
+.app-refresh-icon.spinning span {
   animation: app-refresh-spin 2s linear;
 }
 @keyframes app-refresh-spin {

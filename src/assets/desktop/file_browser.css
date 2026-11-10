@@ -93,9 +93,6 @@
 .file-browser-refresh:active {
   transform: rotate(180deg);
 }
-.file-browser-refresh.refreshing .herdr-tree-icon {
-  animation: file-browser-spin 0.8s linear infinite;
-}
 @keyframes file-browser-spin {
   to { transform: rotate(360deg); }
 }
