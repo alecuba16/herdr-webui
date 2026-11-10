@@ -275,6 +275,7 @@ async function connectTerminal(fitOverride = null) {
         fontFamily: terminalFontFamily(),
         fontSize: options.terminalFontSize || 14,
         links: options.terminalLinks !== false,
+        mouseReporting: options.terminalMouseReporting === true,
         scrollback: 10000,
         onData: sendInputData,
         onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),

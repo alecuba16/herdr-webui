@@ -1170,6 +1170,7 @@ describe("mobile coverage: settings", () => {
       localStorage: ctx.localStorage,
       state: ctx.HerdrMobileAppDeps.state,
       confirmFn: async () => true,
+      getMobileTerminal: () => null,
     });
     settingsMod.flushSettingCommit("worktreeDefaultDirectory");
     app.commitSettingFromChange("worktreeDefaultDirectory", "/tmp/now");

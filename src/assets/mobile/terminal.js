@@ -295,6 +295,7 @@
           fontSize: terminalFontSize(),
           theme: terminalTheme(),
           links: terminalLinksEnabled(),
+          mouseReporting: terminalMouseReportingEnabled(),
           scrollback: 10000,
           onData: sendInputData,
           onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),
