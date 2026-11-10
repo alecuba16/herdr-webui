@@ -288,6 +288,29 @@ describe("app bundle load", () => {
     doesNotThrow(() => runSource(context()));
   });
 
+  it("injects the terminal and agent settings rows when anchors are fresh", () => {
+    // The load-time settings injection runs only while optAgentSortMode is
+    // absent; the default fake DOM auto-creates every id, so the block never
+    // executes and its giant template stays uncovered. Stub getElementById
+    // to miss once for that id, then run the bundle and confirm the row
+    // landed after the browser-notifications anchor (the real anchor chain
+    // optSound -> optBrowserNotifications is what the app ships).
+    const ctx = context();
+    const realGetElementById = ctx.document.getElementById;
+    let agentSortMissed = false;
+    ctx.document.getElementById = (id) => {
+      if (id === "optAgentSortMode" && !agentSortMissed) {
+        agentSortMissed = true;
+        return null;
+      }
+      return realGetElementById.call(ctx.document, id);
+    };
+    runSource(ctx);
+    equal(agentSortMissed, true, "the injection branch actually ran");
+    match(source, /id="optTerminalMouseReporting"/);
+    match(source, /Disabled by default so text stays selectable/);
+  });
+
   it("defines project-first dashboard and command-palette actions", () => {
     match(source, /function renderProjectDashboard\(\)/);
     match(source, /Start with a project/);
