@@ -986,20 +986,20 @@ fn git_remote_host(remote_url: &str) -> Option<String> {
     Some(host)
 }
 
-/// Repo, branch and PR-creation web URLs for the git-ui status payload.
-/// One host table here replaces the client-side URL shaping the desktop
-/// toast used to do (host substring sniffing plus manual reassembly);
-/// TUI and mobile can read the same fields. Bitbucket pins branches
-/// under /branch, every other forge uses /tree. Whether the PR link is
-/// SHOWN (after a push) stays client-side: that is timing state, not
-/// URL state.
+/// Repo home, repo-branch-page, current-branch and PR-creation web URLs for
+/// the git-ui status payload. One host table here replaces the client-side
+/// URL shaping the desktop toast used to do (host substring sniffing plus
+/// manual reassembly); TUI and mobile can read the same fields. Bitbucket
+/// pins branches under /branch, every other forge uses /tree. Whether the PR
+/// link is SHOWN (after a push) stays client-side: that is timing state,
+/// not URL state.
 fn git_web_urls_for_status(
     remote_url: Option<&str>,
     branch: &str,
     default_branch: Option<&str>,
     branch_on_remote: bool,
-) -> (String, String, String) {
-    let empty = (String::new(), String::new(), String::new());
+) -> (String, String, String, String) {
+    let empty = (String::new(), String::new(), String::new(), String::new());
     let Some(raw) = remote_url.filter(|url| !url.trim().is_empty()) else {
         return empty;
     };
@@ -1049,7 +1049,7 @@ fn git_web_urls_for_status(
             encode_git_query_component(branch)
         )
     };
-    (repo_web_url, branch_web_url, pr_create_url)
+    (repo_web_url, branch_web_url, pr_create_url, base)
 }
 
 struct RemoteRefsSnapshot {
@@ -1233,7 +1233,7 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
     let branch_on_remote = refs
         .as_ref()
         .is_some_and(|snapshot| snapshot.branch_on_remote);
-    let (repo_web_url, branch_web_url, pr_create_url) = git_web_urls_for_status(
+    let (repo_web_url, branch_web_url, pr_create_url, repo_home_url) = git_web_urls_for_status(
         remote_url.as_deref(),
         &branch,
         default_branch.as_deref(),
@@ -1254,6 +1254,7 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
         "default_branch": default_branch,
         "branch_on_remote": branch_on_remote,
         "repo_web_url": repo_web_url,
+        "repo_home_url": repo_home_url,
         "branch_web_url": branch_web_url,
         "pr_create_url": pr_create_url,
         "ahead": ahead,
@@ -2087,7 +2088,7 @@ mod tests {
         // bitbucket PR query, gitlab gets repo+branch but no PR URL, and
         // a repo whose path contains a forge name must not trip host
         // sniffing (exact host match only).
-        let (repo, branch, pr) = git_web_urls_for_status(
+        let (repo, branch, pr, home) = git_web_urls_for_status(
             Some("git@bitbucket.org:team/repo.git"),
             "feature x",
             Some("main"),
@@ -2095,12 +2096,13 @@ mod tests {
         );
         assert_eq!(repo, "https://bitbucket.org/team/repo/branch/feature%20x");
         assert_eq!(branch, "https://bitbucket.org/team/repo/branch/feature%20x");
+        assert_eq!(home, "https://bitbucket.org/team/repo");
         assert_eq!(
             pr,
             "https://bitbucket.org/team/repo/pull-requests/new?source=feature%20x"
         );
 
-        let (repo, branch, pr) = git_web_urls_for_status(
+        let (repo, branch, pr, home) = git_web_urls_for_status(
             Some("https://github.com/acme/widget.git"),
             "feature/x",
             Some("main"),
@@ -2109,8 +2111,9 @@ mod tests {
         assert_eq!(repo, "https://github.com/acme/widget/tree/feature/x");
         assert_eq!(branch, "https://github.com/acme/widget/tree/feature/x");
         assert_eq!(pr, "https://github.com/acme/widget/pull/new/feature/x");
+        assert_eq!(home, "https://github.com/acme/widget");
 
-        let (repo, _, pr) = git_web_urls_for_status(
+        let (repo, _, pr, home) = git_web_urls_for_status(
             Some("https://gitlab.com/acme/widget.git"),
             "feature x",
             Some("main"),
@@ -2118,8 +2121,9 @@ mod tests {
         );
         assert_eq!(repo, "https://gitlab.com/acme/widget/tree/feature%20x");
         assert_eq!(pr, "", "gitlab has no PR-create URL shape yet");
+        assert_eq!(home, "https://gitlab.com/acme/widget");
 
-        let (repo, _, pr) = git_web_urls_for_status(
+        let (repo, _, pr, home) = git_web_urls_for_status(
             Some("https://example.com/github.com/lookalike.git"),
             "feature",
             Some("main"),
@@ -2133,10 +2137,11 @@ mod tests {
             pr, "",
             "a lookalike path must not select the github PR shape"
         );
+        assert_eq!(home, "https://example.com/github.com/lookalike");
 
         // Pushed state: unpushed branch falls back to the default branch,
         // and with no default the repo root is the honest answer.
-        let (repo, _, pr) = git_web_urls_for_status(
+        let (repo, _, pr, home) = git_web_urls_for_status(
             Some("https://github.com/acme/widget.git"),
             "feature",
             Some("main"),
@@ -2144,9 +2149,10 @@ mod tests {
         );
         assert_eq!(repo, "https://github.com/acme/widget/tree/main");
         assert_eq!(pr, "", "no branch on the remote means no PR URL");
+        assert_eq!(home, "https://github.com/acme/widget");
 
         // Detached and empty states collapse to the repo root / empty.
-        let (repo, branch, pr) = git_web_urls_for_status(
+        let (repo, branch, pr, home) = git_web_urls_for_status(
             Some("https://github.com/acme/widget.git"),
             "(detached)",
             Some("main"),
@@ -2155,7 +2161,8 @@ mod tests {
         assert_eq!(repo, "https://github.com/acme/widget/tree/main");
         assert_eq!(branch, "");
         assert_eq!(pr, "");
-        let (repo, _, _) = git_web_urls_for_status(
+        assert_eq!(home, "https://github.com/acme/widget");
+        let (repo, _, _, home) = git_web_urls_for_status(
             Some("https://github.com/acme/widget.git"),
             "main",
             None,
@@ -2165,8 +2172,17 @@ mod tests {
             repo, "https://github.com/acme/widget",
             "no default branch answers the repo root"
         );
+        assert_eq!(home, "https://github.com/acme/widget");
         let all_empty = git_web_urls_for_status(None, "main", Some("main"), true);
-        assert_eq!(all_empty, ("".to_string(), "".to_string(), "".to_string()));
+        assert_eq!(
+            all_empty,
+            (
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string()
+            )
+        );
     }
 
     #[test]
@@ -2668,6 +2684,7 @@ mod tests {
             assert_eq!(json["default_branch"], "main");
             assert_eq!(json["branch_on_remote"], true);
             assert_eq!(json["repo_web_url"], "");
+            assert_eq!(json["repo_home_url"], "");
             assert_eq!(json["branch_web_url"], "");
             assert_eq!(json["pr_create_url"], "");
 
