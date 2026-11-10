@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.7.43 Release Notes
+- The git sidepanel opens the remote forge directly: the Repo button
+  now goes to the repository home page (it used to open the current
+  branch page, hiding the repo root behind a branch detour), and a new
+  Branch button next to it opens the current branch page. The backend
+  status payload gains `repo_home_url` (the normalized remote base),
+  and the Branch button only renders when the remote actually has the
+  branch, so a never-pushed branch shows no button instead of a link
+  that 404s. Forge URL shapes (GitHub, Bitbucket, GitLab and lookalike
+  host guarding) stay owned by the server; the buttons read the cached
+  status fields and open synchronously with no extra fetch.
+
 ## 0.7.42 Release Notes
 - Terminal text selection works again in panes running mouse-tracking
   TUIs such as jcode, Neovim, or Helix. Those apps enable SGR mouse
@@ -651,6 +663,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.43 | 2026-11-10 | [v0.7.43](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.43) |
 | 0.7.42 | 2026-11-10 | [v0.7.42](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.42) |
 | 0.7.41 | 2026-11-09 | [v0.7.41](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.41) |
 | 0.7.40 | 2026-11-08 | [v0.7.40](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.40) |
