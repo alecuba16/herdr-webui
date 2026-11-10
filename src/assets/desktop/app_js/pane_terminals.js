@@ -156,6 +156,10 @@
         fontFamily: typeof terminalFontFamily === "function" ? terminalFontFamily() : "monospace",
         fontSize: options.terminalFontSize || 14,
         links: options.terminalLinks !== false,
+        // Same reporting gate as the primary surface: without the option the
+        // adapter disables wterm's mouse interception so split-pane output
+        // stays selectable (sendInput strips the bytes otherwise).
+        mouseReporting: options.terminalMouseReporting === true,
         scrollback: 4000,
         onData: sendInput,
       });

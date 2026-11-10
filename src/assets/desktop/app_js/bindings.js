@@ -278,6 +278,12 @@ el("optTerminalLinks").onchange = () => {
 el("optTerminalMouseReporting").onchange = () => {
   options.terminalMouseReporting = el("optTerminalMouseReporting").checked;
   saveOptions();
+  // Live-apply to the running adapter: with reporting off, wterm must stop
+  // claiming mousedown gestures as SGR reports or native text selection
+  // stays dead (the bytes are stripped one layer up anyway). With reporting
+  // on, the original interception returns so TUI mouse input works.
+  if (typeof term !== "undefined" && term && typeof term.setMouseReporting === "function")
+    term.setMouseReporting(options.terminalMouseReporting === true);
 };
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;

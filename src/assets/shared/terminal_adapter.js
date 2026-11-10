@@ -346,6 +346,53 @@
     return "";
   }
 
+  /* wterm's input class claims every mousedown as an SGR mouse report
+   * whenever the pty program enabled mouse tracking: handleMouse() runs
+   * preventDefault() on the gesture, which is what kills the browser's
+   * native drag selection before it starts. Herdr strips SGR bytes from
+   * input unless the user opted into Terminal mouse reporting, so with
+   * reporting off those intercepted gestures produce bytes that are
+   * dropped on the floor one layer up: the drag is dead on both ends.
+   *
+   * The fix mirrors that strip decision at the source. When reporting is
+   * off, wterm's mouse interception is disabled entirely (plain clicks
+   * keep focusing the terminal, native span selection works again), and
+   * its tracking state keeps flowing to the wheel path so scroll
+   * forwarding for inline TUIs (jcode, tmux mouse on) stays intact.
+   *
+   * handleMouse has no early bail for reporting decisions, so the adapter
+   * swaps the bound method after construction: the original stays on the
+   * instance for the reporting-on path (it reads live bridge state, so
+   * caching it once is safe). Shift gestures stay untouched in both
+   * modes; wterm's own selection handlers (Alt rectangle drag,
+   * Shift+double/triple-click word/line) gate on Shift themselves and run
+   * from different listeners, so they never see this swap.
+   *
+   * Shape note: the interception lives on the wterm INSTANCE in the
+   * unit-test fake but on the internal input class (`wterm.input`) in
+   * the real 0.5.4 bundle (WTerm itself has no handleMouse). Resolve
+   * whichever object owns a callable handleMouse and swap there; the
+   * input listeners call this.handleMouse at event time, so an
+   * instance-level no-op shadows the prototype method cleanly.
+   */
+  function wtermMouseTarget(wterm) {
+    if (wterm && typeof wterm.handleMouse === "function") return wterm;
+    if (wterm && wterm.input && typeof wterm.input.handleMouse === "function") return wterm.input;
+    return null;
+  }
+
+  function setTerminalMouseReporting(wterm, enabled) {
+    const target = wtermMouseTarget(wterm);
+    if (!target) return;
+    if (!target.__herdrHandleMouse) target.__herdrHandleMouse = target.handleMouse;
+    const original = target.__herdrHandleMouse;
+    target.handleMouse = enabled
+      ? original
+      : function () {
+          return undefined;
+        };
+  }
+
   class HerdrWtermAdapter {
     constructor(container, wterm, options) {
       this.element = container;
@@ -368,6 +415,12 @@
       this._onWheelMouseReport = typeof options.onWheelMouseReport === "function" ? options.onWheelMouseReport : null;
       this._inputGate = typeof options.inputGate === "function" ? options.inputGate : null;
       this._inputGateInstalled = false;
+      // Mirrors the sendInputData strip decision: the app strips SGR bytes
+      // unless the user opted into Terminal mouse reporting, and this flag
+      // tells the adapter whether wterm's mouse interception should run
+      // at all. setTerminalMouseReporting() (above) explains the gating.
+      this._mouseReporting = options.mouseReporting === true;
+      setTerminalMouseReporting(wterm, this._mouseReporting);
       if (this._onWheelMouseReport) this._trackPointer();
       this.setTheme(options.theme || {});
       this.setFontFamily(options.fontFamily || "monospace");
@@ -403,6 +456,10 @@
       const adapter = new HerdrWtermAdapter(container, term, opts);
       if (typeof opts.inputGate === "function") adapter.applyInputGate(opts.inputGate);
       await term.init();
+      // init() creates the input class (wterm.input) that owns
+      // handleMouse; the constructor-time gate call could not reach it
+      // yet. Re-apply so the reporting-off default actually lands.
+      setTerminalMouseReporting(term, adapter._mouseReporting);
       adapter.setTheme(opts.theme || {});
       adapter.setFontFamily(opts.fontFamily || "monospace");
       if (typeof opts.inputGate === "function") adapter.applyInputGate(opts.inputGate);
@@ -626,6 +683,16 @@
         root.open(url, "_blank", "noopener,noreferrer");
       };
       this.element.addEventListener("click", this._linkClick, true);
+    }
+
+    // Runtime twin of the constructor's mouseReporting option: the
+    // Settings toggle flips the stored option without recreating the
+    // terminal, so the live adapter needs a setter. Gating logic and the
+    // Shift-selection contract live on setTerminalMouseReporting() above.
+    setMouseReporting(enabled) {
+      if (this._destroyed) return;
+      this._mouseReporting = enabled === true;
+      setTerminalMouseReporting(this.wterm, this._mouseReporting);
     }
 
     setWheelScrolling(enabled) {
@@ -873,6 +940,7 @@
     attachClickFocus,
     applyMouseModeSequences,
     sgrWheelReport,
+    setTerminalMouseReporting,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = root.HerdrTerminalRenderer;
 })(typeof globalThis !== "undefined" ? globalThis : window);

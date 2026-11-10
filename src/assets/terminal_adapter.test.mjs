@@ -56,7 +56,7 @@ function wheelEvent(deltaY, extra = {}) {
   };
 }
 
-async function createAdapter({ normalBuffer = true, wheelReports = false, rows = 24, cols = 80, core, inputGate = null } = {}) {
+async function createAdapter({ normalBuffer = true, wheelReports = false, rows = 24, cols = 80, core, inputGate = null, mouseReporting = false } = {}) {
   // Compiled once per product file so coverage attributes to the real path.
   if (!createAdapter.script) {
     const adapterPath = fileURLToPath(new URL("./shared/terminal_adapter.js", import.meta.url));
@@ -96,6 +96,16 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
           this.options = options;
           this.writes = [];
           this.bridge = { usingAltScreen: () => !normalBuffer };
+          // Mirrors the real 0.5.4 bundle: the input class owns
+          // handleMouse (the method that claims mousedown gestures as
+          // SGR reports); WTerm itself has no handleMouse.
+          this.mousePresses = 0;
+          this.input = {
+            handleMouse: (event, kind) => {
+              this.mousePresses += kind === "press" ? 1 : 0;
+              return undefined;
+            },
+          };
         }
         async init() { return this; }
         focus() { this.focusCount = (this.focusCount || 0) + 1; }
@@ -116,6 +126,7 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
     cols,
     core,
     links: false,
+    mouseReporting,
     ...(wheelReports ? { onWheelMouseReport: (report) => reports.push(report) } : {}),
     ...(inputGate ? { inputGate } : {}),
   });
@@ -417,6 +428,73 @@ describe("terminal adapter mouse-mode tracking", () => {
     equal(state.tracking, true);
     equal(state.sgrMouse, true);
     equal(state.carry, "");
+  });
+
+  it("keeps SGR wheel forwarding while reporting is off", async () => {
+    // jcode enables 1000+1006 tracking; the adapter must still turn the
+    // wheel into SGR bytes for the program even though mouse reporting
+    // (click/drag interception) is off. Selection fix may not regress
+    // scroll forwarding for inline TUIs.
+    const { adapter, container, reports } = await createAdapter({ wheelReports: true });
+    adapter.write("\x1b[?1000;1006h");
+
+    const listener = container.listeners.get("wheel");
+    ok(listener);
+    listener(wheelEvent(40));
+
+    equal(reports.length, 1, "wheel becomes one SGR report");
+    equal(reports[0], "\x1b[<65;1;1M");
+  });
+
+  it("disables wterm mouse interception when reporting is off (default)", async () => {
+    // The fix: with reporting off the adapter neutralizes wterm's
+    // handleMouse so mousedown never becomes an SGR report that the
+    // input layer strips anyway; native drag selection stays possible.
+    const { adapter } = await createAdapter();
+    equal(adapter._mouseReporting, false);
+    const before = adapter.wterm.mousePresses;
+    adapter.wterm.input.handleMouse({}, "press");
+    equal(adapter.wterm.mousePresses, before, "handleMouse no longer counts presses");
+  });
+
+  it("enables wterm mouse interception when reporting is on, live", async () => {
+    const { adapter } = await createAdapter({ mouseReporting: true });
+    equal(adapter._mouseReporting, true);
+    adapter.wterm.input.handleMouse({}, "press");
+    equal(adapter.wterm.mousePresses, 1, "original interception runs");
+
+    // Live toggle off then on again: the original method must survive the
+    // round trip (constructor stores it before the first swap).
+    adapter.setMouseReporting(false);
+    adapter.wterm.input.handleMouse({}, "press");
+    equal(adapter.wterm.mousePresses, 1, "off: press swallowed by the gate");
+    adapter.setMouseReporting(true);
+    adapter.wterm.input.handleMouse({}, "press");
+    equal(adapter.wterm.mousePresses, 2, "on: original interception restored");
+  });
+
+  it("reports mouse mode state to callers", async () => {
+    const { adapter } = await createAdapter();
+    equal(adapter.wheelForwardedToProgram(), false, "no reports callback wired: never forwards");
+  });
+
+  it("gates the wterm instance directly when no input object exists", async () => {
+    // Shape tolerance: older fakes and potential future bundles may put
+    // handleMouse on the WTerm instance itself. The resolver must pick
+    // that target too, not only wterm.input.
+    const { adapter } = await createAdapter();
+    adapter.wterm.input = null;
+    let presses = 0;
+    adapter.wterm.handleMouse = (event, kind) => {
+      presses += kind === "press" ? 1 : 0;
+      return undefined;
+    };
+    adapter.setMouseReporting(false);
+    adapter.wterm.handleMouse({}, "press");
+    equal(presses, 0, "instance-level interception is gated too");
+    adapter.setMouseReporting(true);
+    adapter.wterm.handleMouse({}, "press");
+    equal(presses, 1, "instance-level interception restores");
   });
 
   it("decodes binary frames and tracks modes from Uint8Array output", async () => {

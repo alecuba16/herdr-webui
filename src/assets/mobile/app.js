@@ -1405,6 +1405,7 @@
     localStorage,
     state,
     confirmFn: (...args) => mobileConfirm(...args),
+    getMobileTerminal: () => mobileTerminal,
   });
   mobileWorktrees = globalThis.HerdrMobileWorktrees.create({
     api,

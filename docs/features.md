@@ -73,7 +73,7 @@ Browser terminal:
 - The renderer bundle, CSS, and Ghostty WASM are embedded static assets served from `/assets/vendor/wterm.js`, `/assets/vendor/wterm.css`, and `/assets/vendor/ghostty-vt.wasm`. The old xterm assets are removed.
 - Terminal font, URL link detection, mouse reporting, scroll speed, Shift+Enter newline behavior, and renderer choice are persisted in browser `localStorage` under `herdr-web-options` and apply to desktop and mobile terminals.
 - Terminal URL links are enabled by default. When enabled, detected `http` and `https` links open in a new browser tab. Disable `Terminal links` when terminal apps need raw click handling.
-- Terminal mouse reporting is opt-in. By default WebUI strips SGR/X10 mouse reports emitted by browser terminal renderers so normal text selection and shell input stay safe. Enable `Terminal mouse reporting` only for TUIs that need mouse input.
+- Terminal mouse reporting is opt-in. By default WebUI disables the terminal renderer's mouse-claiming (mousedown stays a normal browser gesture, so text selection works even when TUIs like jcode request mouse tracking) and strips SGR/X10 mouse reports so shell input stays safe. Enable `Terminal mouse reporting` only for TUIs that need mouse input; the change applies live to open terminals.
 - Desktop terminal output is frame-batched before writes to the renderer. Large initial attach frames stay behind the loading overlay until the renderer callback finishes, preventing partial line-by-line reveals.
 - Terminal resize events from the browser window and changing shell panels share
   one frame-coalesced scheduler. Expensive grid updates are capped at 32 ms
