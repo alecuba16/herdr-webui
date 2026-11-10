@@ -10,7 +10,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.7.41` | `0.9.0`-`0.9.5` | `22` exact match | Current | Auth reads the session cookie from any Cookie header field, so Chrome's HTTP/2 cookie crumbing (one field per cookie) no longer bounces logged-in sessions back to the login page when other cookies share the host. |
+| `0.7.42` | `0.9.0`-`0.9.5` | `22` exact match | Current | Terminal text selection works in panes running mouse-tracking TUIs (jcode, Neovim, Helix): mouse interception is gated on the pane's opt-in SGR mouse reporting, so with reporting off (default) drag selects natively and with it on the TUI keeps its events; wheel scroll honors the same gate. |
+| `0.7.41` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | Auth reads the session cookie from any Cookie header field, so Chrome's HTTP/2 cookie crumbing (one field per cookie) no longer bounces logged-in sessions back to the login page when other cookies share the host. |
 | `0.7.40` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | Browser terminals forward OSC color query replies to the PTY like native terminals, so jcode/Neovim/Helix/fzf detect the WebUI light/dark theme automatically; the TUI query moves to a single OSC 11 with a 120ms budget and a tested light/dark classification. |
 | `0.7.39` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | install-mac/update-mac/uninstall-mac detect a Homebrew install (herdr-webui Cellar or HERDR_WEBUI_BREW_CELLAR) and delegate to brew services instead of a second private LaunchAgent; tarball-only machines keep the private layout unchanged. |
 | `0.7.38` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | Dependency refresh: interprocess 2.4.7, tokio 1.54.1, unicode-width 0.2.3, syn 3 with the test_env_guard initializer updated for the new TypePath shape. No behavior changes. |

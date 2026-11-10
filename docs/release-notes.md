@@ -1,5 +1,24 @@
 # Release notes
 
+## 0.7.42 Release Notes
+- Terminal text selection works again in panes running mouse-tracking
+  TUIs such as jcode, Neovim, or Helix. Those apps enable SGR mouse
+  reporting (DECSET 1000 + 1006), and the browser terminal's input
+  class answered every mousedown with `preventDefault()`, which kills
+  the browser's native selection before it starts, while emitting SGR
+  mouse bytes the pane never asked for. Interception is now gated on
+  the pane's opt-in mouse reporting: with reporting off (the default)
+  mousedown reaches the browser and drag selects text normally, with
+  reporting on the TUI keeps receiving its events. Two wiring bugs
+  found by a real-Chrome end-to-end driver are part of the fix: the
+  gate targeted the WTerm instance while `handleMouse` lives on the
+  internal input class (making the gate a silent no-op), and the gate
+  ran before `term.init()` created that class, so it is re-applied
+  after init. Wheel events also honor the gate, so plain scrollbacks
+  through long output stay native. The e2e driver boots an isolated
+  server plus headless Chrome and proves drag-selection with reporting
+  off, no selection with it on, and SGR forwarding on wheel.
+
 ## 0.7.41 Release Notes
 - Auth now scans every `Cookie` header field for the session cookie
   instead of only the first. Chrome sends one field per cookie over
@@ -632,6 +651,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.42 | 2026-11-10 | [v0.7.42](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.42) |
 | 0.7.41 | 2026-11-09 | [v0.7.41](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.41) |
 | 0.7.40 | 2026-11-08 | [v0.7.40](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.40) |
 | 0.7.39 | 2026-11-07 | [v0.7.39](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.39) |
