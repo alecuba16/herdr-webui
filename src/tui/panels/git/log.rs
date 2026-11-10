@@ -14,6 +14,79 @@ pub(crate) const LOG_MAX_LIMIT: usize = 2000;
 /// falling back to "master".
 pub(crate) const LOG_DEFAULT_BASE: &str = "master";
 
+/// One ahead/behind pair of the HEAD vs base comparison the log
+/// endpoint reports (webui comparison chip).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LogComparisonCounts {
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+/// HEAD vs base branch comparison from the log response: the local
+/// base branch and its `origin/` counterpart each get counts when the
+/// ref exists.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LogBaseComparison {
+    pub base_branch: String,
+    pub local: Option<LogComparisonCounts>,
+    pub origin: Option<LogComparisonCounts>,
+}
+
+impl LogBaseComparison {
+    /// Parse the log endpoint `comparison` object. `None` when the base
+    /// ref does not exist or the payload is absent, matching the webui
+    /// chip's hide rule.
+    pub(crate) fn from_log_data(data: &Value) -> Option<Self> {
+        let comparison = data.get("comparison")?;
+        if !comparison
+            .get("exists")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let base_branch = comparison
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if base_branch.is_empty() {
+            return None;
+        }
+        let counts = |slot: &str| {
+            let pair = comparison.get(slot)?;
+            Some(LogComparisonCounts {
+                ahead: pair.get("ahead").and_then(Value::as_u64)? as usize,
+                behind: pair.get("behind").and_then(Value::as_u64)? as usize,
+            })
+        };
+        Some(Self {
+            base_branch,
+            local: counts("local"),
+            origin: counts("origin"),
+        })
+    }
+
+    /// Webui chip label: one `↑ahead ↓behind` pair per existing slot,
+    /// skipping an origin slot identical to the local one so the title
+    /// never repeats the same numbers twice.
+    pub fn label(&self) -> String {
+        let slot = |label: &str, counts: LogComparisonCounts| {
+            format!("{label} ↑{} ↓{}", counts.ahead, counts.behind)
+        };
+        let mut parts = Vec::new();
+        if let Some(local) = self.local {
+            parts.push(slot(&self.base_branch, local));
+        }
+        if let Some(origin) = self.origin {
+            if !self.local.is_some_and(|local| local == origin) {
+                parts.push(slot(&format!("origin/{}", self.base_branch), origin));
+            }
+        }
+        parts.join(" · ")
+    }
+}
+
 /// Log scope cycle, mirroring the webui `cycleLogScope` order
 /// (all → base-current → base). API names match `GitLogScope::from_query`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -72,6 +145,7 @@ impl GitPanel {
             .get("has_more")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        self.log_comparison = LogBaseComparison::from_log_data(&data);
         if self.commit_selected >= self.commits.len() {
             self.commit_selected = self.commits.len().saturating_sub(1);
         }

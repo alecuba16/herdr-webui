@@ -32,6 +32,31 @@
     return rows.filter((row) => row && row.hash).length;
   }
 
+  // HEAD vs base comparison chip. The server's `comparison` object carries
+  // local base and origin/<base> ahead/behind pairs; only slots the server
+  // could compute render, so a repo without the ref shows no chip instead of
+  // a fake 0/0. In-sync slots stay visible (0/0 answers "is it current?"),
+  // a 0/0 duplicate is dropped so the chip never repeats the same pair twice.
+  function renderComparison(data, esc) {
+    const comparison = (data && data.comparison) || {};
+    const base = String(comparison.base_branch || "").trim();
+    if (!base || !comparison.exists) return "";
+    const counts = (slot) => {
+      const pair = comparison[slot];
+      if (!pair || typeof pair.ahead !== "number" || typeof pair.behind !== "number") return null;
+      return { ahead: pair.ahead, behind: pair.behind };
+    };
+    const local = counts("local");
+    const origin = counts("origin");
+    const slots = [];
+    if (local) slots.push({ label: base, pair: local });
+    if (origin && !(local && local.ahead === origin.ahead && local.behind === origin.behind)) {
+      slots.push({ label: `origin/${base}`, pair: origin });
+    }
+    if (!slots.length) return "";
+    return `<span class="git-ui-log-comparison" title="Commits ahead/behind the ${esc(base)} branch (HEAD vs base)">${slots.map((slot) => `<span class="git-ui-log-comparison-slot">${esc(slot.label)} <b class="git-ui-log-comparison-ahead">↑${slot.pair.ahead}</b> <b class="git-ui-log-comparison-behind">↓${slot.pair.behind}</b></span>`).join("")}</span>`;
+  }
+
   function render(options) {
     const rows = rowsFromData(options.data || {});
     const selected = options.selected || [];
@@ -46,7 +71,8 @@
     // lines stay identifiable past the tip chips the way Zed keeps HEAD
     // findable via its check icon (we use line color instead of an icon).
     const lanePainting = computeLanePainting(rows, baseBranch);
-    const scopeButton = `<span class="git-ui-log-scope-control"><span>Scope:</span><button class="git-ui-btn active" title="Toggle history scope: Master + Branch, All, Branch" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope))}</button>${options.filePath ? `<button class="git-ui-btn git-ui-log-file-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">× ${esc(options.filePath)}</button>` : ""}</span>`;
+    const comparisonChip = renderComparison(options.data || {}, esc);
+    const scopeButton = `<span class="git-ui-log-scope-control"><span>Scope:</span><button class="git-ui-btn active" title="Toggle history scope: Master + Branch, All, Branch" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope))}</button>${comparisonChip}${options.filePath ? `<button class="git-ui-btn git-ui-log-file-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">× ${esc(options.filePath)}</button>` : ""}</span>`;
     const header = `<div class="git-ui-log-table-head"><span class="git-ui-log-cell-refs">Refs</span><span class="git-ui-log-cell-graph">Graph</span><span class="git-ui-log-cell-description">Description</span><span class="git-ui-log-cell-date">Date</span><span class="git-ui-log-cell-author">Author</span><span class="git-ui-log-cell-hash">Commit</span></div>`;
     const matches = rows.filter((row) => row.hash && matchesFilters(filterFields(row), filters));
     searchPosition = matches.findIndex((row) => row.hash === searchHash);

@@ -181,6 +181,77 @@ fn git_ref_exists(cwd: &str, ref_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Comparison of the current HEAD against a base branch, for the log
+/// header chip. `local`/`origin` say which form of the base ref the
+/// numbers come from; `exists` is false when neither form resolved, so
+/// the chip can stay hidden instead of showing a fake 0/0.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub(super) struct LogBaseComparison {
+    pub(super) base_branch: String,
+    pub(super) local: Option<ComparisonCounts>,
+    pub(super) origin: Option<ComparisonCounts>,
+    pub(super) exists: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub(super) struct ComparisonCounts {
+    pub(super) ahead: usize,
+    pub(super) behind: usize,
+}
+
+fn rev_list_counts(cwd: &str, from: &str, to: &str) -> Option<ComparisonCounts> {
+    let out = git_ui_text(
+        cwd,
+        &[
+            "rev-list",
+            "--left-only",
+            "--count",
+            &format!("{from}...{to}"),
+        ],
+    )
+    .ok()?;
+    // --left-only answers "left-only" (commits in `from` but not `to`)
+    // as a single count: HEAD vs base, so "ahead" of the base.
+    let ahead = out.trim().parse().ok()?;
+    let out = git_ui_text(
+        cwd,
+        &[
+            "rev-list",
+            "--right-only",
+            "--count",
+            &format!("{from}...{to}"),
+        ],
+    )
+    .ok()?;
+    let behind = out.trim().parse().ok()?;
+    Some(ComparisonCounts { ahead, behind })
+}
+
+fn log_base_comparison(cwd: &str, base_branch: &str) -> LogBaseComparison {
+    let mut comparison = LogBaseComparison {
+        base_branch: base_branch.to_string(),
+        ..LogBaseComparison::default()
+    };
+    if base_branch.is_empty() {
+        return comparison;
+    }
+    for (suffix, slot) in [
+        ("", &mut comparison.local),
+        ("origin/", &mut comparison.origin),
+    ] {
+        let ref_name = format!("{suffix}{base_branch}");
+        if !git_ref_exists(cwd, &ref_name) {
+            continue;
+        }
+        let Some(counts) = rev_list_counts(cwd, "HEAD", &ref_name) else {
+            continue;
+        };
+        *slot = Some(counts);
+        comparison.exists = true;
+    }
+    comparison
+}
+
 fn parsed_log_rows(lines: &[String]) -> Vec<serde_json::Value> {
     lines
         .iter()
@@ -219,7 +290,8 @@ pub(super) fn git_ui_log_blocking(
     base: Option<String>,
     file: Option<String>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let refs = log_refs(&cwd, scope, base)?;
+    let refs = log_refs(&cwd, scope, base.clone())?;
+    let base_branch = default_log_base(base).unwrap_or_default();
     let query_limit = limit.saturating_add(1);
     let args = git_log_args(query_limit, scope.includes_all(), &refs, file.as_deref())
         .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
@@ -248,11 +320,16 @@ pub(super) fn git_ui_log_blocking(
                     })
                 })
                 .collect::<Vec<_>>();
+            // Head-to-base comparison for the log header chip: local base
+            // branch and origin/master-style remote ref each get their own
+            // ahead/behind pair, computed from the refs this server sees.
+            let comparison = log_base_comparison(&cwd, &base_branch);
             Ok(json!({
                 "commits": commits,
                 "rows": rows,
                 "has_more": has_more,
                 "limit": limit,
+                "comparison": serde_json::to_value(comparison).unwrap_or(serde_json::Value::Null),
             }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
@@ -1077,6 +1154,97 @@ mod tests {
                 "src/main.rs",
             ]
         );
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn log_comparison_counts_local_and_origin_base() {
+        let repo = temp_repo("herdr-log-compare");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "--initial-branch", "master"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("file.txt"), "one\n").unwrap();
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        let cwd = repo.to_string_lossy().to_string();
+
+        // No origin remote and no divergence: only the local slot exists.
+        let comparison = log_base_comparison(&cwd, "master");
+        assert!(comparison.exists);
+        assert_eq!(comparison.base_branch, "master");
+        assert_eq!(
+            comparison.local,
+            Some(ComparisonCounts {
+                ahead: 0,
+                behind: 0
+            })
+        );
+        assert_eq!(comparison.origin, None);
+
+        // A missing base ref reports exists=false so the chip hides.
+        let missing = log_base_comparison(&cwd, "main");
+        assert!(!missing.exists);
+        assert_eq!(missing.local, None);
+        assert_eq!(missing.origin, None);
+
+        // Diverge: one commit ahead of local master, still no origin slot.
+        run_git(&repo, &["checkout", "-b", "feature"]);
+        std::fs::write(repo.join("file.txt"), "one\ntwo\n").unwrap();
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "feature"]);
+        let comparison = log_base_comparison(&cwd, "master");
+        assert!(comparison.exists);
+        assert_eq!(
+            comparison.local,
+            Some(ComparisonCounts {
+                ahead: 1,
+                behind: 0
+            })
+        );
+        assert_eq!(comparison.origin, None);
+
+        // Remote-tracking refs are faked with plain refs so no network is
+        // touched: origin/master one commit behind HEAD turns on the origin
+        // slot with its own pair.
+        let master_tip = git_text(&repo, &["rev-parse", "master"]).trim().to_string();
+        run_git(
+            &repo,
+            &["update-ref", "refs/remotes/origin/master", &master_tip],
+        );
+        let comparison = log_base_comparison(&cwd, "master");
+        assert!(comparison.exists);
+        assert_eq!(
+            comparison.local,
+            Some(ComparisonCounts {
+                ahead: 1,
+                behind: 0
+            })
+        );
+        assert_eq!(
+            comparison.origin,
+            Some(ComparisonCounts {
+                ahead: 1,
+                behind: 0
+            })
+        );
+
+        // The endpoint response carries the comparison block.
+        let data = git_ui_log_blocking(
+            cwd.clone(),
+            10,
+            GitLogScope::BaseCurrent,
+            Some("master".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            data["comparison"]["base_branch"],
+            serde_json::json!("master")
+        );
+        assert_eq!(data["comparison"]["local"]["ahead"], serde_json::json!(1));
+        assert_eq!(data["comparison"]["origin"]["behind"], serde_json::json!(0));
 
         let _ = std::fs::remove_dir_all(repo);
     }

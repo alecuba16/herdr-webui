@@ -113,6 +113,13 @@ body.light .git-ui-log-workbench {
 .git-ui-log-filter { display: grid; gap: 3px; font-size: 11px; text-transform: none; min-width: 0; padding-right: 8px; }
 .git-ui-log-filter .sr-only { clip: rect(0,0,0,0); border: 0; height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
 .git-ui-log-scope-control { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* Comparison chip in the log scope row: slots pair a base ref (master,
+   origin/master) with ↑ahead ↓behind counts from the server's comparison. */
+.git-ui-log-comparison { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+.git-ui-log-comparison-slot { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono-font, monospace); color: var(--fg); }
+.git-ui-log-comparison-ahead, .git-ui-log-comparison-behind { font-weight: 600; }
+.git-ui-log-comparison-ahead { color: var(--git-log-current, #ef4444); }
+.git-ui-log-comparison-behind { color: var(--git-log-main, #3b82f6); }
 .git-ui-log-load-more { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; padding: 10px; border-top: 1px solid var(--border); }
 /* z-index 6: below the searchbar (7) so the pane never covers it, above the
    table head (5) and every row, so squeezed rows (browser column below its

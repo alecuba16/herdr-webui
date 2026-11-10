@@ -1358,9 +1358,15 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
     if !items.is_empty() {
         state.select(Some(panel.commit_selected));
     }
-    // Title mirrors the webui log toolbar: scope, load-more hint and
-    // the file filter when the log is file-scoped.
+    // Title mirrors the webui log toolbar: scope, the HEAD vs base
+    // comparison chip, load-more hint and the file filter when the log
+    // is file-scoped.
     let scope = panel.log_scope.label();
+    let comparison = panel
+        .log_comparison
+        .as_ref()
+        .map(|c| format!(" · {}", c.label()))
+        .unwrap_or_default();
     let more = if panel.log_has_more {
         format!(" · +more {}", panel.log_limit)
     } else {
@@ -1368,9 +1374,9 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
     };
     let title = match panel.log_file.as_deref() {
         Some(file) if !file.is_empty() => {
-            format!(" Log · {scope} · {}{more} ", truncate(file, 24))
+            format!(" Log · {scope}{comparison} · {}{more} ", truncate(file, 24))
         }
-        _ => format!(" Log · {scope}{more} "),
+        _ => format!(" Log · {scope}{comparison}{more} "),
     };
     let list = List::new(items)
         .block(panel_block(&title, p))
