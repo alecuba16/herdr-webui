@@ -1,5 +1,21 @@
 # Release notes
 
+## 0.7.44 Release Notes
+- The git log panel gains a comparison chip that shows how HEAD relates
+  to the repository's base branch: it reads ahead/behind counts locally,
+  falls back to origin/master or origin/main (whichever exists) when the
+  local ref is missing, and hides itself on repositories that have
+  neither. Selecting the chip opens the log filtered to the commits HEAD
+  is behind, so catch-up reading is one click.
+- Test coverage now sits above 90% across the three UI languages. The
+  desktop shortcuts module grew a dispatch-focused suite (chord actions,
+  prefix arming, stash/conflict resolution, help dialog, configured
+  overrides), the git cleanup/file/commit endpoints gained error-path
+  tests, and a new CSS selector coverage test defines CSS coverage as
+  every shipped class selector having a runtime producer. That test
+  caught two dead .refreshing rules left behind by the refresh-button
+  refactor; they are gone.
+
 ## 0.7.43 Release Notes
 - The git sidepanel opens the remote forge directly: the Repo button
   now goes to the repository home page (it used to open the current
@@ -663,6 +679,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.44 | 2026-11-10 | [v0.7.44](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.44) |
 | 0.7.43 | 2026-11-10 | [v0.7.43](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.43) |
 | 0.7.42 | 2026-11-10 | [v0.7.42](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.42) |
 | 0.7.41 | 2026-11-09 | [v0.7.41](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.41) |
