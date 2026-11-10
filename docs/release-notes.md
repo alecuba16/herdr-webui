@@ -1744,7 +1744,7 @@ Each version links to its GitHub release for the full changelog.
   bundle gets the same treatment (screens, panels, workmeta, theme,
   actions, backend, sessions, events, search, git) and `main.rs` extracts
   auth and server-settings modules. Findings and the deliberate
-  composition-root decision are recorded in `docs/code-quality-audit.md`.
+  composition-root decision were recorded in the audit doc at the time.
 - Tests were retargeted, never weakened: frontend suite grows from 547 to
   558 with behavioral vm tests added for every module that previously had
   only source-regex coverage, and app_load assertions now read the module

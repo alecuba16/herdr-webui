@@ -9,6 +9,7 @@ __pycache__/
 
 /.local/
 /backlog
+.zed/
 
 /result
 /result-*
@@ -27,3 +28,6 @@ lcov.info
 scripts/e2e/.tmp*/
 anti-slop/
 .codebase-memory/
+# Agent audit reports kept local, not shipped
+/docs/code-quality-audit.md
+/docs/swarm-architecture-review-*.md

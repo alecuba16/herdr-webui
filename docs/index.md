@@ -18,7 +18,6 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | [TUI shortcuts](tui-shortcuts.md) | Full `herdr-webui-tui` key reference: navigation, prefix shortcuts, attach mode, chat lens, composer. |
 | [Development guide](development.md) | Repository layout, frontend module structure, desktop/mobile parity, maintainability rules. |
 | [Release notes](release-notes.md) | Release policy and release history. |
-| [Code quality audit](code-quality-audit.md) | Baseline quality audit, remediated issues, and deferred risks. |
 | [UX flow proposal](ux-flow-proposal.md) | Proposed UX improvements for desktop and mobile navigation. |
 | [Terminal image support analysis](terminal-image-support.md) | Implementation status and upgrade path for rendering jcode-generated images in the browser terminal: protocol support, wterm/Ghostty renderer paths, and risks. |
 
