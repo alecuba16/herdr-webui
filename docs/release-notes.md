@@ -1,5 +1,26 @@
 # Release notes
 
+## 0.7.45 Release Notes
+- Chat lens conversations render markdown: assistant messages go
+  through the shared marked+DOMPurify pipeline with mermaid support,
+  the parsed HTML is cached per text so the periodic poll
+  re-serialization never flickers, and rows show an escaped plain-text
+  fallback until the lazily loaded bundle arrives (user rows stay plain
+  text so prompts read exactly as typed).
+- Holding the Send button for 600ms submits with Ctrl+Enter instead of
+  Enter: the backend writes kitty CSI-u ESC[13;5u after the pasted
+  text, which jcode reads as enqueue-while-working (the message queues
+  into the running agent) and as a plain submit while idle. The button
+  shows a ring animation during the hold, with a reduced-motion
+  fallback, and a status note announces the queued outcome. The TUI
+  client gains the matching submit_pane_enqueued method with a
+  wire-contract test.
+- Terminal input fixes: chooser clicks are no longer swallowed by the
+  lens keydown gates, SGR mouse-reporting mode is reset when a TUI
+  exits so its escape bytes stop leaking into the pane stream, and
+  attaching to a pane with very long scrollback sends a bounded
+  line-aligned tail instead of replaying the whole ring.
+
 ## 0.7.44 Release Notes
 - The git log panel gains a comparison chip that shows how HEAD relates
   to the repository's base branch: it reads ahead/behind counts locally,
@@ -679,6 +700,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.45 | 2026-11-11 | [v0.7.45](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.45) |
 | 0.7.44 | 2026-11-10 | [v0.7.44](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.44) |
 | 0.7.43 | 2026-11-10 | [v0.7.43](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.43) |
 | 0.7.42 | 2026-11-10 | [v0.7.42](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.42) |
