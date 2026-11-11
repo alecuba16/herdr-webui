@@ -1644,6 +1644,108 @@ describe("lens decision chooser (ask_user)", () => {
     equal(status, true, "pane still blocked after answering (status not yet working)");
     match(content.innerHTML, /data-decision="answered"/, "same-key question stays collapsed");
   });
+
+  it("a stale blocked event stays blocked past the TTL (sticky blocked)", async () => {
+    const { ctx, registry, sent } = blockedContext();
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    // Arm blocked ONLY through the event stream: no agents row carrying
+    // the status, so the fallback sources cannot mask the TTL behavior.
+    ctx.state.agents = [];
+    ctx.state.workspaces = [];
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
+    equal(ctx.HerdrLens.paneBlockedNow(), true, "blocked right after the event");
+    // jcode dedups OSC 9 on state change, so no further blocked event will
+    // arrive while the chooser sits open. 11s of silence must NOT disarm
+    // the gate (a TTL flip here silently dropped the chooser click).
+    const realNow = Date.now;
+    const started = realNow();
+    Date.now = () => started + 11000;
+    try {
+      equal(ctx.HerdrLens.paneBlockedNow(), true, "blocked is sticky past the event TTL");
+    } finally {
+      Date.now = realNow;
+    }
+    // A non-blocked status event replaces the sticky one: answered (or
+    // working) clears the gate immediately, no TTL wait.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    equal(ctx.HerdrLens.paneBlockedNow(), false, "non-blocked event clears the gate");
+    equal(sent.length, 0, "no keystrokes sent by the gate checks");
+  });
+
+  it("a fresh blocked event resets the answered mark (same-text re-ask is answerable)", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const option = content.querySelector("[data-decision-index=\"1\"]");
+    for (const fn of lens.listeners.click || []) fn({ target: option });
+    equal(sent.length, 1, "first ask answered");
+    equal(ctx.HerdrLens._decisionAnsweredKey(), "Deploy where?|dev|prod");
+    // The pane resolves and re-asks the SAME question (blocked again):
+    // jcode emits jcode:blocked once more, so the answered mark must drop
+    // or the identical question stays "Answered — waiting" forever.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    await settle();
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
+    await settle();
+    equal(ctx.HerdrLens._decisionAnsweredKey(), null, "answered mark cleared on the fresh blocked event");
+    match(content.innerHTML, /data-decision="live"/, "re-asked chooser is live again");
+    const fresh = content.querySelector("[data-decision-index=\"1\"]");
+    for (const fn of lens.listeners.click || []) fn({ target: fresh });
+    equal(sent.length, 2, "second ask answerable from the webui");
+  });
+
+  it("a blocked event from another pane does not reset the answered mark", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const option = content.querySelector("[data-decision-index=\"1\"]");
+    for (const fn of lens.listeners.click || []) fn({ target: option });
+    equal(sent.length, 1, "first ask answered");
+    equal(ctx.HerdrLens._decisionAnsweredKey(), "Deploy where?|dev|prod");
+    // A DIFFERENT pane blocks while pane_1 still waits for its tool_result:
+    // the answered mark belongs to pane_1's chooser, so it must survive (a
+    // foreign event re-arming it is the double-send A2 exists to prevent).
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_2", agent_status: "blocked" });
+    await settle();
+    equal(ctx.HerdrLens._decisionAnsweredKey(), "Deploy where?|dev|prod", "foreign blocked event leaves the answered mark alone");
+    // But a fresh blocked event from the SAME pane still re-arms it.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    await settle();
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
+    await settle();
+    equal(ctx.HerdrLens._decisionAnsweredKey(), null, "same-pane blocked event clears the mark");
+  });
+
+  it("a dropped click shows transient feedback instead of doing nothing", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const option = content.querySelector("[data-decision-index=\"1\"]");
+    // Gate drop: the pane stopped being blocked (the TUI answered in the
+    // terminal). Without feedback this click vanished silently.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    await settle();
+    for (const fn of lens.listeners.click || []) fn({ target: option });
+    equal(sent.length, 0, "stale click still sends nothing");
+    const overlayNode = registry.get("terminalLens");
+    ok(
+      overlayNode.querySelector(".lens-decision-toast"),
+      "drop toast rendered inside the lens overlay",
+    );
+    // The already-answered drop shows the distinct "already answered" line.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
+    await settle();
+    const liveOption = content.querySelector("[data-decision-index=\"1\"]");
+    for (const fn of lens.listeners.click || []) fn({ target: liveOption });
+    equal(sent.length, 1, "live click sends");
+    for (const fn of lens.listeners.click || []) fn({ target: liveOption });
+    equal(sent.length, 1, "second click on the answered chooser drops");
+    const toast = overlayNode.querySelector(".lens-decision-toast");
+    ok(toast, "answered-drop toast rendered");
+    ok(
+      toast.textContent.includes("Already answered"),
+      "answered drop names the reason",
+    );
+  });
 });
 
 // ---- working (thinking) indicator ----
@@ -2735,5 +2837,91 @@ describe("lens cursor paging and poll contract", () => {
     fireTimers(ctx);
     await settle();
     ok(!content.querySelector(".lens-image img"), "ref-less image renders nothing");
+  });
+});
+
+// ---- Feature M: assistant markdown rendering ----
+// The harness injects a HerdrMarkdownPreview stub through extra:{} the
+// same way it injects HerdrComposer. The stub is deterministic (same
+// text in, same html out) so the outerHTML sync comparisons exercise the
+// exact stability contract the browser relies on.
+
+function previewStub({ bundle } = {}) {
+  const parse = (text) => {
+    let out = String(text);
+    out = out.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    return `<div class="herdr-markdown-body lens-markdown">${out}</div>`;
+  };
+  return {
+    renderChatMarkdownHtml(text) {
+      return bundle ? parse(text) : `<div class="herdr-markdown-body lens-markdown">${String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])}</div>`;
+    },
+    upgradeChatMarkdown() { return Promise.resolve(); },
+    renderChatMermaid() { return Promise.resolve(); },
+    onChatBundleReady() {},
+  };
+}
+
+describe("lens assistant markdown (Feature M)", () => {
+  it("assistant text renders markdown, user text stays escaped", async () => {
+    const mdFixture = {
+      ...conversationFixture(),
+      turns: [
+        { role: "user", ts: "t1", end_ts: "t1", parts: [{ kind: "text", text: "# not a heading" }] },
+        {
+          role: "assistant",
+          ts: "t2",
+          end_ts: "t2",
+          parts: [{ kind: "text", text: "# Summary\n\n**bold answer**" }],
+        },
+      ],
+    };
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => mdFixture,
+      extra: { HerdrMarkdownPreview: previewStub({ bundle: true }) },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const html = content.innerHTML;
+    ok(html.includes("<h1>Summary</h1>"), "assistant markdown rendered");
+    ok(html.includes("<strong>bold answer</strong>"), "assistant bold rendered");
+    ok(!html.includes("<h1>not a heading</h1>"), "user turn not markdown");
+    ok(html.includes("# not a heading"), "user text kept verbatim");
+  });
+
+  it("same-count sync never rewrites a deterministic markdown row", async () => {
+    let calls = 0;
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => {
+        calls++;
+        return conversationFixture();
+      },
+      extra: { HerdrMarkdownPreview: previewStub({ bundle: true }) },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const row = content.querySelector(".lens-text");
+    const before = row.outerHTML;
+    let swaps = 0;
+    const originalOuter = Object.getOwnPropertyDescriptor(content.children.constructor.prototype, "outerHTML");
+    // Second poll with identical data: the sync path must find the row
+    // and compare equal (no outerHTML rewrite). Observe by identity: the
+    // node object must survive the poll untouched.
+    const rowIdentity = row;
+    fireTimers(ctx);
+    await settle();
+    equal(calls, 2, "second poll ran");
+    const rowAfter = content.querySelector(".lens-text");
+    equal(rowAfter, rowIdentity, "deterministic markdown row keeps node identity");
+    equal(rowAfter.outerHTML, before, "serialized row unchanged");
   });
 });

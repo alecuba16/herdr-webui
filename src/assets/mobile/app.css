@@ -893,6 +893,38 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
   cursor: wait;
   opacity: 0.65;
 }
+/* Long-press Send (desktop parity): the hold fills a ring around the
+   button; past the threshold the ring completes and the button dims
+   toward the accent to say the release will queue. */
+.mobile-composer-send.mobile-composer-send-holding {
+  position: relative;
+}
+.mobile-composer-send.mobile-composer-send-holding::after {
+  animation: composer-hold-ring 600ms linear forwards;
+  border: 2px solid var(--accent, #89b4fa);
+  border-radius: 10px;
+  content: "";
+  inset: -3px;
+  pointer-events: none;
+  position: absolute;
+}
+.mobile-composer-send.mobile-composer-send-queued {
+  background: color-mix(in srgb, var(--accent, #89b4fa), transparent 80%);
+}
+@keyframes composer-hold-ring {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mobile-composer-send.mobile-composer-send-holding::after {
+    animation: none;
+    clip-path: inset(0 0 0 0);
+  }
+}
 .mobile-terminal.wterm,
 .mobile-terminal .wterm {
   contain: layout paint style;
@@ -2621,6 +2653,34 @@ body.mobile-keyboard-open .mobile-location-strip {
   overflow-wrap: anywhere;
   padding: 1px 0;
   white-space: pre-wrap;
+}
+/* Assistant markdown rows: .lens-markdown reuses the shared
+   markdown-preview styles (herdr-markdown-body), compacted for chat
+   density; the preview container padding/height are neutralized
+   (desktop terminal.css parity). */
+.lens-text .lens-markdown {
+  padding: 0;
+  height: auto;
+  background: none;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lens-text .lens-markdown p,
+.lens-text .lens-markdown ul,
+.lens-text .lens-markdown ol,
+.lens-text .lens-markdown blockquote,
+.lens-text .lens-markdown pre,
+.lens-text .lens-markdown table,
+.lens-text .lens-markdown hr {
+  margin: 0.4em 0;
+}
+.lens-text .lens-markdown h1,
+.lens-text .lens-markdown h2,
+.lens-text .lens-markdown h3,
+.lens-text .lens-markdown h4,
+.lens-text .lens-markdown h5,
+.lens-text .lens-markdown h6 {
+  margin: 0.7em 0 0.3em;
 }
 .lens-loading,
 .lens-empty,

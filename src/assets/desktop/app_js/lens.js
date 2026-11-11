@@ -694,7 +694,7 @@
       (turn.parts || []).forEach((part, partIndex) => {
         // Part keys are GLOBAL turn indices; a chunk render must keep
         // the indices of the conversation it came from, not restart at 0.
-        parts.push(partHtml(part, globalIndex, partIndex, turn.parts));
+        parts.push(partHtml(part, globalIndex, partIndex, turn.parts, turn.role));
       });
       const body = parts.join("");
       // Assistant turns carry the turn's wall-clock span (ts -> end_ts)
@@ -723,12 +723,20 @@
     return out.join("");
   }
 
-  function partHtml(part, turnIndex, partIndex, turnParts) {
+  function partHtml(part, turnIndex, partIndex, turnParts, role) {
     if (part.kind === "text") {
       // Text parts carry the key too: the same-count sync must FIND them
       // (a miss would append a duplicate on every poll), and a text part
       // appended to an open turn must render once and then compare equal.
-      return `<div class="lens-text" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">${escapeHtml(part.text || "")}</div>`;
+      // Assistant text is markdown; every other surface (user turns,
+      // quotes, UI copy) stays escaped plain. The chat renderer is
+      // synchronous and deterministic so the sync's outerHTML compare
+      // stays stable across polls.
+      const body =
+        role === "assistant" && globalThis.HerdrMarkdownPreview && globalThis.HerdrMarkdownPreview.renderChatMarkdownHtml
+          ? globalThis.HerdrMarkdownPreview.renderChatMarkdownHtml(part.text || "")
+          : escapeHtml(part.text || "");
+      return `<div class="lens-text" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">${body}</div>`;
     }
     if (part.kind === "image") {
       // Image parts reference their bytes by message id (reference
@@ -850,6 +858,14 @@
   // user wants to answer in the terminal): suppress the controls too, but
   // the hint must say the agent is STILL waiting.
   let decisionAnsweredKey = null;
+  // Wall clock of the moment the answered mark above was recorded. A NEW
+  // blocked event for the same pane arriving after this means jcode re-armed
+  // the chooser (it only emits jcode:blocked on state change): the same-text
+  // question is a fresh ask, so the answered mark must drop or the re-asked
+  // chooser stays suppressed forever ("Answered — waiting") with no way to
+  // answer it from here.
+  let decisionAnsweredAt = 0;
+  let decisionAnsweredPane = null;
   let decisionCollapsedKey = null;
 
   function decisionKey(part) {
@@ -873,10 +889,24 @@
 
   function onAgentStatusChanged(data) {
     if (!data || !data.pane_id) return;
+    const at = Date.now();
     paneStatusEvents.set(data.pane_id, {
       status: String(data.agent_status || ""),
-      at: Date.now(),
+      at,
     });
+    // Fresh blocked from the SAME pane we answered: that pane re-armed
+    // its chooser (a new ask, possibly the same question text), so the
+    // answered mark is stale. Blocked from a different pane must NOT
+    // clear the mark: the answered pane still waits on its tool_result,
+    // and a foreign event re-arming it is the double-send A2 prevents.
+    if (
+      String(data.agent_status || "") === "blocked" &&
+      decisionAnsweredKey &&
+      data.pane_id === decisionAnsweredPane &&
+      at > decisionAnsweredAt
+    ) {
+      decisionAnsweredKey = null;
+    }
     // Instant arming/disarming: the chooser reacts to the event itself,
     // not the next poll tick (the agents row refreshes ~500ms later and
     // the poll would add up to 2s more).
@@ -887,10 +917,20 @@
     try {
       if (typeof state === "undefined" || !state) return false;
       const paneId = state.pane;
-      // 1. Freshest: the last status event for THIS pane (if recent).
+      // 1. Freshest: the last status event for THIS pane.
+      // `blocked` is sticky and outlives the TTL: jcode emits jcode:blocked
+      // exactly ONCE per ask (state-change dedup), so a pane that went silent
+      // while blocked would flip this gate to false 10s later and silently
+      // drop the chooser click. Only a non-blocked status event (or a
+      // refreshed row below) clears it, because that event always replaces
+      // the map entry. The TTL stays for non-blocked events only: a stale
+      // `working` must not pin the pane as not-blocked against fresher rows.
       const event = paneId && paneStatusEvents.get(paneId);
-      if (event && Date.now() - event.at < STATUS_EVENT_TTL_MS) {
-        return event.status === "blocked";
+      if (event) {
+        if (event.status === "blocked") return true;
+        if (Date.now() - event.at < STATUS_EVENT_TTL_MS) {
+          return false;
+        }
       }
       // 2. Per-pane agents row (never the workspace aggregate: another
       // blocked pane in the same workspace must not arm THIS pane's
@@ -1233,19 +1273,61 @@
   // (a stale click after the TUI answered types garbage into the main
   // input) and the decision part must still be live in the current
   // conversation (position + name match).
+  // A3: silent drops made visible. A dropped click with no feedback reads
+  // as "the webui is broken" (the click did nothing at all); one transient
+  // line scoped to the lens says the pane moved on, which is the truth.
+  // Scoped to the lens instead of a global toast: the lens owns this
+  // surface and its markup cycles through render(), so a stray global
+  // node would outlive a pane switch and lie about the wrong pane.
+  let decisionDropToastTimer = null;
+
+  function showDecisionDropToast(message) {
+    const node = overlay();
+    if (!node) return;
+    let toast = node.querySelector(".lens-decision-toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.className = "lens-decision-toast";
+      toast.setAttribute("role", "status");
+      // aria-live off mirrors the shortcut hint toast: this is an echo of a
+      // gesture the user just performed, not new information to announce.
+      toast.setAttribute("aria-live", "off");
+      node.appendChild(toast);
+    }
+    toast.textContent = message;
+    if (decisionDropToastTimer) clearTimeout(decisionDropToastTimer);
+    decisionDropToastTimer = setTimeout(() => {
+      decisionDropToastTimer = null;
+      const current = overlay();
+      const live = current && current.querySelector(".lens-decision-toast");
+      if (live) live.remove();
+    }, 2600);
+  }
+
   function decisionAnswer(key, payload) {
-    if (!paneBlockedNow()) return;
+    if (!paneBlockedNow()) {
+      showDecisionDropToast("Could not send: pane no longer waiting");
+      return;
+    }
     const part = decisionPartFromDom(key);
-    if (!part) return;
+    if (!part) {
+      showDecisionDropToast("Could not send: question no longer shown");
+      return;
+    }
     const identity = decisionKey(part);
     // Already answered from the webui: the pane is STILL blocked on the
     // same question (the tool_result has not landed yet). A second send
     // would type into the chooser a second time — after the first
     // answer resolves it, that lands in the re-enabled main input.
-    if (decisionAnsweredKey === identity) return;
+    if (decisionAnsweredKey === identity) {
+      showDecisionDropToast("Already answered — waiting for the agent");
+      return;
+    }
     if (typeof sendInputData !== "function") return;
     sendInputData(payload);
     decisionAnsweredKey = identity;
+    decisionAnsweredAt = Date.now();
+    decisionAnsweredPane = activePaneId();
     // The next poll folds the ask_user into a plain tool row once the
     // tool_result lands; until then the answered hint replaces the
     // controls immediately (no second click can double-send).
@@ -1397,6 +1479,16 @@
     } else if (follow && scroller) {
       scroller.scrollTop = scroller.scrollHeight;
     }
+    // Assistant markdown may carry mermaid fences: the sanitized rows
+    // hold .herdr-mermaid divs, and a row swap (streamed text) replaces
+    // them, so ask the preview module to run mermaid over the live DOM.
+    // No-op when no unrendered fences exist.
+    const preview = globalThis.HerdrMarkdownPreview;
+    if (preview && preview.renderChatMermaid) preview.renderChatMermaid(content);
+    // Rows rendered before the marked/dompurify bundles landed are
+    // queued inside the preview module; this loads them once and the
+    // ready-callback re-renders. Cheap no-op while nothing is queued.
+    if (preview && preview.upgradeChatMarkdown) preview.upgradeChatMarkdown();
   }
 
   // The load-older row above the turns: a button while older turns
@@ -1501,7 +1593,7 @@
         const key = partKey(turnIndex, partIndex, part);
         const row = content.querySelector(`[data-part-key="${cssEscape(key)}"]`);
         if (row) {
-          const fresh = partHtml(part, turnIndex, partIndex, turn.parts);
+          const fresh = partHtml(part, turnIndex, partIndex, turn.parts, turn.role);
           // Compare SERIALIZED forms on both sides: template text keeps
           // entities (&quot;) that the DOM serializer would not emit for
           // text nodes, so a raw string compare would swap unchanged rows
@@ -1520,7 +1612,7 @@
         // turn (parts stream while the turn is open — text included).
         if (!turnEl) return;
         const at = document.createElement("div");
-        at.innerHTML = partHtml(part, turnIndex, partIndex, turn.parts);
+        at.innerHTML = partHtml(part, turnIndex, partIndex, turn.parts, turn.role);
         while (at.firstChild) turnEl.appendChild(at.firstChild);
       });
     });
@@ -2318,6 +2410,19 @@
     node.hidden = !chatSupported();
   }
 
+  // One-time registration: when the chat markdown bundles finish
+  // loading, every queued plain row upgrades through a full re-render.
+  // Registered once at module scope so the callback cannot re-enter
+  // render() per poll (the module invokes it exactly once per load).
+  if (
+    globalThis.HerdrMarkdownPreview &&
+    globalThis.HerdrMarkdownPreview.onChatBundleReady
+  ) {
+    globalThis.HerdrMarkdownPreview.onChatBundleReady(() => {
+      if (lensActive) render();
+    });
+  }
+
   globalThis.HerdrLens = {
     insertLensSwitch,
     toggle: toggleLens,
@@ -2351,7 +2456,7 @@
     paneWorkingNow,
     onAgentStatusChanged,
     _decisionAnsweredKey: () => decisionAnsweredKey,
-    _resetDecisionState: () => { decisionAnsweredKey = null; },
+    _resetDecisionState: () => { decisionAnsweredKey = null; decisionAnsweredAt = 0; decisionAnsweredPane = null; },
     // Test/diagnostic surface: the working (thinking) block internals.
     workingBlockHtml,
     syncWorkingDom,

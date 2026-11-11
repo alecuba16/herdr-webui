@@ -67,6 +67,19 @@ function connectEvents() {
         // (its blocked gate reads this cache, not the poll-delayed row).
         if (globalThis.HerdrLens && globalThis.HerdrLens.onAgentStatusChanged)
           globalThis.HerdrLens.onAgentStatusChanged(d);
+        // The agent process is gone: its mouse-tracking DECSET must not
+        // outlive it. The backend synthesizes DECRST on exit, but the
+        // frames can be lost, so the event also clears the sniffed mode
+        // directly (B2 belt-and-suspenders; garbage SGR wheel bytes
+        // otherwise reach the shell).
+        if (
+          term &&
+          typeof term.resetMouseMode === "function" &&
+          d.pane_id === state.pane &&
+          (d.agent_status === "done" || d.agent_status === "exited")
+        ) {
+          term.resetMouseMode();
+        }
         if (statusClass(d.agent_status) !== "working") {
           for (const agent of state.agents) {
             if (

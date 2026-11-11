@@ -210,6 +210,139 @@
       .replace(/"/g, "&quot;");
   }
 
+  // ---- chat-lens markdown (Feature M) ----
+  // The chat lens re-serializes every part row on each poll and swaps
+  // when outerHTML differs, so the render must be SYNCHRONOUS and
+  // deterministic: same text in, byte-identical html out. marked.parse
+  // and DOMPurify.sanitize are deterministic for the same input+config;
+  // the cache below pins one parse per text so a poll never re-parses
+  // and the outerHTML comparison stays stable (no flicker every 2s).
+  const CHAT_MARKDOWN_CACHE_MAX = 200;
+  let chatHtmlCache = null;
+  let chatQueue = new Set();
+  let chatBundlePromise = null;
+  let chatUpgradeCallbacks = new Set();
+
+  function chatCache() {
+    if (!chatHtmlCache) chatHtmlCache = new Map();
+    return chatHtmlCache;
+  }
+
+  function chatHasBundle() {
+    return !!(
+      typeof window !== "undefined" &&
+      window.HerdrMarked &&
+      window.HerdrMarked.parse &&
+      window.HerdrDOMPurify &&
+      window.HerdrDOMPurify.sanitize
+    );
+  }
+
+  // Chat links must never navigate the webui away: sanitize has already
+  // stripped event handlers, so this string pass only adds safe attrs.
+  function retargetLinks(html) {
+    return html.replace(/<a\b(?![^>]*\btarget=)/g, '<a target="_blank" rel="noopener"');
+  }
+
+  function chatEscaped(text) {
+    // Same escaping shape the lens uses for plain rows, so the fallback
+    // row and the upgrade target serialize identically after the swap.
+    return '<div class="herdr-markdown-body lens-markdown">' + esc(text) + "</div>";
+  }
+
+  function chatRenderHtml(text) {
+    const cache = chatCache();
+    if (cache.has(text)) return cache.get(text);
+    const marked = window.HerdrMarked;
+    const purify = window.HerdrDOMPurify;
+    let html = marked.parse(text);
+    html = transformMermaidFences(html);
+    const clean = purify.sanitize(html, sanitizeConfig());
+    // Gif strip parity with renderInto: a 404ing gif inside a chat row
+    // would spam the console every poll.
+    const gifless = clean.replace(/<img\b[^>]*\bsrc="[^"]*\.gif"[^>]*>/gi, "");
+    const out =
+      '<div class="herdr-markdown-body lens-markdown">' + retargetLinks(gifless) + "</div>";
+    if (cache.size >= CHAT_MARKDOWN_CACHE_MAX) {
+      // Map iteration order is insertion order: drop the oldest entry,
+      // a cheap LRU that never runs per poll (cache hit path skips this).
+      const oldest = cache.keys().next().value;
+      cache.delete(oldest);
+    }
+    cache.set(text, out);
+    return out;
+  }
+
+  function renderChatMarkdownHtml(text) {
+    const source = String(text == null ? "" : text);
+    if (chatHasBundle()) return chatRenderHtml(source);
+    // Bundle not loaded yet: queue for upgrade and render the escaped
+    // fallback so the first paint is immediate (no blank rows).
+    // A permanently failing vendor load would otherwise grow this Set
+    // forever (every poll re-adds its pane's texts), so cap it like the
+    // render cache. Insertion order is drop order: the newest texts
+    // stay queued, the oldest scroll out.
+    if (chatQueue.size >= CHAT_MARKDOWN_CACHE_MAX) {
+      const oldest = chatQueue.values().next().value;
+      chatQueue.delete(oldest);
+    }
+    chatQueue.add(source);
+    return chatEscaped(source);
+  }
+
+  function ensureChatBundle() {
+    if (chatHasBundle()) return Promise.resolve();
+    if (!chatBundlePromise) {
+      chatBundlePromise = Promise.all([ensureMarked(), ensureDOMPurify()])
+        .then(() => {
+          ensureMarkdownStyles().catch(() => {});
+        })
+        .catch((error) => {
+          chatBundlePromise = null;
+          throw error;
+        });
+    }
+    return chatBundlePromise;
+  }
+
+  function onChatBundleReady(callback) {
+    // If the bundle already loaded, rows render markdown at partHtml
+    // time and there is nothing to upgrade: never fire (firing here
+    // would double-render once upgradeChatMarkdown reaches the same
+    // callback set on the next poll).
+    if (chatHasBundle()) return;
+    chatUpgradeCallbacks.add(callback);
+  }
+
+  // Loads the bundles once (only when rows were queued as plain text)
+  // and upgrades the calling lens's rendered rows: the caller registers
+  // a callback that re-renders, and is invoked once when the bundle
+  // lands. Cheap when nothing is pending: no queue, no network.
+  function upgradeChatMarkdown() {
+    if (!chatQueue.size) return Promise.resolve();
+    return ensureChatBundle()
+      .then(() => {
+        if (!chatHasBundle()) return;
+        chatQueue.clear();
+        chatUpgradeCallbacks.forEach((callback) => {
+          try {
+            callback();
+          } catch (_) {
+            // A dead lens callback must not break the other lenses
+            // sharing this module (desktop + mobile mounts).
+          }
+        });
+      })
+      .catch(() => {});
+  }
+
+  // After a swap the caller must ask mermaid to run over the live DOM:
+  // fences became .herdr-mermaid divs inside the sanitized html.
+  function renderChatMermaid(root) {
+    if (!root || !root.querySelectorAll) return Promise.resolve();
+    return renderMermaid(root).catch(() => {});
+  }
+
   window.HerdrMarkdownPreview = {
     isMarkdownPath,
     containsMermaid,
@@ -218,5 +351,13 @@
     transformMermaidFences,
     sanitizeConfig,
     refreshTheme,
+    renderChatMarkdownHtml,
+    ensureChatBundle,
+    upgradeChatMarkdown,
+    onChatBundleReady,
+    renderChatMermaid,
+    // Test probe: the pending-upgrade set is memory-bounded by the cap;
+    // the queue itself is internal, so the size is the only observable.
+    _chatQueueSize: () => chatQueue.size,
   };
 })();

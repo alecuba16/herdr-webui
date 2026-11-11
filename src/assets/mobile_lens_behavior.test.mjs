@@ -1406,3 +1406,120 @@ describe("mobile lens", () => {
     );
   });
 });
+// ---- Feature M: assistant markdown parity ----
+// Same deterministic-stub contract as the desktop lens tests: the lens
+// must route assistant text through HerdrMarkdownPreview and keep the
+// same-count DOM sync stable for identical markdown output.
+
+function previewStub({ bundle } = {}) {
+  const parse = (text) => {
+    let out = String(text);
+    out = out.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    return `<div class="herdr-markdown-body lens-markdown">${out}</div>`;
+  };
+  return {
+    renderChatMarkdownHtml(text) {
+      return bundle
+        ? parse(text)
+        : `<div class="herdr-markdown-body lens-markdown">${String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])}</div>`;
+    },
+    upgradeChatMarkdown() { return Promise.resolve(); },
+    renderChatMermaid() { return Promise.resolve(); },
+    onChatBundleReady() {},
+  };
+}
+
+describe("mobile lens assistant markdown (Feature M)", () => {
+  it("assistant text renders markdown, user text stays escaped", async () => {
+    const mdFixture = {
+      ...conversationFixture(),
+      turns: [
+        { role: "user", ts: "t1", parts: [{ kind: "text", text: "# not a heading" }] },
+        {
+          role: "assistant",
+          ts: "t2",
+          parts: [{ kind: "text", text: "# Summary\n\n**bold answer**" }],
+        },
+      ],
+    };
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async () => json200(mdFixture),
+      extra: { HerdrMarkdownPreview: previewStub({ bundle: true }) },
+    });
+    lens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const content = lensContent(registry);
+    const html = content.innerHTML;
+    ok(html.includes("<h1>Summary</h1>"), "assistant markdown rendered");
+    ok(html.includes("<strong>bold answer</strong>"), "assistant bold rendered");
+    ok(!html.includes("<h1>not a heading</h1>"), "user turn not markdown");
+    ok(html.includes("# not a heading"), "user text kept verbatim");
+  });
+
+  it("same-count sync keeps row identity for deterministic markdown", async () => {
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async () => json200(conversationFixture()),
+      extra: { HerdrMarkdownPreview: previewStub({ bundle: true }) },
+    });
+    lens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const content = lensContent(registry);
+    const row = content.querySelector(".lens-text");
+    ok(row, "text row rendered");
+    fireTimers(ctx);
+    await settle();
+    const rowAfter = content.querySelector(".lens-text");
+    equal(rowAfter, row, "deterministic markdown row keeps node identity");
+  });
+
+  it("bundle-ready registration re-renders while the lens is open", async () => {
+    // The registration used to sit AFTER the factory return statement,
+    // i.e. dead code: no upgrade ever fired on mobile. Pin the live
+    // path: the factory registers with the preview module at create
+    // time and the callback re-renders only while the lens is open.
+    const readyCallbacks = [];
+    // Escaped fallback first, real markdown once the "bundle lands":
+    // flip the flag and the same renderChatMarkdownHtml upgrades the
+    // row, which is exactly what the bundle-ready re-render is for.
+    let bundleLoaded = false;
+    const preview = {
+      renderChatMarkdownHtml(text) {
+        return bundleLoaded
+          ? `<div class="herdr-markdown-body lens-markdown"><p><h1>${String(text).replace("# ", "")}</h1></p></div>`
+          : `<div class="herdr-markdown-body lens-markdown">${String(text).replace(/[&<>]/g, "")}</div>`;
+      },
+      upgradeChatMarkdown() { return Promise.resolve(); },
+      renderChatMermaid() { return Promise.resolve(); },
+      onChatBundleReady(cb) { readyCallbacks.push(cb); },
+    };
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async () =>
+        json200({
+          ...conversationFixture(),
+          turns: [
+            { role: "assistant", ts: "t1", parts: [{ kind: "text", text: "# Upgrade me" }] },
+          ],
+        }),
+      extra: { HerdrMarkdownPreview: preview },
+    });
+    equal(readyCallbacks.length, 1, "factory registered exactly one bundle-ready callback");
+    lens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const before = lensContent(registry).innerHTML;
+    ok(before.includes("# Upgrade me"), "row rendered the escaped fallback before the bundle");
+    bundleLoaded = true;
+    readyCallbacks[0]();
+    const after = lensContent(registry).innerHTML;
+    ok(
+      after.includes("<h1>Upgrade me</h1>"),
+      "bundle-ready callback re-rendered the queued row as markdown",
+    );
+  });
+});

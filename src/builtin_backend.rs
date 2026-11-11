@@ -74,6 +74,18 @@ const DETECTION_TAIL_BYTES: usize = 64 * 1024;
 /// refresh. Same size as DETECTION_TAIL_BYTES by coincidence, not
 /// coupling: either can change alone.
 const RESOLVE_TAIL_BYTES: usize = 64 * 1024;
+/// Attach replay cap. A full scrollback replay costs an 8MB frame, a
+/// multi-second wasm parse on the client, and a multi-second writer drain on
+/// the server side. The bounded tail keeps the visible state (well under
+/// 256KB for any real session) while old scrollback stays server-side only.
+const ATTACH_REPLAY_MAX_BYTES: usize = 256 * 1024;
+/// Mouse + bracketed-paste resets synthesized on agent exit. jcode never
+/// emits DECRST itself (crossterm's try_restore only restores raw mode and
+/// leaves the alternate screen), so its DECSET mouse-tracking bytes would
+/// otherwise keep the client adapter forwarding wheel reports into a shell
+/// that echoes them as garbage.
+const AGENT_EXIT_DECRST_BYTES: &[u8] =
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l\x1b[?2004l";
 /// Gap between a composer message's bracketed paste and its Enter. Must
 /// exceed jcode's 150ms paste-trailing-Enter suppression window
 /// (`paste_guard.rs`, jcode issue #544) or the submit is swallowed.
@@ -547,7 +559,11 @@ fn handle_client_connection(
                 // sequences mid-frame; the reader then decoded garbage frames
                 // ("trailing bytes in frame") and whole PTY bursts were lost
                 // when bulk output floods raced the attach replay.
-                let history = terminal.history_bytes();
+                // Bounded tail (not full history): the client emulator parses
+                // 256KB in one paint instead of multi-second 8MB drains, and
+                // the `full: true` semantics are unchanged (the frame still
+                // replaces local scrollback, just with the recent window).
+                let history = terminal.attach_replay_bytes();
                 if let Some(tx) = &writer_tx {
                     // Re-attach on a live connection: deliver a fresh replay
                     // of the history accumulated since the last attach. The
@@ -1095,8 +1111,20 @@ impl BuiltinState {
                         "message_too_long: composer message exceeds 20000 characters".to_string(),
                     );
                 }
-                terminal.agent_prompt(&text)?;
-                Ok(json!({ "type": "agent_prompt", "pane_id": pane_id, "ok": true }))
+                // Long-press Send (enqueue): absent or false keeps the
+                // legacy Enter submit, so older clients stay untouched.
+                let enqueue = params
+                    .get("enqueue")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if enqueue {
+                    terminal.agent_prompt_enqueue(&text)?;
+                } else {
+                    terminal.agent_prompt(&text)?;
+                }
+                Ok(
+                    json!({ "type": "agent_prompt", "pane_id": pane_id, "ok": true, "enqueue": enqueue }),
+                )
             }
             other => Err(format!("built-in backend does not implement {other}")),
         }
@@ -2559,6 +2587,15 @@ impl TerminalRuntime {
                 observed_at: Instant::now(),
             });
         }
+        // Agent quit INSIDE the pane's shell (jcode + Ctrl-C, zsh alive):
+        // notify_exited never fires for this, so the DECRST the agent never
+        // sent must be synthesized here, exactly at the live->absent
+        // transition. The shell still owns the pty, so the agent's DECSET
+        // bytes outlived the agent; append_output feeds subscribers and
+        // scrollback, which is what flips the web adapter's sniffed mouse
+        // mode off. The armed-flag take() above guarantees this runs once
+        // per exit, not on repeat empty probes.
+        self.append_output(AGENT_EXIT_DECRST_BYTES);
     }
 
     /// True while an agent process previously seen live in this pane has
@@ -2616,6 +2653,29 @@ impl TerminalRuntime {
             .lock()
             .map(|scrollback| scrollback.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    /// Bounded, line-aligned attach replay tail. Cutting raw scrollback at an
+    /// arbitrary byte can split an escape sequence mid-way: the client VT
+    /// emulator then consumes visible text as sequence payload bytes and
+    /// renders garbage on the first rows. Advancing to the first line break
+    /// after the cut guarantees the replay starts on a clean sequence
+    /// boundary (no escape sequence spans a newline).
+    fn attach_replay_bytes(&self) -> Vec<u8> {
+        let mut bytes = self.history_tail_bytes(ATTACH_REPLAY_MAX_BYTES);
+        if bytes.len() < ATTACH_REPLAY_MAX_BYTES {
+            return bytes;
+        }
+        match bytes.iter().position(|&b| b == b'\n' || b == b'\r') {
+            Some(at) => {
+                bytes.drain(..=at);
+                bytes
+            }
+            // No line break in the whole window (one giant unterminated
+            // line): a split escape is possible either way, but dropping
+            // everything would show an empty attach. Keep the tail.
+            None => bytes,
+        }
     }
 
     /// Last `max_bytes` of raw scrollback, byte-exact (no VT emulation),
@@ -2712,6 +2772,15 @@ impl TerminalRuntime {
         if self.exited.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Synthesize the mouse/paste resets the agent never sent (jcode's
+        // crossterm restore only flips raw mode, no DECRST). append_output is
+        // the only path that matters: it feeds subscribers and scrollback,
+        // which is what the web adapter's sniffer keys on. The bytes are
+        // deliberately NOT written to the pty master: they would arrive as
+        // INPUT to the shell (echoed/buffered as garbage on the command
+        // line), and the kernel tty does not track DECSET 1000/1006 anyway
+        // (application-level modes).
+        self.append_output(AGENT_EXIT_DECRST_BYTES);
         // Compute the agent label one last time so we can publish a final
         // "done" status. After this the tracker is reset, so we capture the
         // label from argv or screen text before clearing.
@@ -2866,6 +2935,22 @@ impl TerminalRuntime {
     /// thread that must outlive the submitting HTTP request (the phone can
     /// lock or the connection drop between paste and Enter).
     fn agent_prompt(self: &Arc<Self>, text: &str) -> Result<(), String> {
+        self.agent_prompt_impl(text, false)
+    }
+
+    /// Long-press Send (composer enqueue): the message is pasted the
+    /// same way, but instead of a plain Enter the server sends the kitty
+    /// CSI-u sequence for Ctrl+Enter. jcode maps Ctrl+Enter while
+    /// processing to queue_message (a numbered pending row the agent
+    /// picks up at the next turn boundary) and submits like Enter while
+    /// idle, so the same button works against both states. crossterm
+    /// parses CSI-u unconditionally, and the 300ms gap stays outside
+    /// jcode's 150ms paste-guard window exactly like agent_prompt.
+    fn agent_prompt_enqueue(self: &Arc<Self>, text: &str) -> Result<(), String> {
+        self.agent_prompt_impl(text, true)
+    }
+
+    fn agent_prompt_impl(self: &Arc<Self>, text: &str, enqueue: bool) -> Result<(), String> {
         if self.exited.load(Ordering::Acquire) {
             return Err("agent_exited: terminal has exited".to_string());
         }
@@ -2901,7 +2986,12 @@ impl TerminalRuntime {
             if runtime.exited.load(Ordering::Acquire) {
                 return;
             }
-            let _ = runtime.write_input(b"\r");
+            if enqueue {
+                // kitty CSI-u: keycode 13 (Enter) with modifier 5 (Ctrl).
+                let _ = runtime.write_input(b"\x1b[13;5u");
+            } else {
+                let _ = runtime.write_input(b"\r");
+            }
         });
         Ok(())
     }
@@ -6605,6 +6695,149 @@ mod tests {
     }
 
     #[test]
+    fn agent_prompt_enqueue_validates_input() {
+        // Long-press Send: enqueue shares every agent.prompt validation
+        // (herdr-compatible codes) and reports the enqueue flag back.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let (pane_id, terminal) = {
+            let data = state.data.lock().unwrap();
+            let (pane_id, pane) = data.panes.iter().next().unwrap();
+            let terminal = data.terminals.get(&pane.terminal_id).unwrap().clone();
+            (pane_id.clone(), terminal)
+        };
+
+        // Empty message refused, same code as the normal submit.
+        let response = state.handle_request(
+            "t1",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "  \n", "enqueue": true }),
+        );
+        assert_eq!(
+            response["error"]["message"],
+            "empty_agent_prompt: agent prompt must not be empty"
+        );
+
+        // Over-cap message refused.
+        let long = "x".repeat(MAX_COMPOSER_CHARS + 1);
+        let response = state.handle_request(
+            "t2",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": long, "enqueue": true }),
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("message_too_long"));
+
+        // Blocked pane refused before anything is typed: a message typed
+        // into an open dialog would answer the dialog.
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("jcode".to_string()), "blocked".to_string(), 0));
+        }
+        let response = state.handle_request(
+            "t3",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "should be refused", "enqueue": true }),
+        );
+        assert_eq!(
+            response["error"]["message"],
+            "agent_blocked: the agent is waiting for an answer in the terminal"
+        );
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = None;
+        }
+
+        // Unknown pane refused with agent_not_found (herdr-compatible).
+        let response = state.handle_request(
+            "t4",
+            "agent.prompt",
+            json!({ "pane_id": "no-such-pane", "text": "hi", "enqueue": true }),
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("agent_not_found"));
+
+        // Successful enqueue reports the flag on the wire.
+        let response = state.handle_request(
+            "t5",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "queue me", "enqueue": true }),
+        );
+        assert_eq!(response["result"]["ok"], json!(true));
+        assert_eq!(response["result"]["enqueue"], json!(true));
+
+        // Legacy submit without the flag reports enqueue=false (the
+        // older clients' shape stays byte-compatible on the new field).
+        let response = state.handle_request(
+            "t6",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "plain send" }),
+        );
+        assert_eq!(response["result"]["enqueue"], json!(false));
+    }
+
+    #[test]
+    fn agent_prompt_enqueue_sends_csi_u_after_gap() {
+        // /bin/cat echoes its stdin, so both the bracketed paste AND the
+        // delayed Ctrl+Enter must appear in the scrollback. The CSI-u
+        // bytes arrive after the same 300ms gap as the plain Enter.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let pane_id = {
+            let data = state.data.lock().unwrap();
+            data.panes.keys().next().unwrap().clone()
+        };
+
+        let response = state.handle_request(
+            "test",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "hold to queue\nsecond line\n", "enqueue": true }),
+        );
+        assert!(
+            response.get("error").is_none(),
+            "enqueue must succeed on a plain shell pane: {response}"
+        );
+
+        std::thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS + 700));
+        // pane.read strips ANSI, so assert on the raw PTY history: /bin/cat
+        // echoes everything it read, including the delayed CSI-u bytes.
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.get(&pane_id).unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+        let history = terminal.history_bytes();
+        let raw = String::from_utf8_lossy(&history);
+        assert!(
+            raw.contains("hold to queue\r\nsecond line"),
+            "paste payload missing from pane output: {raw:?}"
+        );
+        // The scrollback holds both raw echo bytes (real ESC) and the
+        // emulator-rendered grid text where ESC shows up in caret notation
+        // (^[). Assert on the CSI-u parameter payload so both encodings
+        // pass: what matters is that the delayed Ctrl+Enter reached the
+        // pane after the paste, in either captured form.
+        assert!(
+            raw.contains("\u{1b}[13;5u") || raw.contains("^[[13;5u"),
+            "delayed Ctrl+Enter CSI-u missing from pane output: {raw:?}"
+        );
+    }
+
+    #[test]
     fn terminal_output_publishes_agent_status_changes() {
         // Use a silent program instead of a real shell: zsh can write its
         // prompt bytes at any moment (on a loaded CI runner the shell can
@@ -6830,6 +7063,155 @@ mod tests {
             Some("idle"),
             "a stale detection pass must not regress the newer committed state"
         );
+    }
+
+    #[test]
+    fn terminal_exit_synthesizes_mouse_and_paste_decrst_for_subscribers() {
+        // jcode never sends DECRST on exit (crossterm's restore only flips
+        // raw mode), so the backend must synthesize it. Through append_output
+        // the bytes reach subscribers and scrollback, which is what flips the
+        // client adapter's sniffed mouse mode off.
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_decrst".to_string(),
+            tab_id: "tab_decrst".to_string(),
+            pane_id: "pane_decrst".to_string(),
+            terminal_id: "term_decrst".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_decrst".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf hi".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        terminal.subscribe(TerminalSubscriber {
+            tx,
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let mut joined = Vec::new();
+        let mut saw_exit = false;
+        for _ in 0..32 {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                TerminalSubscriberMessage::Output(bytes) => joined.extend_from_slice(&bytes),
+                TerminalSubscriberMessage::Replay(..) => {}
+                TerminalSubscriberMessage::Overflow => {}
+                TerminalSubscriberMessage::Exited => {
+                    saw_exit = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_exit);
+        let text = String::from_utf8_lossy(&joined);
+        for mode in ["1000", "1002", "1003", "1015", "1006", "2004"] {
+            assert!(
+                text.contains(&format!("\x1b[?{mode}l")),
+                "exit must synthesize DECRST for mode {mode}, got: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn attach_replay_tail_is_bounded_and_line_aligned() {
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_tail".to_string(),
+            tab_id: "tab_tail".to_string(),
+            pane_id: "pane_tail".to_string(),
+            terminal_id: "term_tail".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_tail".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf x".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        // Fill scrollback past the replay cap with lines that carry a
+        // marker: the replay must keep the newest 256KB (bounded) and start
+        // at a line boundary, not mid-line.
+        let mut filler = String::new();
+        for i in 0..8000 {
+            filler.push_str(&format!("line {i:05} padding padding padding\n"));
+        }
+        terminal.append_output(filler.as_bytes());
+        terminal.reset_status_throttle();
+        let tail = terminal.attach_replay_bytes();
+        assert!(tail.len() <= ATTACH_REPLAY_MAX_BYTES, "replay is bounded");
+        assert!(
+            tail.len() > ATTACH_REPLAY_MAX_BYTES - 4096,
+            "replay keeps (nearly) the whole budget, got {} bytes",
+            tail.len()
+        );
+        let text = String::from_utf8_lossy(&tail);
+        // The newest line must be present: nothing at the tail was dropped.
+        assert!(text.contains("line 07999"), "newest lines survive");
+        // Line alignment: the replay starts at the beginning of a line, so
+        // the first row renders a complete line instead of a mid-line cut.
+        let first_line_end = text.find('\n').unwrap_or(text.len());
+        let first_line = &text[..first_line_end];
+        assert!(
+            first_line.starts_with("line 0"),
+            "replay starts on a line boundary, got start: {:?}",
+            &text[..text.len().min(80)]
+        );
+    }
+
+    #[test]
+    fn attach_replay_returns_full_history_below_the_cap() {
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_small".to_string(),
+            tab_id: "tab_small".to_string(),
+            pane_id: "pane_small".to_string(),
+            terminal_id: "term_small".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_small".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf x".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        terminal.append_output(b"first\nsecond\nthird\n");
+        terminal.reset_status_throttle();
+        let tail = terminal.attach_replay_bytes();
+        // The spawned shell's own bytes can land in scrollback before or
+        // after this append (async reader), so containment + size, not
+        // byte equality: below the cap nothing is dropped or trimmed.
+        assert!(
+            tail.len() < ATTACH_REPLAY_MAX_BYTES,
+            "small history stays small"
+        );
+        let text = String::from_utf8_lossy(&tail);
+        assert!(text.contains("first\nsecond\nthird\n"));
     }
 
     #[test]
@@ -7061,6 +7443,99 @@ mod tests {
             .unwrap()
             .expect("exit record must be set again");
         assert_eq!(record.agent, "jcode");
+    }
+
+    #[test]
+    fn agent_quit_inside_shell_synthesizes_decrst_exactly_once() {
+        // The primary bug-B repro: jcode runs inside the pane's zsh and
+        // quits (Ctrl-C), the shell stays alive. notify_exited never fires
+        // (the pane child did not exit), so the DECRST must come from the
+        // live->absent transition in update_agent_exit_record.
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_inner".to_string(),
+            tab_id: "tab_inner".to_string(),
+            pane_id: "pane_inner".to_string(),
+            terminal_id: "term_inner".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_inner".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "sleep 30".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        terminal.subscribe(TerminalSubscriber {
+            tx,
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+        });
+        terminal.reset_status_throttle();
+
+        let count_decrst = |bytes: &[u8], needle: &[u8]| {
+            bytes
+                .windows(needle.len())
+                .filter(|window| *window == needle)
+                .count()
+        };
+
+        // Live agent seen, then gone: the transition synthesizes the reset.
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        terminal.update_agent_exit_record(None, true);
+        assert!(terminal.recent_agent_exit_active());
+
+        // Repeat empty probes must not synthesize again (armed-flag one-shot).
+        terminal.update_agent_exit_record(None, true);
+        terminal.update_agent_exit_record(None, true);
+
+        let mut joined = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            if let TerminalSubscriberMessage::Output(bytes) = message {
+                joined.extend_from_slice(&bytes);
+            }
+        }
+        for mode in ["1000", "1002", "1003", "1015", "1006", "2004"] {
+            let needle = format!("\x1b[?{mode}l").into_bytes();
+            assert_eq!(
+                count_decrst(&joined, &needle),
+                1,
+                "mode {mode} reset synthesized exactly once at the transition"
+            );
+        }
+        // And the same bytes are in scrollback, so re-attach replays the reset
+        // and the adapter's sniffer flips even for a late attach.
+        let tail = terminal.attach_replay_bytes();
+        let needle = b"\x1b[?1006l";
+        assert_eq!(
+            count_decrst(&tail, needle),
+            1,
+            "reset lands in scrollback once"
+        );
+
+        // Agent comes back and quits again: a second full cycle synthesizes
+        // a second reset (each quit leaves its own DECSET stale).
+        terminal.update_agent_exit_record(Some("jcode"), true);
+        terminal.update_agent_exit_record(None, true);
+        let mut second = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            if let TerminalSubscriberMessage::Output(bytes) = message {
+                second.extend_from_slice(&bytes);
+            }
+        }
+        let needle = b"\x1b[?1006l";
+        assert_eq!(
+            count_decrst(&second, needle),
+            1,
+            "a fresh quit cycle synthesizes one more reset"
+        );
     }
 
     #[test]

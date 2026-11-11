@@ -254,9 +254,24 @@
     if (!text || !state) return;
     if (typeof text !== "string") {
       if (typeof text.length !== "number") return;
-      let decoded = "";
-      for (let i = 0; i < text.length; i += 1) decoded += String.fromCharCode(text[i]);
-      text = decoded;
+      // Large chunks decode in one TextDecoder pass: the char-by-char loop
+      // costs ~8us/KB and runs on every 256KB attach tail, enough to block
+      // a frame. Small chunks keep the fromCharCode path (no decoder
+      // allocation) since tiny writes dominate live traffic.
+      if (text.length > 65536) {
+        const decoder = textDecoder();
+        if (decoder) {
+          text = decoder.decode(text);
+        } else {
+          let decoded = "";
+          for (let i = 0; i < text.length; i += 1) decoded += String.fromCharCode(text[i]);
+          text = decoded;
+        }
+      } else {
+        let decoded = "";
+        for (let i = 0; i < text.length; i += 1) decoded += String.fromCharCode(text[i]);
+        text = decoded;
+      }
     }
     if (state.carry) {
       text = state.carry + text;
@@ -411,7 +426,7 @@
         // change without recreating the adapter.
         allowKittyGraphics: this.core === "ghostty",
       };
-      this._mouseMode = { tracking: false, sgrMouse: false };
+      this._mouseMode = { tracking: false, sgrMouse: false, carry: "" };
       this._onWheelMouseReport = typeof options.onWheelMouseReport === "function" ? options.onWheelMouseReport : null;
       this._inputGate = typeof options.inputGate === "function" ? options.inputGate : null;
       this._inputGateInstalled = false;
@@ -693,6 +708,18 @@
       if (this._destroyed) return;
       this._mouseReporting = enabled === true;
       setTerminalMouseReporting(this.wterm, this._mouseReporting);
+    }
+
+    // Belt-and-suspenders reset of the sniffed mouse modes. The backend
+    // synthesizes DECRST on agent exit, but the frames carrying them can
+    // be lost (overflow shed, replay ordering) and a stale _mouseMode
+    // keeps forwarding wheel bytes to a shell that echoes them as garbage.
+    // A status event is an explicit "the program is gone" signal, safer
+    // than trusting every byte path to have delivered the reset.
+    resetMouseMode() {
+      this._mouseMode.tracking = false;
+      this._mouseMode.sgrMouse = false;
+      this._mouseMode.carry = "";
     }
 
     setWheelScrolling(enabled) {

@@ -15124,3 +15124,74 @@ fn worktree_list_cache_invalidate_drops_only_the_asked_cwd() {
     );
     assert!(cache.get(&Some("/tmp/repo-a".to_string())).is_some());
 }
+
+/// Long-press Send (enqueue) reaches the backend: the submit route must
+/// forward the flag as agent.prompt `params.enqueue`. A recording api
+/// socket captures the request the route actually sent.
+#[cfg(unix)]
+#[tokio::test]
+async fn submit_pane_route_forwards_enqueue_flag() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+    let path = std::env::temp_dir().join(format!(
+        "herdr-webui-submit-enqueue-{}-{}.sock",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        fake_socket_suffix()
+    ));
+    let _ = fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let handle = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        stream
+            .write_all(
+                serde_json::to_string(&json!({
+                    "id": request["id"],
+                    "result": { "type": "agent_prompt", "pane_id": "pane_1", "ok": true, "enqueue": true }
+                }))
+                .unwrap()
+                .as_bytes(),
+            )
+            .unwrap();
+        let _ = stream.write_all(b"\n");
+        let _ = stream.flush();
+        request
+    });
+
+    let mut state = test_state();
+    state.api_socket = Some(path.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::POST, "/api/panes/pane_1/submit")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({ "text": "hold to queue", "enqueue": true }))
+                        .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    let request = handle.join().unwrap();
+    assert_eq!(request["method"], "agent.prompt");
+    assert_eq!(request["params"]["text"], "hold to queue");
+    assert_eq!(
+        request["params"]["enqueue"], true,
+        "the enqueue flag must reach the backend params"
+    );
+}
