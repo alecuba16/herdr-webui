@@ -16,6 +16,14 @@
     let sending = false;
     let noteText = "";
     let lastSyncedPane = null;
+    // Long-press Send (enqueue): same 600ms hold contract as the desktop
+    // composer. The button node is re-created per render, so the hold
+    // state lives here (module scope of the composer closure), not on
+    // the node.
+    const SEND_HOLD_MS = 600;
+    let holdTimer = 0;
+    let holdActive = false;
+    let holdPassed = false;
 
     // ---- Terminal tail reading (wterm bridge grid, same as desktop) ----
 
@@ -352,6 +360,18 @@
       }
     }
 
+    function clearHold(send) {
+      holdActive = false;
+      holdPassed = false;
+      if (holdTimer) clearTimeout(holdTimer);
+      holdTimer = 0;
+      if (send) {
+        send.classList.remove("mobile-composer-send-holding");
+        send.classList.remove("mobile-composer-send-queued");
+        send.setAttribute("aria-busy", "false");
+      }
+    }
+
     function bindComposer(node) {
       if (!node || node.__herdrMobileComposerBound) return;
       const input = node.querySelector && node.querySelector("#mobileComposerInput");
@@ -368,7 +388,45 @@
           if (paneId) drafts.set(paneId, input.value);
         });
       }
-      if (send) send.onclick = () => submit();
+      if (send) {
+        send.title = "Send. Hold to queue while the agent is busy.";
+        send.setAttribute(
+          "aria-label",
+          "Send. Hold to queue while the agent is busy.",
+        );
+        if (typeof PointerEvent !== "undefined") {
+          send.addEventListener("pointerdown", () => {
+            if (send.disabled) return;
+            holdActive = true;
+            holdPassed = false;
+            send.classList.add("mobile-composer-send-holding");
+            send.setAttribute("aria-busy", "true");
+            holdTimer = setTimeout(() => {
+              holdPassed = true;
+              send.classList.add("mobile-composer-send-queued");
+            }, SEND_HOLD_MS);
+          });
+          send.addEventListener("pointerup", (event) => {
+            if (!holdActive) return;
+            const queued = holdPassed;
+            clearHold(send);
+            if (event && event.type === "pointerup") submit(queued);
+          });
+          send.addEventListener("pointercancel", () => clearHold(send));
+          send.addEventListener("pointerleave", () => {
+            // Releasing off the button must not submit: a drag-off would
+            // otherwise send an unintended message.
+            clearHold(send);
+          });
+          document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && holdActive) clearHold(send);
+          });
+          send.onclick = null;
+        } else {
+          // No pointer events: the click fallback keeps Send working.
+          send.onclick = () => submit();
+        }
+      }
       node.__herdrMobileComposerBound = true;
     }
 
@@ -419,7 +477,7 @@
       return noteText;
     }
 
-    async function submit() {
+    async function submit(enqueue) {
       const input = composerInput();
       const paneId = activePaneId();
       const request = typeof api === "function" ? api : globalThis.HerdrMobileApi;
@@ -445,11 +503,16 @@
         await request(`/api/panes/${encodeURIComponent(paneId)}/submit`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: message }),
+          body: JSON.stringify(
+            enqueue ? { text: message, enqueue: true } : { text: message },
+          ),
         });
         input.value = "";
         drafts.delete(paneId);
-        setNote("");
+        // Long-press release: the agent queues the message while it
+        // runs. The note (role=status, aria-live=polite) announces the
+        // different outcome so the release does not read as a lost send.
+        setNote(enqueue ? "Queued for the running agent" : "");
         // Poll carried the turn (or the pane went agent-less): the
         // pending bubble has served its purpose either way.
         const lens = globalThis.HerdrMobileLens;

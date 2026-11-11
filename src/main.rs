@@ -6271,12 +6271,18 @@ async fn submit_pane(
         )
             .into_response();
     };
+    // Long-press Send (enqueue): forwarded as agent.prompt `enqueue` so
+    // both backends see the same flag; absent keeps the legacy submit.
+    let enqueue = body
+        .get("enqueue")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let api = api_for_headers_ensured(&state, &headers).await;
     let result = tokio::task::spawn_blocking(move || {
         api.request_value(json!({
             "id": "web:pane:submit",
             "method": "agent.prompt",
-            "params": { "pane_id": pane_id, "text": text },
+            "params": { "pane_id": pane_id, "text": text, "enqueue": enqueue },
         }))
     })
     .await;

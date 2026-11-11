@@ -523,6 +523,16 @@ impl WebApiClient {
         self.post(&format!("/api/panes/{}/submit", urlencode(pane_id)), &body)
     }
 
+    /// Long-press Send variant: the server forwards `enqueue: true` to
+    /// `agent.prompt`, which types the message and sends Ctrl+Enter
+    /// (kitty CSI-u) instead of Enter, so a running agent queues the
+    /// message instead of interrupting. Same refusal surface as
+    /// `submit_pane`.
+    pub fn submit_pane_enqueued(&self, pane_id: &str, text: &str) -> Result<Value, WebApiError> {
+        let body = serde_json::json!({ "text": text, "enqueue": true });
+        self.post(&format!("/api/panes/{}/submit", urlencode(pane_id)), &body)
+    }
+
     /// `GET /api/panes/{pane_id}/prompt`: the server-side parse of the
     /// pane's question dialog (same tail source and parser the server
     /// already runs for the web prompt card). HTTP-only like the
@@ -1484,6 +1494,71 @@ mod tests {
         // HTTP-only endpoints reject cleanly instead of dialing anything.
         let err = client.recent_workspaces().unwrap_err();
         assert!(err.to_string().contains("WebUI HTTP server"));
+    }
+
+    #[test]
+    fn submit_pane_enqueued_posts_enqueue_true_to_pane_route() {
+        // The TUI has no hold gesture yet, but the method is the
+        // TUI-side counterpart of the web composer's long-press Send;
+        // this pins the wire shape (route + body) so the gesture can
+        // adopt it without re-deriving the contract.
+        use std::io::{BufRead as _, BufReader};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).is_ok() {
+                    // Content-Length carries the body length; drain it.
+                    let mut headers = String::new();
+                    let mut content_length = 0usize;
+                    loop {
+                        headers.clear();
+                        if reader.read_line(&mut headers).is_err() {
+                            break;
+                        }
+                        let line = headers.trim();
+                        if line.is_empty() {
+                            break;
+                        }
+                        if let Some(value) = line
+                            .strip_prefix("Content-Length:")
+                            .and_then(|v| v.trim().parse().ok())
+                        {
+                            content_length = value;
+                        }
+                    }
+                    let mut body = vec![0u8; content_length];
+                    use std::io::Read as _;
+                    let _ = reader.read_exact(&mut body);
+                    let body = String::from_utf8_lossy(&body).to_string();
+                    let ok = request.contains("POST /api/panes/pane-7/submit")
+                        && body.contains("\"enqueue\":true");
+                    let payload = if ok {
+                        r#"{"ok":true,"enqueue":true}"#
+                    } else {
+                        r#"{"ok":false}"#
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    );
+                    let mut stream = stream;
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        });
+        let client = WebApiClient::new("127.0.0.1", addr.port());
+        let value = client
+            .submit_pane_enqueued("pane-7", "hold to queue")
+            .unwrap();
+        assert_eq!(value.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(value.get("enqueue").and_then(Value::as_bool), Some(true));
+        handle.join().unwrap();
     }
 
     #[test]

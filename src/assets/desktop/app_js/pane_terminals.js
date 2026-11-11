@@ -162,6 +162,10 @@
         mouseReporting: options.terminalMouseReporting === true,
         scrollback: 4000,
         onData: sendInput,
+        // Wheel parity with the primary surface: split panes hosting an
+        // SGR-tracking TUI (jcode, tmux `mouse on`) otherwise have a dead
+        // wheel, the same bug terminal.js fixed for the main surface.
+        onWheelMouseReport: (report) => sendInput(report),
       });
     } catch (e) {
       dispose(entry);

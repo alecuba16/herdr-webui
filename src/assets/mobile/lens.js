@@ -515,7 +515,7 @@
         const globalIndex = fromTurn + turnIndex;
         const parts = [];
         (turn.parts || []).forEach((part, partIndex) => {
-          parts.push(partHtml(part, globalIndex, partIndex, turn.parts));
+          parts.push(partHtml(part, globalIndex, partIndex, turn.parts, turn.role));
         });
         const body = parts.join("");
         const metaHtml = turn.role === "assistant" ? turnDurationHtml(turn) : "";
@@ -537,9 +537,16 @@
       return out.join("");
     }
 
-    function partHtml(part, turnIndex, partIndex, turnParts) {
+    function partHtml(part, turnIndex, partIndex, turnParts, role) {
       if (part.kind === "text") {
-        return `<div class="lens-text" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">${escapeHtml(part.text || "")}</div>`;
+        // Assistant text renders markdown, everything else stays escaped
+        // plain (desktop parity). The chat renderer is synchronous and
+        // deterministic so the sync's outerHTML compare stays stable.
+        const body =
+          role === "assistant" && globalThis.HerdrMarkdownPreview && globalThis.HerdrMarkdownPreview.renderChatMarkdownHtml
+            ? globalThis.HerdrMarkdownPreview.renderChatMarkdownHtml(part.text || "")
+            : escapeHtml(part.text || "");
+        return `<div class="lens-text" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">${body}</div>`;
       }
       if (part.kind === "image") {
         const ref = part.ref || "";
@@ -907,7 +914,7 @@
           const key = partKey(turnIndex, partIndex, part);
           const row = content.querySelector(`[data-part-key="${cssEscape(key)}"]`);
           if (row) {
-            const fresh = partHtml(part, turnIndex, partIndex, turn.parts);
+            const fresh = partHtml(part, turnIndex, partIndex, turn.parts, turn.role);
             const probe = document.createElement("div");
             probe.innerHTML = fresh;
             const freshSerialized = probe.firstChild ? probe.firstChild.outerHTML : fresh;
@@ -918,7 +925,7 @@
           }
           if (!turnEl) return;
           const at = document.createElement("div");
-          at.innerHTML = partHtml(part, turnIndex, partIndex, turn.parts);
+          at.innerHTML = partHtml(part, turnIndex, partIndex, turn.parts, turn.role);
           while (at.firstChild) turnEl.appendChild(at.firstChild);
         });
       });
@@ -1041,6 +1048,13 @@
       const newCount = Number(content.dataset.renderedTurns || 0);
       if (!follow && !olderPrepended && newCount > prevCount) unread = true;
       if (pill) pill.hidden = !(unread && !follow);
+      // Mermaid fences inside assistant markdown rows: run over the live
+      // DOM after every render (a row swap replaces rendered fences),
+      // then upgrade queued plain rows once the bundles land (desktop
+      // renderStructured parity).
+      const preview = globalThis.HerdrMarkdownPreview;
+      if (preview && preview.renderChatMermaid) preview.renderChatMermaid(content);
+      if (preview && preview.upgradeChatMarkdown) preview.upgradeChatMarkdown();
     }
 
     function countRenderedTurns() {
@@ -1488,6 +1502,20 @@
 
     function showTerminal() {
       setLens(false);
+    }
+
+    // One-time registration: when the chat markdown bundles finish
+    // loading, queued plain rows upgrade through a re-render. Registered
+    // once per lens so the callback cannot re-enter render() per poll
+    // (desktop module-scope parity, inside the factory closure). Must run
+    // BEFORE the return below or it is dead code.
+    if (
+      globalThis.HerdrMarkdownPreview &&
+      globalThis.HerdrMarkdownPreview.onChatBundleReady
+    ) {
+      globalThis.HerdrMarkdownPreview.onChatBundleReady(() => {
+        if (lensActive) render();
+      });
     }
 
     return {

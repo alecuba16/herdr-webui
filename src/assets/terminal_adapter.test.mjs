@@ -520,6 +520,26 @@ describe("terminal adapter mouse-mode tracking", () => {
     apply("\x1b[?1000h", state);
     equal(state.tracking, true);
   });
+
+  it("resetMouseMode clears sniffed modes even if DECRST frames were lost", async () => {
+    // jcode never sends DECRST on exit; the backend synthesizes it, but the
+    // frames carrying it can be lost. The explicit reset must clear the
+    // sniffed state directly so the wheel stops forwarding SGR bytes to a
+    // shell that would echo them as garbage.
+    const { adapter, container, reports } = await createAdapter({ wheelReports: true });
+    adapter.write("\x1b[?1000;1006h");
+    equal(adapter.wheelForwardedToProgram(), true);
+
+    adapter.resetMouseMode();
+
+    equal(adapter.wheelForwardedToProgram(), false, "forwarding gate disarmed");
+    equal(adapter._mouseMode.tracking, false);
+    equal(adapter._mouseMode.sgrMouse, false);
+    equal(adapter._mouseMode.carry, "");
+    const listener = container.listeners.get("wheel");
+    listener(wheelEvent(40));
+    equal(reports.length, 0, "no wheel bytes reach the shell after the reset");
+  });
 });
 
 describe("terminal adapter wheel-to-SGR forwarding", () => {

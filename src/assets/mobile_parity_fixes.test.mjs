@@ -25,8 +25,9 @@ const readScript = (path) => {
 const composerScript = readScript("./mobile/composer.js");
 const layoutSettingsScript = readScript("./desktop/layout_settings.js");
 
-function mobileComposerDom() {
+function mobileComposerDom({ documentKeyDown = null } = {}) {
   const inputListeners = {};
+  const documentListeners = {};
   const input = {
     value: "",
     disabled: false,
@@ -40,9 +41,26 @@ function mobileComposerDom() {
   const send = {
     disabled: false,
     attributes: {},
+    className: "",
+    title: "",
     onclick: null,
+    listeners: {},
+    classList: {
+      add(name) {
+        if (!send.className.includes(name)) send.className = (send.className + " " + name).trim();
+      },
+      remove(name) {
+        send.className = send.className.split(/\s+/).filter((c) => c && c !== name).join(" ");
+      },
+    },
     setAttribute(name, value) {
       this.attributes[name] = value;
+    },
+    getAttribute(name) {
+      return this.attributes[name] === undefined ? null : this.attributes[name];
+    },
+    addEventListener(type, listener) {
+      (this.listeners[type] ||= []).push(listener);
     },
   };
   const root = {
@@ -54,15 +72,23 @@ function mobileComposerDom() {
       return null;
     },
   };
+  const document = {
+    activeElement: null,
+    getElementById(id) {
+      return id === "mobileComposer" ? root : null;
+    },
+    addEventListener(type, listener) {
+      (documentListeners[type] ||= []).push(listener);
+    },
+  };
+  if (documentKeyDown) document.addEventListener("keydown", documentKeyDown);
   return {
     input,
     note,
     send,
-    document: {
-      activeElement: null,
-      getElementById(id) {
-        return id === "mobileComposer" ? root : null;
-      },
+    document,
+    fireDocumentEvent(type, event) {
+      for (const fn of documentListeners[type] || []) fn(event);
     },
   };
 }
@@ -961,6 +987,172 @@ describe("desktop layout settings module", () => {
 
   it("the module is concatenated into the desktop bundle", () => {
     assert.match(assetsRsSource, /include_str!\("assets\/desktop\/layout_settings\.js"\)/);
+  });
+});
+
+describe("mobile composer long-press send", () => {
+  // Mobile mirrors the desktop hold contract: 600ms arms the enqueue
+  // flag, early release submits normally, cancel paths never submit.
+  const fire = (send, type, event = { type }) => {
+    for (const fn of send.listeners[type] || []) fn(event);
+  };
+
+  const holdTimerKit = () => {
+    const timers = [];
+    return {
+      timers,
+      setTimeout(fn) {
+        timers.push(fn);
+        return timers.length;
+      },
+      clearTimeout(id) {
+        if (id) timers[id - 1] = null;
+      },
+      fireLast() {
+        const last = [...timers].reverse().find((t) => t);
+        if (last) last();
+      },
+      async settle() {
+        await new Promise((resolve) => setImmediate(resolve));
+      },
+    };
+  };
+
+  it("short press submits without the enqueue flag", async () => {
+    const timers = holdTimerKit();
+    const dom = mobileComposerDom();
+    // The vm sandbox shares this Node realm's setTimeout unless we inject
+    // the kit, so the hold timer must be controllable from the test.
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "quick note";
+    fire(dom.send, "pointerdown");
+    fire(dom.send, "pointerup");
+    await timers.settle();
+    assert.equal(calls.api.length, 1, "one submit");
+    const body = JSON.parse(calls.api[0].opts.body);
+    assert.equal(body.text, "quick note");
+    assert.equal(body.enqueue, undefined, "short press never enqueues");
+    assert.equal(dom.send.getAttribute("aria-busy"), "false", "busy cleared after release");
+  });
+
+  it("hold past 600ms submits with enqueue:true and announces the queue", async () => {
+    const timers = holdTimerKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "queue me";
+    fire(dom.send, "pointerdown");
+    assert.equal(dom.send.getAttribute("aria-busy"), "true", "hold announces busy");
+    fire(dom.send, "pointerup");
+    await timers.settle();
+    assert.equal(calls.api.length, 1, "early release still submits normally");
+    let body = JSON.parse(calls.api[0].opts.body);
+    assert.equal(body.enqueue, undefined, "early release never enqueues");
+
+    dom.input.value = "queue me 2";
+    dom.input.listeners.input[0]();
+    fire(dom.send, "pointerdown");
+    timers.fireLast();
+    assert.ok(dom.send.className.includes("mobile-composer-send-queued"), "queued state visible");
+    fire(dom.send, "pointerup");
+    await timers.settle();
+    assert.equal(calls.api.length, 2, "second submit ran");
+    body = JSON.parse(calls.api[1].opts.body);
+    assert.equal(body.enqueue, true, "long press enqueues");
+    assert.equal(dom.note.textContent, "Queued for the running agent", "release announces the queue");
+  });
+
+  it("pointercancel and pointerleave drop the hold without submitting", async () => {
+    const timers = holdTimerKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "abandoned";
+    fire(dom.send, "pointerdown");
+    fire(dom.send, "pointercancel");
+    fire(dom.send, "pointerup");
+    await timers.settle();
+    assert.equal(calls.api.length, 0, "cancelled hold never submits");
+
+    fire(dom.send, "pointerdown");
+    timers.fireLast();
+    fire(dom.send, "pointerleave");
+    fire(dom.send, "pointerup");
+    await timers.settle();
+    assert.equal(calls.api.length, 0, "release after leaving the button never submits");
+    assert.equal(dom.send.getAttribute("aria-busy"), "false", "busy cleared");
+    assert.ok(!dom.send.className.includes("mobile-composer-send-queued"), "queued style cleared");
+  });
+
+  it("escape cancels an armed hold", async () => {
+    const timers = holdTimerKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "escape me";
+    fire(dom.send, "pointerdown");
+    dom.fireDocumentEvent("keydown", { key: "Escape" });
+    fire(dom.send, "pointerup");
+    await timers.settle();
+    assert.equal(calls.api.length, 0, "escaped hold never submits");
+    assert.equal(dom.send.getAttribute("aria-busy"), "false", "busy cleared on escape");
+  });
+
+  it("click fallback submits normally without PointerEvent", async () => {
+    const timers = holdTimerKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "legacy click";
+    dom.send.onclick();
+    await timers.settle();
+    assert.equal(calls.api.length, 1, "click fallback submits");
+    const body = JSON.parse(calls.api[0].opts.body);
+    assert.equal(body.enqueue, undefined, "click fallback never enqueues");
+  });
+
+  it("click stays inert when pointer events exist", async () => {
+    const timers = holdTimerKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "pointer browser";
+    assert.equal(dom.send.onclick, null, "the pointer path owns the submit; the click arm is disarmed");
+    await timers.settle();
+    assert.equal(calls.api.length, 0, "no submit happened");
+  });
+
+  it("send button carries the hold hint in title and aria-label", () => {
+    const dom = mobileComposerDom();
+    const { module } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {} },
+    });
+    module.syncComposer();
+    assert.equal(dom.send.title, "Send. Hold to queue while the agent is busy.");
+    assert.equal(
+      dom.send.getAttribute("aria-label"),
+      "Send. Hold to queue while the agent is busy.",
+    );
   });
 });
 

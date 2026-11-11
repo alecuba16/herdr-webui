@@ -43,6 +43,26 @@ function stubNode(id) {
     children: [],
     listeners: {},
     value: "",
+    classList: {
+      add(token) {
+        if (!(" " + node.className + " ").includes(" " + token + " "))
+          node.className = (node.className + " " + token).trim();
+      },
+      remove(token) {
+        node.className = (" " + node.className + " ")
+          .replace(" " + token + " ", " ")
+          .trim();
+      },
+    },
+    _attrs: {},
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, name)
+        ? this._attrs[name]
+        : null;
+    },
+    setAttribute(name, value) {
+      this._attrs[name] = String(value);
+    },
     // The overlay's innerHTML is parsed when assigned (like the real
     // DOM); its interactive children are cached so identity survives
     // across querySelector calls.
@@ -103,12 +123,21 @@ function loadComposer(overrides = {}) {
       created.push(node);
       return node;
     },
+    ...(overrides.documentOverrides || {}),
   };
+  if (!document.addEventListener) {
+    document.addEventListener = () => {};
+  }
   const state = overrides.state || { pane: "pane_a" };
   const api = overrides.api || (async () => ({}));
   const ctx = {
     console,
     document,
+    // Pointer events feature-detect: present by default (the browser
+    // reality), delete via overrides to test the click fallback.
+    PointerEvent: overrides.pointerEvents === false ? undefined : function PointerEvent() {},
+    setTimeout: overrides.setTimeout,
+    clearTimeout: overrides.clearTimeout,
     state,
     inputAttrs,
     api: async (url, opt) => {
@@ -330,13 +359,34 @@ describe("composer module", () => {
     equal(calls, 1, "Enter sent once");
   });
 
-  it("Send button click submits the draft", async () => {
+  it("Send button click submits the draft (no-pointer fallback)", async () => {
     let calls = 0;
-    const result = loadComposer({ api: async () => { calls++; return {}; } });
+    const result = loadComposer({
+      api: async () => { calls++; return {}; },
+      pointerEvents: false,
+    });
     typeDraft(result, "via button");
     sendOf(result).onclick();
     await Promise.resolve();
     await Promise.resolve();
+    equal(calls, 1);
+  });
+
+  it("Send pointer press submits the draft", async () => {
+    // PointerEvent exists in real browsers, so the click arm is inert;
+    // the pointerdown/pointerup pair owns the submit.
+    let calls = 0;
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      api: async () => { calls++; return {}; },
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "via pointer");
+    const send = sendOf(result);
+    fireSendEvent(send, "pointerdown");
+    fireSendEvent(send, "pointerup");
+    await timers.settle();
     equal(calls, 1);
   });
 
@@ -486,5 +536,163 @@ describe("composer module", () => {
     equal(result.ctx.HerdrComposer.drafts.has("pane_b"), false,
       "tab.closed releases the tab's drafts");
     equal(result.ctx.HerdrComposer.drafts.size, 0, "no drafts leak");
+  });
+});
+
+// ---- long-press Send (enqueue) ----
+// Fake timers: the hold arms a 600ms setTimeout; the tests fire it
+// manually, the way the lens tests fire poll ticks.
+function fakeTimerKit() {
+  let seq = 1;
+  const timers = new Map();
+  const kit = {
+    setTimeout(fn, ms) {
+      timers.set(seq, { fn, ms: ms || 0 });
+      return seq++;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    // Fire the newest armed timer (the hold threshold).
+    fireLast() {
+      const lastKey = [...timers.keys()].pop();
+      const t = timers.get(lastKey);
+      if (t) {
+        timers.delete(lastKey);
+        t.fn();
+      }
+    },
+    async settle() {
+      await new Promise((r) => setTimeout(r, 0));
+    },
+  };
+  return kit;
+}
+
+function fireSendEvent(send, type) {
+  for (const fn of send.listeners[type] || []) fn({ type });
+}
+
+describe("composer long-press send", () => {
+  it("short press submits without the enqueue flag", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "quick note");
+    const send = sendOf(result);
+    fireSendEvent(send, "pointerdown");
+    fireSendEvent(send, "pointerup");
+    await timers.settle();
+    equal(result.apiCalls.length, 1, "one submit");
+    const body = JSON.parse(result.apiCalls[0].opt.body);
+    equal(body.text, "quick note");
+    equal(body.enqueue, undefined, "short press never enqueues");
+    equal(send.getAttribute("aria-busy"), "false", "busy cleared after release");
+  });
+
+  it("hold past 600ms submits with enqueue:true and announces the queue", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "queue me");
+    const send = sendOf(result);
+    fireSendEvent(send, "pointerdown");
+    equal(send.getAttribute("aria-busy"), "true", "hold announces busy");
+    fireSendEvent(send, "pointerup");
+    await timers.settle();
+    equal(result.apiCalls.length, 1, "release before the threshold still submits normally");
+    let body = JSON.parse(result.apiCalls[0].opt.body);
+    equal(body.enqueue, undefined, "early release never enqueues");
+
+    // Hold again and let the 600ms timer fire before the release.
+    typeDraft(result, "queue me 2");
+    fireSendEvent(send, "pointerdown");
+    timers.fireLast();
+    ok(send.className.includes("terminal-composer-send-queued"), "queued state visible");
+    fireSendEvent(send, "pointerup");
+    await timers.settle();
+    equal(result.apiCalls.length, 2, "second submit ran");
+    body = JSON.parse(result.apiCalls[1].opt.body);
+    equal(body.enqueue, true, "long press enqueues");
+    equal(noteOf(result).textContent, "Queued for the running agent", "release announces the queue");
+  });
+
+  it("pointercancel and pointerleave drop the hold without submitting", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "abandoned");
+    const send = sendOf(result);
+    fireSendEvent(send, "pointerdown");
+    fireSendEvent(send, "pointercancel");
+    fireSendEvent(send, "pointerup");
+    await timers.settle();
+    equal(result.apiCalls.length, 0, "cancelled hold never submits");
+
+    fireSendEvent(send, "pointerdown");
+    timers.fireLast();
+    fireSendEvent(send, "pointerleave");
+    fireSendEvent(send, "pointerup");
+    await timers.settle();
+    equal(result.apiCalls.length, 0, "release after leaving the button never submits");
+    equal(send.getAttribute("aria-busy"), "false", "busy cleared");
+    ok(!send.className.includes("terminal-composer-send-queued"), "queued style cleared");
+  });
+
+  it("escape cancels an armed hold", async () => {
+    const timers = fakeTimerKit();
+    const docListeners = new Map();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      documentOverrides: {
+        addEventListener(type, fn) {
+          (docListeners.get(type) || docListeners.set(type, []).get(type)).push(fn);
+        },
+      },
+    });
+    typeDraft(result, "escape me");
+    const send = sendOf(result);
+    fireSendEvent(send, "pointerdown");
+    for (const fn of docListeners.get("keydown") || []) fn({ key: "Escape" });
+    fireSendEvent(send, "pointerup");
+    await timers.settle();
+    equal(result.apiCalls.length, 0, "escaped hold never submits");
+    equal(send.getAttribute("aria-busy"), "false", "busy cleared on escape");
+  });
+
+  it("click fallback submits normally without PointerEvent", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      pointerEvents: false,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "legacy click");
+    const send = sendOf(result);
+    send.onclick();
+    await timers.settle();
+    equal(result.apiCalls.length, 1, "click fallback submits");
+    const body = JSON.parse(result.apiCalls[0].opt.body);
+    equal(body.enqueue, undefined, "click fallback never enqueues");
+  });
+
+  it("click stays inert when pointer events exist", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "pointer browser");
+    const send = sendOf(result);
+    send.onclick();
+    await timers.settle();
+    equal(result.apiCalls.length, 0, "the pointer path owns the submit; the click arm stays inert");
   });
 });

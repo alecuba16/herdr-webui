@@ -36,13 +36,14 @@ use tokio::sync::mpsc::{Receiver, Sender};
 /// graphics-sized bursts.
 const CLIENT_QUEUE_CAP: usize = 512;
 
-/// Per-attach replay ring cap. The built-in backend replays its full
-/// scrollback on every fresh attach; the hub ring covers re-joins of a
-/// still-attached terminal (reconnect while the hub lives) where no new
-/// backend full frame arrives. Matches the backend's own 8 MiB
-/// scrollback bound so a late joiner sees at least what a fresh attach
-/// would have shown.
-const REPLAY_RING_BYTES: usize = 8 * 1024 * 1024;
+/// Per-attach replay ring cap. The hub ring covers re-joins of a
+/// still-attached terminal (pane flips, quick reloads within
+/// TEARDOWN_GRACE) where no new backend full frame arrives. Must stay in
+/// sync with builtin_backend.rs ATTACH_REPLAY_MAX_BYTES: the backend full
+/// frame replaces the ring on fresh attach (replace_with), so the ring
+/// only ever needs to replay the same tail a fresh attach would send.
+/// HERDR_REPLAY_CAP_BYTES remains the operator escape hatch.
+const REPLAY_RING_BYTES: usize = 256 * 1024;
 
 /// How long the last viewer's departure keeps the shared attach open, so
 /// page reloads and quick reconnects reuse the backend connection and the
@@ -119,7 +120,37 @@ impl ReplayRing {
     }
 
     fn snapshot(&self) -> Vec<u8> {
-        self.bytes.iter().copied().collect()
+        // The ring front is cut at the byte cap, not at a line boundary,
+        // so the stored bytes usually start mid-line. A re-joining client
+        // renders the snapshot first, so skip the partial front line. Same
+        // degenerate fallback as the backend's attach_replay_bytes: a ring
+        // with no newline at all (or one whose only newline ends it) is
+        // returned whole rather than dropped to empty.
+        match self
+            .bytes
+            .iter()
+            .position(|byte| *byte == b'\n' || *byte == b'\r')
+        {
+            None | Some(0) => self.bytes.iter().copied().collect(),
+            Some(cut) => {
+                // Skip the whole terminator (\r\n or \n\r): stopping
+                // after the first byte would leave the partner newline at
+                // the snapshot front (one blank line).
+                let mut end = cut + 1;
+                if end < self.bytes.len()
+                    && matches!(self.bytes[end], b'\n' | b'\r')
+                    && self.bytes[end] != self.bytes[cut]
+                {
+                    end += 1;
+                }
+                let aligned: Vec<u8> = self.bytes.iter().skip(end).copied().collect();
+                if aligned.is_empty() {
+                    self.bytes.iter().copied().collect()
+                } else {
+                    aligned
+                }
+            }
+        }
     }
 
     /// Replay size in bytes. Used by tests; kept for diagnostics.
@@ -794,6 +825,52 @@ mod tests {
         ring.push_bytes(b"");
         assert_eq!(ring.snapshot(), b"data".to_vec());
         assert_eq!(ring.len(), 4);
+    }
+
+    #[test]
+    fn replay_ring_snapshot_starts_at_line_boundary() {
+        let mut ring = ReplayRing::new(16);
+        // Ring front cut mid-line (what a byte-cap trim leaves behind).
+        ring.push_bytes(b"ne2\ndef\nghi");
+        let snapshot = ring.snapshot();
+        assert_eq!(snapshot, b"def\nghi".to_vec(), "partial front line skipped");
+
+        // Front byte itself is a newline: nothing to skip.
+        let mut clean = ReplayRing::new(16);
+        clean.push_bytes(b"\nabc");
+        assert_eq!(clean.snapshot(), b"\nabc".to_vec());
+
+        // Degenerate: no newline anywhere, return whole rather than empty.
+        let mut dense = ReplayRing::new(16);
+        dense.push_bytes(b"abcdefgh");
+        assert_eq!(dense.snapshot(), b"abcdefgh".to_vec());
+    }
+
+    #[test]
+    fn replay_ring_rejoin_snapshot_bounded_by_default_cap() {
+        // More live output than the default cap: a re-join must replay at
+        // most REPLAY_RING_BYTES (plus the at-most-one skipped front line
+        // is inside that bound, never larger).
+        let mut ring = ReplayRing::new(REPLAY_RING_BYTES);
+        let line = b"0123456789abcdef\r\n";
+        let mut total = 0;
+        while total <= REPLAY_RING_BYTES + line.len() {
+            ring.push_bytes(line);
+            total += line.len();
+        }
+        let snapshot = ring.snapshot();
+        assert!(
+            snapshot.len() <= REPLAY_RING_BYTES,
+            "re-join snapshot stays within the default cap (got {})",
+            snapshot.len()
+        );
+        assert!(!snapshot.is_empty(), "snapshot is not degenerately empty");
+        // Line-aligned: first byte starts a full line.
+        assert_eq!(
+            &snapshot[..line.len()],
+            line,
+            "snapshot starts at a line boundary"
+        );
     }
 
     #[test]

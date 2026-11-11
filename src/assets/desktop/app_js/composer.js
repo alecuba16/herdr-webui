@@ -17,6 +17,15 @@
   const drafts = new Map();
   let sending = false;
   let lastSyncedPane = null;
+  // Long-press Send (enqueue): 600ms hold flips the release from a
+  // normal submit to an enqueue submit (the running agent queues the
+  // message instead of being interrupted). Short presses and the
+  // Enter key keep the legacy path; browsers without PointerEvent fall
+  // back to the click handler below.
+  const SEND_HOLD_MS = 600;
+  let holdTimer = 0;
+  let holdActive = false;
+  let holdPassed = false;
   // Session metadata (model / reasoning effort) published by the lens
   // from each conversation poll. Rendered in the status line above the
   // box, reference parity ("the composer status line displays the model
@@ -65,7 +74,73 @@
           }
         });
       }
-      if (send) send.onclick = () => submit();
+      if (send) {
+        send.title = "Send\nHold to queue while the agent is busy";
+        if (typeof PointerEvent !== "undefined") {
+          send.addEventListener("pointerdown", (event) => {
+            if (send.disabled) return;
+            holdActive = true;
+            holdPassed = false;
+            send.classList.add("terminal-composer-send-holding");
+            send.setAttribute("aria-busy", "true");
+            holdTimer = setTimeout(() => {
+              holdPassed = true;
+              send.classList.add("terminal-composer-send-queued");
+            }, SEND_HOLD_MS);
+          });
+          const finishHold = (event) => {
+            if (!holdActive) return;
+            holdActive = false;
+            clearTimeout(holdTimer);
+            send.classList.remove("terminal-composer-send-holding");
+            send.setAttribute("aria-busy", "false");
+            const queued = holdPassed;
+            holdPassed = false;
+            send.classList.remove("terminal-composer-send-queued");
+            // pointerup fires only for the pointer that went down on
+            // the button; a pointer that wandered off (pointerleave)
+            // cancels without submitting.
+            if (event && event.type === "pointerup") submit(queued);
+          };
+          send.addEventListener("pointerup", finishHold);
+          send.addEventListener("pointercancel", () => {
+            holdActive = false;
+            clearTimeout(holdTimer);
+            holdPassed = false;
+            send.classList.remove("terminal-composer-send-holding");
+            send.classList.remove("terminal-composer-send-queued");
+            send.setAttribute("aria-busy", "false");
+          });
+          send.addEventListener("pointerleave", () => {
+            // Leaving the button mid-hold cancels: releasing outside must
+            // not submit, or a drag-off would send an unintended message.
+            holdActive = false;
+            clearTimeout(holdTimer);
+            holdPassed = false;
+            send.classList.remove("terminal-composer-send-holding");
+            send.classList.remove("terminal-composer-send-queued");
+            send.setAttribute("aria-busy", "false");
+          });
+          // Escape anywhere cancels an armed hold (the keyboard escape
+          // hatch for a hold the user wants to back out of).
+          document.addEventListener("keydown", (event) => {
+            if (event.key !== "Escape" || !holdActive) return;
+            holdActive = false;
+            clearTimeout(holdTimer);
+            holdPassed = false;
+            send.classList.remove("terminal-composer-send-holding");
+            send.classList.remove("terminal-composer-send-queued");
+            send.setAttribute("aria-busy", "false");
+          });
+        }
+        send.onclick = () => {
+          // The pointer path handled the press when pointer events
+          // exist; this click arm is the fallback for browsers without
+          // PointerEvent only.
+          if (typeof PointerEvent !== "undefined") return;
+          submit();
+        };
+      }
     }
     return node;
   }
@@ -92,7 +167,7 @@
     return state.pane || null;
   }
 
-  async function submit() {
+  async function submit(enqueue) {
     const input = inputEl();
     const paneId = activePaneId();
     if (!input || !paneId || sending) return;
@@ -111,12 +186,17 @@
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: message }),
+          body: JSON.stringify(
+            enqueue ? { text: message, enqueue: true } : { text: message },
+          ),
         },
       );
       input.value = "";
       drafts.delete(paneId);
-      note("");
+      // Long-press release: the agent queues the message while it runs.
+      // The note (role=status) announces the different outcome so the
+      // release does not read as a lost normal send.
+      note(enqueue ? "Queued for the running agent" : "");
       // Optimistic pending bubble (design section 5): the lens renders
       // it until a poll carries the real user turn with the same text.
       // Cap at one per pane: a new submit replaces the previous text.
