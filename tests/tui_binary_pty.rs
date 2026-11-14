@@ -1430,3 +1430,177 @@ fn tui_binary_focus_and_highlight_acceptance_pty() {
     let _ = std::fs::remove_file(&path);
     let _ = stop.send(());
 }
+
+/// Fake terminal-socket server speaking the framed wire protocol:
+/// Welcome after the hello, then a history replay on attach and a
+/// stream of Terminal frames echoing any Input the client sends. Used
+/// by the attach PTY test so the LiveTerminal reader and writer worker
+/// threads in the binary run for real under coverage.
+fn serve_framed_terminal(path: &std::path::Path) -> mpsc::Sender<()> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (tx, rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                std::thread::spawn(move || {
+                    // Helpers for the 4-byte LE length + bincode frames.
+                    fn write_frame(s: &mut std::os::unix::net::UnixStream, payload: &[u8]) {
+                        let len = u32::try_from(payload.len()).unwrap();
+                        let _ = s.write_all(&len.to_le_bytes());
+                        let _ = s.write_all(payload);
+                        let _ = s.flush();
+                    }
+                    fn read_frame(s: &mut std::os::unix::net::UnixStream) -> Option<Vec<u8>> {
+                        let mut len_buf = [0u8; 4];
+                        s.read_exact(&mut len_buf).ok()?;
+                        let len = u32::from_le_bytes(len_buf) as usize;
+                        let mut payload = vec![0u8; len];
+                        s.read_exact(&mut payload).ok()?;
+                        Some(payload)
+                    }
+                    fn varint(value: u64) -> Vec<u8> {
+                        match value {
+                            0..=250 => vec![value as u8],
+                            _ => {
+                                let mut out = vec![0xFC];
+                                out.extend_from_slice(&(value as u32).to_le_bytes());
+                                out
+                            }
+                        }
+                    }
+                    let _hello = read_frame(&mut stream);
+                    // Welcome: variant 0, version, encoding 1, no error.
+                    let mut welcome = varint(0);
+                    welcome.extend(varint(22));
+                    welcome.extend(varint(1));
+                    welcome.push(0);
+                    write_frame(&mut stream, &welcome);
+                    let _attach = read_frame(&mut stream);
+                    // History replay: Terminal frame with one line.
+                    let mut replay = varint(1);
+                    replay.extend(varint(0));
+                    replay.extend(varint(120));
+                    replay.extend(varint(32));
+                    replay.push(1);
+                    replay.extend(varint(b"attached\n".len() as u64));
+                    replay.extend_from_slice(b"attached\n");
+                    write_frame(&mut stream, &replay);
+                    // Echo loop: every Input frame comes back as a
+                    // Terminal frame (bincode Input = index 1, len,
+                    // bytes).
+                    while let Some(frame) = read_frame(&mut stream) {
+                        if frame.first() == Some(&1) && frame.len() > 1 {
+                            let len = frame[1] as usize;
+                            let data = &frame[2..2 + len];
+                            let mut out = varint(1);
+                            out.extend(varint(0));
+                            out.extend(varint(120));
+                            out.extend(varint(32));
+                            out.push(0);
+                            out.extend(varint(data.len() as u64));
+                            out.extend_from_slice(data);
+                            write_frame(&mut stream, &out);
+                        }
+                    }
+                });
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    });
+    tx
+}
+
+#[test]
+fn tui_binary_terminal_attach_and_resize_pty() {
+    let api_path = herdr_webui::backend_client::unique_test_path("herdr-tui-attach-api");
+    let term_path = herdr_webui::backend_client::unique_test_path("herdr-tui-attach-term");
+    let _stop_api = serve_fake_backend_at(&api_path, "/repo");
+    let _stop_term = serve_framed_terminal(&term_path);
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        api_path.to_str().unwrap(),
+        "--terminal-socket",
+        term_path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    // Wait for the main screen, then Enter attaches the selected pane.
+    wait_for(&log, "Enter attach");
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(b"\r");
+    let _ = writer.flush();
+    // The history replay from the framed server must land on screen.
+    wait_for(&log, "attached");
+
+    // Typed input is forwarded: the dispatch sets the sent-input
+    // notice (writer thread live), and the framed server echoes the
+    // bytes back as a Terminal frame (reader thread live). The echo
+    // lands in the pane buffer but diff rendering may coalesce it, so
+    // only the status is asserted deterministically.
+    let _ = writer.write_all(b"hi");
+    let _ = writer.flush();
+    wait_for(&log, "sent input");
+
+    // Resize the pty: the Resize event resizes the live pty client.
+    pair.master
+        .resize(PtySize {
+            rows: 30,
+            cols: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Raw Ctrl-G (0x07) detaches the live terminal in attach mode.
+    let _ = writer.write_all(&[0x07]);
+    let _ = writer.flush();
+    wait_for(&log, "detached");
+
+    // Quit through the confirm flow (the master writer is once-only).
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+    let mut killer = child.clone_killer();
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+    child_guard.disarm();
+}
