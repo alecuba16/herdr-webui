@@ -11796,3 +11796,334 @@ fn wrap_input_with_cursor_handles_zero_width_and_word_splits() {
     );
     assert!(rows.iter().all(|row| row.chars().count() <= 4));
 }
+
+// ---------------------------------------------------------------------------
+// Split/move/resize mode handler coverage: ghost walks, cycling, guards,
+// sync pruning of dead overlays, zoom restores, and refused commits.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn split_mode_keys_drive_the_ghost_and_cycle_candidates() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let preview = app.split_mode.clone().expect("split mode open");
+    assert_eq!(preview.neighbor, "pane_1");
+    assert_eq!(preview.pane, "pane_2", "cross-workspace first");
+
+    // p cycles candidates: pane_2 -> pane_3 -> wrap pane_2.
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert_eq!(app.split_mode.as_ref().unwrap().pane, "pane_3");
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert_eq!(app.split_mode.as_ref().unwrap().pane, "pane_2");
+
+    // hjkl moves the ghost: with no geometry recorded yet the walk
+    // cannot move, so the neighbor stays and only mark_dirty ran.
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_1");
+
+    // Tab cycles the side family through all four edges.
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Left
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Above
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Right
+    );
+
+    // Esc cancels and arms the double-Esc guard.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.split_mode.is_none());
+    assert!(app.just_closed_mode);
+    assert_eq!(app.status, "split cancelled");
+}
+
+#[test]
+fn split_mode_cycle_without_candidates_reports_and_keeps_the_ghost() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+    // Only pane_1 exists and it is the neighbor: no candidates, but
+    // the status is overwritten by the key loop's refresh state
+    // ("connecting" on the dead socket), so assert on the ghost.
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert!(app.split_mode.is_some(), "ghost stays open");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().pane,
+        "pane_2",
+        "no cycle possible, candidate unchanged"
+    );
+}
+
+#[test]
+fn split_commit_refuses_vanished_and_duplicate_targets() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+
+    // Neighbor gone from the tree: commit refuses.
+    let preview = app.split_mode.clone().unwrap();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "gone".to_string(),
+        ..preview
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "split target vanished");
+    assert!(app.split_mode.is_none(), "commit consumed the ghost");
+
+    // Candidate already on the tree: commit refuses.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let preview = app.split_mode.clone().unwrap();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        pane: "pane_1".to_string(),
+        ..preview
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "pane already on screen");
+}
+
+#[test]
+fn move_mode_open_refusals_and_esc_cancel() {
+    // Single tile: nothing to move.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert_eq!(app.status, "nothing to move (single tile)");
+    assert!(app.move_mode.is_none());
+
+    // Two tiles: opens, Esc cancels with the double-Esc guard armed.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert!(app.move_mode.is_some());
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.move_mode.is_none());
+    assert!(app.just_closed_mode);
+    assert_eq!(app.status, "move cancelled");
+}
+
+#[test]
+fn move_mode_commit_refuses_vanished_tiles_and_last_leaf_inserts() {
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    let state = app.move_mode.clone().unwrap();
+
+    // Both named tiles gone from the tree: commit refuses.
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "gone_a".to_string(),
+        target: "gone_b".to_string(),
+        ..state
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "move target vanished");
+
+    // Insert on the last two tiles: pulling the picked leaf leaves a
+    // single leaf, insert lands it back beside the target.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    app.handle_key(KeyEvent::from(KeyCode::Tab)); // insert verb
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        target: "pane_2".to_string(),
+        ..state
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.move_mode.is_none());
+    assert_eq!(app.split_tree.leaves(), vec!["pane_2", "pane_1"]);
+}
+
+#[test]
+fn sync_split_tree_prunes_dead_overlays_and_zoom() {
+    // Split-mode ghost whose neighbor died closes on sync (single leaf
+    // tree, pane_2 as the cross-workspace candidate).
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+    // The neighbor pane_1 vanishes: sync prunes the ghost.
+    app.snapshot.panes.retain(|pane| pane.id != "pane_1");
+    app.sync_split_tree();
+    assert!(app.split_mode.is_none(), "dead neighbor closes the ghost");
+
+    // Move mode with both tiles alive survives, then dies when the
+    // target leaves the tree.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        target: "pane_2".to_string(),
+        ..state
+    });
+    // pane_2 vanishes from the snapshot: sync prunes it.
+    app.snapshot.panes.retain(|pane| pane.id != "pane_2");
+    app.sync_split_tree();
+    assert!(app.move_mode.is_none(), "dead target closes the overlay");
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+
+    // Resize mode with a dead pane closes too.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert!(app.resize_mode.is_some());
+    // The resized pane (the focused pane_1) vanishes.
+    app.snapshot.panes.retain(|pane| pane.id != "pane_1");
+    app.sync_split_tree();
+    assert!(app.resize_mode.is_none(), "dead resize target closes");
+
+    // Zoomed pane vanishing clears the zoom flag: every pane must be
+    // gone so the fallback focus chain ends in None.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.split_zoomed = true;
+    app.snapshot.panes.clear();
+    app.sync_split_tree();
+    assert!(!app.split_zoomed, "zoom clears when its pane dies");
+    assert_eq!(app.split_tree.leaves(), vec![""], "reseeded to empty");
+}
+
+#[test]
+fn sync_split_tree_outside_terminal_leaves_the_tree_alone() {
+    let mut app = two_tile_split();
+    app.screen = TuiScreen::Git;
+    app.split_tree = crate::tui::split::SplitNode::leaf("gone_pane");
+    app.sync_split_tree();
+    assert_eq!(
+        app.split_tree.leaves(),
+        vec!["gone_pane"],
+        "no pruning off the Terminal screen"
+    );
+}
+
+#[test]
+fn resize_mode_guards_and_axis_refusals() {
+    // Single tile: nothing to resize.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert_eq!(app.status, "nothing to resize (single tile)");
+    assert!(app.resize_mode.is_none());
+
+    // Column split: h/l (Row axis) finds no vertical divider.
+    let mut app = two_tile_split();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Col,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert!(app.resize_mode.is_some());
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.status, "no vertical divider to move");
+
+    // Row split: j/k (Col axis) finds no horizontal divider.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.status, "no horizontal divider to move");
+    assert!(app.resize_mode.is_some(), "refusal keeps the mode open");
+}
+
+#[test]
+fn zoom_open_refusals_and_resize_unzooms_first() {
+    // No focus and no panes: zoom toggles nothing.
+    let mut app = app_with_two_panes();
+    app.snapshot.panes.clear();
+    app.split_focus = None;
+    app.split_toggle_zoom();
+    assert!(!app.split_zoomed);
+
+    // Resize while zoomed unzooms first (the mode needs the grid).
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert!(app.split_zoomed);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert!(!app.split_zoomed, "resize unzooms");
+    assert!(app.resize_mode.is_some());
+    assert_eq!(app.status, "zoom off");
+
+    // Split mode open while zoomed also unzooms.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        side: crate::tui::split::Side::Right,
+        pane: "pane_2".to_string(),
+    });
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(!app.split_zoomed, "open_split_mode unzooms");
+}
+
+#[test]
+fn sync_seeds_focus_on_the_first_alive_leaf() {
+    // A two-leaf tree with no focus: sync seeds it.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = None;
+    app.sync_split_tree();
+    assert!(
+        app.split_focus.is_some(),
+        "focus seeded on first alive leaf"
+    );
+}
+
+#[test]
+fn split_mode_move_ghost_without_focus_returns_silent() {
+    // split_move_focus needs a focused pane: none -> silent return.
+    let mut app = app_with_two_panes();
+    app.split_focus = None;
+    app.snapshot.panes.clear();
+    app.split_move_focus(1, 0);
+    assert!(app.split_mode.is_none(), "no overlay, no crash");
+}

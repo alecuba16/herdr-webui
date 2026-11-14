@@ -1097,3 +1097,69 @@ mod coverage_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+
+    fn leaf(id: &str) -> SplitNode {
+        SplitNode::leaf(id)
+    }
+
+    #[test]
+    fn remove_every_leaf_of_a_split_yields_none() {
+        // Both children removed one after another: the split collapses
+        // to None (the caller keeps the last leaf alive instead).
+        let tree = SplitNode::split(SplitDir::Row, vec![leaf("p1"), leaf("p2")]);
+        let after = remove_leaf(&tree, "p1").unwrap();
+        assert_eq!(after, leaf("p2"));
+        assert_eq!(remove_leaf(&after, "p2"), None);
+        // Removing the leaf of a leaf tree is None too.
+        assert_eq!(remove_leaf(&leaf("solo"), "solo"), None);
+    }
+
+    #[test]
+    fn apply_resize_path_stops_on_a_single_slot_path() {
+        // path of length 1 never reaches a sibling: no weight moves.
+        let mut tree = SplitNode::weighted(SplitDir::Row, vec![leaf("p1"), leaf("p2")], vec![8, 8]);
+        apply_resize_path(&mut tree, &[0], 2);
+        let SplitNode::Split { weights, .. } = &tree else {
+            panic!("tree stays a split");
+        };
+        assert_eq!(weights, &[8, 8]);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::*;
+
+    fn leaf(id: &str) -> SplitNode {
+        SplitNode::leaf(id)
+    }
+
+    #[test]
+    fn swap_leaves_only_touches_the_named_pair() {
+        // A third leaf keeps its pane: the else arm of the swap map.
+        let tree = SplitNode::split(
+            SplitDir::Row,
+            vec![leaf("p1"), leaf("bystander"), leaf("p2")],
+        );
+        let swapped = swap_leaves(&tree, "p1", "p2");
+        assert_eq!(swapped.leaves(), vec!["p2", "bystander", "p1"]);
+    }
+
+    #[test]
+    fn apply_resize_path_needs_two_slots() {
+        // The `path.get(1)` guard fires only on len-1 paths, which the
+        // earlier len check already returns for; the guard still runs
+        // for safety, so drive it once with a single-slot path on a
+        // tree whose weights would otherwise move.
+        let mut tree = SplitNode::weighted(SplitDir::Row, vec![leaf("p1"), leaf("p2")], vec![8, 8]);
+        apply_resize_path(&mut tree, &[0], 2);
+        let SplitNode::Split { weights, .. } = &tree else {
+            panic!("tree stays a split");
+        };
+        assert_eq!(weights, &[8, 8]);
+    }
+}
