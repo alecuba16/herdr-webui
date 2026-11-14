@@ -249,11 +249,6 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
         frame.render_widget(block, tile.rect);
         return;
     };
-    let agent_name = pane
-        .display_agent
-        .as_deref()
-        .or(pane.agent.as_deref())
-        .unwrap_or("shell");
     let (dot, _dot_style) = status_dot(&pane.agent_status, p);
     // Workspace identity per the design: human label (not the raw
     // ws id) plus the cwd basename on every tile, worktree/branch
@@ -269,18 +264,38 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
     let workspace_label = workspace
         .map(|ws| ws.label.clone())
         .unwrap_or_else(|| pane.workspace_id.clone());
-    let folder = std::path::Path::new(&pane.cwd)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // Terminal title (OSC 0/2, stripped): the pane name slot falls
+    // back through provisioned label -> agent -> title -> shell, and
+    // a title distinct from the resolved name rides its own token
+    // right of the workspace so the user sees what the pane shows.
+    // A title usually carries the path, so the folder token yields
+    // its width budget instead of crowding narrow tiles.
+    let terminal_title = pane.terminal_title.as_deref();
+    let name = pane
+        .label
+        .as_deref()
+        .filter(|label| !label.is_empty())
+        .or(pane.display_agent.as_deref())
+        .or(pane.agent.as_deref())
+        .or(terminal_title)
+        .unwrap_or("shell");
+    let title_token = terminal_title.filter(|title| *title != name);
     let mut title = format!(
         " {} {} · {} ",
         dot,
-        truncate(agent_name, 18),
+        truncate(name, 18),
         truncate(&workspace_label, 12),
     );
-    if !folder.is_empty() {
-        title.push_str(&format!("· {} ", truncate(&folder, 14)));
+    if let Some(terminal_title) = title_token {
+        title.push_str(&format!("· {} ", truncate(terminal_title, 12)));
+    } else {
+        let folder = std::path::Path::new(&pane.cwd)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !folder.is_empty() {
+            title.push_str(&format!("· {} ", truncate(&folder, 14)));
+        }
     }
     if let Some(ws) = workspace {
         if ws.worktree.as_ref().is_some_and(|stamp| stamp.is_linked) {

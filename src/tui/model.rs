@@ -156,6 +156,12 @@ pub struct TuiPane {
     pub agent_status: String,
     pub cwd: String,
     pub focused: bool,
+    /// OSC 0/2 title the pane's terminal last set, stripped of the
+    /// mutating status suffix (backend `terminal_title_stripped`).
+    /// None on old backends without the field; headers show it as the
+    /// pane name fallback under label/display_agent (design: tile
+    /// header title feature).
+    pub terminal_title: Option<String>,
     /// Chat-transcript provider state (design section 6, TUI parity):
     /// same wire shape the webui gate reads. None = no provider at all
     /// (shell panes, unsupported agents, old backends without the field)
@@ -439,6 +445,15 @@ fn parse_pane(value: &Value) -> TuiPane {
                 session_id: value_str(session, &["session_id"]).map(str::to_string),
                 reason: value_str(session, &["reason"]).map(str::to_string),
             }),
+        // Strip the mutating status suffix client-side too: a backend
+        // that only serves the raw `terminal_title` still renders a
+        // stable header (upstream reserves both spellings).
+        terminal_title: value
+            .get("terminal_title_stripped")
+            .or_else(|| value.get("terminal_title"))
+            .and_then(Value::as_str)
+            .map(strip_terminal_title_suffix)
+            .filter(|title| !title.is_empty()),
     }
 }
 
@@ -483,4 +498,34 @@ pub(crate) fn value_u64(value: &Value, keys: &[&str]) -> Option<u64> {
 fn value_bool(value: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter()
         .find_map(|key| value.get(key).and_then(Value::as_bool))
+}
+
+/// Client-side twin of the backend's title stripper: same markers
+/// (jcode's ` · work ~<dur>` / ` · last ~<dur>`, braille spinner
+/// prefixes) so a raw-only backend still yields a stable header
+/// string. Kept deliberately small: the backend's stripped field is
+/// the primary source, this only guards the fallback.
+fn strip_terminal_title_suffix(title: &str) -> String {
+    let mut stripped = title.trim();
+    for marker in [" · work ~", " · last ~", "· work ~", "· last ~"] {
+        if let Some(index) = stripped.find(marker) {
+            let head = &stripped[..index];
+            stripped = head
+                .trim_start()
+                .strip_prefix('·')
+                .unwrap_or(head)
+                .trim_start();
+            break;
+        }
+    }
+    let stripped = stripped
+        .trim_start_matches(|ch: char| is_braille(ch) || ch.is_whitespace())
+        .trim();
+    stripped.trim_end_matches('·').trim().to_string()
+}
+
+/// Braille pattern range (U+2800-U+28FF), the spinner chars agents
+/// prefix their titles with (claude, amp, qwen).
+fn is_braille(ch: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&ch)
 }

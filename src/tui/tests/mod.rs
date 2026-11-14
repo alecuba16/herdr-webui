@@ -10031,6 +10031,7 @@ fn push_pane_3(app: &mut TuiApp) {
         agent_status: "idle".to_string(),
         cwd: "/other".to_string(),
         focused: false,
+        terminal_title: None,
         agent_session: None,
     });
 }
@@ -10296,6 +10297,7 @@ fn opening_split_mode_while_zoomed_auto_unzooms() {
         agent_status: "idle".to_string(),
         cwd: "/other".to_string(),
         focused: false,
+        terminal_title: None,
         agent_session: None,
     });
 
@@ -10349,6 +10351,7 @@ fn split_and_move_modes_never_coexist() {
         agent_status: "idle".to_string(),
         cwd: "/other".to_string(),
         focused: false,
+        terminal_title: None,
         agent_session: None,
     });
     app.handle_key(ctrl('b'));
@@ -10816,5 +10819,120 @@ fn resize_mode_hint_names_the_pane() {
         drawn
             .contains("RESIZE · pane_1 · h/l narrower/wider · j/k shorter/taller · Enter/Esc done"),
         "footer shows the resize hint, got: {drawn}"
+    );
+}
+
+#[test]
+fn parse_pane_reads_terminal_title_with_the_stripped_field_first() {
+    let value = serde_json::json!({
+        "panes": [{
+            "pane_id": "pane_1",
+            "terminal_id": "term_1",
+            "agent_status": "idle",
+            "terminal_title": "raw · work ~3s",
+            "terminal_title_stripped": "raw",
+        }]
+    });
+    let pane = crate::tui::model::TuiSnapshot::from_backend_response(&value).panes[0].clone();
+    assert_eq!(pane.terminal_title.as_deref(), Some("raw"));
+
+    // Raw-only backend: the client-side strip still yields the head.
+    let raw_only = serde_json::json!({
+        "panes": [{
+            "pane_id": "pane_1",
+            "terminal_id": "term_1",
+            "agent_status": "idle",
+            "terminal_title": "raw · work ~3s",
+        }]
+    });
+    let pane = crate::tui::model::TuiSnapshot::from_backend_response(&raw_only).panes[0].clone();
+    assert_eq!(pane.terminal_title.as_deref(), Some("raw"));
+
+    // Old backend without the field: None, headers fall back further.
+    let old = serde_json::json!({
+        "panes": [{
+            "pane_id": "pane_1",
+            "terminal_id": "term_1",
+            "agent_status": "idle",
+        }]
+    });
+    let pane = crate::tui::model::TuiSnapshot::from_backend_response(&old).panes[0].clone();
+    assert_eq!(pane.terminal_title, None);
+
+    // A title that strips to nothing is treated as absent.
+    let spinner_only = serde_json::json!({
+        "panes": [{
+            "pane_id": "pane_1",
+            "terminal_id": "term_1",
+            "agent_status": "idle",
+            "terminal_title": "⠙",
+        }]
+    });
+    let pane =
+        crate::tui::model::TuiSnapshot::from_backend_response(&spinner_only).panes[0].clone();
+    assert_eq!(pane.terminal_title, None);
+}
+
+#[test]
+fn tile_header_falls_back_to_terminal_title_for_the_name_slot() {
+    let mut app = app_with_two_panes();
+    // No label, no agent: the terminal title is the pane's name.
+    app.snapshot.panes[0].label = None;
+    app.snapshot.panes[0].agent = None;
+    app.snapshot.panes[0].display_agent = None;
+    app.snapshot.panes[0].terminal_title = Some("jcode · src/foo.rs".to_string());
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn.contains("jcode · src/foo.rs"),
+        "title serves as the name slot, got: {drawn}"
+    );
+    // The title already names the pane: no duplicate token next to it.
+    assert!(
+        !drawn.contains("jcode · src/foo.rs · jcode"),
+        "no duplicated title token, got: {drawn}"
+    );
+}
+
+#[test]
+fn tile_header_shows_a_distinct_title_beside_the_name() {
+    let mut app = app_with_two_panes();
+    app.snapshot.panes[0].terminal_title = Some("jcode · src/foo.rs".to_string());
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 150, 40);
+    // Agent name stays the name slot; the distinct title rides its own
+    // token next to the workspace label (truncated to its 12-column
+    // budget) and displaces the folder token.
+    assert!(
+        drawn.contains("○ jcode · Repo · jcode · src…"),
+        "distinct title shows beside the name, got: {drawn}"
+    );
+}
+
+#[test]
+fn single_pane_header_shows_the_terminal_title_too() {
+    let mut app = app_with_two_panes();
+    // Single-pane path: no split tree, focus on pane_1.
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = None;
+    app.snapshot.panes[0].terminal_title = Some("jcode · src/foo.rs".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn.contains("jcode · src"),
+        "single-pane header carries the title, got: {drawn}"
     );
 }

@@ -35,7 +35,9 @@ use crate::builtin_detection::{
     pi::detect_pi_status,
     qodercli::detect_qodercli_status,
     qwen::detect_qwen_status,
-    scrape::{bottom_non_empty_lines, contains_any, contains_braille, starts_with_braille},
+    scrape::{
+        bottom_non_empty_lines, contains_any, contains_braille, is_braille, starts_with_braille,
+    },
 };
 use crate::builtin_detection::{
     jcode::{
@@ -3324,8 +3326,57 @@ fn tab_json(tab: &TabRecord, data: &BuiltinData) -> Value {
     })
 }
 
+/// Stable form of a terminal title for headers: drops the mutating
+/// status tokens agents append or prefix so the string stays identical
+/// while a turn runs. jcode appends ` · work ~<dur>` /
+/// ` · last ~<dur>` (`title_with_metrics`); claude/amp/qwen ride a
+/// braille spinner prefix. Titles with no known token come back
+/// trimmed only.
+fn strip_terminal_title_suffix(title: &str) -> String {
+    let mut stripped = title.trim();
+    for marker in [" · work ~", " · last ~", "· work ~", "· last ~"] {
+        if let Some(index) = stripped.find(marker) {
+            let head = &stripped[..index];
+            stripped = head
+                .trim_start()
+                .strip_prefix('·')
+                .unwrap_or(head)
+                .trim_start();
+            break;
+        }
+    }
+    // Spinner prefixes (⠙ Working…) never belong in a header name;
+    // a trailing separator from a stripped suffix must not linger.
+    let stripped = stripped
+        .trim_start_matches(|ch: char| is_braille(ch) || ch.is_whitespace())
+        .trim();
+    stripped.trim_end_matches('·').trim().to_string()
+}
+
 fn pane_json(pane: &PaneRecord, data: &BuiltinData) -> Value {
     let presentation = pane_agent_presentation(pane, data);
+    // OSC 0/2 title the pane's terminal last set. Served raw plus
+    // stripped of the mutating status suffix (jcode's ` · work ~<dur>`
+    // / ` · last ~<dur>`, braille spinner prefixes) so headers can show
+    // a stable string; absent tracker or no title seen -> null.
+    let terminal_title = data
+        .terminals
+        .get(&pane.terminal_id)
+        .and_then(|terminal| {
+            terminal
+                .osc9_tracker
+                .lock()
+                .ok()
+                .map(|tracker| tracker.latest_title().to_string())
+        })
+        .filter(|title| !title.is_empty())
+        .map(|title| json!(title));
+    let terminal_title_stripped = terminal_title
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .map(strip_terminal_title_suffix)
+        .filter(|title| !title.is_empty())
+        .map(|title| json!(title));
     json!({
         "pane_id": pane.pane_id,
         "terminal_id": pane.terminal_id,
@@ -3343,6 +3394,8 @@ fn pane_json(pane: &PaneRecord, data: &BuiltinData) -> Value {
         "custom_status": null,
         "state_labels": {},
         "agent_session": pane_agent_session(pane, data, &presentation),
+        "terminal_title": terminal_title,
+        "terminal_title_stripped": terminal_title_stripped,
         "scroll": null,
         "revision": 0,
     })
@@ -4869,6 +4922,102 @@ mod tests {
     // not any shell program.
     fn hermetic_test_shell() -> String {
         "/bin/sh".to_string()
+    }
+
+    #[test]
+    fn strip_terminal_title_suffix_drops_mutating_status_tokens() {
+        // jcode's live metrics suffix: both markers cut at the first
+        // occurrence, leaving the stable title head.
+        assert_eq!(
+            strip_terminal_title_suffix("jcode · src/foo.rs · work ~1m09s"),
+            "jcode · src/foo.rs"
+        );
+        assert_eq!(
+            strip_terminal_title_suffix("jcode · src/foo.rs · last ~4h02m"),
+            "jcode · src/foo.rs"
+        );
+        // Braille spinner prefixes never reach a header.
+        assert_eq!(strip_terminal_title_suffix("⠙ Working…"), "Working…");
+        // A title with no known token comes back trimmed only.
+        assert_eq!(
+            strip_terminal_title_suffix("  plain title  "),
+            "plain title"
+        );
+        // Everything strips to nothing -> empty (callers treat empty
+        // as no title).
+        assert_eq!(strip_terminal_title_suffix("⠙"), "");
+        assert_eq!(strip_terminal_title_suffix(" · work ~1s"), "");
+    }
+
+    #[test]
+    fn pane_json_serves_terminal_title_from_the_osc_tracker() {
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(hermetic_test_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let workspace = state.handle_request(
+            "seed",
+            "workspace.create",
+            json!({
+                "label": "Workspace",
+                "open_terminal": false
+            }),
+        );
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab = state.handle_request(
+            "seed",
+            "tab.create",
+            json!({ "workspace_id": workspace_id, "label": "Tab", "focus": true }),
+        );
+        let pane_id = tab["result"]["root_pane"]["pane_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let terminal_id = tab["result"]["root_pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // No title observed yet: both fields stay null.
+        let before = state.handle_request("q", "session.snapshot", json!({}));
+        let pane_before = before["result"]["snapshot"]["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["pane_id"].as_str() == Some(pane_id.as_str()))
+            .cloned()
+            .unwrap();
+        assert!(pane_before["terminal_title"].is_null());
+        assert!(pane_before["terminal_title_stripped"].is_null());
+
+        // A pane_json read with the tracker primed serves both fields:
+        // the raw OSC 0 title and the stripped form without the
+        // metrics suffix.
+        let value = state.data.lock().unwrap();
+        let terminal = value.terminals.get(&terminal_id).unwrap();
+        {
+            let mut tracker = terminal.osc9_tracker.lock().unwrap();
+            tracker.observe(b"\x1b]0;jcode \xC2\xB7 src/foo.rs \xC2\xB7 work ~1m09s\x07");
+        }
+        let pane = value
+            .panes
+            .get(&pane_id)
+            .map(|pane| pane_json(pane, &value))
+            .unwrap();
+        drop(value);
+        assert_eq!(
+            pane["terminal_title"].as_str(),
+            Some("jcode · src/foo.rs · work ~1m09s")
+        );
+        assert_eq!(
+            pane["terminal_title_stripped"].as_str(),
+            Some("jcode · src/foo.rs")
+        );
     }
 
     #[test]

@@ -459,15 +459,29 @@ fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
                 .find(|tab| tab.id == pane.tab_id)
                 .map(|tab| tab.label.as_str())
                 .unwrap_or("panel");
-            format!(
+            // Same composition as the split tile header (feature
+            // parity): the name slot falls back through the terminal
+            // title, and a distinct title rides its own segment so
+            // the single-pane view shows what the pane displays too.
+            let terminal_title = pane.terminal_title.as_deref();
+            let name = pane
+                .label
+                .as_deref()
+                .filter(|label| !label.is_empty())
+                .or(pane.display_agent.as_deref())
+                .or(pane.agent.as_deref())
+                .or(terminal_title)
+                .unwrap_or("shell");
+            let mut title = format!(
                 " {} · {} · {} ",
-                pane.display_agent
-                    .as_deref()
-                    .or(pane.agent.as_deref())
-                    .unwrap_or("shell"),
+                truncate(name, 18),
                 truncate(tab_label, 16),
                 pane.id
-            )
+            );
+            if let Some(terminal_title) = terminal_title.filter(|title| *title != name) {
+                title.push_str(&format!("· {} ", truncate(terminal_title, 12)));
+            }
+            title
         })
         .unwrap_or_else(|| " Pane ".to_string());
     let block = panel(&title, p).border_style(match app.mode {
