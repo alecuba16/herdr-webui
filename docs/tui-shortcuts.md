@@ -121,7 +121,8 @@ answered from the webui's chat lens card. The server-side parser
 | `E` (Shift+E) | settings overlay from any screen (Terminal keeps `Ctrl+B s` for split mode) |
 | `s` | settings overlay (t cycles the theme) · terminal: split tile mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm) |
 | `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
-| `z` | git: stash the selected file · terminal: zoom the focused tile |
+| `Shift+Z` | terminal: resize mode (`h`/`l` narrow/widen, `j`/`k` shorten/lengthen, `Enter`/`Esc` close) |
+| `z` | git: stash the selected file · terminal: zoom the focused tile (resize mode closes it first) |
 | `hjkl` / arrows | terminal (split active): walk tile focus, single tile keeps pane scroll · `Ctrl+hjkl` scrolls the focused pane |
 | `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |
