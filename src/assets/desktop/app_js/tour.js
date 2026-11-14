@@ -20,6 +20,7 @@
   let visibleSteps = [];
   let boundKeys = false;
   let boundResize = false;
+  let renderedOnce = false;
 
   function reducedMotion() {
     return !!(window.matchMedia && window.matchMedia(REDUCED_MOTION).matches);
@@ -110,28 +111,25 @@
   }
 
   const PAD = 6;
-  const RADIUS = 12;
 
   function paintSpot(rect, instant) {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    // Four dim panes around the cutout; the hole stays interactive so the
-    // user can see the highlighted control beneath.
+    // Four dim bands around the cutout (top/right/bottom/left); the hole
+    // itself stays undimmed so the user can see and use the target.
     const x = rect.x - PAD;
     const y = rect.y - PAD;
     const w = rect.w + PAD * 2;
     const h = rect.h + PAD * 2;
+    const xl = ((x / vw) * 100).toFixed(4);
+    const xr = (((x + w) / vw) * 100).toFixed(4);
+    const yt = ((y / vh) * 100).toFixed(4);
+    const yb = (((y + h) / vh) * 100).toFixed(4);
     hole.style.clipPath =
       "polygon(" +
-      `0% 0%, 100% 0%, 100% ${((y / vh) * 100).toFixed(4)}%, ` +
-      `0% ${((y / vh) * 100).toFixed(4)}%, ` +
-      `0% ${(((y + h) / vh) * 100).toFixed(4)}%, ` +
-      `100% ${(((y + h) / vh) * 100).toFixed(4)}%, ` +
-      `100% 100%, 0% 100%` +
+      `0% 0%, 100% 0%, 100% ${yt}%, ${xr}% ${yt}%, ${xr}% ${yb}%, 100% ${yb}%, ` +
+      `100% 100%, 0% 100%, 0% ${yb}%, ${xl}% ${yb}%, ${xl}% ${yt}%, 0% ${yt}%` +
       ")";
-    // The clip is a percentage polygon (resize-safe); the spotlight
-    // outline is a rounded rect drawn on a border-box shadow.
-    hole.style.boxShadow = "none";
     if (!instant && !reducedMotion()) {
       hole.style.transition = "clip-path 180ms ease-out";
     } else {
@@ -141,7 +139,7 @@
   }
 
   function placeCard(rect, step) {
-    const cardW = Math.min(360, window.innerWidth - 24);
+    const cardW = Math.max(180, Math.min(360, window.innerWidth - 24));
     card.style.maxWidth = `${cardW}px`;
     let x;
     const anchor = (step && step.anchor) || "end";
@@ -186,10 +184,18 @@
     } catch (_) {}
   }
 
+  function enterStep(instant) {
+    renderCurrent(instant);
+    // Demo runs exactly once per step entry; repaints (resize, hideOnDemo)
+    // go through renderCurrent and never re-run it.
+    const step = visibleSteps[stepIndex];
+    if (step) runDemo(step);
+  }
+
   function renderCurrent(instant) {
     const step = visibleSteps[stepIndex];
     if (!step) {
-      stop(true);
+      stop(renderedOnce);
       return;
     }
     const rect = targetRect(step);
@@ -197,6 +203,7 @@
       move(1);
       return;
     }
+    renderedOnce = true;
     el("tourTitle").textContent = step.title;
     const bodyNode = card.querySelector(".tour-body");
     if (bodyNode) bodyNode.textContent = typeof step.body === "function" ? step.body() : step.body;
@@ -210,19 +217,18 @@
     paintSpot(rect, instant);
     placeCard(rect, step);
     card.setAttribute("aria-hidden", "false");
-    runDemo(step);
     el("tourNext").focus({ preventScroll: true });
   }
 
   function move(delta) {
     const next = stepIndex + delta;
     if (next >= visibleSteps.length) {
-      stop(true);
+      stop(renderedOnce);
       return;
     }
     if (next < 0) return;
     stepIndex = next;
-    renderCurrent(false);
+    enterStep(false);
   }
 
   function onKey(e) {
@@ -247,13 +253,12 @@
   }
 
   function ensureBindings() {
-    if (boundKeys) return;
-    // Capture phase, registered after the app's own capture handlers run
-    // only while the tour is active: the tour keys must not reach the
-    // terminal or the prefix system. handleGlobalShortcut checks
-    // window.HerdrOnboardingTour first, so ordering stays safe either way.
-    document.addEventListener("keydown", onKey, true);
-    boundKeys = true;
+    if (!boundKeys) {
+      // Capture phase so tour keys never reach the terminal or the prefix
+      // system; handleGlobalShortcut also checks isActive() as backstop.
+      document.addEventListener("keydown", onKey, true);
+      boundKeys = true;
+    }
     if (!boundResize) {
       window.addEventListener("resize", onResize);
       boundResize = true;
@@ -267,10 +272,11 @@
     ensureBindings();
     active = true;
     stepIndex = 0;
+    renderedOnce = false;
     buildVisibleSteps();
     root.hidden = false;
     root.style.display = "block";
-    renderCurrent(true);
+    enterStep(true);
   }
 
   function stop(finished) {
@@ -282,11 +288,23 @@
       if (searchPaletteOpen()) closeSearchPalette();
     } catch (_) {}
     try {
+      // Same close path as the backdrop click in core.js: hide + drag/focus
+      // restore; there is no closeSettingsModal global.
       const settings = el("settingsModal");
-      if (settings && settings.style.display !== "none" && typeof closeSettingsModal === "function") closeSettingsModal();
+      if (settings && settings.style.display !== "none") {
+        settings.style.display = "none";
+        if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(settings);
+        if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
+      }
     } catch (_) {}
     root.hidden = true;
     root.style.display = "none";
+    if (boundResize) {
+      try {
+        window.removeEventListener("resize", onResize);
+        boundResize = false;
+      } catch (_) {}
+    }
     markDone(finished);
     const focusTarget = el("terminal") || document.body;
     try {
@@ -318,6 +336,5 @@
     return active;
   }
 
-  start.markDone = markDone;
   window.HerdrOnboardingTour = { start, stop, isActive, isDone, reset };
 })();

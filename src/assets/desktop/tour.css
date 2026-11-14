@@ -5,7 +5,9 @@
 .tour-root {
   position: fixed;
   inset: 0;
-  z-index: 1150;
+  /* Stack tier: shortcut-prefix overlay 1150 below this; file-browser
+     menu 1500 and alert-card toasts stay above. */
+  z-index: 1160;
   display: none;
 }
 .tour-root[hidden] {
@@ -41,6 +43,11 @@
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+/* Desktop-only surface (mouse + keyboard); Skip gets a comfortable
+   click height, not a mobile touch standard. */
+.tour-skip {
+  min-height: 24px;
 }
 .tour-card h3 {
   margin: 0;

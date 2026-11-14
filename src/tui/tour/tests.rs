@@ -133,7 +133,13 @@ fn tour_closes_with_esc_and_help_replays_it_with_shift_t() {
     app.handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::NONE));
     assert_eq!(app.mode, TuiMode::Tour);
     app.handle_key(key(KeyCode::Esc));
-    assert_ne!(app.mode, TuiMode::Tour);
+    assert_eq!(app.mode, TuiMode::Help, "close returns to the Help overlay");
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(
+        app.mode,
+        TuiMode::Navigate,
+        "help close returns to Navigate"
+    );
 }
 
 #[test]
@@ -154,5 +160,48 @@ fn tour_steps_cover_the_main_areas_in_the_webui_order() {
         ]
     );
     // Every step teaches a chord except the prefix explanation.
-    assert!(steps.iter().filter(|s| s.shortcut.is_some()).count() >= 7);
+    let total = tour::tour_steps().len();
+    assert_eq!(
+        steps.iter().filter(|s| s.shortcut.is_some()).count(),
+        total - 1
+    );
+}
+
+#[test]
+fn tour_swallows_the_prefix_and_lens_keys() {
+    let mut app = open_tour_app();
+    let before_index = app.tour_index;
+    let before_workspace = app.selected_workspace;
+    // Ctrl+B never arms inside the tour, so the next key is a plain tour
+    // key, not a prefix chord.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    assert!(!app.prefix.is_armed());
+    assert_eq!(app.mode, TuiMode::Tour);
+    // Plain j after Ctrl+B advances the tour step; the selection moves
+    // through the step's demo dispatch, never through a leaked chord.
+    app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(app.mode, TuiMode::Tour, "j stayed inside the tour");
+    assert_eq!(app.tour_index, before_index + 1);
+    assert_eq!(
+        app.selected_workspace,
+        before_workspace + 1,
+        "demo moved it, not a leaked chord"
+    );
+    // Ctrl+B then ?: ? closes the tour, it never opens Help.
+    let mut app = open_tour_app();
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(key(KeyCode::Char('?')));
+    assert_ne!(app.mode, TuiMode::Tour);
+    assert_ne!(app.mode, TuiMode::Help, "prefix ? did not open Help");
+    assert_eq!(app.tour_demo_overlay, None);
+}
+
+#[test]
+fn tour_renders_on_a_tiny_terminal_without_panicking() {
+    let app = open_tour_app();
+    // 10x8: narrower than the card floor, shorter than the card height.
+    let screen = draw(&app, 10, 8);
+    assert!(screen.contains("Tour"));
+    // A wide terminal still renders the full card.
+    assert!(draw(&app, 100, 30).contains("Tour 1 / 8"));
 }

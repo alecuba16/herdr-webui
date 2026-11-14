@@ -5,9 +5,11 @@
 //! that reaches it, and can run the real shortcut action so the UI moves
 //! through its own states while the user watches.
 //!
-//! Keys while the tour overlay is open: `j`/`Right`/`Enter` next step,
-//! `k`/`Left` previous, `Esc`/`q`/`?` quit. Everything else is swallowed
-//! so a mid-tour keypress never leaks into the app underneath.
+//! The tour owns every key (webui tour.js captures before
+//! handleGlobalShortcut): `j`/`Right`/`Enter` next step, `k`/`Left`
+//! previous, `Esc`/`q`/`?` quit. Everything else, including the Ctrl+B
+//! prefix, is swallowed so a mid-tour keypress never leaks into the app
+//! underneath.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -81,9 +83,10 @@ pub(crate) fn shortcut_key_hint(shortcut: Shortcut) -> &'static str {
         Shortcut::NewTab => "p",
         Shortcut::CloseTab => "x",
         Shortcut::Quit => "q",
-        Shortcut::Settings => "s",
+        // Terminal screen in Navigate mode takes prefix s for split mode;
+        // settings is Shift+E everywhere, so say that instead of a wrong s.
+        Shortcut::Settings | Shortcut::SettingsOverlay => "Shift+E",
         Shortcut::Sidebar => "Shift+B",
-        Shortcut::SettingsOverlay => "Shift+E",
         Shortcut::FocusNext => ".",
         Shortcut::FocusPrev => ",",
         Shortcut::Lens => "L",
@@ -215,10 +218,13 @@ impl TuiApp {
         if let Some(screen) = step.screen {
             self.screen = screen;
         }
+        let stack_len = self.overlay_stack.len();
         self.run_shortcut(shortcut);
         if self.mode != TuiMode::Tour {
             self.tour_demo_overlay = Some(self.mode);
-            self.overlay_stack.pop();
+            // Undo every push the shortcut made, not just one: chained
+            // shortcuts (folder picker + prompt) would strand entries.
+            self.overlay_stack.truncate(stack_len);
             self.mode = TuiMode::Tour;
         }
     }
@@ -270,6 +276,7 @@ pub(crate) fn render_tour(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
     let Some(step) = app.tour_step() else {
         return;
     };
+    let steps = tour_steps();
 
     // Region border: draw over the live layout, color-only change.
     let body = Rect {
@@ -278,20 +285,34 @@ pub(crate) fn render_tour(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         width: area.width,
         height: area.height.saturating_sub(1),
     };
+    // Mirrors the sidebar column in render::split_screen; narrower
+    // terminals shrink it to half the body width.
+    let sidebar_width = if body.width >= 100 {
+        34
+    } else {
+        28.min(body.width / 2)
+    };
     let region_rect = match step.region {
         TourRegion::Sidebar => Rect {
             x: body.x,
             y: body.y,
-            width: body.width.min(34),
+            width: sidebar_width.min(body.width),
             height: body.height,
         },
         TourRegion::Agents => Rect {
             x: body.x,
             y: body.y + body.height / 2,
-            width: body.width.min(34),
+            width: sidebar_width.min(body.width),
             height: body.height / 2,
         },
-        TourRegion::Main | TourRegion::Footer => body,
+        // The footer hint line is the bottom row of the area.
+        TourRegion::Footer => Rect {
+            x: area.x,
+            y: area.y + area.height.saturating_sub(1),
+            width: area.width,
+            height: 1,
+        },
+        TourRegion::Main => body,
     };
     if !region_rect.is_empty() {
         let style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
@@ -312,31 +333,27 @@ pub(crate) fn render_tour(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         width,
         height,
     };
-    // Paint the card background over the dimmed backdrop (ratatui 0.30:
-    // direct buffer writes; the Clear widget targets a Buffer, not a Frame).
-    let buffer = frame.buffer_mut();
-    for y in card.y..card.bottom() {
-        for x in card.x..card.right() {
-            if let Some(cell) = buffer.cell_mut((x, y)) {
-                cell.reset();
-                cell.bg = p.panel_bg;
-            }
-        }
-    }
+    // Clear erases the dimmed backdrop under the card; the Paragraph
+    // styles paint the panel background back in.
+    frame.render_widget(ratatui::widgets::Clear, card);
     let block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::ALL)
-        .border_style(Style::default().fg(p.accent))
+        .border_style(Style::default().fg(p.accent).bg(p.panel_bg))
         .title(Span::styled(
-            format!(" Tour {} / {} ", app.tour_index + 1, tour_steps().len()),
-            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            format!(" Tour {} / {} ", app.tour_index + 1, steps.len()),
+            Style::default()
+                .fg(p.accent)
+                .add_modifier(Modifier::BOLD)
+                .bg(p.panel_bg),
         ));
+    let card_style = |style: Style| style.bg(p.panel_bg);
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
         step.title,
-        Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        card_style(Style::default().fg(p.text).add_modifier(Modifier::BOLD)),
     ))];
-    // Manual wrap: body words into the card width; ratatui's Wrap on a
-    // Paragraph is not used because the card mixes styled spans below.
-    let inner_width = (width.saturating_sub(4)) as usize;
+    // Manual wrap: body words into the card width; the card mixes styled
+    // spans, so ratatui's Wrap cannot take the whole Paragraph.
+    let inner_width = (width.saturating_sub(2)) as usize;
     let mut line = String::new();
     for word in step.body.split(' ') {
         if line.is_empty() {
@@ -347,36 +364,41 @@ pub(crate) fn render_tour(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         } else {
             lines.push(Line::from(Span::styled(
                 line.clone(),
-                Style::default().fg(p.muted),
+                card_style(Style::default().fg(p.muted)),
             )));
             line.clear();
             line.push_str(word);
         }
     }
     if !line.is_empty() {
-        lines.push(Line::from(Span::styled(line, Style::default().fg(p.muted))));
+        lines.push(Line::from(Span::styled(
+            line,
+            card_style(Style::default().fg(p.muted)),
+        )));
     }
     lines.push(Line::from(""));
     if let Some(chord) = step.chord() {
         lines.push(Line::from(vec![
-            Span::styled("Shortcut: ", Style::default().fg(p.muted)),
+            Span::styled("Shortcut: ", card_style(Style::default().fg(p.muted))),
             Span::styled(
                 chord,
-                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                card_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
             ),
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "The prefix is Ctrl+B (remappable in settings).",
-            Style::default().fg(p.muted),
+            "Ctrl+B arms the prefix; Esc cancels it.",
+            card_style(Style::default().fg(p.muted)),
         )));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "j/Enter next · k back · Esc close",
-        Style::default().fg(p.muted),
+        card_style(Style::default().fg(p.muted)),
     )));
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().bg(p.panel_bg));
     frame.render_widget(paragraph, card);
 }
 

@@ -45,21 +45,24 @@ class FakeElement {
   get id() { return this._id; }
   set innerHTML(value) {
     this._innerHTML = String(value || "");
-    // Parse id="..." and class="..." so querySelector finds the tour
-    // card/hole nodes the driver builds via root.innerHTML.
-    const idRe = /id="([^"]+)"/g;
+    // Parse id="..."/class="..." pairs; tour markup nests everything after
+    // the card under the card so card.querySelector finds its own nodes.
     const classRe = /class="([^"]+)"/g;
-    const ids = [...this._innerHTML.matchAll(idRe)].map((m) => m[1]);
+    const idRe = /id="([^"]+)"/g;
     const classes = [...this._innerHTML.matchAll(classRe)].map((m) => m[1].split(/\s+/));
+    const ids = [...this._innerHTML.matchAll(idRe)].map((m) => m[1]);
     const count = Math.max(ids.length, classes.length);
+    let cardNode = null;
     for (let i = 0; i < count; i++) {
       const key = ids[i] || classes[i].join(".");
       if (this.ownerDocument.nodes.has(key)) continue;
       const node = new FakeElement(this.ownerDocument);
       if (ids[i]) node.id = ids[i];
       if (classes[i]) node.className = classes[i].join(" ");
-      node.parentNode = this;
-      this.children.push(node);
+      const host = cardNode && classes[i] && classes[i][0].startsWith("tour-") ? cardNode : this;
+      node.parentNode = host;
+      host.children.push(node);
+      if (classes[i] && classes[i][0] === "tour-card") cardNode = node;
     }
   }
   get innerHTML() { return this._innerHTML; }
@@ -124,7 +127,7 @@ function makeHarness() {
   document.getElementById("settingsModal").style.display = "none";
 
   const storage = new Map();
-  const flags = { paletteOpened: 0, workspaceJumps: 0, tabCreated: 0, terminalFocused: 0, helpOpened: 0 };
+  const flags = { paletteOpened: 0, paletteClosed: 0, workspaceJumps: 0, tabCreated: 0, terminalFocused: 0, helpOpened: 0, timeouts: [] };
   const ctx = {
     window: {
       document,
@@ -134,6 +137,9 @@ function makeHarness() {
         removeItem: (k) => storage.delete(k),
       },
       matchMedia: () => ({ matches: false }),
+      // Minimal timer queue: hideOnDemo repaints schedule here, tests flush.
+      setTimeout: (fn) => { flags.timeouts.push(fn); return flags.timeouts.length; },
+      removeEventListener() {},
       addEventListener() {},
       innerWidth: 1280,
       innerHeight: 800,
@@ -150,8 +156,8 @@ function makeHarness() {
     }),
     shortcutDisplay: (v) => String(v || ""),
     openSearchPalette: () => { flags.paletteOpened += 1; },
-    searchPaletteOpen: () => false,
-    closeSearchPalette: () => {},
+    searchPaletteOpen: () => flags.paletteOpened > 0 && flags.paletteClosed === 0,
+    closeSearchPalette: () => { flags.paletteClosed += 1; },
     selectRelativeWorkspace: () => { flags.workspaceJumps += 1; return true; },
     selectRelativeAgent: () => true,
     newTab: () => { flags.tabCreated += 1; },
@@ -187,6 +193,10 @@ function makeHarness() {
     stepsApi: context.window.HerdrTourSteps,
     press(key) {
       for (const handler of document.keydownHandlers) handler({ key, preventDefault() {}, stopPropagation() {}, defaultPrevented: false });
+    },
+    flushTimeouts() {
+      const pending = flags.timeouts.splice(0);
+      for (const fn of pending) fn();
     },
   };
 }
@@ -259,5 +269,53 @@ describe("onboarding tour (webui)", () => {
     }
     assert.ok(!seen.includes("Workspaces"), "workspaces step skipped without data");
     assert.ok(!seen.includes("Agents"), "agents step skipped without data");
+  });
+
+  it("runs the demo once per step entry; repaints never re-run it", () => {
+    const h = makeHarness();
+    h.tour.start();
+    assert.equal(h.flags.paletteOpened, 1);
+    h.flushTimeouts();
+    assert.equal(h.flags.paletteOpened, 1, "hideOnDemo repaint scheduled no second demo");
+    h.press("ArrowRight");
+    h.press("ArrowLeft");
+    assert.equal(h.flags.paletteOpened, 2, "re-entering the step runs the demo once more");
+  });
+
+  it("stop() closes a search palette the demo left open", () => {
+    const h = makeHarness();
+    h.tour.start();
+    assert.ok(h.flags.paletteOpened > 0);
+    h.tour.stop(false);
+    assert.equal(h.flags.paletteClosed, 1, "stop closed the palette");
+    assert.equal(h.tour.isActive(), false);
+  });
+
+  it("double start() is a no-op", () => {
+    const h = makeHarness();
+    h.tour.start();
+    h.tour.start();
+    assert.equal(h.flags.paletteOpened, 1, "second start ran nothing");
+    assert.equal(h.document.getElementById("tourTitle").textContent, "Search and actions");
+  });
+
+  it("chord markup escapes a remapped label containing HTML", () => {
+    const h = makeHarness();
+    const realChordLabel = h.stepsApi.chordLabel;
+    h.context.window.HerdrTourSteps.chordLabel = () => '<img src=x> then <script>1</' + 'script>';
+    h.tour.start();
+    const findByClass = (node, cls) => {
+      for (const child of node.children || []) {
+        if (String(child.className || "").split(/\s+/).includes(cls)) return child;
+        const found = findByClass(child, cls);
+        if (found) return found;
+      }
+      return null;
+    };
+    const chord = findByClass(h.document.body, "tour-chord");
+    assert.ok(chord, "chord node exists");
+    assert.ok(!String(chord.innerHTML).includes("<img"), "img tag escaped");
+    assert.ok(String(chord.innerHTML).includes("&lt;img"), "entities present");
+    h.context.window.HerdrTourSteps.chordLabel = realChordLabel;
   });
 });

@@ -1216,8 +1216,17 @@ impl TuiApp {
         // must stay free to rewrite the line (create/close tab prove it).
         self.status_hold_until = None;
         let before = self.status.clone();
-        // The Ctrl+B prefix wins everywhere, including attach mode, exactly
-        // like the WebUI shortcut overlay wins over terminal input.
+        // The tour owns every key, including the prefix (webui tour.js
+        // captures before handleGlobalShortcut): no Ctrl+B, no lens, no
+        // leak into the app underneath.
+        if self.mode == TuiMode::Tour {
+            self.handle_tour_key(key);
+            self.hold_status_if_changed(&before);
+            self.mark_dirty();
+            return false;
+        }
+        // The Ctrl+B prefix wins everywhere else, including attach mode,
+        // exactly like the WebUI shortcut overlay wins over terminal input.
         if let Some(shortcut) = self.prefix.feed(key) {
             self.run_shortcut(shortcut);
             self.hold_status_if_changed(&before);
@@ -1251,11 +1260,8 @@ impl TuiApp {
             return false;
         }
         match self.mode {
-            TuiMode::Tour => {
-                // The tour overlay owns every key: no leak into navigation,
-                // attach, or the panels below.
-                self.handle_tour_key(key);
-            }
+            // Tour never reaches here: the guard above owns its keys.
+            TuiMode::Tour => {}
             TuiMode::Help => match key.code {
                 // Esc clears the filter first, then closes (webui settings
                 // search clears its box before dismissing the modal).
@@ -1271,7 +1277,6 @@ impl TuiApp {
                 // overlay stack keeps Help below, so closing the tour
                 // returns to this help overlay.
                 KeyCode::Char('T') => {
-                    self.close_help_overlay();
                     self.open_tour();
                 }
                 // Toggle close: ? always closes the overlay (it never

@@ -19,6 +19,10 @@ with the live UI as the prop.
 | WebUI | auto-starts ~600ms after boot when no prior record exists | Help modal, "Replay the tour" button |
 | TUI | no auto-start (auto-start is a webui localStorage behavior; the TUI has no persisted first-run store) | Help overlay, `T` key |
 
+The WebUI tour is desktop-only: the steps ship in the desktop bundle
+(`app_js/`), and the mobile bundle has no tour. The TUI covers terminal
+users.
+
 Persistence (WebUI only): `localStorage` key `herdr-web-tour-done`
 holds `done` when the last step is reached, `skipped` after an early
 exit. Both values suppress the auto-start; only the explicit replay
@@ -35,12 +39,13 @@ paths start it again. The `reset()` export clears the key.
    agents. Chord: `Ctrl+B a`.
 4. **Panels / main screen** - tab strips per pane. WebUI demo creates a
    terminal tab; TUI demo switches to the files screen. Chord: `Ctrl+B
-   f` (TUI) / panel chord (WebUI).
+   f` (TUI) / `Ctrl+B P` (WebUI new panel).
 5. **Terminal** - paste, scrollback, links. WebUI demo focuses the
    terminal; TUI demo returns to the terminal screen. Chord: `Ctrl+B t`.
 6. **Workspace views / sidebar collapse** - WebUI walks the right rail
    (files, git, search, notes); TUI collapses the sidebar column.
-   Chord: `Ctrl+B Shift+B` (TUI sidebar).
+   Chord: `Ctrl+B Shift+V` (WebUI right rail) / `Ctrl+B Shift+B`
+   (TUI sidebar).
 7. **Help overlay** - the full shortcut reference with a type-to-filter
    box. No demo (opening help over the tour card would hide it; the
    card explains the `?` chord instead). Chord: `Ctrl+B ?`.
@@ -48,19 +53,23 @@ paths start it again. The `reset()` export clears the key.
    runs a shortcut instead of reaching the terminal, `Esc` cancels. No
    chord; this step is the concept the other seven use.
 
-## Chords are resolved, never hardcoded
+## Chords are resolved from the shortcut maps
 
 Every chord label comes from the configured shortcut map at render
-time, so remapping a key in Settings (WebUI) or the keys config (TUI)
-changes the tour text with no code edits. Stale hardcoded chords were
-the main maintainability risk of a tour feature, and this design
-removes it.
+
+time, so remapping a key in Settings changes the WebUI tour text with
+no code edits. Stale hardcoded chords were the main maintainability
+risk of a tour feature; this design removes it on the WebUI.
 
 - WebUI: `tour_steps.js` stores chord *intent* (`["webuiShortcuts",
   "search"]`), and `chordLabel()` resolves it through
-  `shortcutMapFor`/`globalShortcutPrefixLabel` from `core.js`.
-- TUI: each step stores a `Shortcut` enum value, and
-  `shortcut_key_hint()` renders it behind the configured prefix label.
+  `shortcutMapFor`/`globalShortcutPrefixLabel` from `core.js`. Remap a
+  shortcut in Settings and the tour card follows.
+- TUI: each step stores a `Shortcut` enum value and renders through
+  `shortcut_key_hint()` behind `Ctrl+B`. The TUI prefix and key table
+  are code constants (`src/tui/keys.rs`), so a keys.rs change must
+  update `shortcut_key_hint()` in `src/tui/tour.rs` in the same commit;
+  the tour tests catch title/order drift, not chord drift.
 
 ## Demos run the real dispatch
 
@@ -113,9 +122,9 @@ to the pre-tour context.
 | 1 | search palette | `Ctrl+B /` | open palette |
 | 2 | workspaces | `Ctrl+B j` | move selection |
 | 3 | agents | `Ctrl+B a` | jump agent |
-| 4 | main screen / panels | `Ctrl+B f` | open files screen (TUI), new tab (WebUI) |
+| 4 | main screen / panels | `Ctrl+B f` (TUI) / `Ctrl+B P` (WebUI) | open files screen (TUI), new tab (WebUI) |
 | 5 | terminal | `Ctrl+B t` | return to terminal screen / focus terminal |
-| 6 | sidebar | `Ctrl+B Shift+B` | collapse sidebar / walk right rail |
+| 6 | sidebar | `Ctrl+B Shift+B` (TUI) / `Ctrl+B Shift+V` (WebUI) | collapse sidebar (TUI) / walk right rail (WebUI) |
 | 7 | help | `Ctrl+B ?` | none |
 | 8 | footer | none | none |
 
