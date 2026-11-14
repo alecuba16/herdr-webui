@@ -1,0 +1,125 @@
+/* Onboarding tour: dim layer with a cutout around the step target, plus
+   the step card. Card language follows the shortcut-prefix card and hint
+   toast (same border, radius, kbd chips) so the tour reads as part of
+   the shortcut system, not a foreign widget. */
+.tour-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1150;
+  display: none;
+}
+.tour-root[hidden] {
+  display: none;
+}
+.tour-spot {
+  position: absolute;
+  inset: 0;
+  background: #000a;
+  pointer-events: auto;
+}
+.tour-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 24px));
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.35);
+  padding: 14px 15px;
+  pointer-events: auto;
+}
+.tour-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.tour-step {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.tour-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.tour-body {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  margin: 0;
+}
+.tour-chord {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tour-chord:empty {
+  display: none;
+}
+.tour-chord-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.tour-chord kbd {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  font: 12px var(--mono-font);
+  padding: 3px 7px;
+}
+.tour-chord-arrow {
+  color: var(--muted);
+  font-size: 11px;
+}
+.tour-nav {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.tour-nav .btn[disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.tour-progress {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 0;
+  height: 4px;
+  margin: 2px 0 0;
+  width: 100%;
+}
+.tour-progress::-webkit-progress-bar {
+  background: var(--panel2);
+  border-radius: 99px;
+}
+.tour-progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 99px;
+}
+.tour-progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 99px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot {
+    transition: none;
+  }
+}
+/* Replay row in the Help modal: button plus one-line note, same rhythm as
+   the shortcut rows around it. */
+.help-tour-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+.help-tour-row .settings-note {
+  margin: 0;
+}

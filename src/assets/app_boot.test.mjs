@@ -20,6 +20,7 @@ const SHARED_STYLES = [
 const DESKTOP_STYLES = [
   "/assets/desktop/app.css",
   "/assets/desktop/shortcuts.css",
+  "/assets/desktop/tour.css",
   "/assets/desktop/search.css",
   "/assets/shared/file-tree.css",
   ...SHARED_STYLES,

@@ -9,6 +9,7 @@ pub mod split;
 mod split_mode;
 pub mod terminal;
 pub mod theme;
+pub mod tour;
 pub mod web_api;
 pub mod workspace;
 
@@ -118,6 +119,9 @@ impl TuiScreen {
 pub(crate) enum FooterContext {
     ConfirmQuit,
     HelpOverlay,
+    /// Onboarding tour overlay: j/Enter next step, k back, Esc closes
+    /// (tour.rs owns the full step table).
+    TourOverlay,
     SettingsOverlay,
     /// Worktree browser overlay: j/k or arrows move, Enter opens, Esc closes.
     WorktreeList,
@@ -171,6 +175,7 @@ impl FooterContext {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
+            Self::TourOverlay => " j/Enter next step · k back · Esc closes ",
             Self::SettingsOverlay => " t theme · Esc closes ",
             Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
             Self::BranchPicker => {
@@ -253,6 +258,7 @@ impl FooterContext {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
+            Self::TourOverlay => " j/Enter next step · k back · Esc closes ",
             Self::SettingsOverlay => " t theme · Esc closes ",
             Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
             Self::BranchPicker => " Enter switch/worktree · j/k moves · type filters or creates · Esc closes ",
@@ -505,6 +511,14 @@ pub struct TuiApp {
     /// help overlay opened from inside the worktree overlay must close
     /// back into that overlay, not out of the whole stack.
     pub(crate) overlay_stack: Vec<TuiMode>,
+    /// Onboarding tour state: current step index (tour.rs owns the step
+    /// table) and whether the last walk reached the end.
+    pub(crate) tour_index: usize,
+    pub(crate) tour_finished: bool,
+    /// Overlay the current step's demo opened (palette). The tour keeps
+    /// the key dispatch and renders this surface below its card, webui's
+    /// "palette open under the spotlight" behavior in a single-mode TUI.
+    pub(crate) tour_demo_overlay: Option<TuiMode>,
     dirty: bool,
 }
 
@@ -824,6 +838,9 @@ impl TuiApp {
             composer_drafts: std::collections::HashMap::new(),
             quit_prev_mode: TuiMode::Navigate,
             overlay_stack: Vec::new(),
+            tour_index: 0,
+            tour_finished: false,
+            tour_demo_overlay: None,
             dirty: true,
         }
     }
@@ -1158,6 +1175,7 @@ impl TuiApp {
         match self.mode {
             TuiMode::ConfirmQuit => return FooterContext::ConfirmQuit,
             TuiMode::Help => return FooterContext::HelpOverlay,
+            TuiMode::Tour => return FooterContext::TourOverlay,
             TuiMode::Settings => return FooterContext::SettingsOverlay,
             TuiMode::WorktreeList => return FooterContext::WorktreeList,
             TuiMode::BranchPicker => return FooterContext::BranchPicker,
@@ -1233,6 +1251,11 @@ impl TuiApp {
             return false;
         }
         match self.mode {
+            TuiMode::Tour => {
+                // The tour overlay owns every key: no leak into navigation,
+                // attach, or the panels below.
+                self.handle_tour_key(key);
+            }
             TuiMode::Help => match key.code {
                 // Esc clears the filter first, then closes (webui settings
                 // search clears its box before dismissing the modal).
@@ -1243,6 +1266,13 @@ impl TuiApp {
                     } else {
                         self.close_help_overlay();
                     }
+                }
+                // Tour replay (webui Help modal's Replay button): the
+                // overlay stack keeps Help below, so closing the tour
+                // returns to this help overlay.
+                KeyCode::Char('T') => {
+                    self.close_help_overlay();
+                    self.open_tour();
                 }
                 // Toggle close: ? always closes the overlay (it never
                 // appears in shortcut names or descriptions, so unlike q it

@@ -68,6 +68,7 @@ const DESKTOP_NOTES_CSS: &str = include_str!("assets/desktop/notes.css");
 const DESKTOP_FILE_BROWSER_CSS: &str = include_str!("assets/desktop/file_browser.css");
 const DESKTOP_DIRECTORY_PICKER_CSS: &str = include_str!("assets/desktop/directory_picker.css");
 const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css");
+const DESKTOP_TOUR_CSS: &str = include_str!("assets/desktop/tour.css");
 const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui/settings.js"),
     include_str!("assets/desktop/git_ui/primitives.js"),
@@ -109,6 +110,8 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/prompt_cards.js"),
     include_str!("assets/desktop/app_js/composer.js"),
     include_str!("assets/desktop/app_js/worktrees.js"),
+    include_str!("assets/desktop/app_js/tour_steps.js"),
+    include_str!("assets/desktop/app_js/tour.js"),
     include_str!("assets/desktop/app_js/shortcuts.js"),
     include_str!("assets/desktop/app_js/workspace_create.js"),
     include_str!("assets/desktop/lsp_settings.js"),
@@ -543,6 +546,10 @@ pub(crate) async fn desktop_directory_picker_css(headers: HeaderMap) -> Response
 
 pub(crate) async fn desktop_shortcuts_css(headers: HeaderMap) -> Response {
     static_text(&headers, DESKTOP_SHORTCUTS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn desktop_tour_css(headers: HeaderMap) -> Response {
+    static_text(&headers, DESKTOP_TOUR_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn mobile_js(headers: HeaderMap) -> Response {

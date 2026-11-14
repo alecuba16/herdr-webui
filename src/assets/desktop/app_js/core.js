@@ -846,6 +846,7 @@ function helpAndShortcutsBodyHtml() {
           </div>
         </section>
         <div id="shortcutEditor"></div>
+        <div class="help-tour-row"><button type="button" class="btn" id="helpTourButton" onclick="window.HerdrOnboardingTour && window.HerdrOnboardingTour.start()">Replay the tour</button><span class="settings-note">Walk the main areas again with their shortcuts.</span></div>
         <h3 class="shortcut-section-title">Keyboard shortcuts</h3>
         <div class="shortcuts-list">
           <div class="shortcut-row"><kbd id="closeShortcutCurrent">Disabled</kbd><span>Close current Herdr panel. Configure in Settings.</span></div>

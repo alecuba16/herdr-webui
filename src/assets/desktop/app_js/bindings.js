@@ -1220,3 +1220,12 @@ loadVersions();
 loadServerSettings();
 refresh();
 connectEvents();
+// First visit in this browser starts the onboarding tour once the first
+// layout lands. The tour module itself persists done/skipped state, so a
+// reload or an explicit skip never replays it; the Help modal's Replay
+// button restarts it on demand.
+if (window.HerdrOnboardingTour && !window.HerdrOnboardingTour.isDone()) {
+  setTimeout(() => {
+    if (!window.HerdrOnboardingTour.isDone()) window.HerdrOnboardingTour.start();
+  }, 600);
+}

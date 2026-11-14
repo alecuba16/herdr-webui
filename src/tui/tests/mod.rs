@@ -941,7 +941,7 @@ fn fixture_snapshot_value_with_tabs() -> serde_json::Value {
     })
 }
 
-fn app_with_snapshot() -> TuiApp {
+pub(crate) fn app_with_snapshot() -> TuiApp {
     // NOTE: tests must NEVER wire `builtin_session(None)` into an app that
     // dispatches mutating shortcuts: that points at the real user backend
     // (the live herdr.sock in ~/.config/herdr-webui/builtin/default), so a

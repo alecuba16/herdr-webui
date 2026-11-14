@@ -60,13 +60,13 @@ use assets::{
     app_boot_js, app_html, desktop_css, desktop_directory_picker_css, desktop_directory_picker_js,
     desktop_file_browser_css, desktop_file_browser_js, desktop_git_ui_css, desktop_git_ui_js,
     desktop_js, desktop_modal_drag_js, desktop_notes_css, desktop_notes_js, desktop_search_css,
-    desktop_search_js, desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg,
-    favicon_svg, icon_chevron_down_svg, icon_chevron_right_svg, icon_clock_svg, icon_columns_svg,
-    icon_copy_svg, icon_eye_off_svg, icon_eye_svg, icon_file_svg, icon_folder_svg,
-    icon_folder_up_svg, icon_git_svg, icon_help_svg, icon_link_svg, icon_lock_open_svg,
-    icon_lock_svg, icon_pencil_svg, icon_refresh_svg, icon_save_svg, icon_search_svg,
-    icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg, icon_x_svg,
-    jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_actions_js,
+    desktop_search_js, desktop_shortcuts_css, desktop_tour_css, favicon_attention_svg,
+    favicon_error_svg, favicon_svg, icon_chevron_down_svg, icon_chevron_right_svg, icon_clock_svg,
+    icon_columns_svg, icon_copy_svg, icon_eye_off_svg, icon_eye_svg, icon_file_svg,
+    icon_folder_svg, icon_folder_up_svg, icon_git_svg, icon_help_svg, icon_link_svg,
+    icon_lock_open_svg, icon_lock_svg, icon_pencil_svg, icon_refresh_svg, icon_save_svg,
+    icon_search_svg, icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg,
+    icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_actions_js,
     mobile_attention_js, mobile_backend_js, mobile_composer_js, mobile_core_js, mobile_css,
     mobile_directory_picker_js, mobile_events_js, mobile_file_browser_js, mobile_git_js, mobile_js,
     mobile_lens_js, mobile_notes_js, mobile_panels_js, mobile_screens_js, mobile_search_js,
@@ -1502,6 +1502,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/desktop/search.css", get(desktop_search_css))
         .route("/assets/desktop/notes.css", get(desktop_notes_css))
         .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
+        .route("/assets/desktop/tour.css", get(desktop_tour_css))
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
         .route("/assets/shared/http.js", get(shared_http_js))
