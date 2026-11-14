@@ -4661,6 +4661,11 @@ pub(crate) mod prompt_action_tests {
                 {
                     json!({"entries": [], "tree": {"name": "repo", "path": "/repo",
                         "dirs": [], "files": []}})
+                } else if target.contains("/api/git-ui/branches") {
+                    json!({"branches": [
+                        {"name": "feat", "current": false, "remote": false,
+                         "pushed": false, "worktree_path": null}
+                    ]})
                 } else {
                     json!({"ok": true})
                 };
@@ -5051,7 +5056,7 @@ mod key_handler_tests {
     use panels::files::content_search::{ContentSearchChunk, ContentSearchFile, ContentSearchRow};
     use panels::files::SearchKind;
 
-    fn key(code: KeyCode) -> KeyEvent {
+    pub(crate) fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
@@ -5242,5 +5247,383 @@ mod key_handler_tests {
         assert!(app.mode == TuiMode::Help);
         app.handle_navigation_key(key(KeyCode::Esc));
         assert!(app.mode != TuiMode::Help);
+    }
+}
+
+#[cfg(test)]
+mod git_key_tests {
+    use super::key_handler_tests::key;
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::KeyCode;
+    use panels::git::{
+        CleanupItem, CleanupItemKind, CleanupRepo, CleanupWorktree, ConflictAction,
+        ConflictResolveMode, GitBranchEntry, GitCommitEntry, GitStashEntry, GitView,
+    };
+
+    fn commit(hash: &str) -> GitCommitEntry {
+        GitCommitEntry {
+            hash: hash.into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }
+    }
+
+    fn git_app(failures: &[&str]) -> (TuiApp, std::sync::mpsc::Sender<()>) {
+        let (api, stop) = fake_api_server(failures);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.mode = TuiMode::Navigate;
+        (app, stop)
+    }
+
+    #[test]
+    fn git_tab_cycles_views_and_diff_search_keys() {
+        let (mut app, _stop) = git_app(&[]);
+        // Tab walks the view ring all the way around.
+        for view in [
+            GitView::Log,
+            GitView::Branches,
+            GitView::Stash,
+            GitView::History,
+            GitView::Conflicts,
+            GitView::Cleanup,
+            GitView::Changes,
+        ] {
+            app.handle_git_key(key(KeyCode::Tab));
+            assert_eq!(app.git_panel.view, view, "tab cycle");
+        }
+        // `/` opens the diff search, n/N walk it, Esc cancels once
+        // matches exist.
+        app.git_panel.view = GitView::Changes;
+        app.git_panel.diff_lines = vec!["+ match here".into()];
+        app.git_panel.diff_search_matches = vec![0];
+        app.handle_git_key(key(KeyCode::Esc));
+        assert!(
+            app.git_panel.diff_search_matches.is_empty(),
+            "esc clears committed search"
+        );
+        app.handle_git_key(key(KeyCode::Char('/')));
+        assert_eq!(
+            app.status,
+            "diff search: type to match, n/N cycle, Esc closes"
+        );
+        // While the bar is open every printable key types into it and
+        // the status reports the live match count.
+        app.handle_git_key(key(KeyCode::Char('m')));
+        assert_eq!(app.status, "diff search: m (1 matches)");
+        // Enter commits the query; n/N cycle the kept matches.
+        app.handle_git_key(key(KeyCode::Enter));
+        app.handle_git_key(key(KeyCode::Char('n')));
+        assert!(app.status.ends_with("(1 matches)"));
+        app.handle_git_key(key(KeyCode::Char('N')));
+        assert!(app.status.ends_with("(1 matches)"));
+        // Esc closes and forgets; with no matches left n/N report it.
+        app.handle_git_key(key(KeyCode::Esc));
+        // With the bar closed and no matches kept, n/N report it.
+        app.handle_git_key(key(KeyCode::Char('n')));
+        assert_eq!(app.status, "no diff search matches");
+        app.handle_git_key(key(KeyCode::Char('N')));
+        assert_eq!(app.status, "no diff search matches");
+        // J/K without hunks report it.
+        app.handle_git_key(key(KeyCode::Char('J')));
+        assert_eq!(app.status, "no hunks in the loaded diff");
+        app.handle_git_key(key(KeyCode::Char('K')));
+        assert_eq!(app.status, "no hunks in the loaded diff");
+    }
+
+    #[test]
+    fn git_log_keys_select_compare_and_prompt() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Log;
+        app.git_panel.commits = vec![commit("aaa"), commit("bbb")];
+        // Space marks commits; `c` compares the selected pair.
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.git_panel.log_selected, vec!["aaa"]);
+        app.handle_git_key(key(KeyCode::Char('j')));
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.git_panel.log_selected.len(), 2);
+        app.handle_git_key(key(KeyCode::Char('c')));
+        assert_eq!(app.status, "compare loaded");
+        // t/R/b open the tag/reset/rebase prompts on the selection.
+        app.handle_git_key(key(KeyCode::Char('t')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::CreateTag)
+        ));
+        app.handle_git_key(key(KeyCode::Char('R')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ResetMode)
+        ));
+        app.handle_git_key(key(KeyCode::Char('b')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::RebaseUpstream)
+        ));
+        // w opens the worktree creation prompt chain.
+        app.handle_git_key(key(KeyCode::Char('w')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::CreateWorktreeBranch)
+        ));
+        // Enter compares the selected commit with its parent.
+        app.prompt_input = None;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "compare bbb^..bbb");
+        // s cycles the log scope; `+` loads more until refused.
+        app.handle_git_key(key(KeyCode::Char('s')));
+        assert!(app.status.starts_with("log scope: "));
+        app.git_panel.log_has_more = true;
+        app.handle_git_key(key(KeyCode::Char('+')));
+        assert!(app.status.starts_with("log limit: "));
+        // Without a selection, t/R/b and Space refuse.
+        app.git_panel.commits.clear();
+        app.handle_git_key(key(KeyCode::Char('t')));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    }
+
+    #[test]
+    fn git_actions_stage_discard_fetch_pull_push_commit() {
+        let (mut app, _stop) = git_app(&[]);
+        // c opens the commit modal, a the amend modal outside stash.
+        app.handle_git_key(key(KeyCode::Char('c')));
+        let input = app.commit_input.expect("commit modal");
+        assert!(!input.amend);
+        app.commit_input = None;
+        app.handle_git_key(key(KeyCode::Char('a')));
+        assert!(app.commit_input.expect("amend modal").amend);
+        app.commit_input = None;
+        // Stage/discard/fetch/pull/push succeed against the looping
+        // fake (stage and discard need a selected file).
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: panels::git::GitFileStatus::Unstaged,
+        }];
+        for ch in ['s', 'd', 'f', 'p', 'P', 'G'] {
+            app.error = None;
+            // Each mutating verb's refresh wipes the file list, so
+            // re-seed the selection before every key.
+            app.git_panel.files = vec![panels::git::GitFileEntry {
+                path: "a.rs".into(),
+                status: panels::git::GitFileStatus::Unstaged,
+            }];
+            app.git_panel.file_selected = 0;
+            app.handle_git_key(key(KeyCode::Char(ch)));
+            assert!(app.error.is_none(), "{ch} failed: {:?}", app.error);
+        }
+        // Every git verb fails against the dead server.
+        let (mut app, _stop) = git_app(&["/git-ui/"]);
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: panels::git::GitFileStatus::Unstaged,
+        }];
+        for ch in ['s', 'd', 'f', 'p', 'P', 'G', 'H'] {
+            app.error = None;
+            // The failing verb's own refresh also wipes the list.
+            app.git_panel.files = vec![panels::git::GitFileEntry {
+                path: "a.rs".into(),
+                status: panels::git::GitFileStatus::Unstaged,
+            }];
+            app.git_panel.file_selected = 0;
+            app.handle_git_key(key(KeyCode::Char(ch)));
+            assert!(app.error.is_some(), "{ch} should fail: {:?}", app.error);
+        }
+        // Discard under a dirty matching preview refuses instead.
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Changes;
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: panels::git::GitFileStatus::Unstaged,
+        }];
+        app.file_explorer.preview.dirty = true;
+        app.file_explorer.preview.path = Some("a.rs".into());
+        app.handle_git_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            app.error.as_deref(),
+            Some("unsaved edits: save or reload before discarding this file")
+        );
+    }
+
+    #[test]
+    fn git_branch_and_stash_keys_cover_all_guards() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Branches;
+        app.git_panel.branches = vec![GitBranchEntry {
+            name: "main".into(),
+            current: true,
+            remote: false,
+            pushed: true,
+            worktree_path: None,
+        }];
+        // Current branch cannot be deleted.
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert_eq!(
+            app.error.as_deref(),
+            Some("cannot delete the current branch")
+        );
+        // A non-current branch opens the confirm prompt.
+        app.git_panel.branches.push(GitBranchEntry {
+            name: "feat".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        });
+        app.git_panel.branch_selected = 1;
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmDeleteBranch)
+        ));
+        app.prompt_input = None;
+        // No selection refuses.
+        app.git_panel.branches.clear();
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert_eq!(app.error.as_deref(), Some("no branch selected"));
+        // `c` in Branches prompts for a new branch.
+        app.handle_git_key(key(KeyCode::Char('c')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::CreateBranch)
+        ));
+        app.prompt_input = None;
+        // Enter switches the selected branch (fake accepts).
+        app.git_panel.branches = vec![GitBranchEntry {
+            name: "feat".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.git_panel.branch_selected = 0;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "switched to feat");
+        // Stash view: Enter loads a diff, a applies, D guards.
+        app.git_panel.view = GitView::Stash;
+        app.git_panel.stashes = vec![GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "stash diff loaded");
+        app.handle_git_key(key(KeyCode::Char('a')));
+        assert_eq!(app.status, "stash applied");
+        // The apply's refresh wiped the stash list; re-seed for D.
+        app.git_panel.stashes = vec![GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmDropStash)
+        ));
+        app.prompt_input = None;
+        app.git_panel.stashes.clear();
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert_eq!(app.error.as_deref(), Some("no stash selected"));
+    }
+
+    #[test]
+    fn git_conflicts_and_cleanup_keys() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Conflicts;
+        // o/e/t/m resolve through the fake server. The refresh after
+        // each resolve wipes the conflict list, so re-seed per key.
+        for (ch, expected) in [
+            ('o', "resolved with HEAD"),
+            ('e', "resolved with parent"),
+            ('t', "resolved with remote"),
+            ('m', "marked resolved"),
+        ] {
+            app.git_panel.conflict_files = vec!["a.rs".into()];
+            app.handle_git_key(key(KeyCode::Char(ch)));
+            assert_eq!(app.status, expected, "{ch} resolve");
+        }
+        // R/S/A continue/skip/abort the in-flight operation.
+        app.git_panel.rebase_in_progress = true;
+        app.handle_git_key(key(KeyCode::Char('R')));
+        assert_eq!(app.status, "operation continued");
+        app.handle_git_key(key(KeyCode::Char('S')));
+        assert_eq!(app.status, "rebase commit skipped");
+        app.handle_git_key(key(KeyCode::Char('A')));
+        assert_eq!(app.status, "operation aborted");
+        // Without conflicts the resolve keys surface the error.
+        app.git_panel.conflict_files.clear();
+        app.handle_git_key(key(KeyCode::Char('o')));
+        assert!(app.error.is_some());
+
+        // Cleanup view: Space marks, x guards without selection, B prunes.
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Cleanup;
+        app.git_panel.cleanup_repos = vec![CleanupRepo {
+            path: "/repo".into(),
+            branches: vec![],
+            worktrees: vec![CleanupWorktree {
+                path: "/lane".into(),
+                branch: Some("feat".into()),
+            }],
+        }];
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.status, "marked 1 item(s)");
+        app.handle_git_key(key(KeyCode::Char('x')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmCleanupDelete)
+        ));
+        app.prompt_input = None;
+        app.git_panel.cleanup_repos.clear();
+        app.handle_git_key(key(KeyCode::Char('x')));
+        assert_eq!(app.error.as_deref(), Some("no cleanup item selected"));
+        app.git_panel.cleanup_repos = vec![CleanupRepo {
+            path: "/repo".into(),
+            branches: vec!["feat".into()],
+            worktrees: vec![],
+        }];
+        app.handle_git_key(key(KeyCode::Char('B')));
+        assert_eq!(app.status, "worktrees pruned");
+        // ? opens help from any git view.
+        app.handle_git_key(key(KeyCode::Char('?')));
+        assert_eq!(app.mode, TuiMode::Help);
+    }
+
+    #[test]
+    fn git_history_enter_loads_commit_diff() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::History;
+        app.git_panel.history_file = Some("a.rs".into());
+        app.git_panel.commits = vec![commit("abc")];
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "commit abc · a.rs");
+        app.git_panel.commits.clear();
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    }
+
+    #[test]
+    fn git_changes_enter_refreshes_diff() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Changes;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert!(app.error.is_none());
+        let (mut app, _stop) = git_app(&["/diff"]);
+        app.git_panel.view = GitView::Changes;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert!(app.error.is_some());
+        let _ = CleanupItem {
+            repo: String::new(),
+            name: String::new(),
+            kind: CleanupItemKind::Branch,
+            branch: None,
+            current: false,
+        };
+        let _ = (ConflictAction::MergeContinue, ConflictResolveMode::Ours);
     }
 }
