@@ -6389,7 +6389,8 @@ mod batch11_coverage_tests {
         // Conflicts: the four resolve modes plus merge-flavored R/A
         // with rebase_in_progress false.
         let mut app = super::prompt_action_tests::app_with_api(
-            super::prompt_action_tests::fake_api_server(&["/conflict-resolve"]).0,
+            super::prompt_action_tests::fake_api_server(&["/conflict-resolve", "/conflict-action"])
+                .0,
         );
         app.screen = TuiScreen::Git;
         app.git_panel.view = GitView::Conflicts;
