@@ -6181,3 +6181,183 @@ mod misc_coverage_tests {
         assert!(app.should_quit());
     }
 }
+
+#[cfg(test)]
+mod final_coverage_tests {
+    use super::key_handler_tests::key;
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use panels::git::{GitView, LOG_PAGE_SIZE};
+
+    #[test]
+    fn content_search_enter_error_arm_and_attach_viewport() {
+        // Enter on a line row whose preview open fails surfaces the
+        // error instead of a jump status.
+        let (api, _stop) = fake_api_server(&["/file-browser/file"]);
+        let mut app = app_with_api(api);
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = panels::files::SearchKind::Content;
+        app.file_explorer.filter = "m".into();
+        app.file_explorer.content_search.query = "m".into();
+        app.file_explorer.content_search.files =
+            vec![panels::files::content_search::ContentSearchFile {
+                path: "a.rs".into(),
+                name: "a.rs".into(),
+                match_count: 1,
+                chunks: vec![panels::files::content_search::ContentSearchChunk {
+                    start: 1,
+                    end: 1,
+                    rows: vec![panels::files::content_search::ContentSearchRow {
+                        line: 1,
+                        text: "m".into(),
+                        matched: true,
+                    }],
+                }],
+                truncated: false,
+                first_match_line: 1,
+            }];
+        app.file_explorer.content_search.expanded = vec![true];
+        // Walk down to the line row and Enter: the refused read errors.
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(app.error.is_some());
+        // Enter past the end of the rows is a no-op.
+        app.error = None;
+        app.file_explorer.content_search.selected = 9;
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(app.error.is_none());
+
+        // attach_viewport: split geometry for the focused tile, then
+        // the terminal-size fallback and the 120x32 default.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.tile_geometry
+            .borrow_mut()
+            .push(crate::tui::render::TileRectOwned {
+                pane_id: "pane_1".into(),
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24,
+            });
+        // Two leaves make split_active true; the focused pane matches
+        // the seeded tile geometry.
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_1".into());
+        let (cols, rows) = app.attach_viewport();
+        assert_eq!((cols, rows), (78, 19));
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        app.terminal_size = (100, 40);
+        let (cols, rows) = app.attach_viewport();
+        assert_eq!((cols, rows), (64, 33));
+        app.terminal_size = (0, 0);
+        assert_eq!(app.attach_viewport(), (120, 32));
+    }
+
+    #[test]
+    fn diff_search_typing_and_hunk_walk_and_apply() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Changes;
+        // Bar open: typing, backspace, Enter commit, n/N cycle.
+        app.git_panel.diff_lines = vec!["+ alpha".into(), "- beta".into()];
+        app.git_panel.diff_search_active = true;
+        app.handle_git_key(key(KeyCode::Char('a')));
+        assert!(app.status.starts_with("diff search: a (2 matches)"));
+        app.handle_git_key(key(KeyCode::Backspace));
+        assert!(app.status.starts_with("diff search:  (0 matches)"));
+        app.handle_git_key(key(KeyCode::Char('b')));
+        app.handle_git_key(key(KeyCode::Enter));
+        app.handle_git_key(key(KeyCode::Char('n')));
+        // Hunks: J/K walk a loaded diff, H applies through the fake.
+        app.git_panel.diff_search_active = false;
+        app.git_panel.diff_title = "a.rs".into();
+        app.git_panel.diff_lines = vec![
+            "@@ -1,2 +1,3 @@".into(),
+            " context".into(),
+            "+ added".into(),
+        ];
+        // hunk_headers reads diff_meta: header lines carry None.
+        app.git_panel.diff_meta = vec![None, Some(Default::default()), Some(Default::default())];
+        app.handle_git_key(key(KeyCode::Char('J')));
+        assert_eq!(app.status, "hunk 1");
+        app.handle_git_key(key(KeyCode::Char('K')));
+        assert_eq!(app.status, "hunk 1");
+        app.handle_git_key(key(KeyCode::Char('H')));
+        assert!(app.error.is_none(), "hunk apply failed: {:?}", app.error);
+        // H with no file loaded refuses.
+        app.git_panel.diff_title = "working tree".into();
+        app.handle_git_key(key(KeyCode::Char('H')));
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn log_scope_and_limit_refusals() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Log;
+        // `+` with nothing more reports no more commits.
+        app.git_panel.log_has_more = false;
+        app.handle_git_key(key(KeyCode::Char('+')));
+        assert_eq!(app.status, "no more commits");
+        // Scope cycling refreshes and reports the label.
+        app.handle_git_key(key(KeyCode::Char('s')));
+        assert!(app.status.starts_with("log scope: "));
+        assert!(app.git_panel.log_limit >= LOG_PAGE_SIZE);
+    }
+
+    #[test]
+    fn workspace_shortcuts_route_manager_and_panel_ops() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.run_shortcut(Shortcut::NewWorkspace);
+        app.run_shortcut(Shortcut::OpenWorktrees);
+        app.run_shortcut(Shortcut::CreateWorktree);
+        app.run_shortcut(Shortcut::CloseWorkspace);
+        app.run_shortcut(Shortcut::RemoveWorktree);
+        app.run_shortcut(Shortcut::RenamePanel);
+        app.run_shortcut(Shortcut::RenameWorkspace);
+        app.run_shortcut(Shortcut::NextPanel);
+        app.run_shortcut(Shortcut::PrevPanel);
+        app.run_shortcut(Shortcut::NextWorkspace);
+        app.run_shortcut(Shortcut::PrevWorkspace);
+        app.run_shortcut(Shortcut::NewTab);
+        app.run_shortcut(Shortcut::CloseTab);
+        app.run_shortcut(Shortcut::Search);
+        app.run_shortcut(Shortcut::Refresh);
+        // Ctrl+S in the settings overlay: route a save chord through
+        // the palette-free path just to confirm no panic.
+        app.run_shortcut(Shortcut::GitCwdPicker);
+        // All shortcuts ran without panicking; their status/error
+        // text is flow-dependent, so no exact assertion here.
+    }
+
+    #[test]
+    fn terminal_attach_keys_send_and_detach() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Attach;
+        // Plain char keys map to terminal bytes; the dead backend
+        // socket surfaces the attach failure in dispatch, but the
+        // key-to-bytes mapping must still resolve.
+        let bytes = key_to_terminal_bytes(key(KeyCode::Char('x')));
+        assert_eq!(bytes, Some("x".as_bytes().to_vec()));
+        let esc = key_to_terminal_bytes(key(KeyCode::Esc));
+        assert_eq!(esc, Some(b"\x1b".to_vec()));
+        // Ctrl-G routes through handle_key and detaches.
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_ne!(app.mode, TuiMode::Attach);
+    }
+}
