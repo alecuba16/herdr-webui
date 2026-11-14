@@ -11038,9 +11038,7 @@ fn sessions_list_response() -> serde_json::Value {
 fn session_rows_handler(_method: String, path: String) -> serde_json::Value {
     if path.starts_with("/api/sessions") {
         sessions_list_response()
-    } else if path.starts_with("/api/session/launch")
-        || path.starts_with("/api/session/close")
-    {
+    } else if path.starts_with("/api/session/launch") || path.starts_with("/api/session/close") {
         json!({"ok": true})
     } else if path.starts_with("/api/session/cleanup") {
         json!({"removed_count": 2})

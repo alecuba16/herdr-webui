@@ -707,6 +707,13 @@ mod tests {
             Shortcut::FocusPrev,
             Shortcut::Lens,
             Shortcut::Composer,
+            Shortcut::GitStageAll,
+            Shortcut::GitFocusFile,
+            Shortcut::SessionManager,
+            Shortcut::SplitPane,
+            Shortcut::MovePane,
+            Shortcut::ZoomPane,
+            Shortcut::ResizePane,
         ] {
             assert!(!shortcut.label().is_empty());
         }

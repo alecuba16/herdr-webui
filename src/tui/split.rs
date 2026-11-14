@@ -954,3 +954,146 @@ mod tests {
         assert_eq!(weights, &[8, 8]);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn leaf(id: &str) -> SplitNode {
+        SplitNode::leaf(id)
+    }
+
+    #[test]
+    fn split_dir_default_side_maps_rows_and_columns() {
+        assert_eq!(SplitDir::Row.default_side(), Side::Right);
+        assert_eq!(SplitDir::Col.default_side(), Side::Below);
+    }
+
+    #[test]
+    fn side_opposite_flips_every_edge() {
+        assert_eq!(Side::Right.opposite(), Side::Left);
+        assert_eq!(Side::Left.opposite(), Side::Right);
+        assert_eq!(Side::Below.opposite(), Side::Above);
+        assert_eq!(Side::Above.opposite(), Side::Below);
+    }
+
+    #[test]
+    fn insert_left_and_above_into_a_same_direction_split_join_it() {
+        // Left into a row split: newcomer lands before the neighbor,
+        // seeded at its weight, split shape kept.
+        let tree = SplitNode::weighted(SplitDir::Row, vec![leaf("p1"), leaf("p2")], vec![6, 10]);
+        let next = insert_beside(&tree, "p1", "p3", Side::Left);
+        assert_eq!(next.leaves(), vec!["p3", "p1", "p2"]);
+        let SplitNode::Split { dir, weights, .. } = next else {
+            panic!("insert keeps split");
+        };
+        assert_eq!(dir, SplitDir::Row);
+        assert_eq!(weights, &[6, 6, 10]);
+
+        // Above into a col split: same shape, vertical order.
+        let tree = SplitNode::weighted(SplitDir::Col, vec![leaf("p1"), leaf("p2")], vec![4, 4]);
+        let next = insert_beside(&tree, "p2", "p3", Side::Above);
+        assert_eq!(next.leaves(), vec!["p1", "p3", "p2"]);
+        let SplitNode::Split { dir, .. } = next else {
+            panic!("insert keeps split");
+        };
+        assert_eq!(dir, SplitDir::Col);
+    }
+
+    #[test]
+    fn node_pane_returns_none_for_splits() {
+        let tree = SplitNode::split(SplitDir::Row, vec![leaf("p1"), leaf("p2")]);
+        assert_eq!(node_pane(&tree), None);
+        let lone = leaf("p1");
+        assert_eq!(node_pane(&lone), Some("p1"));
+    }
+
+    #[test]
+    fn apply_resize_path_guards_reject_short_and_out_of_range_paths() {
+        let mut tree = SplitNode::weighted(SplitDir::Row, vec![leaf("p1"), leaf("p2")], vec![8, 8]);
+        // A leaf root: the split destructure fails, nothing happens.
+        let mut lone = leaf("p1");
+        apply_resize_path(&mut lone, &[0, 1], 2);
+        assert_eq!(lone, leaf("p1"));
+
+        // Path of length 1 and 0 are refused.
+        apply_resize_path(&mut tree, &[0], 2);
+        apply_resize_path(&mut tree, &[], 2);
+        let SplitNode::Split { weights, .. } = &tree else {
+            panic!("tree stays a split");
+        };
+        assert_eq!(weights, &[8, 8]);
+
+        // Slots beyond the weights length are refused.
+        apply_resize_path(&mut tree, &[5, 6], 2);
+        let SplitNode::Split { weights, .. } = &tree else {
+            panic!("tree stays a split");
+        };
+        assert_eq!(weights, &[8, 8]);
+
+        // A path through a missing child is refused.
+        apply_resize_path(&mut tree, &[9, 0, 1], 2);
+        let SplitNode::Split { weights, .. } = &tree else {
+            panic!("tree stays a split");
+        };
+        assert_eq!(weights, &[8, 8]);
+    }
+
+    #[test]
+    fn apply_resize_path_walks_deeper_levels() {
+        let mut tree = SplitNode::split(
+            SplitDir::Row,
+            vec![
+                SplitNode::weighted(SplitDir::Col, vec![leaf("p1"), leaf("p2")], vec![8, 8]),
+                leaf("p3"),
+            ],
+        );
+        apply_resize_path(&mut tree, &[0, 1, 0], 2);
+        let SplitNode::Split { children, .. } = &tree else {
+            panic!("root keeps split");
+        };
+        let SplitNode::Split { weights, .. } = &children[0] else {
+            panic!("child keeps split");
+        };
+        assert_eq!(weights, &[6, 10]);
+    }
+
+    #[test]
+    fn find_resize_path_refuses_perpendicular_side_families() {
+        // Asking for a Row-axis divider with an Above/Below side (and
+        // vice versa) is a type mismatch the path builder rejects.
+        let row = SplitNode::split(SplitDir::Row, vec![leaf("p1"), leaf("p2")]);
+        assert_eq!(
+            find_resize_path(&row, "p1", SplitDir::Row, Side::Above),
+            None
+        );
+        assert_eq!(
+            find_resize_path(&row, "p1", SplitDir::Row, Side::Below),
+            None
+        );
+        let col = SplitNode::split(SplitDir::Col, vec![leaf("p1"), leaf("p2")]);
+        assert_eq!(
+            find_resize_path(&col, "p1", SplitDir::Col, Side::Left),
+            None
+        );
+        assert_eq!(
+            find_resize_path(&col, "p1", SplitDir::Col, Side::Right),
+            None
+        );
+        // A leaf has no divider at all.
+        assert_eq!(
+            find_resize_path(&leaf("p1"), "p1", SplitDir::Row, Side::Right),
+            None
+        );
+        // A pane not in the tree finds nothing.
+        assert_eq!(
+            find_resize_path(&row, "gone", SplitDir::Row, Side::Right),
+            None
+        );
+        // Outer boundary: p1 asking Left finds no sibling.
+        assert_eq!(
+            find_resize_path(&row, "p1", SplitDir::Row, Side::Left),
+            None
+        );
+    }
+}
