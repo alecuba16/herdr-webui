@@ -851,3 +851,17 @@ mod coverage_tests {
         assert_eq!(explorer.selected, 2);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+
+    #[test]
+    fn create_directory_requires_a_name() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = FileExplorer::new("/repo");
+        // Empty name: guard fires before the api call.
+        let err = explorer.create_directory(&api, "  ").unwrap_err();
+        assert!(err.to_string().contains("directory name is required"));
+    }
+}

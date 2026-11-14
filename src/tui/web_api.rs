@@ -2551,3 +2551,24 @@ mod coverage_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_socket {
+    use super::*;
+
+    #[test]
+    fn socket_transport_dispatches_git_verbs_over_the_backend_socket() {
+        // Socket transport: git/file verbs dispatch to the backend
+        // control socket instead of HTTP. A nonexistent socket path
+        // fails without ever touching a TCP port.
+        let client = WebApiClient::from_backend_socket("/nonexistent-tui-cov.sock");
+        assert!(client.is_socket_transport());
+        let err = client.git_status("/repo").unwrap_err();
+        match err {
+            WebApiError::Api(message) => {
+                assert!(!message.is_empty(), "socket failure maps to Api error");
+            }
+            other => panic!("expected Api error from the socket path, got {other:?}"),
+        }
+    }
+}

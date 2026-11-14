@@ -2196,3 +2196,48 @@ fn git_conflicts_and_cleanup_views_move_their_cursors() {
     panel.move_selection(-1);
     assert_eq!(panel.cleanup_selected, 0);
 }
+
+#[test]
+fn cleanup_toggle_mark_flips_the_cursor_item_and_ignores_missing_selection() {
+    let mut panel = GitPanel::new("/repo");
+    // Nothing loaded: the toggle is a silent no-op.
+    panel.cleanup_toggle_mark();
+    assert!(panel.cleanup_marked.is_empty());
+
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["one".into()],
+        worktrees: vec![],
+    }];
+    panel.cleanup_toggle_mark();
+    assert_eq!(panel.cleanup_marked.len(), 1, "item marked");
+    panel.cleanup_toggle_mark();
+    assert!(panel.cleanup_marked.is_empty(), "toggled back off");
+}
+
+#[test]
+fn cleanup_delete_guards_empty_selection_and_reports_branch_too_failures() {
+    let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+    let mut panel = GitPanel::new("/repo");
+    // No items at all: the empty guard fires before any api call.
+    let err = panel.cleanup_delete_selected(&api, false).unwrap_err();
+    assert!(err.to_string().contains("no cleanup item selected"));
+
+    // A worktree with a branch, delete-branch-too: the branch item is
+    // attempted after the (dead) worktree delete fails.
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec![],
+        worktrees: vec![CleanupWorktree {
+            path: "/repo-wt".to_string(),
+            branch: Some("feature".into()),
+        }],
+    }];
+    panel.cleanup_selected = 0;
+    let deleted = panel.cleanup_delete_selected(&api, true).unwrap();
+    assert_eq!(deleted, 0, "dead api deletes nothing");
+    assert!(
+        !panel.cleanup_failures.is_empty(),
+        "worktree and branch failures are collected"
+    );
+}

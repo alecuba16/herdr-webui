@@ -367,3 +367,18 @@ mod coverage_tests {
         assert_eq!(comparison.label(), "trunk ↑7 ↓0");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+
+    #[test]
+    fn log_compare_parent_titles_with_and_without_a_scoped_file() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        // Dead endpoint: the compare verb runs and fails. Both calls
+        // exercise the request build with log_file unset and set.
+        assert!(panel.log_compare_parent(&api, "abc123").is_err());
+        panel.log_file = Some("src/main.rs".into());
+        assert!(panel.log_compare_parent(&api, "abc123").is_err());
+    }
+}

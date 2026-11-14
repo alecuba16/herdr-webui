@@ -266,3 +266,18 @@ mod coverage_tests {
         assert_eq!(ranges, vec![(1, 2), (3, 4)]);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::find_ranges;
+
+    #[test]
+    fn find_ranges_stops_at_the_match_cap() {
+        // 10001 single-char matches: the range vec stops at the
+        // 10000 cap instead of scanning the whole text.
+        let text = "a".repeat(10001);
+        let ranges = find_ranges(&text, "a", false, false);
+        assert_eq!(ranges.len(), 10000);
+        assert_eq!(ranges.last(), Some(&(9999, 10000)));
+    }
+}

@@ -136,3 +136,38 @@ impl GitPanel {
         self.refresh_conflicts(api)
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn conflict_actions_require_a_selection_and_hit_the_api() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        // No conflict files: the selection guard fires.
+        let err = panel
+            .resolve_selected_conflict(&api, ConflictResolveMode::Ours)
+            .unwrap_err();
+        assert!(err.to_string().contains("no conflicted file selected"));
+
+        // With a file selected the api verb runs against the dead
+        // endpoint and fails.
+        panel.conflict_files = vec!["a.rs".into()];
+        panel.conflict_selected = 0;
+        assert!(panel
+            .resolve_selected_conflict(&api, ConflictResolveMode::Remote)
+            .is_err());
+
+        // Continue/skip/abort verbs also run through the api.
+        assert!(panel
+            .conflict_action(&api, ConflictAction::MergeContinue)
+            .is_err());
+        assert!(panel
+            .conflict_action(&api, ConflictAction::RebaseSkip)
+            .is_err());
+        assert!(panel
+            .conflict_action(&api, ConflictAction::MergeAbort)
+            .is_err());
+    }
+}

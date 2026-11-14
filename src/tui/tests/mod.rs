@@ -12585,3 +12585,235 @@ fn resize_mode_opens_walks_and_guards() {
     app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('l')));
     assert!(app.resize_mode.is_none());
 }
+
+#[test]
+fn branch_picker_reroute_succeeds_through_the_fake_backend() {
+    // The reroute tail (open, recent-workspace record, refresh, focus,
+    // autoclose, overlay drop) needs a live backend socket: wire the
+    // workspace fake so worktree.open succeeds.
+    let mut app = app_with_snapshot();
+    app.client = crate::tui::workspace::tests::fake_backend_client();
+    app.branch_picker_rows = vec![GitBranchEntry {
+        name: "feature".into(),
+        current: false,
+        remote: false,
+        pushed: false,
+        worktree_path: Some("/repo-wt".into()),
+    }];
+    app.branch_picker_root = "/repo".into();
+    app.open_overlay(TuiMode::BranchPicker);
+
+    let result = app.branch_picker_commit();
+    assert!(result.is_ok(), "reroute runs through worktree.open");
+    assert_eq!(app.mode, TuiMode::Navigate, "overlay stack dropped");
+}
+
+#[test]
+fn panel_focus_cycles_the_tab_list_and_reports_the_index() {
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":2,"active_tab_id":"tab_1"}],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_1","label":"Server","focused":false,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo","focused":false}
+            ],
+            "agents": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo","focused":false}
+            ]
+        }
+    }));
+    // Two tabs in the fixture: cycling wraps around the list.
+    let first = app.move_panel(1).expect("panel focus works");
+    assert_eq!(first, "panel 2/2");
+    let wrap = app.move_panel(1).expect("panel focus works");
+    assert_eq!(wrap, "panel 1/2", "wraps back to the first tab");
+}
+
+#[test]
+fn split_mode_commit_refuses_when_the_neighbor_vanished() {
+    let mut app = app_with_two_panes();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "gone".into(),
+        pane: "pane_2".into(),
+        side: crate::tui::split::Side::Right,
+    });
+    app.split_commit();
+    assert_eq!(app.status, "split target vanished");
+    assert!(app.split_mode.is_none());
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"], "tree untouched");
+
+    // No preview at all: silent return.
+    app.split_commit();
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
+fn handle_split_mode_key_routes_all_verbs() {
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+
+    // hjkl move the ghost (draw once so geometry exists).
+    draw(&app, 150, 40);
+    let before = app.split_mode.as_ref().unwrap().neighbor.clone();
+    app.handle_split_mode_key(KeyEvent::from(KeyCode::Char('l')));
+    app.handle_split_mode_key(KeyEvent::from(KeyCode::Char('h')));
+    app.handle_split_mode_key(KeyEvent::from(KeyCode::Char('j')));
+    app.handle_split_mode_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, before);
+
+    // Inert key with no direction: falls through.
+    app.handle_split_mode_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(app.split_mode.is_some());
+
+    // Esc cancels.
+    app.handle_split_mode_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.split_mode.is_none());
+    assert_eq!(app.status, "split cancelled");
+}
+
+#[test]
+fn autoclose_guards_skip_empty_ids_and_still_selected_workspaces() {
+    let mut app = app_with_snapshot();
+    app.snapshot.workspaces[0].tab_count = 0;
+    app.snapshot.workspaces[0].pane_count = 0;
+
+    // No previous id at all: silent return.
+    app.autoclose_left_workspace(None);
+    assert_eq!(app.snapshot.workspaces.len(), 1);
+
+    // Empty previous id: silent return.
+    app.autoclose_left_workspace(Some(""));
+    assert_eq!(app.snapshot.workspaces.len(), 1);
+
+    // Previous is the still-selected workspace: never closed.
+    app.autoclose_left_workspace(Some("ws_1"));
+    assert_eq!(app.snapshot.workspaces.len(), 1);
+
+    // Previous id not in the snapshot (already gone): silent return.
+    app.autoclose_left_workspace(Some("ws_missing"));
+    assert_eq!(app.snapshot.workspaces.len(), 1);
+
+    // Non-empty workspace left behind: kept.
+    app.snapshot.workspaces[0].tab_count = 1;
+    app.snapshot.workspaces.push(TuiWorkspace {
+        id: "ws_2".to_string(),
+        label: "Lane".to_string(),
+        cwd: "/repo-lane".to_string(),
+        focused: true,
+        agent_status: "idle".to_string(),
+        pane_count: 1,
+        tab_count: 1,
+        active_tab_id: None,
+        worktree: None,
+    });
+    app.selected_workspace = 1;
+    app.autoclose_left_workspace(Some("ws_1"));
+    assert!(
+        app.snapshot.workspaces.iter().any(|ws| ws.id == "ws_1"),
+        "a workspace with tabs is never autoclosed"
+    );
+}
+
+#[test]
+fn worktree_open_selected_reports_the_missing_row() {
+    let mut app = app_with_snapshot();
+    // Selection index past the rows: the open guard fires.
+    app.worktree_selected = 99;
+    let result = app.worktree_open_selected();
+    assert_eq!(result, Err("no worktree selected".to_string()));
+}
+
+#[test]
+fn ghost_half_covers_all_sides_and_both_axes() {
+    // Draw the split-mode ghost once per side (Right/Below/Left/Above):
+    // every ghost_half_rect arm and both split_rect_half axes run.
+    for side in [
+        crate::tui::split::Side::Right,
+        crate::tui::split::Side::Below,
+        crate::tui::split::Side::Left,
+        crate::tui::split::Side::Above,
+    ] {
+        let mut app = app_with_two_panes();
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_mode = Some(crate::tui::split::SplitPreview {
+            neighbor: "pane_1".into(),
+            pane: "pane_3".into(),
+            side,
+        });
+        app.screen = TuiScreen::Terminal;
+        let drawn = draw(&app, 150, 40);
+        assert!(drawn.contains("+ pane_3 "), "ghost renders side {side:?}");
+    }
+}
+
+#[test]
+fn split_view_with_an_empty_pane_area_draws_nothing() {
+    // A zero-height window: render_split_view returns before layout,
+    // and nothing panics.
+    let app = two_tile_split();
+    let drawn = draw(&app, 10, 0);
+    assert!(drawn.is_empty() || !drawn.contains("AGENTS"));
+}
+
+#[test]
+fn layout_weights_fall_back_to_equal_shares_for_missing_entries() {
+    // A hand-built tree whose weights are missing: layout still
+    // splits equally (recorded geometry proves it) instead of
+    // panicking. Also pins the empty-children and empty-area arms.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    draw(&app, 150, 40);
+    let geometry = app.tile_geometry_snapshot();
+    assert_eq!(geometry.len(), 2);
+    assert_eq!(geometry[0].width, geometry[1].width, "equal shares");
+
+    // Zero-height window: layout bails without panicking.
+    let drawn = draw(&app, 10, 0);
+    assert!(drawn.is_empty() || !drawn.contains("AGENTS"));
+}
+
+#[test]
+fn session_retarget_to_builtin_default_rebuilds_the_default_socket() {
+    let mut app = app_with_snapshot();
+    // Start on a non-default session so the default retarget is not
+    // short-circuited by the already-targeting guard.
+    app.current_session = "work".into();
+    app.current_backend = "builtin".into();
+    app.session_rows = vec![TuiSessionRow {
+        name: "default".to_string(),
+        backend: "builtin".to_string(),
+        backend_label: "built-in".to_string(),
+        running: true,
+        api_socket: "/nonexistent.sock".to_string(),
+    }];
+    let result = app.session_target("default", "builtin");
+    assert!(result.is_err(), "refresh fails against the dead socket");
+    assert_eq!(app.current_session, "default");
+    assert!(
+        app.client
+            .api_socket()
+            .ends_with("builtin/default/herdr.sock"),
+        "client points at the canonical default socket, got {}",
+        app.client.api_socket().display()
+    );
+}

@@ -581,3 +581,69 @@ mod coverage_tests {
         assert_eq!(state.expanded, vec![true, false]);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+    use serde_json::json;
+
+    /// Same one-shot server shape as the earlier coverage tests, but
+    /// the body omits the total_files/total_matches summary so the
+    /// fallbacks (files.len() / 0) run.
+    fn search_once(
+        body: serde_json::Value,
+    ) -> (
+        crate::tui::panels::FileExplorer,
+        crate::tui::web_api::WebApiClient,
+    ) {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+            }
+            let response = body.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            );
+        });
+        let explorer = FileExplorer::new("/repo");
+        let client = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        (explorer, client)
+    }
+
+    #[test]
+    fn run_content_search_falls_back_when_the_summary_is_missing() {
+        let (mut explorer, client) = search_once(json!({
+            "files": [{
+                "path": "a.rs",
+                "name": "a.rs",
+                "match_count": 1,
+                "matches": [{"start_line": 2}],
+                "chunks": []
+            }]
+        }));
+        explorer.filter = "needle".into();
+        run_content_search(&mut explorer, &client, false).unwrap();
+        assert_eq!(
+            explorer.content_search.total_files, 1,
+            "falls back to files.len()"
+        );
+        assert_eq!(
+            explorer.content_search.total_matches, 0,
+            "missing matches default 0"
+        );
+    }
+}

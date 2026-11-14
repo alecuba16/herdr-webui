@@ -380,3 +380,94 @@ mod coverage_tests {
         assert!(matches!(err, WebApiError::Io(ref msg) if msg == "no hunk selected"));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::super::GitFileEntry;
+    use super::*;
+
+    fn panel() -> GitPanel {
+        let mut p = GitPanel::new("/repo");
+        p.files = vec![
+            GitFileEntry {
+                path: "a.rs".into(),
+                status: GitFileStatus::Staged,
+            },
+            GitFileEntry {
+                path: "b.rs".into(),
+                status: GitFileStatus::Unstaged,
+            },
+        ];
+        p
+    }
+
+    fn dead_client() -> crate::tui::web_api::WebApiClient {
+        // Port 1 refuses connections: every api call errors without a
+        // server thread.
+        crate::tui::web_api::WebApiClient::new("127.0.0.1", 1)
+    }
+
+    #[test]
+    fn stage_unstage_and_toggle_guards_fire_without_selection() {
+        let api = dead_client();
+        let mut p = panel();
+        p.file_selected = 99;
+        assert!(p.stage_selected(&api).is_err());
+        assert!(p.unstage_selected(&api).is_err());
+        assert!(p.discard_selected(&api).is_err());
+    }
+
+    #[test]
+    fn toggle_all_unstages_when_anything_is_staged() {
+        let api = dead_client();
+        let mut p = panel();
+        p.file_selected = 0;
+        // Staged file present: toggle-all takes the unstage branch,
+        // which fails against the dead api.
+        let result = p.toggle_stage_all(&api);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn toggle_all_stages_when_nothing_is_staged() {
+        let api = dead_client();
+        let mut p = panel();
+        p.files[0].status = GitFileStatus::Unstaged;
+        let result = p.toggle_stage_all(&api);
+        assert!(result.is_err(), "dead api fails the stage call");
+    }
+
+    #[test]
+    fn stash_commit_pull_push_fetch_and_discard_hit_the_api() {
+        let api = dead_client();
+        let mut p = panel();
+        p.file_selected = 1;
+        assert!(p.stash_changes(&api).is_err());
+        assert!(p.commit(&api, "title", false).is_err());
+        assert!(p.commit(&api, "title", true).is_err());
+        assert!(p.pull(&api).is_err());
+        assert!(p.push(&api).is_err());
+        assert!(p.fetch(&api).is_err());
+        assert!(p.discard_selected(&api).is_err());
+    }
+
+    #[test]
+    fn toggle_blame_off_keeps_the_cache_and_on_hits_the_api() {
+        let api = dead_client();
+        let mut p = panel();
+        p.show_blame = true;
+        p.blame_authors = std::collections::HashMap::from([(0usize, "alice".to_string())]);
+        // Toggling off returns before any api call.
+        p.toggle_blame(&api).unwrap();
+        assert!(!p.show_blame);
+        assert_eq!(
+            p.blame_authors.get(&0).map(String::as_str),
+            Some("alice"),
+            "cache kept"
+        );
+        // Toggling on hits the api; the dead client fails and blame
+        // resets so the panel does not show a half-loaded state.
+        assert!(p.toggle_blame(&api).is_err());
+        assert!(!p.show_blame, "failed blame load resets the flag");
+    }
+}

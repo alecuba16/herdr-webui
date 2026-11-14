@@ -330,3 +330,27 @@ mod coverage_tests {
         assert_ne!(light.accent_dim(), dark.accent_dim());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+
+    #[test]
+    fn accent_dim_falls_back_to_panel_bg_for_named_colors() {
+        // A palette whose accent is a named (non-Rgb) color dims to
+        // the panel background instead of doing channel math.
+        let mut palette = Palette::for_theme(TuiTheme::Dark);
+        palette.accent = Color::Blue;
+        assert_eq!(palette.accent_dim(), palette.panel_bg);
+    }
+
+    #[test]
+    fn system_theme_falls_back_to_dark_when_no_terminal_is_detected() {
+        // Test binaries run without a real terminal: detection
+        // returns None, so System resolves to the dark palette.
+        let system = TuiTheme::System.palette();
+        let dark = Palette::for_theme(TuiTheme::Dark);
+        assert_eq!(system.panel_bg, dark.panel_bg);
+        assert_eq!(system.border, dark.border);
+    }
+}

@@ -932,3 +932,21 @@ mod coverage_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+
+    #[test]
+    fn load_recents_caches_and_errors_carry_through() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut state = SearchPalette::default();
+        // First call hits the dead endpoint and fails, but stamps the
+        // cache time so the retry inside the TTL returns Ok without
+        // another request.
+        assert!(state.load_recents(&api).is_err());
+        state
+            .load_recents(&api)
+            .expect("cached failure short-circuits");
+    }
+}
