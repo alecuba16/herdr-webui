@@ -920,7 +920,7 @@ fn fixture_snapshot_value() -> serde_json::Value {
     })
 }
 
-fn fixture_snapshot() -> TuiSnapshot {
+pub(crate) fn fixture_snapshot() -> TuiSnapshot {
     TuiSnapshot::from_backend_response(&fixture_snapshot_value())
 }
 
@@ -2453,7 +2453,7 @@ fn drain_refresh(app: &mut TuiApp) {
 /// Scripted fake backend socket for TuiApp tests: one thread accepting
 /// connections in a loop, answering each JSON-line request by method.
 /// Hermetic replacement for the built-in session socket.
-fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+pub(crate) fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
     fake_backend_socket_with(fixture_snapshot_value())
 }
 

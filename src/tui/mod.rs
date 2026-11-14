@@ -6821,6 +6821,161 @@ mod batch11_coverage_tests {
     }
 
     #[test]
+    fn prompt_error_arms_against_refusing_routes() {
+        // CreateTag / GitCwd / CreateBranch / CreateFile through the
+        // handle_prompt_key entry with typed text and a refusing route.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/tag"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Log;
+        app.git_panel.commits = vec![commit("abc")];
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('t'),
+        ));
+        assert!(app.prompt_input.is_some());
+        app.run_prompt_action(PromptKind::CreateTag, "v1.0");
+        assert!(app.error.is_some(), "tag error arm");
+
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/switch"]).0,
+        );
+        app.run_prompt_action(PromptKind::CreateBranch, "feat2");
+        assert!(app.error.is_some(), "create branch error arm");
+
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/git-ui/status"]).0,
+        );
+        app.run_prompt_action(PromptKind::GitCwd, "/repo");
+        assert!(app.error.is_some(), "git cwd refresh error arm");
+
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/file-browser/file"]).0,
+        );
+        app.run_prompt_action(PromptKind::CreateFile, "a.rs");
+        assert!(app.error.is_some(), "create file error arm");
+    }
+
+    #[test]
+    fn composer_too_long_message_refuses() {
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        let long = "x".repeat(20001);
+        app.run_prompt_action(PromptKind::ComposerMessage, &long);
+        assert!(app.status.contains("too long"));
+    }
+
+    #[test]
+    fn search_palette_jk_with_empty_query_and_arrows() {
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.mode = TuiMode::SearchPalette;
+        let key = super::key_handler_tests::key;
+        use crossterm::event::KeyCode;
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('k')));
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(app.search_palette.query, "x", "letters type into the query");
+    }
+
+    #[test]
+    fn commit_search_query_requires_a_cwd() {
+        // No workspace selected: commit_search_query errors.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.snapshot = Default::default();
+        app.search_palette.query = "x".into();
+        assert!(app.commit_search_query().is_err());
+    }
+
+    #[test]
+    fn navigate_recent_already_open_and_palette_zoom() {
+        // The open recent guard fires when the selected row is open.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.search_palette
+            .results
+            .push(crate::tui::search::SearchCandidate::Recent {
+                path: "/repo".into(),
+                title: "Repo".into(),
+                subtitle: "main".into(),
+                label: None,
+                is_worktree: false,
+                is_open: true,
+            });
+        let candidate = app.search_palette.results[0].clone();
+        assert!(app.run_search_candidate(&candidate).is_err());
+        // ZoomPane shortcut on the terminal screen toggles the zoom.
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::ZoomPane);
+        assert!(app.split_zoomed);
+        app.run_shortcut(Shortcut::ZoomPane);
+        assert!(!app.split_zoomed);
+    }
+
+    #[test]
+    fn remove_and_clear_recents_against_the_server() {
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/recent-workspaces"]).0,
+        );
+        app.search_palette
+            .results
+            .push(crate::tui::search::SearchCandidate::Recent {
+                path: "/repo".into(),
+                title: "Repo".into(),
+                subtitle: "main".into(),
+                label: None,
+                is_worktree: false,
+                is_open: false,
+            });
+        app.remove_selected_recent();
+        assert!(app.error.is_some(), "remove recent error arm");
+        app.error = None;
+        app.clear_recent_workspaces();
+        assert!(app.error.is_some(), "clear recents error arm");
+    }
+
+    #[test]
+    fn close_tab_real_failure_and_last_tab_refresh_error() {
+        // tab.close on a real socket backend whose reply is a live
+        // error (not "not found"): the error arm runs. Then the
+        // was_last_tab path with a dead follow-up refresh surfaces the
+        // refresh error: close ok, then the client socket dies.
+        let (api_socket, _stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.snapshot.tabs[0].id = "tab_err".to_string();
+        app.snapshot.workspaces[0].active_tab_id = Some("tab_err".to_string());
+        app.close_selected_tab();
+        let _ = std::fs::remove_file(&api_socket);
+
+        // was_last_tab with the socket gone after a successful close:
+        // the workspace.close failure arm and the refresh error arm.
+        let (api_socket, stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.close_selected_tab();
+        // Kill the backend and close another workspace: the request now
+        // fails on the socket itself (the error arm without not-found).
+        stop.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = std::fs::remove_file(&api_socket);
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.snapshot.tabs.clear();
+        app.snapshot.workspaces[0].active_tab_id = None;
+        app.close_selected_tab();
+        assert!(app.error.is_some(), "dead backend close surfaces an error");
+    }
+
+    #[test]
     fn fake_api_server_break_and_continue_arms() {
         // The server stop sender breaks the accept loop; a fresh server
         // then serves one request so the read-empty continue arm runs.
