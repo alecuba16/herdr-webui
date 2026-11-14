@@ -10057,3 +10057,106 @@ fn ctrl_hjkl_scrolls_focused_pane_instead_of_walking() {
     assert_eq!(app.pane_scroll, 1);
     assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
 }
+
+#[test]
+fn view_pane_follows_split_focus_not_sidebar_cursor() {
+    // The sidebar cursor stays on pane_1 (workspace ws_1's active
+    // tab); the split commits pane_2 and focus lands there. Every
+    // focused-tile pipeline (tail fetch, attach, lens) must read
+    // pane_2 through view_pane, or the focused tile shows another
+    // pane's output (live-demo regression).
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+    assert_eq!(app.selected_pane().map(|p| p.id.as_str()), Some("pane_1"));
+    assert_eq!(app.view_pane().map(|p| p.id.as_str()), Some("pane_2"));
+    assert_eq!(app.view_pane_id().as_deref(), Some("pane_2"));
+    assert_eq!(app.view_terminal_id(), Some("term_2"));
+
+    // Walking focus back to pane_1 flips the view pane with it. The
+    // walk scores against the last frame's tile geometry, so one
+    // draw must happen first (production renders every tick).
+    app.main_focused = true;
+    let _ = draw(&app, 150, 40);
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    assert_eq!(app.view_pane().map(|p| p.id.as_str()), Some("pane_1"));
+    // ...and the sidebar cursor never moved.
+    assert_eq!(app.selected_pane().map(|p| p.id.as_str()), Some("pane_1"));
+}
+
+#[test]
+fn view_pane_falls_back_to_selection_without_split() {
+    let app = app_with_two_panes();
+    assert_eq!(app.split_tree.leaves().len(), 1);
+    assert_eq!(app.view_pane().map(|p| p.id.as_str()), Some("pane_1"));
+    assert_eq!(app.view_terminal_id(), Some("term_1"));
+}
+
+#[test]
+fn attach_viewport_sizes_to_focused_tile_in_split() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+    app.set_terminal_size(150, 40);
+    // One draw records the frame's tile geometry.
+    let _ = draw(&app, 150, 40);
+
+    let (cols, rows) = app.attach_viewport();
+    let geometry = app.tile_geometry.borrow();
+    let tile = geometry
+        .iter()
+        .find(|t| t.pane_id == "pane_2")
+        .expect("focused tile recorded");
+    // Borders (2) and the cwd/status/blank rows (3) do not belong to
+    // the pty viewport.
+    assert_eq!(cols, tile.width.saturating_sub(2));
+    assert_eq!(rows, tile.height.saturating_sub(5));
+    // The tile is roughly half the pane area, minus sidebar and
+    // bars; the full-window viewport would be far wider.
+    let (full_cols, _) = crate::tui::render::pane_viewport_size(150, 40, false);
+    assert!(
+        cols < full_cols,
+        "split attach must size to the tile, not the window"
+    );
+
+    // Without a split the legacy viewport applies again.
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = None;
+    let (cols, _) = app.attach_viewport();
+    assert_eq!(cols, full_cols);
+}
+
+#[test]
+fn pane_buffers_follow_view_pane_on_focus_walk() {
+    // refresh_tail's fetch target and the pane_buffers gate both key
+    // on the view pane: after a focus walk the next refresh must
+    // reset scroll/history for the newly focused pane, not keep the
+    // previous pane's offsets.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+    app.pane_buffers_pane_id = Some("pane_1".to_string());
+    app.pane_scroll = 7;
+
+    app.refresh_tail();
+
+    // The client is a dead socket, so the read errors; the gate still
+    // must have switched panes (scroll reset happens with the pane
+    // switch, before the request).
+    assert_eq!(app.pane_buffers_pane_id.as_deref(), Some("pane_2"));
+    assert_eq!(app.pane_scroll, 0);
+}

@@ -816,7 +816,21 @@ impl TuiApp {
     /// (cols, rows) every attach must use: the pane viewport the tail
     /// renders into when the screen size is known, else the legacy
     /// 120x32 fallback (no real screen: --once, embedders, tests).
+    /// With a split on screen the focused tile's inner rect is the
+    /// real viewport (design: "the pty resizes to the focused tile's
+    /// viewport, not the window"); tile borders cost 2 cols/rows,
+    /// the cwd/status/blank rows 3 more when the tail starts.
     pub fn attach_viewport(&self) -> (u16, u16) {
+        if render::split_active(self) {
+            if let Some(focus) = self.focused_pane_id() {
+                let geometry = self.tile_geometry.borrow();
+                if let Some(tile) = geometry.iter().find(|tile| tile.pane_id == focus) {
+                    let cols = tile.width.saturating_sub(2).max(1);
+                    let rows = tile.height.saturating_sub(5).max(1);
+                    return (cols, rows);
+                }
+            }
+        }
         let (width, height) = self.terminal_size;
         if width > 0 && height > 0 {
             render::pane_viewport_size(width, height, self.sidebar_collapsed)
@@ -1360,7 +1374,7 @@ impl TuiApp {
             return;
         }
         let text = prompt.text.clone();
-        if let Some(pane) = self.selected_pane() {
+        if let Some(pane) = self.view_pane() {
             let pane_id = pane.id.clone();
             self.composer_drafts.insert(pane_id, text);
         }
@@ -1630,7 +1644,7 @@ impl TuiApp {
     /// the server's note lands in the status line and the draft stays.
     fn submit_composer_message(&mut self, text: &str) {
         const MAX_COMPOSER_CHARS: usize = 20_000;
-        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+        let Some(pane_id) = self.view_pane_id() else {
             self.error = Some("no pane selected".to_string());
             return;
         };
@@ -2255,7 +2269,7 @@ impl TuiApp {
                     // Read the session snapshot up front: the borrow ends
                     // before the mutable lens toggle.
                     let session = self
-                        .selected_pane()
+                        .view_pane()
                         .and_then(|pane| pane.agent_session.as_ref());
                     match session.map(|s| s.chat_supported()) {
                         Some(true) => {
@@ -2290,7 +2304,7 @@ impl TuiApp {
                 // the selected pane, prefilled with the pane's draft.
                 if self.screen == TuiScreen::Terminal {
                     let mut input = PromptInput::new(PromptKind::ComposerMessage);
-                    if let Some(pane) = self.selected_pane() {
+                    if let Some(pane) = self.view_pane() {
                         if let Some(draft) = self.composer_drafts.get(&pane.id) {
                             input.text = draft.clone();
                         }
@@ -3685,7 +3699,7 @@ impl TuiApp {
                 agent.status, agent.pane_id, agent.terminal_id
             ));
         }
-        if let Some(pane) = self.selected_pane() {
+        if let Some(pane) = self.view_pane() {
             out.push(format!(
                 "pane {} · terminal {} · {}",
                 pane.id, pane.terminal_id, pane.agent_status
@@ -3699,7 +3713,7 @@ impl TuiApp {
     }
 
     pub fn ingest_terminal_output(&mut self, output: &TerminalOutput) {
-        let selected_terminal_id = self.selected_terminal_id().map(str::to_string);
+        let selected_terminal_id = self.view_terminal_id().map(str::to_string);
         if output.full || self.terminal_raw_terminal_id != selected_terminal_id {
             self.terminal_raw_output.clear();
             self.terminal_raw_terminal_id = selected_terminal_id;
@@ -3923,7 +3937,7 @@ impl TuiApp {
             self.status = "detached".to_string();
             return;
         }
-        let Some(terminal_id) = self.selected_terminal_id().map(str::to_string) else {
+        let Some(terminal_id) = self.view_terminal_id().map(str::to_string) else {
             self.mode = TuiMode::Navigate;
             self.error = Some("selected pane has no terminal".to_string());
             return;
@@ -3949,7 +3963,7 @@ impl TuiApp {
     }
 
     fn attach_selected(&mut self) {
-        if self.selected_terminal_id().is_some() {
+        if self.view_terminal_id().is_some() {
             self.mode = TuiMode::Attach;
             self.status = "attach mode: Ctrl-G detach".to_string();
             self.refresh_tail();
@@ -3961,7 +3975,7 @@ impl TuiApp {
     }
 
     pub fn load_selected_terminal_history(&mut self, cols: u16, rows: u16) {
-        let Some(terminal_id) = self.selected_terminal_id().map(str::to_string) else {
+        let Some(terminal_id) = self.view_terminal_id().map(str::to_string) else {
             return;
         };
         match self.client.attach_terminal(&terminal_id, cols, rows) {
@@ -4052,7 +4066,7 @@ impl TuiApp {
     /// reads the session directly (it needs the reason too).
     fn lens_chat_supported(&self) -> LensGate {
         match self
-            .selected_pane()
+            .view_pane()
             .and_then(|pane| pane.agent_session.as_ref())
         {
             Some(session) if session.chat_supported() => LensGate::Supported,
@@ -4109,6 +4123,31 @@ impl TuiApp {
         self.selected_pane().map(|pane| pane.terminal_id.as_str())
     }
 
+    /// The pane the main view acts on. With a split on screen the
+    /// focused tile owns the tail, scroll, lens, composer, and
+    /// Enter-attach (design: "Enter attaches the focused tile"),
+    /// so the pipeline must follow `split_focus`, not the sidebar
+    /// cursor; the sidebar keeps its own selection untouched.
+    /// Without a split this is exactly `selected_pane()`.
+    pub fn view_pane(&self) -> Option<&TuiPane> {
+        if render::split_active(self) {
+            if let Some(focus) = self.focused_pane_id() {
+                if let Some(pane) = self.snapshot.panes.iter().find(|p| p.id == focus) {
+                    return Some(pane);
+                }
+            }
+        }
+        self.selected_pane()
+    }
+
+    pub fn view_pane_id(&self) -> Option<String> {
+        self.view_pane().map(|pane| pane.id.clone())
+    }
+
+    pub fn view_terminal_id(&self) -> Option<&str> {
+        self.view_pane().map(|pane| pane.terminal_id.as_str())
+    }
+
     pub fn refresh_tail(&mut self) {
         // Lens gate (design section 6): the overlay must not survive a
         // pane switch onto a pane without a transcript provider — same
@@ -4119,7 +4158,7 @@ impl TuiApp {
             self.lens.close();
             self.status = "lens closed (pane has no transcript provider)".to_string();
         }
-        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+        let Some(pane_id) = self.view_pane_id() else {
             self.pane_tail.clear();
             self.pane_tail_styles.clear();
             self.pane_scroll = 0;
@@ -4289,7 +4328,7 @@ impl TuiApp {
         if self.pane_history_exhausted {
             return 0;
         }
-        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+        let Some(pane_id) = self.view_pane_id() else {
             return 0;
         };
         let want = if self.pane_history.is_empty() {

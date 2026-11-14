@@ -15,6 +15,7 @@ use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
 use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen, TuiWorkspace};
 
 mod split_tiles;
+pub(crate) use split_tiles::split_active;
 pub(crate) use split_tiles::TileRectOwned;
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -386,7 +387,7 @@ fn render_lens(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let rect = overlay_rect(area, width, height);
     render_shadow(frame, rect, p);
     let pane_label = app
-        .selected_pane()
+        .view_pane()
         .map(|pane| {
             pane.display_agent
                 .as_deref()
@@ -1751,7 +1752,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         // counterpart of the webui box's aria-label "Message to this
         // panel".
         crate::tui::PromptKind::ComposerMessage => app
-            .selected_pane()
+            .view_pane()
             .map(|pane| {
                 format!(
                     "{} · {}",
