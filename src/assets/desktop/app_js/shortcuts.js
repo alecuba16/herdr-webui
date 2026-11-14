@@ -532,6 +532,9 @@ function consumeShortcutEvent(e) {
 }
 function handleGlobalShortcut(e) {
   if (e.defaultPrevented || options.globalShortcutsEnabled === false) return false;
+  // The onboarding tour owns the keyboard while active: its own keys move
+  // steps and everything else waits until it closes.
+  if (window.HerdrOnboardingTour && window.HerdrOnboardingTour.isActive()) return false;
   const appFindShortcut = isAppFindShortcut(e);
   if (appFindShortcut) {
     if (editorShortcutTarget(e.target)) return false;

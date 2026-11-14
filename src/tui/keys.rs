@@ -389,7 +389,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B g", "git panel"),
         ("Ctrl+B t", "terminal view"),
         ("Ctrl+B /", "open search palette"),
-        ("Ctrl+B ?", "help"),
+        ("Ctrl+B ?", "help (T replays the onboarding tour)"),
         ("Ctrl+B r", "refresh"),
         ("Ctrl+B j/k", "next/prev workspace"),
         ("Ctrl+B a/A", "next/prev agent"),

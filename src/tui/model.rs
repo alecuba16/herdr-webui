@@ -5,6 +5,12 @@ pub enum TuiMode {
     Navigate,
     Attach,
     Help,
+    /// Onboarding tour overlay (webui parity, replayable from Help with
+    /// the `T` key): step card plus accent border around the step's
+    /// region; j/k/Enter walk steps, Esc/q/? close. Demos run the real
+    /// shortcuts through `run_shortcut`, so the underlying UI moves
+    /// through its own states while the tour explains them.
+    Tour,
     /// Quit confirmation overlay: `y`/Enter quits, `n`/Esc cancels.
     /// All quit paths (Ctrl+B q, plain q, Esc on the Terminal screen)
     /// land here first so nobody leaves the TUI by accident.

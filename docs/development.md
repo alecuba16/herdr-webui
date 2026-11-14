@@ -35,7 +35,7 @@
 - `src/assets/`: embedded HTML/CSS/JS and frontend tests.
 - `src/assets/desktop/`: desktop UI bundle chunks and desktop-only CSS.
 - `src/assets/desktop/app_css/`: desktop shell CSS modules concatenated into `/assets/desktop/app.css`.
-- `src/assets/desktop/app_js/`: desktop shell JS modules concatenated into `/assets/desktop/app.js`.
+- `src/assets/desktop/app_js/`: desktop shell JS modules concatenated into `/assets/desktop/app.js` (includes the onboarding tour pair `tour_steps.js`/`tour.js` and `src/assets/desktop/tour.css`).
 - `src/assets/desktop/file_browser.js` and `src/assets/desktop/file_browser.css`: desktop file explorer and editor shell.
 - `src/assets/desktop/git_ui/`: embedded Git UI modules for settings, syntax highlighting, log rendering/filtering (`log.js`), selected-log action templates (`actions.js`), drawer shell CSS, diff CSS, log CSS, and layout CSS. Keep selected actions separate from log rendering so toolbar UX can change without touching graph parsing.
 - `src/assets/icons/`: SVG icons served as static assets and referenced from CSS/markup.

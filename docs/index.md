@@ -16,6 +16,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | [TUI screenshots](tui-screenshots.md) | Every `herdr-webui-tui` screen with captions and an animated tour GIF. |
 | [WebUI screenshots](webui-screenshots.md) | Browser WebUI captures with captions and a slow animated tour GIF. |
 | [TUI shortcuts](tui-shortcuts.md) | Full `herdr-webui-tui` key reference: navigation, prefix shortcuts, attach mode, chat lens, composer. |
+| [Onboarding tour](onboarding-tour.md) | Guided walkthrough for WebUI and TUI: step list, resolved chords, demo actions, implementation map. |
 | [Development guide](development.md) | Repository layout, frontend module structure, desktop/mobile parity, maintainability rules. |
 | [Release notes](release-notes.md) | Release policy and release history. |
 | [UX flow proposal](ux-flow-proposal.md) | Proposed UX improvements for desktop and mobile navigation. |
@@ -37,6 +38,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | TUI screens and shots | [TUI screenshots](tui-screenshots.md) | Every TUI screen with captions: terminal, overlays, git, files, tabs, CLI modes, plus the animated tour. |
 | WebUI screens and shots | [WebUI screenshots](webui-screenshots.md) | Browser captures with captions: agents and chat, git log and compare, file explorer editor and preview, notes. |
 | TUI keys and overlays | [TUI shortcuts](tui-shortcuts.md) | Prefix shortcuts, attach mode, lens/composer keys, per-screen highlights. |
+| First-run walkthrough | [Onboarding tour](onboarding-tour.md) | Step order, chord resolution, demo dispatch, replay entry points. |
 | Performance model | [Technical details: Performance decisions](technical-details.md#performance-decisions) | Backend-owned repo work, terminal batching, lazy loading. |
 | Styling and themes | [Technical details: Styling and theme architecture](technical-details.md#styling-and-theme-architecture) | Theme variables, shared color tokens, icon coloring rules. |
 | Language servers in the editor | [Features: Language servers](features.md#webui-features) | Per-language opt-in LSP servers, diagnostics, hover, completion, definition. |

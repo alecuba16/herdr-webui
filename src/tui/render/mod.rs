@@ -50,6 +50,7 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     // (`.modal-backdrop { background: #0008 }`) with a shadowed,
     // accent-bordered float window (neovim-style depth).
     let overlay_active = app.mode == TuiMode::Help
+        || app.mode == TuiMode::Tour
         || app.mode == TuiMode::ConfirmQuit
         || app.mode == TuiMode::Settings
         || app.mode == TuiMode::WorktreeList
@@ -67,6 +68,15 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     }
     if app.mode == TuiMode::Help {
         render_help(frame, area, p, &app.help_filter, app.help_scroll);
+    }
+    if app.mode == TuiMode::Tour {
+        // The step's demo surface (search palette) renders below the
+        // tour card like the webui palette under the spotlight; the
+        // card keeps the keys and the explanation.
+        if app.tour_demo_overlay == Some(TuiMode::SearchPalette) {
+            render_search_palette(frame, area, app, p);
+        }
+        crate::tui::tour::render_tour(frame, area, app, p);
     }
     if app.mode == TuiMode::ConfirmQuit {
         render_confirm_quit(frame, area, p);
@@ -1952,6 +1962,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::Navigate => "NAV",
         TuiMode::Attach => "ATTACH",
         TuiMode::Help => "HELP",
+        TuiMode::Tour => "TOUR",
         TuiMode::ConfirmQuit => "QUIT?",
         TuiMode::Settings => "SET",
         TuiMode::WorktreeList => "WORKTREES",

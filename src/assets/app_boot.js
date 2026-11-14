@@ -59,6 +59,7 @@
     } else {
       loadCss("/assets/desktop/app.css");
       loadCss("/assets/desktop/shortcuts.css");
+      loadCss("/assets/desktop/tour.css");
       loadCss("/assets/desktop/search.css");
       loadCss("/assets/shared/file-tree.css");
     }
