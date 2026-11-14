@@ -135,6 +135,10 @@ pub enum Shortcut {
     GitCwdPicker,
     // Settings overlay (webui settings: KeyS).
     Settings,
+    // Settings overlay via the dedicated `Ctrl+B Shift+E` chord
+    // (review F4): unlike `Settings` this one works on the Terminal
+    // screen too, where prefix `s` belongs to split mode.
+    SettingsOverlay,
     // Sidebar visibility (webui sidebar: KeyB is plain B, so the TUI
     // uses Shift+B; plain b stays the git branches shortcut).
     Sidebar,
@@ -211,6 +215,7 @@ impl Shortcut {
             Self::RenameWorkspace => "rename workspace",
             Self::GitCwdPicker => "git cwd",
             Self::Settings => "settings",
+            Self::SettingsOverlay => "settings",
             Self::Sidebar => "toggle sidebar",
             Self::FocusNext => "focus next",
             Self::FocusPrev => "focus previous",
@@ -299,7 +304,11 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // Webui `edit: KeyE` is the plain `e` key, so muscle memory maps plain
         // `e` to EditFile. Amend has no webui prefix shortcut (it is a checkbox
         // in the commit modal); the TUI keeps it on the in-screen `a` key.
-        (KeyCode::Char('e') | KeyCode::Char('E'), _) => Some(Shortcut::EditFile),
+        // Shift+E stays settings (review F4): `Ctrl+B s` belongs to split
+        // mode on the Terminal screen, so the settings overlay needs a
+        // keyboard path that works from every screen.
+        (KeyCode::Char('e'), false) => Some(Shortcut::EditFile),
+        (KeyCode::Char('E'), true) => Some(Shortcut::SettingsOverlay),
         // Webui `history: KeyH` shows commits for the selected file;
         // `compare: KeyO` returns to the current changes view;
         // `blame: KeyM` toggles blame annotations in the diff.
@@ -455,10 +464,18 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "Ctrl+B s",
             "settings overlay (t cycles) · terminal: split tile mode",
         ),
+        (
+            "Ctrl+B Shift+E",
+            "settings overlay from any screen (works where Ctrl+B s splits)",
+        ),
         ("z (terminal)", "zoom focused tile (Ctrl+B z restores)"),
         (
             "hjkl (split)",
             "walk tile focus · Ctrl+hjkl scrolls the focused pane",
+        ),
+        (
+            "Shift+L / Shift+C",
+            "chat lens / composer (plain keys on terminal, no prefix)",
         ),
         (
             "Ctrl+B Shift+P",
@@ -647,6 +664,7 @@ mod tests {
             Shortcut::RenameWorkspace,
             Shortcut::GitCwdPicker,
             Shortcut::Settings,
+            Shortcut::SettingsOverlay,
             Shortcut::Sidebar,
             Shortcut::FocusNext,
             Shortcut::FocusPrev,

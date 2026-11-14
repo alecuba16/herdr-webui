@@ -133,6 +133,10 @@ pub(crate) enum FooterContext {
     /// Session manager overlay (prefix Shift+P): j/k move, Enter
     /// targets a built-in session, l launch, x close, c cleanup, n new.
     SessionManager,
+    /// Terminal screen, main region focused, split view active
+    /// (review F2): j/k walks tiles, so the hint must name the
+    /// Ctrl+j/k scroll escape instead of staying silent about it.
+    TerminalMainSplit,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -207,6 +211,9 @@ impl FooterContext {
             Self::TerminalMain => {
                 " Enter attach · Shift+L chat lens · Shift+C compose · . / , focus sidebar · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
+            Self::TerminalMainSplit => {
+                " hjkl walk tiles · Ctrl+j/k scroll · Enter attach · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ? help "
+            }
             Self::Terminal(TuiMode::Attach) => {
                 " Ctrl-G detach · type sends input · Ctrl+B ? help "
             }
@@ -264,6 +271,7 @@ impl FooterContext {
             Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
             Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
             Self::TerminalMain => " Enter attach · . , focus · Ctrl+B ? help ",
+            Self::TerminalMainSplit => " hjkl walk · Ctrl+j/k scroll · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
             Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
             Self::SessionManager => {
@@ -1146,7 +1154,11 @@ impl TuiApp {
                 // the select/attach hint; attach mode owns the hint as
                 // before (the focus walker does not apply there).
                 if self.mode == TuiMode::Navigate && self.main_focused {
-                    FooterContext::TerminalMain
+                    if crate::tui::render::split_active(self) {
+                        FooterContext::TerminalMainSplit
+                    } else {
+                        FooterContext::TerminalMain
+                    }
                 } else {
                     FooterContext::Terminal(self.mode)
                 }
@@ -2235,12 +2247,20 @@ impl TuiApp {
                 self.prompt_input = Some(PromptInput::new(PromptKind::GitCwd));
                 self.status = PromptKind::GitCwd.title().to_string();
             }
+            Shortcut::SettingsOverlay => {
+                // Dedicated settings chord (review F4): `Ctrl+B Shift+E`
+                // opens the settings overlay from every screen, including
+                // the Terminal screen where prefix `s` is split mode.
+                self.open_overlay(TuiMode::Settings);
+            }
             Shortcut::Settings => {
-                // Prefix s: settings overlay (webui settings modal) —
-                // except on the Terminal screen in Navigate mode, where
-                // the split-panel design takes the key (Ctrl+B s opens
-                // split mode; the settings overlay stays on the git
-                // screens and reachable via the sidebar menu).
+                // Prefix s: on the git screens this stays the settings
+                // overlay (webui KeyS muscle memory). On the Terminal
+                // screen in Navigate mode the split-panel design takes
+                // the key (Ctrl+B s opens split mode); Shift+E
+                // (Ctrl+B Shift+E, review F4) is the dedicated settings
+                // chord that works from every screen, so the overlay is
+                // no longer mouse-only from Terminal.
                 if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
                     self.open_split_mode();
                 } else {
@@ -2259,60 +2279,8 @@ impl TuiApp {
             }
             Shortcut::FocusNext => self.walk_focus(1),
             Shortcut::FocusPrev => self.walk_focus(-1),
-            Shortcut::Lens => {
-                // Chat lens toggle (webui Chat/Terminal switch): only
-                // meaningful over the terminal screen, and only for
-                // panes with a transcript provider (design section 6).
-                // Unsupported panes show positive evidence instead of
-                // silently ignoring the key.
-                if self.screen == TuiScreen::Terminal {
-                    // Read the session snapshot up front: the borrow ends
-                    // before the mutable lens toggle.
-                    let session = self
-                        .view_pane()
-                        .and_then(|pane| pane.agent_session.as_ref());
-                    match session.map(|s| s.chat_supported()) {
-                        Some(true) => {
-                            // Refusal shape (resolvable: false): the lens
-                            // opens but the hint carries the refusal
-                            // reason (design section 6: "reason drives
-                            // the lens hint text"). Only the open shows
-                            // the copy; closing says "lens closed".
-                            let refusal = session
-                                .filter(|s| !s.resolvable)
-                                .and_then(|s| s.reason.as_deref())
-                                .map(refusal_reason_copy);
-                            self.lens.toggle();
-                            self.status = match (&refusal, self.lens.active) {
-                                (Some(copy), true) => format!("lens: {copy}"),
-                                (Some(_), false) => "lens closed".to_string(),
-                                (None, true) => "lens: j/k scroll · G tail · Esc close".to_string(),
-                                (None, false) => "lens closed".to_string(),
-                            };
-                        }
-                        Some(false) => {
-                            self.status = "lens: unsupported agent".to_string();
-                        }
-                        None => {
-                            self.status = "lens: no agent session on this pane".to_string();
-                        }
-                    }
-                }
-            }
-            Shortcut::Composer => {
-                // Chat composer (webui composer box): message prompt for
-                // the selected pane, prefilled with the pane's draft.
-                if self.screen == TuiScreen::Terminal {
-                    let mut input = PromptInput::new(PromptKind::ComposerMessage);
-                    if let Some(pane) = self.view_pane() {
-                        if let Some(draft) = self.composer_drafts.get(&pane.id) {
-                            input.text = draft.clone();
-                        }
-                    }
-                    self.prompt_input = Some(input);
-                    self.status = "composer: type the message, Enter sends".to_string();
-                }
-            }
+            Shortcut::Lens => self.toggle_lens_from_footer(),
+            Shortcut::Composer => self.open_composer_from_footer(),
             Shortcut::Quit => self.request_quit(),
             Shortcut::GitChanges => {
                 self.open_git_screen();
@@ -2458,7 +2426,10 @@ impl TuiApp {
                 match self.git_panel.toggle_blame(&self.web_api) {
                     Ok(()) => {
                         self.status = if self.git_panel.show_blame {
-                            "blame on".to_string()
+                            // Review F3: `Ctrl+B m` is move-tile on the
+                            // Terminal screen, so the git meaning firing
+                            // names the context to break the surprise.
+                            "blame on (Ctrl+B m moves tiles on terminal)".to_string()
                         } else {
                             "blame off".to_string()
                         };
@@ -2513,6 +2484,11 @@ impl TuiApp {
                     return;
                 }
                 self.run_git_action(|panel, api| panel.stash_changes(api));
+                // Review F3: `Ctrl+B z` is tile zoom on the Terminal
+                // screen; the git meaning firing names the context.
+                if self.error.is_none() {
+                    self.status = "stashed (Ctrl+B z zooms tiles on terminal)".to_string();
+                }
             }
             Shortcut::GitPush => self.run_git_action(|panel, api| panel.push(api)),
             Shortcut::GitStageAll => {
@@ -2574,6 +2550,64 @@ impl TuiApp {
                     self.split_toggle_zoom();
                 }
             }
+        }
+    }
+
+    /// Chat lens toggle shared by the footer's plain `Shift+L` and the
+    /// `Ctrl+B Shift+L` chord (review F1: the footer advertised the
+    /// key but only the prefix binding fired). Only meaningful over
+    /// the terminal screen, and only for panes with a transcript
+    /// provider (design section 6). Unsupported panes show positive
+    /// evidence instead of silently ignoring the key.
+    fn toggle_lens_from_footer(&mut self) {
+        if self.screen == TuiScreen::Terminal {
+            // Read the session snapshot up front: the borrow ends
+            // before the mutable lens toggle.
+            let session = self
+                .view_pane()
+                .and_then(|pane| pane.agent_session.as_ref());
+            match session.map(|s| s.chat_supported()) {
+                Some(true) => {
+                    // Refusal shape (resolvable: false): the lens opens
+                    // but the hint carries the refusal reason (design
+                    // section 6: "reason drives the lens hint text").
+                    // Only the open shows the copy; closing says
+                    // "lens closed".
+                    let refusal = session
+                        .filter(|s| !s.resolvable)
+                        .and_then(|s| s.reason.as_deref())
+                        .map(refusal_reason_copy);
+                    self.lens.toggle();
+                    self.status = match (&refusal, self.lens.active) {
+                        (Some(copy), true) => format!("lens: {copy}"),
+                        (Some(_), false) => "lens closed".to_string(),
+                        (None, true) => "lens: j/k scroll · G tail · Esc close".to_string(),
+                        (None, false) => "lens closed".to_string(),
+                    };
+                }
+                Some(false) => {
+                    self.status = "lens: unsupported agent".to_string();
+                }
+                None => {
+                    self.status = "lens: no agent session on this pane".to_string();
+                }
+            }
+        }
+    }
+
+    /// Composer prompt shared by the plain `Shift+C` footer key and the
+    /// `Ctrl+B Shift+C` chord: message prompt for the focused pane,
+    /// prefilled with the pane's draft.
+    fn open_composer_from_footer(&mut self) {
+        if self.screen == TuiScreen::Terminal {
+            let mut input = PromptInput::new(PromptKind::ComposerMessage);
+            if let Some(pane) = self.view_pane() {
+                if let Some(draft) = self.composer_drafts.get(&pane.id) {
+                    input.text = draft.clone();
+                }
+            }
+            self.prompt_input = Some(input);
+            self.status = "composer: type the message, Enter sends".to_string();
         }
     }
 
@@ -3793,6 +3827,12 @@ impl TuiApp {
                     self.open_help_overlay();
                 }
                 KeyCode::Char('r') => self.refresh_active_screen(),
+                // Plain Shift+L / Shift+C (review F1): the TerminalMain
+                // footer advertises these keys, so the main-focus arm
+                // must honor them, not only the Ctrl+B chord. They
+                // share the exact dispatch body with the prefix route.
+                KeyCode::Char('L') => self.toggle_lens_from_footer(),
+                KeyCode::Char('C') => self.open_composer_from_footer(),
                 KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
                 KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
                 KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
@@ -3868,6 +3908,12 @@ impl TuiApp {
                 self.scroll_pane_down(10);
             }
             KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
+            // Footer-advertised lens/composer keys work with the
+            // sidebar focused too: the hint line renders in both
+            // focus states, so the keys must not be focus-dependent
+            // (review F1).
+            KeyCode::Char('L') => self.toggle_lens_from_footer(),
+            KeyCode::Char('C') => self.open_composer_from_footer(),
             KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
             KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
             KeyCode::Enter => self.attach_selected(),
