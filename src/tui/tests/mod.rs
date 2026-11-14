@@ -7417,6 +7417,114 @@ fn lens_gate_allows_supported_kind_even_when_unresolvable() {
 }
 
 #[test]
+fn plain_shift_l_and_shift_c_open_lens_and_composer() {
+    // Review F1: the TerminalMain footer advertises Shift+L / Shift+C
+    // as plain keys, so they must fire without the Ctrl+B prefix in
+    // both focus states (main focused and sidebar focused).
+    let mut app = app_with_snapshot();
+    app.main_focused = true;
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(app.lens.active, "plain Shift+L opens the lens");
+    app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+    assert!(!app.lens.active);
+
+    // Composer prompt via plain Shift+C, main focus.
+    app.handle_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    assert!(
+        app.prompt_input.is_some(),
+        "plain Shift+C opens the composer prompt"
+    );
+    assert_eq!(app.status, "composer: type the message, Enter sends");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+
+    // Sidebar focused: the footer still advertises the keys, so they
+    // keep working there too.
+    app.main_focused = false;
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(app.lens.active, "Shift+L works with the sidebar focused");
+    app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+    app.handle_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    assert!(
+        app.prompt_input.is_some(),
+        "Shift+C works with the sidebar focused"
+    );
+}
+
+#[test]
+fn footer_names_walk_and_scroll_keys_when_split_active() {
+    // Review F2: with a split open the TerminalMain footer must swap
+    // to the split hint (hjkl walk, Ctrl+j/k scroll); without one the
+    // plain hint stays.
+    let mut app = app_with_two_panes();
+    app.main_focused = true;
+    let plain = app.footer_context().hint();
+    assert!(plain.contains("Enter attach"));
+    assert!(
+        !plain.contains("Ctrl+j/k"),
+        "no split, no walk/scroll hint yet"
+    );
+
+    // Open the split like a user: Ctrl+B s then Enter commits.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.split_tree.leaves().len(), 2);
+    let split = app.footer_context().hint();
+    assert!(
+        split.contains("hjkl walk"),
+        "split hint names the walk keys"
+    );
+    assert!(
+        split.contains("Ctrl+j/k scroll"),
+        "split hint names the scroll escape"
+    );
+
+    // Narrow-terminal shrink keeps the essentials.
+    let compact = app.footer_context().compact_hint();
+    assert!(compact.contains("hjkl walk"));
+    assert!(compact.contains("Ctrl+j/k scroll"));
+}
+
+#[test]
+fn prefix_shift_e_opens_settings_from_terminal_screen() {
+    // Review F4: `Ctrl+B Shift+E` is the dedicated settings chord that
+    // works from every screen; on Terminal `Ctrl+B s` stays split mode.
+    let mut app = app_with_snapshot();
+    app.main_focused = true;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT));
+    assert_eq!(
+        app.mode,
+        crate::tui::TuiMode::Settings,
+        "Shift+E opens settings"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Plain e behind the prefix stays edit-file (on Terminal that
+    // routes to the Git screen's file list, never settings).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert_ne!(app.mode, crate::tui::TuiMode::Settings);
+    assert_eq!(app.screen, crate::tui::TuiScreen::Git);
+    // On the git screen prefix s keeps the settings meaning.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(
+        app.mode,
+        crate::tui::TuiMode::Settings,
+        "git screen: prefix s stays settings"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Back on Terminal, Ctrl+B s still opens split mode, not settings.
+    app.screen = crate::tui::TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some(), "Ctrl+B s keeps the split meaning");
+}
+
+#[test]
 fn lens_gate_blocks_pane_without_agent_session() {
     let mut app = app_with_snapshot();
     app.snapshot.panes[0].agent_session = None;
@@ -10132,6 +10240,91 @@ fn attach_viewport_sizes_to_focused_tile_in_split() {
     app.split_focus = None;
     let (cols, _) = app.attach_viewport();
     assert_eq!(cols, full_cols);
+}
+
+#[test]
+fn tile_titles_carry_workspace_label_folder_and_chips() {
+    // Design "Tile identity and status": every tile border carries
+    // the workspace label (human, not the raw id), the cwd folder on
+    // every tile (not only the focused one), and the worktree/branch
+    // chips when the workspace carries a git stamp.
+    let mut fixture = fixture_snapshot_value_two_panes();
+    // ws_2 becomes a linked worktree lane with a branch.
+    fixture["snapshot"]["workspaces"][1]["worktree"] = json!({
+        "repo_root": "/repos/herdr",
+        "repo_name": "herdr",
+        "branch": "feature/side-lane",
+        "path": "/repos/herdr-lane",
+    });
+    fixture["snapshot"]["workspaces"][0]["worktree"] = json!({
+        "repo_root": "/repo",
+        "repo_name": "repo",
+        "branch": "main",
+        "path": "/repo",
+    });
+    fixture["snapshot"]["panes"][1]["cwd"] = json!("/repos/herdr-lane");
+    let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture);
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+
+    // Half-width tiles must fit the whole title: at 150 cols each
+    // tile is 58 wide and ratatui clips the tail of the 59-char
+    // pane_2 title (the branch token), so the identity composition
+    // needs a draw that leaves the tokens room.
+    let drawn = draw(&app, 220, 40);
+
+    // Both tiles: human workspace labels, never the raw ws_ ids.
+    assert!(drawn.contains("Repo"), "workspace label renders");
+    assert!(drawn.contains("Other"), "second workspace label renders");
+    assert!(!drawn.contains("ws_1"), "raw workspace id must not render");
+    assert!(!drawn.contains("ws_2"), "raw workspace id must not render");
+    // Folder on both tiles: main checkout repo, linked lane checkout.
+    assert!(drawn.contains("repo"));
+    assert!(drawn.contains("herdr-lane"), "folder comes from pane cwd");
+    // Linked lane chip + branch token on the worktree tile.
+    assert!(drawn.contains("[worktree]"), "linked lane chip renders");
+    assert!(
+        drawn.contains("@ feature/side-lane"),
+        "branch token renders"
+    );
+    // The main checkout shows its branch without the worktree chip
+    // (@ main renders once, no second [worktree]).
+    assert!(drawn.contains("@ main"));
+    assert_eq!(
+        drawn.matches("[worktree]").count(),
+        1,
+        "only the linked lane carries the worktree chip"
+    );
+}
+
+#[test]
+fn tile_titles_fall_back_to_workspace_id_without_label() {
+    // A snapshot row without a label keeps rendering: the title falls
+    // back to the workspace id instead of vanishing (defensive parse
+    // already defaults the label, so this pins the fallback).
+    let mut fixture = fixture_snapshot_value_two_panes();
+    fixture["snapshot"]["workspaces"][1]["label"] = serde_json::Value::Null;
+    let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture);
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("Workspace"), "default label renders");
 }
 
 #[test]

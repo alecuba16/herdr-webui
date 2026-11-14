@@ -18,7 +18,7 @@ use crate::tui::split::{Side, SplitDir, SplitNode, TileRect};
 use crate::tui::theme::Palette;
 use crate::tui::TuiApp;
 
-use super::{status_dot, status_style, styled_terminal_line, truncate};
+use super::{status_dot, status_style, styled_terminal_line, truncate, workspace_branch_token};
 
 /// One laid-out tile: pane id plus its rect and focus flag.
 pub(crate) struct Tile {
@@ -241,26 +241,41 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
         .or(pane.agent.as_deref())
         .unwrap_or("shell");
     let (dot, _dot_style) = status_dot(&pane.agent_status, p);
-    let title = if tile.focused {
-        let folder = std::path::Path::new(&pane.cwd)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
-        format!(
-            " {} {} · {} {} ",
-            dot,
-            truncate(agent_name, 18),
-            truncate(&pane.workspace_id, 12),
-            truncate(&folder, 14),
-        )
-    } else {
-        format!(
-            " {} {} · {} ",
-            dot,
-            truncate(agent_name, 18),
-            truncate(&pane.workspace_id, 12),
-        )
-    };
+    // Workspace identity per the design: human label (not the raw
+    // ws id) plus the cwd basename on every tile, worktree/branch
+    // chips when the workspace carries a git stamp. Focused keeps
+    // the bold accent ring; the label parts stay the same shape so
+    // scanning a row of tiles reads left to right: dot · agent ·
+    // workspace · folder · chips.
+    let workspace = app
+        .snapshot
+        .workspaces
+        .iter()
+        .find(|ws| ws.id == pane.workspace_id);
+    let workspace_label = workspace
+        .map(|ws| ws.label.clone())
+        .unwrap_or_else(|| pane.workspace_id.clone());
+    let folder = std::path::Path::new(&pane.cwd)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut title = format!(
+        " {} {} · {} ",
+        dot,
+        truncate(agent_name, 18),
+        truncate(&workspace_label, 12),
+    );
+    if !folder.is_empty() {
+        title.push_str(&format!("· {} ", truncate(&folder, 14)));
+    }
+    if let Some(ws) = workspace {
+        if ws.worktree.as_ref().is_some_and(|stamp| stamp.is_linked) {
+            title.push_str("[worktree] ");
+        }
+        if let Some(branch) = workspace_branch_token(ws) {
+            title.push_str(&format!("{} ", truncate(&branch, 24)));
+        }
+    }
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)

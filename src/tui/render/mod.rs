@@ -278,7 +278,7 @@ fn workspace_worktree_token(workspace: &TuiWorkspace) -> Option<String> {
 /// HEAD), mirroring the desktop's disabled branch chip: the desktop
 /// renders a disabled ` branch…` placeholder, the TUI drops the token
 /// instead (a muted placeholder buys no information in text form).
-fn workspace_branch_token(workspace: &TuiWorkspace) -> Option<String> {
+pub(crate) fn workspace_branch_token(workspace: &TuiWorkspace) -> Option<String> {
     workspace.worktree.as_ref().and_then(|stamp| {
         if stamp.branch.is_empty() {
             None
