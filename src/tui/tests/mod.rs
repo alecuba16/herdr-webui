@@ -12303,3 +12303,285 @@ fn worktree_stage_picked_guards_missing_rows_and_paths() {
     let result = app.worktree_stage_picked();
     assert_eq!(result, Err("worktree path missing".to_string()));
 }
+
+#[test]
+fn split_ghost_moves_between_tiles_and_flips_side_family_only_on_axis_break() {
+    let mut app = app_with_two_panes();
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.sync_split_tree();
+    // Two tiles side by side, ghost overlays pane_1 proposing pane_2.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".into(),
+        pane: "pane_2".into(),
+        side: crate::tui::split::Side::Right,
+    });
+    // Tile geometry is recorded during render; draw once so the ghost
+    // walk has real rectangles.
+    draw(&app, 150, 40);
+
+    // Zoomed: ghost moves are suppressed.
+    app.split_zoomed = true;
+    app.split_move_ghost(1, 0);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_1");
+    app.split_zoomed = false;
+
+    // Horizontal move lands on the other tile and keeps the row side.
+    app.split_move_ghost(1, 0);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_3");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Right
+    );
+
+    // Back: the row neighbor is pane_1 again.
+    app.split_move_ghost(-1, 0);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_1");
+
+    // A vertical move on a flat row finds no neighbor: the ghost
+    // stays put and the side family is untouched.
+    app.split_move_ghost(0, 1);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_1");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Right
+    );
+
+    // A stacked (column) tree does have a vertical neighbor, and the
+    // axis switch flips the side family to Below.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Col,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    draw(&app, 150, 40);
+    app.split_move_ghost(0, 1);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_3");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below
+    );
+
+    // With a single tile on the tree, a move that finds no neighbor is
+    // a no-op.
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_move_ghost(0, 1);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_3");
+}
+
+#[test]
+fn split_cycle_pane_reports_when_no_alternative_exists() {
+    let mut app = app_with_two_panes();
+    // Both panes on the tree after a commit: no off-tree candidate.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1", "pane_2"]);
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".into(),
+        pane: "pane_2".into(),
+        side: crate::tui::split::Side::Right,
+    });
+    app.split_cycle_pane();
+    assert_eq!(app.status, "no other pane to open");
+    assert!(app.split_mode.is_some(), "preview stays up");
+
+    // No preview at all: silent return.
+    app.split_mode = None;
+    app.split_cycle_pane();
+    assert!(app.split_mode.is_none());
+}
+
+#[test]
+fn split_flip_side_cycles_the_full_side_compass() {
+    let mut app = app_with_two_panes();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".into(),
+        pane: "pane_2".into(),
+        side: crate::tui::split::Side::Right,
+    });
+    let expect = [
+        crate::tui::split::Side::Below,
+        crate::tui::split::Side::Left,
+        crate::tui::split::Side::Above,
+        crate::tui::split::Side::Right,
+    ];
+    for side in expect {
+        app.split_flip_side();
+        assert_eq!(app.split_mode.as_ref().unwrap().side, side);
+    }
+    // No preview: silent return.
+    app.split_mode = None;
+    app.split_flip_side();
+    assert!(app.split_mode.is_none());
+}
+
+#[test]
+fn move_mode_walk_target_tracks_the_approach_side() {
+    let mut app = app_with_two_panes();
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.sync_split_tree();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "pane_1".into(),
+        target: "pane_1".into(),
+        insert: false,
+        side: crate::tui::split::Side::Right,
+    });
+    draw(&app, 150, 40);
+
+    // Zoomed: suppressed.
+    app.split_zoomed = true;
+    app.move_walk_target(1, 0);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_1");
+    app.split_zoomed = false;
+
+    // Walking right approaches from the left edge.
+    app.move_walk_target(1, 0);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+    assert_eq!(
+        app.move_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Left
+    );
+
+    // Walking back left skips the picked tile itself (the insert
+    // preview never targets the pane being moved), so the target
+    // stays on pane_3.
+    app.move_walk_target(-1, 0);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+
+    // No mode: silent return.
+    app.move_mode = None;
+    app.move_walk_target(1, 0);
+    assert!(app.move_mode.is_none());
+}
+
+#[test]
+fn move_mode_key_handler_routes_tab_esc_and_walking() {
+    let mut app = app_with_two_panes();
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.sync_split_tree();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "pane_1".into(),
+        target: "pane_1".into(),
+        insert: false,
+        side: crate::tui::split::Side::Right,
+    });
+    draw(&app, 150, 40);
+
+    // Tab toggles the insert verb.
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Tab));
+    assert!(app.move_mode.as_ref().unwrap().insert);
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Tab));
+    assert!(!app.move_mode.as_ref().unwrap().insert);
+
+    // hjkl walk the target.
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+
+    // Esc cancels.
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.move_mode.is_none());
+    assert_eq!(app.status, "move cancelled");
+
+    // No mode: keys are inert.
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Char('l')));
+    assert!(app.move_mode.is_none());
+}
+
+#[test]
+fn open_move_mode_guards_single_tile_and_missing_focus() {
+    let mut app = app_with_two_panes();
+    // Single tile: refused.
+    app.open_move_mode();
+    assert_eq!(app.status, "nothing to move (single tile)");
+    assert!(app.move_mode.is_none());
+
+    // No panes at all: no focus guard.
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({"snapshot": {
+        "workspaces": [], "tabs": [], "panes": [], "agents": []
+    }}));
+    app.split_tree = crate::tui::split::SplitNode::leaf("gone");
+    app.open_move_mode();
+    assert_eq!(app.status, "no pane to move");
+    assert!(app.move_mode.is_none());
+}
+
+#[test]
+fn resize_mode_opens_walks_and_guards() {
+    let mut app = app_with_two_panes();
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.sync_split_tree();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+
+    // Single tile guard first.
+    let single = app.split_tree.clone();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.open_resize_mode();
+    assert_eq!(app.status, "nothing to resize (single tile)");
+    assert!(app.resize_mode.is_none());
+    app.split_tree = single;
+
+    // Zoomed auto-unzoom opens resize mode.
+    app.split_zoomed = true;
+    app.open_resize_mode();
+    assert!(!app.split_zoomed);
+    assert_eq!(app.status, "zoom off");
+    assert!(app.resize_mode.is_some());
+    assert_eq!(app.resize_mode.as_ref().unwrap().pane, "pane_1");
+
+    // h narrows the focused tile.
+    let before = app.split_tree.clone();
+    app.resize_step_direction(
+        crate::tui::split::SplitDir::Row,
+        crate::tui::split::ResizeDir::Narrow,
+    );
+    assert_eq!(app.status, "tile resized");
+    assert_ne!(app.split_tree, before);
+
+    // l widens it back.
+    app.resize_step_direction(
+        crate::tui::split::SplitDir::Row,
+        crate::tui::split::ResizeDir::Wider,
+    );
+    assert_eq!(app.split_tree, before);
+
+    // Key handler routing: j/k drive the col axis (no col dividers
+    // on a flat row, so the move reports the outer boundary).
+    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('l')));
+    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('k')));
+    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('j')));
+    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('h')));
+
+    // No mode: inert.
+    app.resize_mode = None;
+    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('l')));
+    assert!(app.resize_mode.is_none());
+}
