@@ -11636,6 +11636,19 @@ fn split_tile_tails_render_loading_and_cached_text() {
     let drawn = draw(&app, 150, 40);
     assert!(drawn.contains("scrollback line"), "deep history renders");
     assert!(drawn.contains("tail line"), "styled tail renders");
+
+    // The single-pane view walks the same deep history: scrollback
+    // lines above the styled window render plain there too.
+    let mut app = app_with_snapshot();
+    app.pane_history = vec!["plain past".to_string(), "tail line".to_string()];
+    app.pane_tail = vec!["tail line".to_string()];
+    app.pane_tail_styles = vec![vec![crate::tui::terminal::TuiTextSpan {
+        text: "tail line".to_string(),
+        style: crate::tui::terminal::TuiTextStyle::default(),
+    }]];
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("plain past"), "plain scrollback row");
+    assert!(drawn.contains("tail line"), "live tail row");
 }
 
 #[test]
@@ -12389,8 +12402,22 @@ fn split_ghost_moves_between_tiles_and_flips_side_family_only_on_axis_break() {
         ],
     );
     draw(&app, 150, 40);
-    // The side family is already Below from the last flip: a vertical
-    // move keeps it (the col-side-preserving arm).
+    // The side family is still Right: the axis switch flips it to
+    // Below on the way to pane_3.
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".into(),
+        pane: "pane_2".into(),
+        side: crate::tui::split::Side::Right,
+    });
+    app.split_move_ghost(0, 1);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_3");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below
+    );
+
+    // The side family is already Below now: a vertical move keeps it
+    // (the col-side-preserving arm).
     app.split_mode = Some(crate::tui::split::SplitPreview {
         neighbor: "pane_1".into(),
         pane: "pane_2".into(),
@@ -13307,28 +13334,29 @@ fn move_panel_selects_the_tab_of_the_pane_the_agent_list_points_at() {
 #[test]
 fn move_panel_keeps_the_cursor_when_the_tab_has_no_agent_entry() {
     let mut app = app_with_snapshot();
+    // tab_2 has no pane entry at all: neither the pane lookup nor the
+    // agent repoint finds anything, and the panel still switches.
     app.snapshot = TuiSnapshot::from_backend_response(&json!({
         "snapshot": {
-            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":2,"active_tab_id":"tab_2"}],
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":2,"active_tab_id":"tab_1"}],
             "tabs": [
                 {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":false,"pane_count":1,"agent_status":"idle"},
                 {"tab_id":"tab_2","workspace_id":"ws_1","label":"Server","focused":false,"pane_count":1,"agent_status":"idle"}
             ],
             "panes": [
-                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
-                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo","focused":false}
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false}
             ],
             "agents": [
                 {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false}
             ]
         }
     }));
-    // tab_2's pane has no agent row: the cursor stays put and the
-    // panel still switches.
+    // Moving to tab_2 finds no pane: the agent cursor stays on pane_1's
+    // row and the status still reports the switch.
     app.selected_agent = 0;
     let message = app.move_panel(1).unwrap();
     assert_eq!(message, "panel 2/2");
-    assert_eq!(app.selected_agent, 0, "no agent row to repoint at");
+    assert_eq!(app.selected_agent, 0, "no pane row to repoint at");
 }
 
 #[test]
@@ -13379,6 +13407,38 @@ fn tile_titles_stamp_worktree_and_branch_chip() {
     let drawn = draw(&app, 150, 40);
     assert!(drawn.contains("[worktree] "), "worktree marker on the tile");
     assert!(drawn.contains("@ feature-x "), "branch chip on the tile");
+
+    // A three-row terminal: tab bar and AGENTS bar take the body, the
+    // pane area collapses to zero and the split view early-returns.
+    let _ = draw(&app, 150, 3);
+
+    // A tile whose workspace vanished from the snapshot still renders:
+    // the workspace lookup falls back to the raw id.
+    app.snapshot.workspaces.clear();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.snapshot.panes.push(crate::tui::model::TuiPane {
+        id: "pane_2".into(),
+        terminal_id: "term_2".into(),
+        workspace_id: "ws_missing".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        agent: Some("bot".into()),
+        display_agent: Some("bot".into()),
+        agent_status: "idle".into(),
+        cwd: "/elsewhere".into(),
+        focused: false,
+        terminal_title: None,
+        agent_session: None,
+    });
+    app.split_focus = Some("pane_2".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("ws_missing"), "fallback workspace token");
 }
 
 #[test]
