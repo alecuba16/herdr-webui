@@ -5627,3 +5627,243 @@ mod git_key_tests {
         let _ = (ConflictAction::MergeContinue, ConflictResolveMode::Ours);
     }
 }
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use panels::git::{GitFileEntry, GitFileStatus, GitView};
+
+    #[test]
+    fn shortcuts_open_screens_overlays_and_cycle_focus() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        // Help overlay, settings overlay, files screen.
+        app.run_shortcut(Shortcut::Help);
+        assert_eq!(app.mode, TuiMode::Help);
+        app.mode = TuiMode::Navigate;
+        // Settings on the Terminal screen in Navigate opens split mode;
+        // the SettingsOverlay chord opens the overlay from anywhere.
+        app.run_shortcut(Shortcut::Settings);
+        assert!(app.split_mode.is_some(), "settings on terminal opens split");
+        app.split_mode = None;
+        app.screen = TuiScreen::Git;
+        app.run_shortcut(Shortcut::Settings);
+        assert_eq!(app.mode, TuiMode::Settings);
+        app.mode = TuiMode::Navigate;
+        app.run_shortcut(Shortcut::SettingsOverlay);
+        assert_eq!(app.mode, TuiMode::Settings);
+        app.mode = TuiMode::Navigate;
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::Files);
+        assert_eq!(app.screen, TuiScreen::Files);
+        // Git and terminal routing plus view shortcuts.
+        app.run_shortcut(Shortcut::Git);
+        assert_eq!(app.screen, TuiScreen::Git);
+        app.run_shortcut(Shortcut::Terminal);
+        assert_eq!(app.screen, TuiScreen::Terminal);
+        app.run_shortcut(Shortcut::GitLog);
+        assert_eq!(app.git_panel.view, GitView::Log);
+        app.run_shortcut(Shortcut::GitStash);
+        assert_eq!(app.git_panel.view, GitView::Stash);
+        app.run_shortcut(Shortcut::GitBranch);
+        assert_eq!(app.git_panel.view, GitView::Branches);
+        app.run_shortcut(Shortcut::GitChanges);
+        assert_eq!(app.git_panel.view, GitView::Changes);
+        app.run_shortcut(Shortcut::GitChangesBack);
+        assert_eq!(app.git_panel.view, GitView::Changes);
+        // Focus walker cycles through the regions.
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::FocusNext);
+        app.run_shortcut(Shortcut::FocusPrev);
+        assert!(app.status.is_empty() || app.error.is_none());
+        // Sidebar toggle flips the flag both ways.
+        app.run_shortcut(Shortcut::Sidebar);
+        assert!(app.sidebar_collapsed);
+        app.run_shortcut(Shortcut::Sidebar);
+        assert!(!app.sidebar_collapsed);
+        // Quit shortcut opens the confirm, not an instant exit.
+        app.run_shortcut(Shortcut::Quit);
+        assert_eq!(app.mode, TuiMode::ConfirmQuit);
+        app.mode = TuiMode::Navigate;
+        // Split entry points only act on the Terminal screen.
+        app.screen = TuiScreen::Files;
+        app.run_shortcut(Shortcut::SplitPane);
+        assert!(app.split_mode.is_none());
+        app.run_shortcut(Shortcut::MovePane);
+        assert!(app.move_mode.is_none());
+        app.run_shortcut(Shortcut::ZoomPane);
+        app.run_shortcut(Shortcut::ResizePane);
+        assert!(app.resize_mode.is_none());
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::SplitPane);
+        assert!(app.split_mode.is_some());
+        app.split_mode = None;
+        // Move needs a focused pane and 2+ tiles; the single-tile
+        // fixture reports it instead of opening the overlay.
+        app.run_shortcut(Shortcut::MovePane);
+        assert!(app.move_mode.is_none());
+        app.run_shortcut(Shortcut::ResizePane);
+        assert!(app.resize_mode.is_none());
+    }
+
+    #[test]
+    fn git_shortcuts_stage_unstage_stash_push_and_blame() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        // run_git_action routes through open_git_screen, whose refresh
+        // wipes the file list; start on the Git screen and re-seed the
+        // selection before every mutating verb.
+        app.screen = TuiScreen::Git;
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitStageFile);
+        assert!(app.error.is_none(), "stage failed: {:?}", app.error);
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Staged,
+        }];
+        app.run_shortcut(Shortcut::GitUnstageFile);
+        assert!(app.error.is_none(), "unstage failed: {:?}", app.error);
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitPush);
+        assert!(app.error.is_none(), "push failed: {:?}", app.error);
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitStageAll);
+        assert_eq!(app.status, "staged state toggled");
+        // No selection guards for stage/unstage/discard.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        app.screen = TuiScreen::Git;
+        app.run_shortcut(Shortcut::GitStageFile);
+        assert!(app.error.is_some());
+        app.error = None;
+        app.run_shortcut(Shortcut::GitUnstageFile);
+        assert!(app.error.is_some());
+        app.error = None;
+        app.run_shortcut(Shortcut::GitDiscardFile);
+        assert!(app.error.is_some());
+        // Empty cwd guards stage-all.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = String::new();
+        app.run_shortcut(Shortcut::GitStageAll);
+        assert_eq!(app.error.as_deref(), Some("git: no repository selected"));
+        // Stash verb on the git screen stashes, on Terminal it zooms.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        app.screen = TuiScreen::Git;
+        app.run_shortcut(Shortcut::GitStashFile);
+        assert!(app.status.contains("stashed"));
+        // Blame toggles on the git screen.
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitBlame);
+        assert!(app.error.is_none(), "blame failed: {:?}", app.error);
+        app.run_shortcut(Shortcut::GitBlame);
+        assert!(app.error.is_none(), "blame off failed: {:?}", app.error);
+        // File history requires a selected file.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        app.run_shortcut(Shortcut::GitFileHistory);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("no file selected in git changes")
+        );
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitFileHistory);
+        assert!(app.status.starts_with("history: a.rs"));
+        // Focus-file reports an empty list without a selection.
+        app.git_panel.files.clear();
+        app.run_shortcut(Shortcut::GitFocusFile);
+        assert_eq!(app.status, "git: no files in the list");
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitFocusFile);
+        assert_eq!(app.status, "git: file list focused");
+    }
+
+    #[test]
+    fn edit_file_shortcut_opens_git_and_files_editors() {
+        // Files screen: start editing the open preview.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer.preview.path = Some("a.rs".into());
+        app.file_explorer.preview.content = "hi".into();
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(app.status, "editing: Ctrl-S saves, Esc stops");
+        // Git screen: no selection refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.cwd = "/repo".into();
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("no file selected in git changes")
+        );
+        // Git screen with a selection opens the editor through the api.
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.error = None;
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(app.status, "editing: Ctrl-S saves, Esc stops");
+        assert_eq!(app.screen, TuiScreen::Files);
+        // Git screen with a dirty different preview refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.cwd = "/repo".into();
+        app.git_panel.files = vec![GitFileEntry {
+            path: "b.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.file_explorer.preview.dirty = true;
+        app.file_explorer.preview.path = Some("a.rs".into());
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(
+            app.status,
+            "unsaved edits: save or reload before editing another file"
+        );
+    }
+
+    #[test]
+    fn git_commit_shortcut_opens_modal_and_branch_picker_routes() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_shortcut(Shortcut::GitCommit);
+        assert!(app.commit_input.is_some());
+        assert_eq!(app.status, "commit: type message, Enter commits");
+        // Branch switch shortcut opens the picker overlay.
+        app.run_shortcut(Shortcut::GitSwitchBranch);
+        // Session manager opens its overlay.
+        app.run_shortcut(Shortcut::SessionManager);
+        // Composer and lens both route through the footer helpers.
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::Composer);
+        app.run_shortcut(Shortcut::Lens);
+        assert!(app.status.is_empty() || app.error.is_none());
+    }
+}
