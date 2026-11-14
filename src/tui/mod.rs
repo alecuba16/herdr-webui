@@ -6088,3 +6088,96 @@ mod scroll_tests {
         assert!(app.error.is_none());
     }
 }
+
+#[cfg(test)]
+mod misc_coverage_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    fn nav_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn lens_keys_scroll_jump_and_close() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.lens.active = true;
+        app.pane_tail = (0..60).map(|i| format!("l{i}")).collect::<Vec<_>>();
+        // j/k walk, pages, G/g jump, Esc/q close.
+        app.handle_lens_key(nav_key(KeyCode::Char('k')));
+        assert!(app.lens.scroll_up >= 1);
+        app.handle_lens_key(nav_key(KeyCode::Char('j')));
+        app.handle_lens_key(nav_key(KeyCode::PageDown));
+        app.handle_lens_key(nav_key(KeyCode::PageUp));
+        app.handle_lens_key(nav_key(KeyCode::Char('G')));
+        app.handle_lens_key(nav_key(KeyCode::Char('g')));
+        app.handle_lens_key(nav_key(KeyCode::Esc));
+        assert!(!app.lens.active);
+        assert_eq!(app.status, "lens closed");
+        // q and i close too.
+        app.lens.active = true;
+        app.handle_lens_key(nav_key(KeyCode::Char('q')));
+        assert!(!app.lens.active);
+        app.lens.active = true;
+        app.handle_lens_key(nav_key(KeyCode::Char('i')));
+        assert!(!app.lens.active);
+    }
+
+    #[test]
+    fn sync_history_suffix_keeps_one_tail_copy() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.pane_history = (0..50).map(|i| format!("h{i}")).collect::<Vec<_>>();
+        app.pane_tail = vec!["t0".into(), "t1".into()];
+        app.sync_history_suffix();
+        assert_eq!(app.pane_history.len(), 50);
+        assert_eq!(app.pane_history[48], "t0");
+        assert_eq!(app.pane_history[49], "t1");
+        // A tail longer than the history rewrites it entirely.
+        app.pane_history.clear();
+        app.pane_tail = vec!["a".into(), "b".into(), "c".into()];
+        app.sync_history_suffix();
+        assert!(app.pane_history.is_empty());
+    }
+
+    #[test]
+    fn helpers_move_index_trim_and_strip() {
+        assert_eq!(move_index(0, 0, 1), 0);
+        assert_eq!(move_index(5, 3, 1), 2);
+        assert_eq!(move_index(0, 3, -1), 0);
+        assert_eq!(strip_ansi_lossy("\u{1b}[31mred\u{1b}[0m"), "red");
+        let mut raw = "x".repeat(TERMINAL_RAW_BUFFER_BYTES + 10);
+        trim_terminal_raw_output(&mut raw);
+        assert!(raw.len() <= TERMINAL_RAW_BUFFER_BYTES + 4);
+    }
+
+    #[test]
+    fn build_client_routes_explicit_and_builtin_sockets() {
+        let options = TuiOptions {
+            api_socket: Some("/tmp/a.sock".into()),
+            terminal_socket: Some("/tmp/t.sock".into()),
+            ..Default::default()
+        };
+        let client = build_client(&options);
+        assert_eq!(client.api_socket(), std::path::Path::new("/tmp/a.sock"));
+        // Without explicit sockets the builtin session namespace wins.
+        let options = TuiOptions::default();
+        let client = build_client(&options);
+        assert!(client.api_socket().to_string_lossy().contains("herdr"));
+    }
+
+    #[test]
+    fn status_notice_and_quit_flag() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.set_status_notice("hello".into());
+        assert_eq!(app.status, "hello");
+        assert!(app.status_hold_until.is_some());
+        assert!(!app.should_quit());
+        app.status = "quit".into();
+        assert!(app.should_quit());
+    }
+}
