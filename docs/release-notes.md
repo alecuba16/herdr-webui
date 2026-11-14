@@ -1,5 +1,23 @@
 # Release notes
 
+## 0.7.47 Release Notes
+- Onboarding tour on both surfaces: an 8-step guided walkthrough that
+  spotlights each region (search palette, workspaces, agents, panels,
+  terminal, sidebar, help, footer) and runs the real shortcut while
+  the card explains it. The WebUI auto-starts ~600ms after boot when
+  no localStorage record exists and replays from the Help modal; the
+  TUI opens it with T from the Help overlay.
+- The tour owns every key while active: the WebUI captures in the
+  capture phase before handleGlobalShortcut, the TUI guards
+  handle_key before the Ctrl+B prefix and the lens, so no chord
+  leaks under the card. Closing restores the pre-tour state, including
+  any modal or palette a demo opened.
+- Chord labels follow the configured shortcut map on the WebUI (remap
+  in Settings and the tour text follows); the TUI keeps a
+  code-constant table synced with keys.rs in the same commit. Both
+  surfaces teach the same 8 steps in the same order, documented in
+  docs/onboarding-tour.md.
+
 ## 0.7.46 Release Notes
 - The TUI Terminal screen splits into tiles: Ctrl+B s arms split
   mode (hjkl places the new pane, Tab flips orientation, p picks the
@@ -722,6 +740,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.47 | 2026-11-14 | [v0.7.47](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.47) |
 | 0.7.46 | 2026-11-14 | [v0.7.46](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.46) |
 | 0.7.45 | 2026-11-11 | [v0.7.45](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.45) |
 | 0.7.44 | 2026-11-10 | [v0.7.44](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.44) |
