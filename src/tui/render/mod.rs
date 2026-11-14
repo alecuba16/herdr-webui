@@ -1834,7 +1834,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
 /// space glued to the word before it, so wrapping never swallows or
 /// invents spaces. The empty input is exactly one cursor row, so the
 /// box height does not jump when the first character arrives.
-fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec!["█".to_string()];
     }

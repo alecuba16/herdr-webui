@@ -346,7 +346,9 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
         let tail_lines: Vec<&str> = text.split('\n').collect();
         let max_tail = inner.height as usize;
         let start = tail_lines.len().saturating_sub(max_tail);
-        if tail_lines.is_empty() {
+        // `"".split('\n')` yields one empty row, so the placeholder
+        // gate must check the source text, not the split vec.
+        if text.is_empty() {
             lines.push(Line::from(Span::styled(
                 if app.tile_tail_rx.is_some() {
                     "loading…"

@@ -11476,3 +11476,323 @@ fn web_api_replay_session_propagates_non_401_errors() {
         "transport error during replay surfaces: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Render coverage round: split tile drawing arms, branch picker edges,
+// cleanup prompt summary, session manager empty list, prompt wrapping.
+// ---------------------------------------------------------------------------
+
+fn two_tile_split() -> TuiApp {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app
+}
+
+fn three_pane_fixture() -> serde_json::Value {
+    json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":1,"active_tab_id":"tab_1"},
+                {"workspace_id":"ws_2","label":"Other","cwd":"/other","focused":false,"agent_status":"working","pane_count":1,"tab_count":1,"active_tab_id":"tab_2"}
+            ],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":2,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_2","label":"Server","focused":false,"pane_count":1,"agent_status":"working"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_2","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"working","cwd":"/other","focused":false},
+                {"pane_id":"pane_3","terminal_id":"term_3","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false}
+            ],
+            "agents": []
+        }
+    })
+}
+
+#[test]
+fn split_tiles_show_ghost_preview_and_move_rings() {
+    // Split mode ghost: two tiles on the tree, a third pane available
+    // from the same workspace as the candidate.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("SPLIT · open pane_3"), "hint names the pane");
+    assert!(
+        drawn.contains("+ pane_3 "),
+        "ghost tile titles the incoming pane, got: {drawn}"
+    );
+
+    // Move mode swap rings: double borders on picked and target.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        target: "pane_2".to_string(),
+        ..state
+    });
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("⇄ moving"), "picked ring renders");
+    assert!(drawn.contains("⇄ target"), "target ring renders");
+
+    // Insert verb swaps the target ring for a ghost landing tile.
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        insert: true,
+        ..state
+    });
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn.contains("pane_1 lands"),
+        "insert ghost names the pane"
+    );
+
+    // A zoomed single tile draws alone and the hint bar still lists.
+    let mut app = two_tile_split();
+    app.split_zoomed = true;
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("cwd "), "zoomed focused tile keeps chrome");
+}
+
+#[test]
+fn split_tile_tails_render_loading_and_cached_text() {
+    // Unfocused tile with no tail and no fetch in flight: no output.
+    let mut app = two_tile_split();
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("no output"), "empty tail placeholder");
+
+    // Cached plain tail lines render into the unfocused tile.
+    app.tile_tails
+        .insert("pane_2".to_string(), "alpha\nbeta\ngamma".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("alpha"), "cached tail renders");
+
+    // Focused tile with no pane tail shows the attach hint.
+    let mut app = two_tile_split();
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn.contains("No pane output yet"),
+        "focused tile attach hint"
+    );
+
+    // Deep history renders plain, the styled live tail renders styled.
+    let mut app = two_tile_split();
+    app.pane_history = vec!["scrollback line".to_string(), "tail line".to_string()];
+    app.pane_tail = vec!["tail line".to_string()];
+    app.pane_tail_styles = vec![vec![crate::tui::terminal::TuiTextSpan {
+        text: "tail line".to_string(),
+        style: crate::tui::terminal::TuiTextStyle {
+            bold: true,
+            ..Default::default()
+        },
+    }]];
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("scrollback line"), "deep history renders");
+    assert!(drawn.contains("tail line"), "styled tail renders");
+}
+
+#[test]
+fn split_status_bar_aggregates_and_lists_tiles() {
+    // Two tiles both list, counts aggregate by status.
+    let app = two_tile_split();
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("AGENTS "), "status bar renders");
+    assert!(drawn.contains("(Repo)"), "workspace labels list");
+
+    // Beyond five tiles the bar switches to the aggregate form.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+            crate::tui::split::SplitNode::leaf("ghost_1"),
+            crate::tui::split::SplitNode::leaf("ghost_2"),
+            crate::tui::split::SplitNode::leaf("ghost_3"),
+            crate::tui::split::SplitNode::leaf("ghost_4"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn.contains("· 1 more "),
+        "overflow counts the tail, got: {drawn}"
+    );
+    // A tile whose pane left the snapshot renders the placeholder.
+    assert!(drawn.contains(" … "), "missing pane placeholder");
+}
+
+#[test]
+fn branch_picker_empty_filter_line_and_no_match_row() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::BranchPicker;
+    app.branch_picker_root = "/repo".to_string();
+    app.branch_picker_rows = vec![
+        crate::tui::panels::git::GitBranchEntry {
+            name: "main".to_string(),
+            current: true,
+            remote: false,
+            pushed: true,
+            worktree_path: None,
+        },
+        crate::tui::panels::git::GitBranchEntry {
+            name: "feature".to_string(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: Some("/wt/feature".to_string()),
+        },
+    ];
+    // Typed filter shows the query line and narrows rows.
+    app.branch_picker_filter = "feat".to_string();
+    let drawn = draw(&app, 120, 30);
+    assert!(
+        drawn.contains("Branches · Enter switches or creates"),
+        "filtered footer copy, got: {drawn}"
+    );
+
+    // A filter matching nothing shows the create hint row.
+    app.branch_picker_filter = "zzz".to_string();
+    let drawn = draw(&app, 120, 30);
+    assert!(
+        drawn.contains("No branches match"),
+        "no-match row renders, got: {drawn}"
+    );
+
+    // Empty filter keeps the plain footer and full row list.
+    app.branch_picker_filter.clear();
+    let drawn = draw(&app, 120, 30);
+    assert!(drawn.contains("Branches · Enter switch/worktree"));
+}
+
+#[test]
+fn cleanup_prompt_summary_counts_and_branch_option() {
+    let mut app = app_with_snapshot();
+    app.prompt_input = Some(crate::tui::PromptInput::new(
+        crate::tui::PromptKind::ConfirmCleanupDelete,
+    ));
+    // No pending items at all.
+    let drawn = draw(&app, 120, 30);
+    assert!(
+        drawn.contains("no cleanup item"),
+        "zero-item summary, got: {drawn}"
+    );
+
+    // One marked worktree with a branch: singular + branch-too note.
+    app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec![],
+        worktrees: vec![crate::tui::panels::git::CleanupWorktree {
+            path: "/repo/wt".to_string(),
+            branch: Some("feature".to_string()),
+        }],
+    }];
+    app.git_panel.cleanup_toggle_mark();
+    let drawn = draw(&app, 120, 30);
+    assert!(
+        drawn.contains("worktree /repo/wt"),
+        "singular summary, got: {drawn}"
+    );
+    assert!(
+        drawn.contains("(yb also deletes branches)"),
+        "branch-too option renders"
+    );
+
+    // Two marked items: plural summary (move the cursor between marks,
+    // else the second toggle un-marks the first).
+    app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["old-a".to_string(), "old-b".to_string()],
+        worktrees: vec![],
+    }];
+    app.git_panel.cleanup_marked.clear();
+    app.git_panel.cleanup_selected = 0;
+    app.git_panel.cleanup_toggle_mark();
+    app.git_panel.cleanup_selected = 1;
+    app.git_panel.cleanup_toggle_mark();
+    let drawn = draw(&app, 120, 30);
+    assert!(
+        drawn.contains("2 cleanup items"),
+        "plural summary, got: {drawn}"
+    );
+}
+
+#[test]
+fn create_session_prompt_subject_names_session_and_backend() {
+    let mut app = app_with_snapshot();
+    app.prompt_input = Some(crate::tui::PromptInput::new(
+        crate::tui::PromptKind::CreateSession,
+    ));
+    let drawn = draw(&app, 120, 30);
+    assert!(
+        drawn.contains(&format!(
+            "from {} · {}",
+            app.current_session, app.current_backend
+        )),
+        "create-session subject names both, got: {drawn}"
+    );
+}
+
+#[test]
+fn session_manager_empty_list_renders_the_hint_row() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::SessionManager;
+    app.session_rows.clear();
+    app.session_load_error = None;
+    let drawn = draw(&app, 120, 30);
+    assert!(
+        drawn.contains("No sessions found"),
+        "empty-list hint, got: {drawn}"
+    );
+}
+
+#[test]
+fn prompt_input_wraps_long_words_and_zero_width() {
+    // A word wider than the row hard-breaks across rows.
+    let mut app = app_with_snapshot();
+    app.prompt_input = Some(crate::tui::PromptInput::new(
+        crate::tui::PromptKind::NewWorkspaceName,
+    ));
+    app.prompt_input.as_mut().unwrap().text = "supercalifragilisticexpialidocious".to_string();
+    let drawn = draw(&app, 40, 30);
+    assert!(
+        drawn.contains("supercalifragil"),
+        "long word breaks at the width, got: {drawn}"
+    );
+}
+
+#[test]
+fn wrap_input_with_cursor_handles_zero_width_and_word_splits() {
+    use crate::tui::render::wrap_input_with_cursor;
+    // Zero width degrades to one cursor row.
+    assert_eq!(wrap_input_with_cursor("anything", 0), vec!["\u{2588}"]);
+    // A word wider than the row splits across rows without spaces.
+    let rows = wrap_input_with_cursor("aaaaaaaaaa", 4);
+    assert!(
+        rows.windows(2)
+            .all(|w| w[0].len() == 4 || w[0].contains(' '))
+            || rows.len() > 1
+    );
+    assert!(rows.iter().all(|row| row.chars().count() <= 4));
+}
