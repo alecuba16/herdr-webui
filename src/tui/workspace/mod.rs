@@ -397,7 +397,7 @@ impl TuiApp {
     /// Stage the selected row's path for the workspace name prompt
     /// (prefix `N` pick mode). Validates on disk like the typed-path
     /// flow (webui "workspace folder must exist") before chaining.
-    fn worktree_stage_picked(&mut self) -> WorkspaceResult {
+    pub(crate) fn worktree_stage_picked(&mut self) -> WorkspaceResult {
         let Some(row) = self
             .filtered_browser_rows()
             .get(self.worktree_selected)

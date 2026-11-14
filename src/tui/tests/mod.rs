@@ -10948,12 +10948,15 @@ fn single_pane_header_shows_the_terminal_title_too() {
 /// server thread answers every request until the sender is dropped.
 /// The returned client rides a session cookie so no auth replay runs
 /// (the sessions routes are covered auth-free in web_api tests).
-fn fake_webui_api(
-    handler: fn(method: String, path: String) -> serde_json::Value,
+fn fake_webui_api<F>(
+    handler: F,
 ) -> (
     crate::tui::web_api::WebApiClient,
     std::sync::mpsc::Sender<()>,
-) {
+)
+where
+    F: Fn(String, String) -> serde_json::Value + Send + 'static,
+{
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -11011,9 +11014,10 @@ fn fake_webui_api(
     (client, tx)
 }
 
-fn session_manager_app(
-    handler: fn(method: String, path: String) -> serde_json::Value,
-) -> (TuiApp, std::sync::mpsc::Sender<()>) {
+fn session_manager_app<F>(handler: F) -> (TuiApp, std::sync::mpsc::Sender<()>)
+where
+    F: Fn(String, String) -> serde_json::Value + Send + 'static,
+{
     let (web_api, stop) = fake_webui_api(handler);
     let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
     let mut app = TuiApp::new(client, Duration::from_secs(1));
@@ -12126,4 +12130,176 @@ fn split_mode_move_ghost_without_focus_returns_silent() {
     app.snapshot.panes.clear();
     app.split_move_focus(1, 0);
     assert!(app.split_mode.is_none(), "no overlay, no crash");
+}
+
+#[test]
+fn session_manager_switch_to_a_live_external_session_succeeds() {
+    // A live backend socket for the external row: retarget points the
+    // client at it, the refresh succeeds, and the switched message
+    // lands in status (the only path through retarget's Ok tail).
+    let (backend_sock, stop) = fake_backend_socket();
+    let sock_str = backend_sock.to_str().unwrap().to_string();
+    let handler = move |_method: String, path: String| {
+        if path.starts_with("/api/sessions") {
+            json!({"sessions": [
+                {"name": "ext", "backend": "external-herdr", "running": true,
+                 "api_socket": sock_str}
+            ]})
+        } else {
+            json!({})
+        }
+    };
+    let (mut app, _web_stop) = session_manager_app(handler);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.status, "switched to session ext (backend external-herdr)",
+        "status: {} error: {:?}",
+        app.status, app.error
+    );
+    assert_eq!(app.current_session, "ext");
+    assert_eq!(app.current_backend, "external-herdr");
+    // The snapshot came from the live backend.
+    assert!(!app.snapshot.workspaces.is_empty());
+    drop(stop);
+}
+
+#[test]
+fn branch_picker_key_handler_moves_the_cursor_and_edits_the_filter() {
+    let mut app = app_with_snapshot();
+    app.branch_picker_rows = vec![
+        GitBranchEntry {
+            name: "main".into(),
+            current: true,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+        GitBranchEntry {
+            name: "feature".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+    ];
+    app.branch_picker_root = "/repo".into();
+    app.open_overlay(TuiMode::BranchPicker);
+
+    // Arrows wrap around.
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.branch_picker_selected, 1);
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.branch_picker_selected, 0);
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.branch_picker_selected, 1);
+
+    // j/k mirror the arrows when the filter is empty.
+    app.branch_picker_selected = 0;
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.branch_picker_selected, 1);
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.branch_picker_selected, 0);
+
+    // Typing feeds the filter, Backspace pops it, Ctrl+U clears it.
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Char('f')));
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Char('e')));
+    assert_eq!(app.branch_picker_filter, "fe");
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.branch_picker_filter, "f");
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Char('a')));
+    app.handle_branch_picker_key(ctrl('u'));
+    assert_eq!(app.branch_picker_filter, "");
+
+    // Esc with no filter closes the overlay; with a filter it only
+    // clears the filter.
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.mode != TuiMode::BranchPicker, "closed with no filter");
+    app.open_overlay(TuiMode::BranchPicker);
+    app.branch_picker_filter = "f".into();
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.branch_picker_filter, "");
+    assert_eq!(app.mode, TuiMode::BranchPicker, "first Esc keeps it open");
+}
+
+#[test]
+fn branch_picker_commit_with_no_selection_and_empty_filter_errors() {
+    let mut app = app_with_snapshot();
+    app.branch_picker_rows = vec![];
+    app.branch_picker_root = "/repo".into();
+    let result = app.branch_picker_commit();
+    assert_eq!(result, Err("no branch selected".to_string()));
+}
+
+#[test]
+fn worktree_create_prompt_chains_branch_path_base_and_pull_base() {
+    let mut app = app_with_snapshot();
+    use crate::tui::workspace::WorktreeCreateStage;
+    use crate::tui::workspace::{run_prompt, WorkspacePrompt};
+
+    // Empty branch name is rejected without staging.
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBranch, "  ");
+    assert_eq!(app.error, Some("type a branch name".to_string()));
+    assert!(app.worktree_create_stage.is_none());
+
+    // Branch stages and chains into the path prompt.
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBranch, "feat");
+    assert_eq!(app.status, "type the checkout path");
+    assert!(matches!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Branch(_))
+    ));
+
+    // Empty path keeps the path prompt open.
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "");
+    assert_eq!(app.error, Some("type the checkout path".to_string()));
+
+    // Path stages and chains into the base prompt.
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "/tmp/wt");
+    assert_eq!(
+        app.status,
+        "type the base ref (empty = HEAD), Enter continues"
+    );
+    assert!(matches!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Path(_, _))
+    ));
+
+    // Base stages and chains into the pull-base confirm.
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBase, "main");
+    assert_eq!(
+        app.status,
+        "pull the base ref first? (y = fast-forward it, Enter = skip)"
+    );
+    assert!(matches!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Base(_, _, _))
+    ));
+
+    // The confirm drives create_worktree; the nonexistent backend fails,
+    // and the stage is restored so Enter can retry.
+    app.error = None;
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "y");
+    assert!(app.error.is_some(), "backend is unreachable, create fails");
+    assert!(
+        matches!(
+            app.worktree_create_stage,
+            Some(WorktreeCreateStage::Base(_, _, _))
+        ),
+        "failed create keeps the staged draft"
+    );
+}
+
+#[test]
+fn worktree_stage_picked_guards_missing_rows_and_paths() {
+    let mut app = app_with_snapshot();
+    // A selection index past the rows: the guard fires.
+    app.worktree_selected = 99;
+    let result = app.worktree_stage_picked();
+    assert_eq!(result, Err("no worktree selected".to_string()));
+
+    // A this-folder row whose root is empty hits the second guard.
+    app.worktree_selected = 0;
+    app.worktree_root = String::new();
+    let result = app.worktree_stage_picked();
+    assert_eq!(result, Err("worktree path missing".to_string()));
 }

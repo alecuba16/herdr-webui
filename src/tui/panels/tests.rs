@@ -2174,3 +2174,25 @@ fn round3_conflict_labels_cover_remaining_variants() {
     assert_eq!(LogScope::All.label(), "all");
     assert_eq!(LogScope::Base.label(), "base");
 }
+
+#[test]
+fn git_conflicts_and_cleanup_views_move_their_cursors() {
+    let mut panel = GitPanel::new("/repo");
+    panel.view = GitView::Conflicts;
+    panel.conflict_files = vec!["a.rs".into(), "b.rs".into()];
+    panel.move_selection(1);
+    assert_eq!(panel.conflict_selected, 1, "conflict cursor moves");
+    panel.move_selection(1);
+    assert_eq!(panel.conflict_selected, 1, "saturates at the end");
+
+    panel.view = GitView::Cleanup;
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["one".into(), "two".into()],
+        worktrees: vec![],
+    }];
+    panel.move_selection(1);
+    assert_eq!(panel.cleanup_selected, 1, "cleanup cursor moves");
+    panel.move_selection(-1);
+    assert_eq!(panel.cleanup_selected, 0);
+}
