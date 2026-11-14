@@ -3693,6 +3693,105 @@ fn renders_prefix_armed_footer_and_tiny_screens() {
 }
 
 #[test]
+fn armed_prefix_footer_lists_the_live_shortcut_legend() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Navigate;
+
+    // Terminal screen in Navigate: the legend names split for `s` (the
+    // dispatch owns the key there) and keeps the ? help discovery tail.
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    assert!(app.prefix.is_armed());
+    let armed = draw(&app, 160, 24);
+    assert!(armed.contains("Ctrl+B> "), "armed label present");
+    assert!(
+        armed.contains("s split"),
+        "Terminal legend names split for s: {armed}"
+    );
+    assert!(
+        armed.contains("? help"),
+        "legend keeps the discovery tail: {armed}"
+    );
+
+    // Attach mode on the same Terminal screen: the dispatch sends
+    // prefix-s to settings there, and the legend must not lie (review
+    // F1). The attach hint is also the state users arm from most.
+    app.handle_key(ctrl('b')); // toggle the armed prefix off
+    assert!(!app.prefix.is_armed());
+    app.mode = TuiMode::Attach;
+    app.handle_key(ctrl('b'));
+    let attach_armed = draw(&app, 160, 24);
+    assert!(
+        attach_armed.contains("s settings"),
+        "attach legend names settings for s: {attach_armed}"
+    );
+    assert!(
+        !attach_armed.contains("s split"),
+        "attach legend must not promise split: {attach_armed}"
+    );
+    app.mode = TuiMode::Navigate;
+
+    // Git screen in Navigate: same settings wording (webui KeyS muscle
+    // memory lives on Files/Git).
+    app.handle_key(ctrl('b')); // cancel the armed prefix first...
+    assert!(!app.prefix.is_armed());
+    app.screen = TuiScreen::Git;
+    app.handle_key(ctrl('b'));
+    let git_armed = draw(&app, 160, 24);
+    assert!(
+        git_armed.contains("s settings"),
+        "Git legend names settings for s: {git_armed}"
+    );
+
+    // Disarmed: the footer is back to the context hint, no legend keys.
+    app.handle_key(ctrl('b'));
+    assert!(!app.prefix.is_armed());
+    let plain = draw(&app, 160, 24);
+    assert!(
+        !plain.contains("Ctrl+B> "),
+        "disarmed footer drops the armed label"
+    );
+    assert!(plain.contains("? help"), "context hint back in place");
+}
+
+#[test]
+fn armed_prefix_legend_survives_narrow_terminals_and_outranks_mode_hints() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+    // Zoom mode would own the hint slot with its own "ZOOM" hint; while
+    // the prefix is armed the legend must win, because the zoom keys
+    // are dead until the prefix resolves.
+    app.split_zoomed = true;
+    app.handle_key(ctrl('b'));
+    assert!(app.prefix.is_armed());
+
+    // 80 cols: the full legend cannot fit next to the label and status
+    // budget, so fit_hint trims front segments; the tail (? help) is
+    // the part that must survive, like every other footer hint.
+    let narrow = draw(&app, 80, 24);
+    assert!(
+        narrow.contains("? help"),
+        "narrow armed footer keeps the discovery tail: {narrow}"
+    );
+    assert!(
+        !narrow.contains("ZOOM"),
+        "legend outranks the zoom mode hint while armed: {narrow}"
+    );
+
+    // Wide terminal: the full legend fits and still beats the zoom hint.
+    let wide = draw(&app, 200, 24);
+    assert!(wide.contains("s split"), "wide legend shows the split key");
+    assert!(!wide.contains("ZOOM"), "zoom hint stays hidden while armed");
+
+    // After the prefix resolves (Esc), the zoom hint owns the slot again.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.prefix.is_armed());
+    let zoomed = draw(&app, 200, 24);
+    assert!(zoomed.contains("ZOOM"), "zoom hint back once disarmed");
+}
+
+#[test]
 fn files_and_git_panel_error_arms_surface_to_status() {
     // A dead WebUI API endpoint makes every panel call fail fast, and the
     // snapshot-failing backend socket makes Terminal refreshes fail too;

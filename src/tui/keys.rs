@@ -1,3 +1,4 @@
+use crate::tui::{TuiMode, TuiScreen};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
@@ -344,6 +345,28 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // plain p is already new tab.
         (KeyCode::Char('P'), true) => Some(Shortcut::SessionManager),
         _ => None,
+    }
+}
+
+/// Legend for the footer while the Ctrl+B prefix is armed (zellij
+/// mode-bar style: the hint line swaps to the keys live in the current
+/// mode). Value gradient runs toward the tail: `fit_hint` drops
+/// segments from the front on narrow terminals, so the daily keys
+/// (files, git, worktrees) sit next to the discovery segment (`? help`)
+/// and are the last to go. The full key map stays in the help overlay;
+/// this names only the keys a user reaches for daily. The `s` segment
+/// follows its dual dispatch exactly (review F1): split mode only on
+/// the Terminal screen in Navigate mode, settings everywhere else,
+/// including attach mode where the attach hint arms the prefix most.
+/// `r refresh` rides the Terminal legend because the TerminalMain hint
+/// already names it as a direct key; `E settings` stays in the overlay
+/// (review F4 chord, not a daily key).
+pub fn prefix_legend(screen: TuiScreen, mode: TuiMode) -> &'static str {
+    let split_s = screen == TuiScreen::Terminal && mode == TuiMode::Navigate;
+    if split_s {
+        "q quit · C compose · L lens · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s split · w worktrees · g git · f files · ? help"
+    } else {
+        "q quit · C compose · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s settings · w worktrees · g git · f files · ? help"
     }
 }
 

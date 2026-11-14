@@ -1950,8 +1950,18 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     } else {
         ""
     };
+    // While the prefix is armed, the hint slot becomes the legend of
+    // keys live under it (zellij mode-bar style, user decision): the
+    // user sees what the next key does instead of remembering blind.
+    // The legend carries the same fit_hint budget path as every hint
+    // below, so narrow terminals keep the tail (? help) and drop the
+    // low-value front segments first.
     let context = app.footer_context();
-    let help = context.hint();
+    let help = if app.prefix.is_armed() {
+        crate::tui::keys::prefix_legend(app.screen, app.mode)
+    } else {
+        context.hint()
+    };
     // On narrow terminals (the classic 80x24) the full hint would push the
     // discovery tail off-screen: the mode label alone eats 14+ columns and
     // the status message needs room. Drop the middle actions first and keep
@@ -1965,6 +1975,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         .saturating_sub(8) as usize;
     let help = if help.chars().count() <= hint_budget {
         help.to_string()
+    } else if app.prefix.is_armed() {
+        // Armed: `help` is already the legend, trim it in place instead
+        // of recomputing it (it has no compact twin).
+        fit_hint(help, hint_budget)
     } else {
         fit_hint(context.compact_hint(), hint_budget)
     };
@@ -1990,8 +2004,14 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let message = message.as_str();
     // Split/move mode hint (design: Zellij-style mode bar): while an
     // overlay owns the keyboard the help slot swaps to the mode
-    // verbs so the user sees the keys without the overlay.
-    let help = split_tiles::mode_hint(app).unwrap_or(help);
+    // verbs so the user sees the keys without the overlay. The armed
+    // prefix legend outranks the mode hints: while Ctrl+B is armed all
+    // mode keys are dead, so naming them would mislead.
+    let help = if app.prefix.is_armed() {
+        help
+    } else {
+        split_tiles::mode_hint(app).unwrap_or(help)
+    };
     let used = label_width + help.chars().count() + prefix.chars().count();
     let status_budget = area.width.saturating_sub(used as u16) as usize;
     let line = Line::from(vec![

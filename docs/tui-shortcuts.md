@@ -6,10 +6,11 @@ page is the browsable copy. Every screen keeps the `Ctrl+B ? help`
 tail in the statusbar, so the overlay is discoverable without reading
 docs first.
 
-Shortcut model: `Ctrl+B` arms the prefix (statusbar shows `Ctrl+B>`),
-the next key runs the matching WebUI default shortcut, `Esc` cancels,
-pressing `Ctrl+B` again toggles the prefix off. The prefix works on
-every screen, including while attached.
+Shortcut model: `Ctrl+B` arms the prefix (statusbar shows `Ctrl+B>`
+plus a legend of the keys live under it, so the next key is never a
+guess), the next key runs the matching WebUI default shortcut, `Esc`
+cancels, pressing `Ctrl+B` again toggles the prefix off. The prefix
+works on every screen, including while attached.
 
 ## Terminal screen (navigation)
 
