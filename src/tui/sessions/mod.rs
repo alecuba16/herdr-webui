@@ -300,3 +300,14 @@ fn session_display_name(name: &str) -> &str {
         name
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::session_display_name;
+
+    #[test]
+    fn session_display_name_falls_back_to_default_for_empty() {
+        assert_eq!(session_display_name(""), "default");
+        assert_eq!(session_display_name("work"), "work");
+    }
+}

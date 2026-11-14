@@ -543,3 +543,49 @@ pub(crate) fn render_panes_or_split(
         super::render_pane(frame, pane_area, app, p);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
+        Rect::new(x, y, width, height)
+    }
+
+    #[test]
+    fn layout_handles_empty_children_and_missing_weights() {
+        // A hand-built split with no children renders nothing.
+        let empty = SplitNode::Split {
+            dir: SplitDir::Row,
+            weights: vec![],
+            children: vec![],
+        };
+        assert!(layout_tiles(&empty, rect(0, 0, 80, 24), None).is_empty());
+
+        // A weights vec shorter than the children falls back to the
+        // equal-share default per missing slot; layout never panics.
+        let sparse = SplitNode::Split {
+            dir: SplitDir::Row,
+            weights: vec![],
+            children: vec![SplitNode::leaf("a"), SplitNode::leaf("b")],
+        };
+        let tiles = layout_tiles(&sparse, rect(0, 0, 80, 24), Some("b"));
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(tiles[0].pane_id, "a");
+        assert_eq!(tiles[1].pane_id, "b");
+        assert!(tiles[1].focused);
+        assert!(!tiles[0].focused);
+        // Equal fallback shares: both halves of the 80-col area.
+        assert_eq!(tiles[0].rect.width, 40);
+        assert_eq!(tiles[1].rect.width, 40);
+
+        // tile_rects mirrors the laid-out geometry for walk scoring.
+        let rects = tile_rects(&tiles);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0].pane_id, "a");
+        assert_eq!(rects[0].width, 40);
+
+        // A zero-size area drops every tile (empty-rect guard).
+        assert!(layout_tiles(&sparse, rect(0, 0, 0, 0), None).is_empty());
+    }
+}

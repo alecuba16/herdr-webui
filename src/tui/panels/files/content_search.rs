@@ -450,6 +450,39 @@ mod tests {
         assert_eq!(explorer.content_search.expanded, vec![true, true]);
         assert!(explorer.content_search.done);
     }
+
+    #[test]
+    fn run_content_search_propagates_a_server_error() {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+            }
+            let _ = request;
+            let body = "{\"error\":\"grep exploded\"}";
+            write!(
+                stream,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.filter = "needle".to_string();
+        assert!(run_content_search(&mut explorer, &api, false).is_err());
+    }
 }
 
 #[cfg(test)]

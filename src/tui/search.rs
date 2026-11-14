@@ -949,4 +949,17 @@ mod coverage_tests_round2 {
             .load_recents(&api)
             .expect("cached failure short-circuits");
     }
+
+    #[test]
+    fn load_recents_refetches_once_the_ttl_expires() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut state = SearchPalette::default();
+        // A stamp older than the TTL no longer short-circuits: the
+        // dead endpoint is hit again.
+        let stale = std::time::Instant::now()
+            .checked_sub(RECENTS_CACHE_TTL + Duration::from_secs(1))
+            .expect("clock far enough into the epoch");
+        state.recents_fetched_at = Some(stale);
+        assert!(state.load_recents(&api).is_err(), "expired cache refetches");
+    }
 }

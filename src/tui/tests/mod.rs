@@ -2454,6 +2454,14 @@ fn drain_refresh(app: &mut TuiApp) {
 /// connections in a loop, answering each JSON-line request by method.
 /// Hermetic replacement for the built-in session socket.
 fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    fake_backend_socket_with(fixture_snapshot_value())
+}
+
+/// `fake_backend_socket` with a custom `session.snapshot` reply, for
+/// flows that assert on the post-refresh workspace list (reroute).
+fn fake_backend_socket_with(
+    snapshot: serde_json::Value,
+) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use interprocess::TryClone as _;
     use std::io::{BufRead, BufReader, Write};
@@ -2485,7 +2493,7 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
         let response = match request["method"].as_str().unwrap_or("") {
             "ping" => json!({"id": request["id"], "result": {"version": "test", "protocol": 1}}),
             "session.snapshot" => {
-                json!({"id": request["id"], "result": fixture_snapshot_value()})
+                json!({"id": request["id"], "result": snapshot})
             }
             "tab.create" | "tab.close" => {
                 // A close on a tab the server no longer knows (raced by
@@ -11585,6 +11593,20 @@ fn split_tile_tails_render_loading_and_cached_text() {
     let drawn = draw(&app, 150, 40);
     assert!(drawn.contains("no output"), "empty tail placeholder");
 
+    // Tail fetch in flight: the unfocused tile shows the loading
+    // placeholder until the reply lands in the cache.
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.tile_tail_rx = Some(rx);
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("loading…"), "in-flight tail placeholder");
+    app.tile_tail_rx = None;
+
+    // Degenerate terminal sizes: every sub-area collapses and the
+    // empty-rect guards return without panicking.
+    for (w, h) in [(2, 1), (3, 2), (5, 4)] {
+        let _ = draw(&app, w, h);
+    }
+
     // Cached plain tail lines render into the unfocused tile.
     app.tile_tails
         .insert("pane_2".to_string(), "alpha\nbeta\ngamma".to_string());
@@ -12228,6 +12250,10 @@ fn branch_picker_commit_with_no_selection_and_empty_filter_errors() {
     app.branch_picker_root = "/repo".into();
     let result = app.branch_picker_commit();
     assert_eq!(result, Err("no branch selected".to_string()));
+
+    // The key handler surfaces the same error on the status line.
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "no branch selected");
 }
 
 #[test]
@@ -12363,6 +12389,13 @@ fn split_ghost_moves_between_tiles_and_flips_side_family_only_on_axis_break() {
         ],
     );
     draw(&app, 150, 40);
+    // The side family is already Below from the last flip: a vertical
+    // move keeps it (the col-side-preserving arm).
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".into(),
+        pane: "pane_2".into(),
+        side: crate::tui::split::Side::Below,
+    });
     app.split_move_ghost(0, 1);
     assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_3");
     assert_eq!(
@@ -12462,6 +12495,69 @@ fn move_mode_walk_target_tracks_the_approach_side() {
     // preview never targets the pane being moved), so the target
     // stays on pane_3.
     app.move_walk_target(-1, 0);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+
+    // A column tree walks vertically: dy > 0 approaches from above,
+    // dy < 0 from below.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.mark_dirty();
+    draw(&app, 150, 40);
+    // Walking left from pane_3 skips the picked pane_1 and lands on
+    // pane_2, approached from its right edge.
+    app.move_walk_target(-1, 0);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_2");
+    assert_eq!(
+        app.move_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Right
+    );
+
+    // A column tree walks vertically: dy < 0 approaches pane_1 from
+    // below, dy > 0 approaches pane_3 from above. The picked pane_1
+    // stays skipped in the horizontal walk but is a legal vertical
+    // target from pane_2.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Col,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.mark_dirty();
+    draw(&app, 150, 40);
+    // Walking down from pane_2 approaches pane_3 from above; the
+    // picked pane_1 is always skipped, so walking up from pane_2
+    // finds nothing.
+    app.move_walk_target(0, -1);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_2");
+    app.move_walk_target(0, 1);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+    assert_eq!(
+        app.move_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Above
+    );
+    // Walking back up approaches pane_2 from below.
+    app.move_walk_target(0, -1);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_2");
+    assert_eq!(
+        app.move_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below
+    );
+    app.move_walk_target(0, 1);
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+
+    // A single-tile tree finds no neighbor: silent no-op.
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_3");
+    app.mark_dirty();
+    draw(&app, 150, 40);
+    app.move_walk_target(0, 1);
     assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
 
     // No mode: silent return.
@@ -12585,8 +12681,36 @@ fn resize_mode_opens_walks_and_guards() {
     );
     assert_eq!(app.split_tree, before);
 
+    // A nested tree: resizing pane_1 on the row axis has no row
+    // divider in its own column, so the outer frame's divider moves.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::split(
+                crate::tui::split::SplitDir::Col,
+                vec![
+                    crate::tui::split::SplitNode::leaf("pane_1"),
+                    crate::tui::split::SplitNode::leaf("pane_2"),
+                ],
+            ),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.resize_step_direction(
+        crate::tui::split::SplitDir::Row,
+        crate::tui::split::ResizeDir::Narrow,
+    );
+    assert_eq!(app.status, "resized outer boundary");
+
     // Key handler routing: j/k drive the col axis (no col dividers
     // on a flat row, so the move reports the outer boundary).
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
     for key in [
         KeyCode::Char('l'),
         KeyCode::Char('k'),
@@ -12971,8 +13095,9 @@ fn drain_auto_split_queue_waits_when_no_neighbor_is_alive() {
     // Queue a workspace whose spare pane exists but the captured
     // neighbor is dead and the current focus IS the spare pane (it
     // cannot host a tile beside itself): the request is kept.
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
     app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
-    app.split_focus = Some("pane_2".to_string());
+    app.split_focus = Some("pane_3".to_string());
     app.split_panes_of_workspaces = vec![("ws_1".to_string(), Some("dead".to_string()))];
     app.drain_auto_split_queue();
     assert_eq!(
@@ -13180,6 +13305,33 @@ fn move_panel_selects_the_tab_of_the_pane_the_agent_list_points_at() {
 }
 
 #[test]
+fn move_panel_keeps_the_cursor_when_the_tab_has_no_agent_entry() {
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":2,"active_tab_id":"tab_2"}],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":false,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_1","label":"Server","focused":false,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo","focused":false}
+            ],
+            "agents": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false}
+            ]
+        }
+    }));
+    // tab_2's pane has no agent row: the cursor stays put and the
+    // panel still switches.
+    app.selected_agent = 0;
+    let message = app.move_panel(1).unwrap();
+    assert_eq!(message, "panel 2/2");
+    assert_eq!(app.selected_agent, 0, "no agent row to repoint at");
+}
+
+#[test]
 fn worktree_stage_picked_reads_the_worktree_row_path() {
     let mut app = app_with_snapshot();
     // A real directory so validation passes: use the repo cwd itself.
@@ -13191,7 +13343,111 @@ fn worktree_stage_picked_reads_the_worktree_row_path() {
         label: "wt".into(),
         is_linked: false,
     }];
-    app.worktree_selected = 0;
+    // Index 0 is the "this folder" row; index 1 is the worktree row
+    // whose path arms the Worktree match.
+    app.worktree_selected = 1;
     let result = app.worktree_stage_picked();
     assert!(result.is_ok(), "real dir stages, got {result:?}");
+}
+
+#[test]
+fn tile_titles_stamp_worktree_and_branch_chip() {
+    // A workspace stamped as a linked worktree with a branch renders
+    // the [worktree] marker and the @ branch chip on its tile title;
+    // the focused tile renders through the full single-pane chrome.
+    let mut app = app_with_two_panes();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,
+                 "agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1",
+                 "worktree":{"repo_root":"/repo","repo_name":"repo","branch":"feature-x",
+                             "checkout_path":"/repo/.wt/feature-x"}}
+            ],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1",
+                 "agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo/.wt/feature-x","focused":true}
+            ],
+            "agents": []
+        }
+    }));
+    app.sync_split_tree();
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("[worktree] "), "worktree marker on the tile");
+    assert!(drawn.contains("@ feature-x "), "branch chip on the tile");
+}
+
+#[test]
+fn branch_picker_reroute_focuses_the_worktrees_workspace_after_refresh() {
+    // Full reroute success: worktree.open answers, refresh lands a
+    // snapshot whose workspace lives at the worktree path, and the
+    // focus moves to it (the tail after refresh).
+    let (port, _stop_http) = fake_git_api_server(json!({
+        "branches": [
+            {"name": "main", "current": true, "remote": false, "worktree_path": "/repo"},
+            {"name": "feature", "current": false, "remote": false, "worktree_path": "/repo-wt"}
+        ]
+    }));
+    let (api_socket, _stop_backend) = fake_backend_socket_with(json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"},
+                {"workspace_id":"ws_wt","label":"Lane","cwd":"/repo-wt","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_wt"}
+            ],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":false,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_wt","workspace_id":"ws_wt","label":"Lane","focused":true,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                {"pane_id":"pane_wt","terminal_id":"term_wt","workspace_id":"ws_wt","tab_id":"tab_wt","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo-wt","focused":true}
+            ],
+            "agents": [
+                {"pane_id":"pane_wt","terminal_id":"term_wt","workspace_id":"ws_wt","tab_id":"tab_wt","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo-wt","focused":true}
+            ]
+        }
+    }));
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    app.branch_picker_open().unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    let result = app.branch_picker_commit().unwrap();
+    assert_eq!(result, "switched to feature in /repo-wt");
+    assert_eq!(
+        app.selected_workspace().unwrap().id,
+        "ws_wt",
+        "reroute focuses the worktree's workspace"
+    );
+    assert_eq!(app.mode, crate::tui::TuiMode::Navigate);
+    assert!(app.overlay_stack.is_empty());
+}
+
+#[test]
+fn git_cleanup_render_marks_the_marked_rows_and_tab_bar_skips_an_empty_cwd() {
+    let mut app = app_with_snapshot();
+    // Marked cleanup rows render the accent star.
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Cleanup;
+    app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["old".into()],
+        worktrees: vec![],
+    }];
+    app.git_panel.cleanup_toggle_mark();
+    let drawn = draw(&app, 120, 30);
+    assert!(drawn.contains("* "), "marked row shows the star");
+    assert!(drawn.contains("old"));
+
+    // A workspace with an empty cwd renders the tab bar without the
+    // path chip (no panic, no empty token).
+    let mut app = app_with_snapshot();
+    app.snapshot.workspaces[0].cwd = String::new();
+    let drawn = draw(&app, 120, 30);
+    assert!(drawn.contains("Shell"), "tab bar still renders");
 }

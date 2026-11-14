@@ -2419,6 +2419,13 @@ mod coverage_tests {
             body: serde_json::json!({}),
         };
         assert_eq!(detailed.to_string(), "WebUI API error 502");
+        // A detailed error with a message renders the long form.
+        let detailed = WebApiError::HttpDetailed {
+            status: 503,
+            message: "upstream gone".to_string(),
+            body: serde_json::json!({"error": "upstream gone"}),
+        };
+        assert_eq!(detailed.to_string(), "WebUI API error 503: upstream gone");
     }
 
     #[test]

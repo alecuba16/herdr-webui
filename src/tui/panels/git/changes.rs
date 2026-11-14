@@ -407,6 +407,60 @@ mod coverage_tests_round2 {
         crate::tui::web_api::WebApiClient::new("127.0.0.1", 1)
     }
 
+    /// One-shot server that records the request line before answering
+    /// the diff call with `body`.
+    fn diff_server(
+        body: serde_json::Value,
+    ) -> (
+        crate::tui::web_api::WebApiClient,
+        std::sync::mpsc::Receiver<String>,
+    ) {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            for _ in 0..64 {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let _ = tx.send(request);
+            let response = body.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            );
+        });
+        (
+            crate::tui::web_api::WebApiClient::new("127.0.0.1", port),
+            rx,
+        )
+    }
+
+    #[test]
+    fn refresh_diff_scopes_a_staged_file_as_staged() {
+        let (api, request_rx) = diff_server(serde_json::json!({"files": []}));
+        let mut p = panel();
+        p.file_selected = 0;
+        p.refresh_diff(&api).unwrap();
+        let request = request_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            request.contains("scope=staged"),
+            "staged file diffs staged: {request}"
+        );
+        assert_eq!(p.diff_title, "a.rs");
+    }
+
     #[test]
     fn stage_unstage_and_toggle_guards_fire_without_selection() {
         let api = dead_client();

@@ -264,6 +264,10 @@ mod coverage_tests {
         // match_case matches only the exact letter.
         let ranges = find_ranges("aAbA", "A", true, false);
         assert_eq!(ranges, vec![(1, 2), (3, 4)]);
+        // Zero-width regex matches are skipped: the loop keeps walking
+        // until a real range lands.
+        let ranges = find_ranges("abc", "b*", false, true);
+        assert_eq!(ranges, vec![(1, 2)]);
     }
 }
 

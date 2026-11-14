@@ -1954,6 +1954,11 @@ fn git_log_history_and_actions_cover_http_success_paths() {
     let (target, _) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(target.contains("base=hist%5E"));
     assert_eq!(panel.diff_title, "hist · src/lib.rs");
+    // Without a history file the commit title carries no file token.
+    panel.history_file = None;
+    panel.load_commit_diff(&api, "hist").unwrap();
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(panel.diff_title, "hist");
     panel.log_compare_parent(&api, "new").unwrap();
     assert!(rx
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -2410,6 +2415,80 @@ fn cleanup_delete_succeeds_and_deletes_the_branch_too_against_the_fake_api() {
     let deleted = panel.cleanup_delete_selected(&api, false).unwrap();
     assert_eq!(deleted, 1);
     assert!(panel.cleanup_failures.is_empty());
+}
+
+#[test]
+fn cleanup_delete_reports_a_branch_too_failure_from_the_server() {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    // The worktree removes fine but its branch delete is refused by
+    // the server on both the safe and the forced attempt: the batch
+    // survives, the failure is recorded per branch.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || loop {
+        let Ok((mut stream, _)) = listener.accept() else {
+            break;
+        };
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut request = String::new();
+        if reader.read_line(&mut request).unwrap_or(0) == 0 {
+            break;
+        }
+        let mut content_length = 0usize;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                break;
+            }
+            if let Some(value) = header
+                .trim()
+                .to_ascii_lowercase()
+                .strip_prefix("content-length:")
+            {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut payload = vec![0u8; content_length];
+        if content_length > 0 {
+            let _ = reader.read_exact(&mut payload);
+        }
+        let branch_delete = request.starts_with("POST /api/git-ui/branch-delete");
+        let response = if branch_delete {
+            json!({"error": "branch is checked out in another worktree"})
+        } else {
+            json!({"ok": true})
+        };
+        let text = serde_json::to_string(&response).unwrap();
+        let status_line = if branch_delete {
+            "HTTP/1.1 500 Internal Server Error"
+        } else {
+            "HTTP/1.1 200 OK"
+        };
+        let _ = write!(
+            stream,
+            "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            text.len(),
+            text
+        );
+    });
+    let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec![],
+        worktrees: vec![CleanupWorktree {
+            path: "/repo-wt".to_string(),
+            branch: Some("feature".into()),
+        }],
+    }];
+    let deleted = panel.cleanup_delete_selected(&api, true).unwrap();
+    assert_eq!(deleted, 1, "only the worktree deleted");
+    assert_eq!(panel.cleanup_failures.len(), 1);
+    assert!(
+        panel.cleanup_failures[0].starts_with("feature:"),
+        "failure names the branch: {:?}",
+        panel.cleanup_failures
+    );
 }
 
 #[test]
