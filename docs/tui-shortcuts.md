@@ -114,7 +114,10 @@ answered from the webui's chat lens card. The server-side parser
 | `Shift+L` | chat lens |
 | `Shift+C` | chat composer |
 | `e`, `E` | edit the current file (Files preview or Git Changes selection) |
-| `s` | settings overlay (t cycles the theme) |
+| `s` | settings overlay (t cycles the theme) · terminal: split tile mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm) |
+| `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
+| `z` | git: stash the selected file · terminal: zoom the focused tile |
+| `hjkl` / arrows | terminal (split active): walk tile focus, single tile keeps pane scroll |
 | `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |
 | `i` | git: focus the file list (webui `KeyI` parity) |

@@ -12,7 +12,9 @@
 /// Terminal screen renders exactly like today.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SplitNode {
-    Leaf { pane_id: String },
+    Leaf {
+        pane_id: String,
+    },
     Split {
         dir: SplitDir,
         children: Vec<SplitNode>,
@@ -46,7 +48,7 @@ impl SplitNode {
     }
 
     pub fn contains_pane(&self, pane_id: &str) -> bool {
-        self.leaves().iter().any(|id| *id == pane_id)
+        self.leaves().contains(&pane_id)
     }
 }
 
@@ -103,12 +105,7 @@ impl Side {
 /// single-child splits); otherwise the leaf is wrapped in a fresh
 /// 50/50 split. Missing neighbor leaves the tree untouched (stale
 /// ghost after a snapshot change commits nothing).
-pub fn insert_beside(
-    tree: &SplitNode,
-    neighbor: &str,
-    new_pane: &str,
-    side: Side,
-) -> SplitNode {
+pub fn insert_beside(tree: &SplitNode, neighbor: &str, new_pane: &str, side: Side) -> SplitNode {
     fn insert(node: &SplitNode, neighbor: &str, new_pane: &str, side: Side) -> SplitNode {
         match node {
             SplitNode::Leaf { pane_id } if pane_id == neighbor => {
@@ -126,9 +123,9 @@ pub fn insert_beside(
             SplitNode::Leaf { pane_id } => SplitNode::leaf(pane_id.clone()),
             SplitNode::Split { dir, children } => {
                 // Direct child leaf in a same-direction split joins it.
-                let neighbor_leaf_here = children.iter().any(|child| {
-                    matches!(child, SplitNode::Leaf { pane_id } if pane_id == neighbor)
-                });
+                let neighbor_leaf_here = children.iter().any(
+                    |child| matches!(child, SplitNode::Leaf { pane_id } if pane_id == neighbor),
+                );
                 if *dir == side.dir() && neighbor_leaf_here {
                     let mut next = Vec::with_capacity(children.len() + 1);
                     for child in children {
@@ -216,10 +213,7 @@ pub fn swap_leaves(tree: &SplitNode, a: &str, b: &str) -> SplitNode {
             }
             SplitNode::Split { dir, children } => SplitNode::Split {
                 dir: *dir,
-                children: children
-                    .iter()
-                    .map(|child| swap(child, a, b))
-                    .collect(),
+                children: children.iter().map(|child| swap(child, a, b)).collect(),
             },
         }
     }
@@ -236,31 +230,52 @@ fn node_pane(node: &SplitNode) -> Option<&str> {
     }
 }
 
+/// Split-mode state (Ctrl+B s): where the ghost preview sits and which
+/// pane the new tile opens. `pane` cycles the candidate list; commit
+/// inserts it beside `neighbor` at `side`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitPreview {
+    /// Pane id the ghost overlays; the new pane lands beside it.
+    pub neighbor: String,
+    /// Edge of the neighbor the new tile takes.
+    pub side: Side,
+    /// Pane id the new tile would open (a candidate from another
+    /// workspace, or a fresh shell when the list runs out).
+    pub pane: String,
+}
+
+/// Move-mode state (Ctrl+B m): the picked tile, the target tile, and
+/// whether Enter swaps (i3 drop-on-container) or inserts the picked
+/// pane beside the target at `side` (i3 drop-as-sibling).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveState {
+    pub picked: String,
+    pub target: String,
+    pub insert: bool,
+    pub side: Side,
+}
+
 /// Geometry inputs for the tile walks: pane id plus its rect. The
 /// render layer fills these from the laid-out tree; the scoring stays
 /// backend-free and testable with synthetic rects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TileRect {
-    pub pane_id: *const str,
+pub struct TileRect<'a> {
+    pub pane_id: &'a str,
     pub x: u16,
     pub y: u16,
     pub width: u16,
     pub height: u16,
 }
 
-impl TileRect {
-    pub fn new(pane_id: &str, x: u16, y: u16, width: u16, height: u16) -> Self {
+impl<'a> TileRect<'a> {
+    pub fn new(pane_id: &'a str, x: u16, y: u16, width: u16, height: u16) -> Self {
         Self {
-            pane_id: pane_id as *const str,
+            pane_id,
             x,
             y,
             width,
             height,
         }
-    }
-
-    pub fn pane_id(&self) -> &str {
-        unsafe { &*self.pane_id }
     }
 }
 
@@ -270,17 +285,20 @@ impl TileRect {
 /// the moved axis (pure horizontal for dx-only, pure vertical for
 /// dy-only, else both components must agree). Nearest center wins.
 pub fn walk_next<'a>(
-    tiles: &'a [TileRect],
+    tiles: &'a [TileRect<'_>],
     from: &str,
     dx: i32,
     dy: i32,
     skip: Option<&str>,
 ) -> Option<&'a str> {
-    let origin = tiles.iter().find(|t| t.pane_id() == from)?;
-    let (ox, oy) = (origin.x as i32 + origin.width as i32 / 2, origin.y as i32 + origin.height as i32 / 2);
+    let origin = tiles.iter().find(|t| t.pane_id == from)?;
+    let (ox, oy) = (
+        origin.x as i32 + origin.width as i32 / 2,
+        origin.y as i32 + origin.height as i32 / 2,
+    );
     let mut best: Option<(f32, &str)> = None;
     for tile in tiles {
-        let id = tile.pane_id();
+        let id = tile.pane_id;
         if id == from || Some(id) == skip {
             continue;
         }

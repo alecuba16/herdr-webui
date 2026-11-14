@@ -4628,7 +4628,9 @@ fn settings_overlay_opens_cycles_theme_and_closes() {
     app.theme = TuiTheme::Dark;
     app.palette = Palette::for_theme(TuiTheme::Dark);
 
-    // Ctrl+B s opens the settings overlay.
+    // Ctrl+B s opens the settings overlay from the Git screen (the
+    // Terminal screen scopes prefix-s to split mode; git keeps it).
+    app.screen = TuiScreen::Git;
     app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert_eq!(app.mode, TuiMode::Settings);
@@ -6413,13 +6415,14 @@ fn overlay_depth_effect_dims_backdrop_and_draws_shadow() {
     // (.modal-backdrop #0008) with a shadowed, accent-bordered float
     // window (neovim-style depth).
     let mut app = app_with_snapshot();
-    app.screen = TuiScreen::Terminal;
+    app.screen = TuiScreen::Git;
 
     // Baseline footer text color before any overlay.
     let plain = draw_buffer(&app, 110, 30);
     let plain_footer_fg = plain[(5u16, 29u16)].fg;
 
-    // Open the settings overlay.
+    // Open the settings overlay from the Git screen (prefix-s on the
+    // Terminal screen opens split mode instead).
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert_eq!(app.mode, TuiMode::Settings);
@@ -6535,7 +6538,7 @@ fn overlay_depth_effect_light_theme_and_named_colors() {
     // overlay. Drive the light theme through the settings overlay and
     // assert both the shadow color and a dimmed named-color cell.
     let mut app = app_with_snapshot();
-    app.screen = TuiScreen::Terminal;
+    app.screen = TuiScreen::Git;
     app.theme = TuiTheme::Light;
     app.palette = Palette::for_theme(TuiTheme::Light);
 
@@ -9612,4 +9615,212 @@ fn session_manager_keys_map_to_actions_and_prompt() {
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(app.prompt_input.is_none());
     assert!(app.error.is_some());
+}
+
+// --- Split panels (design: docs/ux/tui-split-panels-design.md) ---
+
+/// Two panes across two workspaces: the cross-workspace case the split
+/// feature exists for.
+fn fixture_snapshot_value_two_panes() -> serde_json::Value {
+    json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"},
+                {"workspace_id":"ws_2","label":"Other","cwd":"/other","focused":false,"agent_status":"working","pane_count":1,"tab_count":1,"active_tab_id":"tab_2"}
+            ],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_2","label":"Server","focused":false,"pane_count":1,"agent_status":"working"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_2","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"working","cwd":"/other","focused":false}
+            ],
+            "agents": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_2","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"working","cwd":"/other","focused":false}
+            ]
+        }
+    })
+}
+
+fn app_with_two_panes() -> TuiApp {
+    let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    // Production seeds the tree when the first snapshot lands
+    // (apply_refresh -> sync_split_tree); tests that set the snapshot
+    // directly must walk the same path.
+    app.sync_split_tree();
+    app
+}
+
+#[test]
+fn split_mode_opens_previews_and_commits_cross_workspace_pane() {
+    let mut app = app_with_two_panes();
+
+    // Ctrl+B s on the Terminal screen opens split mode (prefix-s there
+    // is no longer settings; the Git screen keeps settings).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let preview = app.split_mode.clone().expect("split mode open");
+    assert_eq!(preview.neighbor, "pane_1");
+    assert_eq!(
+        preview.pane, "pane_2",
+        "cross-workspace pane is the candidate"
+    );
+    assert_eq!(preview.side, crate::tui::split::Side::Right);
+
+    // Enter commits: the tree holds both panes, focus lands on the new
+    // tile, and the mode overlay closes.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.split_mode.is_none());
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1", "pane_2"]);
+    assert_eq!(app.split_focus.as_deref(), Some("pane_2"));
+    // Split view is active: two tiles render.
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("jcode"), "tile titles carry agent names");
+    assert!(drawn.contains("bot"));
+}
+
+#[test]
+fn split_mode_esc_cancels_and_tab_flips_side() {
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+
+    // Tab flips the side family: Right -> Below.
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below
+    );
+
+    // Esc cancels with zero mutation.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.split_mode.is_none());
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
+fn split_mode_git_screen_still_opens_settings() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Git;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+}
+
+#[test]
+fn move_mode_swaps_and_inserts_tiles() {
+    let mut app = app_with_two_panes();
+    // Seed a split: pane_2 right of pane_1.
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_1".to_string());
+
+    // Ctrl+B m opens move mode on the focused tile.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert!(app.move_mode.is_some());
+    assert_eq!(app.move_mode.as_ref().unwrap().picked, "pane_1");
+
+    // Tab toggles the verb to insert.
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert!(app.move_mode.as_ref().unwrap().insert);
+
+    // Tab back to swap; Enter with picked == target is a no-op cancel.
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.move_mode.is_none());
+
+    // Reopen and swap pane_1 with pane_2 via a walk: with only two
+    // tiles the geometry comes from the last render; tests have none
+    // yet, so commit directly through the state helpers.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        target: "pane_2".to_string(),
+        ..state
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.split_tree.leaves(), vec!["pane_2", "pane_1"]);
+    assert!(app.move_mode.is_none());
+}
+
+#[test]
+fn zoom_toggles_and_restores_the_split() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+
+    // Ctrl+B z zooms the focused tile.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert!(app.split_zoomed);
+    // Zoom walks are pinned: hjkl cannot leave the zoomed tile.
+    app.split_move_focus(1, 0);
+    assert_eq!(app.split_focus.as_deref(), Some("pane_2"));
+
+    // Ctrl+B z again restores the tree.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert!(!app.split_zoomed);
+    assert_eq!(app.split_tree.leaves().len(), 2);
+}
+
+#[test]
+fn sync_split_tree_prunes_dead_panes_and_reseeds() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("gone_pane"),
+        ],
+    };
+    app.split_focus = Some("gone_pane".to_string());
+    app.sync_split_tree();
+    // Dead leaf pruned, single-child split collapsed, focus falls back
+    // to the surviving leaf.
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+    assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+
+    // Fresh app: the dead seed leaf (initial "" tree) reseeds from the
+    // focused pane so the Terminal screen always shows something.
+    let mut fresh = app_with_two_panes();
+    fresh.sync_split_tree();
+    assert_eq!(fresh.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
+fn agnets_status_bar_lists_tiles_with_dots_and_counts() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("AGENTS"), "summary bar present");
+    assert!(drawn.contains("jcode"));
+    assert!(drawn.contains("bot"));
+    assert!(drawn.contains("(Repo)"));
+    assert!(drawn.contains("(Other)"));
 }

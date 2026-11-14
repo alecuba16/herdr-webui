@@ -129,20 +129,28 @@ One AGENTS summary bar sits between the tab bar and the pane area:
 ## Implementation slices
 
 1. `src/tui/split.rs`: tree model, insert/pull/swap rules, geometry
-   scoring (ghost + focus + target walks). Pure, unit-testable.
-2. `TuiApp` state: `split_tree`, `split_focus`, `zoomed_pane`,
-   `split_mode: Option<GhostState>`, `move_mode: Option<MoveState>`.
-   New `TuiMode::Split` and `TuiMode::MoveTiles`? No: the split/move
-   overlays key off state fields, `TuiMode::Attach` interplay stays as
-   is (Ctrl+B prefix wins in attach mode already).
+   scoring (ghost + focus + target walks). Pure, unit-testable. DONE.
+2. `TuiApp` state: `split_tree`, `split_focus`, `split_zoomed`,
+   `split_mode: Option<SplitPreview>`, `move_mode: Option<MoveState>`,
+   per-tile tail cache. New `TuiMode::Split` and `TuiMode::MoveTiles`?
+   No: the split/move overlays key off state fields, `TuiMode::Attach`
+   interplay stays as is (Ctrl+B prefix wins in attach mode already).
+   DONE (split_mode.rs).
 3. `render`: `render_main` Terminal branch lays out the tree; new
    `render_status_bar`; ghost/picked/target indicators per the mock.
+   DONE (render/split_tiles.rs).
 4. Keys: `Shortcut::SplitPane`, `Shortcut::MovePane`, `Shortcut::ZoomPane`
    in `keys.rs`; mode-scoped key handlers; hjkl/arrows route to the
-   active walk when a mode is open.
-5. Footer hints per mode; help overlay rows; docs/tui-shortcuts.md rows.
+   active walk when a mode is open. DONE.
+   Key collision resolution (user-approved): prefix s/m/z are
+   Terminal-screen scoped — split/move/zoom there — while the Git and
+   Files screens keep settings (s), blame (m), stash-file (z). Settings
+   is reachable from any non-Terminal screen.
+5. Footer hints per mode; help overlay rows; docs/tui-shortcuts.md
+   rows. DONE.
 6. Tests: tree ops, ghost scoring, key routing per mode, render smoke
-   via the existing `text_snapshot` harness.
+   via the existing `text_snapshot` harness. DONE (13 split unit tests
+   + 7 integration tests in tui/tests).
 
 ## Non-goals (v1)
 

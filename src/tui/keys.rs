@@ -160,6 +160,12 @@ pub enum Shortcut {
     // button (no prefix default); the TUI needs a chord, so Shift+P
     // takes it (plain p stays new tab).
     SessionManager,
+    // Split-panel mode entry points (design: docs/ux/
+    // tui-split-panels-design.md). Terminal screen only: the prefix
+    // dispatch scopes them, so the git screen keeps its s/m/z keys.
+    SplitPane,
+    MovePane,
+    ZoomPane,
 }
 
 impl Shortcut {
@@ -213,6 +219,9 @@ impl Shortcut {
             Self::GitStageAll => "toggle stage all",
             Self::GitFocusFile => "focus file list",
             Self::SessionManager => "session manager",
+            Self::SplitPane => "split mode",
+            Self::MovePane => "move tile",
+            Self::ZoomPane => "zoom tile",
         }
     }
 }
@@ -380,7 +389,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "Ctrl+B h/o",
             "git: file history (Enter: commit diff) / back to changes",
         ),
-        ("Ctrl+B m", "git: toggle blame in the diff"),
+        ("Ctrl+B m", "git: toggle blame · terminal: move tile mode"),
         ("Ctrl+B 0", "git: shortcut help"),
         (
             "git: G",
@@ -442,7 +451,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "diff search: n/N cycle, Enter keeps, Esc clears",
         ),
         ("git: c (branches)", "create and switch to a new branch"),
-        ("Ctrl+B s", "settings overlay (t cycles the theme)"),
+        (
+            "Ctrl+B s",
+            "settings overlay (t cycles) · terminal: split tile mode",
+        ),
         (
             "Ctrl+B Shift+P",
             "session manager (Enter targets, l launch, x close, c cleanup, n new)",

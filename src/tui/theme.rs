@@ -128,6 +128,15 @@ impl Palette {
         theme.palette()
     }
 
+    pub(crate) fn accent_dim(&self) -> Color {
+        // Ghost tint: the accent at low brightness over the panel bg
+        // (the mock's translucent overlay in text form).
+        let Color::Rgb(r, g, b) = self.accent else {
+            return self.panel_bg;
+        };
+        Color::Rgb(r / 4 + 17, g / 4 + 17, b / 4 + 17)
+    }
+
     fn system(terminal: TerminalTheme) -> Self {
         let mut palette = match terminal {
             TerminalTheme::Dark => Self::dark(),

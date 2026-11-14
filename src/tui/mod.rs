@@ -6,6 +6,7 @@ pub mod render;
 pub mod search;
 pub mod sessions;
 pub mod split;
+mod split_mode;
 pub mod terminal;
 pub mod theme;
 pub mod web_api;
@@ -341,6 +342,34 @@ pub struct TuiApp {
     /// The backend served its whole scrollback (or the retention cap
     /// was reached): further deep fetches cannot grow the buffer.
     pub(crate) pane_history_exhausted: bool,
+    /// Split-panel layout tree (design: docs/ux/tui-split-panels-design.md).
+    /// Leaves hold backend pane ids (any workspace); single leaf = the
+    /// pre-split single-pane view. Rebuilt lazily from the snapshot:
+    /// a leaf whose pane vanished is pruned so the tree never paints a
+    /// dead pane.
+    pub(crate) split_tree: split::SplitNode,
+    /// Pane id of the focused tile; `None` falls back to the sidebar
+    /// selection (the pre-split behavior).
+    pub(crate) split_focus: Option<String>,
+    /// Zoom toggle: the focused tile renders the full pane area
+    /// (WebUI maximized-leaf parity). Tree and ptys stay alive.
+    pub(crate) split_zoomed: bool,
+    /// Split mode state (Ctrl+B s): the ghost preview over a tile and
+    /// the pane the new tile would open.
+    pub(crate) split_mode: Option<split::SplitPreview>,
+    /// Move mode state (Ctrl+B m): picked tile, target, and verb.
+    pub(crate) move_mode: Option<split::MoveState>,
+    /// Last tail text per visible tile pane, for the non-focused tiles
+    /// (the focused tile keeps the full pane_tail pipeline: styles,
+    /// scroll, deep history). Only panes on the tree get entries.
+    pub(crate) tile_tails: std::collections::HashMap<String, String>,
+    /// Receiver of the in-flight tile-tail fetch worker. `None` means
+    /// no fetch running: the next tail refresh may spawn one.
+    tile_tail_rx: Option<std::sync::mpsc::Receiver<Vec<(String, String)>>>,
+    /// Tile geometry of the last rendered frame (pane id + rect),
+    /// recorded by the render pass so key walks score against the
+    /// on-screen grid. RefCell: `render` takes `&TuiApp`.
+    pub(crate) tile_geometry: std::cell::RefCell<Vec<crate::tui::render::TileRectOwned>>,
     terminal_raw_output: String,
     terminal_raw_terminal_id: Option<String>,
     /// Full TUI screen size (cols, rows), set by the binary loop at
@@ -719,6 +748,14 @@ impl TuiApp {
             pane_history: Vec::new(),
             pane_buffers_pane_id: None,
             pane_history_exhausted: false,
+            split_tree: split::SplitNode::leaf(""),
+            split_focus: None,
+            split_zoomed: false,
+            split_mode: None,
+            move_mode: None,
+            tile_tails: std::collections::HashMap::new(),
+            tile_tail_rx: None,
+            tile_geometry: std::cell::RefCell::new(Vec::new()),
             terminal_raw_output: String::new(),
             terminal_raw_terminal_id: None,
             terminal_size: (0, 0),
@@ -813,9 +850,11 @@ impl TuiApp {
                 .unwrap_or(true);
             if tail_due && self.mode != TuiMode::Attach && self.screen == TuiScreen::Terminal {
                 self.refresh_tail();
+                self.refresh_tile_tails();
                 self.last_tail_refresh = Some(Instant::now());
             }
         }
+        self.poll_tile_tails();
     }
 
     /// Start the ping+snapshot round-trip off-loop. The old inline call
@@ -876,6 +915,7 @@ impl TuiApp {
             self.select_focused_items();
         }
         self.clamp_selection();
+        self.sync_split_tree();
         if self.mode != TuiMode::Attach {
             self.refresh_tail();
             self.last_tail_refresh = Some(Instant::now());
@@ -2177,8 +2217,16 @@ impl TuiApp {
                 self.status = PromptKind::GitCwd.title().to_string();
             }
             Shortcut::Settings => {
-                // Prefix s: settings overlay (webui settings modal).
-                self.open_overlay(TuiMode::Settings);
+                // Prefix s: settings overlay (webui settings modal) —
+                // except on the Terminal screen in Navigate mode, where
+                // the split-panel design takes the key (Ctrl+B s opens
+                // split mode; the settings overlay stays on the git
+                // screens and reachable via the sidebar menu).
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    self.open_split_mode();
+                } else {
+                    self.open_overlay(TuiMode::Settings);
+                }
             }
             Shortcut::Sidebar => {
                 // Prefix Shift+B: collapse/expand the sidebar column
@@ -2376,7 +2424,13 @@ impl TuiApp {
             }
             Shortcut::GitBlame => {
                 // Webui `blame: KeyM`: toggle author annotations on the
-                // diff lines of the selected file.
+                // diff lines of the selected file. Terminal screen in
+                // Navigate mode keeps the key for move mode (split
+                // design); the git screen keeps blame.
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    self.open_move_mode();
+                    return;
+                }
                 self.open_git_screen();
                 if self.git_panel.view != GitView::Changes {
                     self.git_panel.view = GitView::Changes;
@@ -2431,7 +2485,16 @@ impl TuiApp {
                     self.run_git_action(|panel, api| panel.discard_selected(api));
                 }
             }
-            Shortcut::GitStashFile => self.run_git_action(|panel, api| panel.stash_changes(api)),
+            Shortcut::GitStashFile => {
+                // Webui `stash: Digit4` is the stash verb; prefix z maps
+                // to per-file stash. Terminal screen in Navigate mode
+                // keeps z for tile zoom (split design).
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    self.split_toggle_zoom();
+                    return;
+                }
+                self.run_git_action(|panel, api| panel.stash_changes(api));
+            }
             Shortcut::GitPush => self.run_git_action(|panel, api| panel.push(api)),
             Shortcut::GitStageAll => {
                 // Webui `stageAll: KeyG` behind the prefix (audit fix):
@@ -2472,6 +2535,25 @@ impl TuiApp {
                 // free chord here): list sessions, switch, launch,
                 // close, cleanup, create.
                 self.open_session_manager();
+            }
+            // The s/m/z prefix arms dispatch through the git/settings
+            // arms above (Terminal-screen scoped there); these variants
+            // exist for exhaustive matches and any future direct
+            // binding. Keep the behavior identical to the scoped arms.
+            Shortcut::SplitPane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.open_split_mode();
+                }
+            }
+            Shortcut::MovePane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.open_move_mode();
+                }
+            }
+            Shortcut::ZoomPane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.split_toggle_zoom();
+                }
             }
         }
     }
@@ -3633,11 +3715,37 @@ impl TuiApp {
         self.mark_dirty();
     }
 
+    /// Tile focus walk with scroll fallback: when the split tree has
+    /// neighbors in the (dx, dy) direction the focus moves there and
+    /// the caller skips its fallback. Returns false when the walk
+    /// found nothing (single tile or edge): the pre-split key behavior
+    /// runs instead.
+    fn split_walk_fallback(&mut self, dx: i32, dy: i32) -> bool {
+        if self.split_tree.leaves().len() < 2 {
+            return false;
+        }
+        let before = self.split_focus.clone();
+        self.split_move_focus(dx, dy);
+        self.split_focus != before
+    }
+
     fn handle_navigation_key(&mut self, key: KeyEvent) {
         // The Files and Git screens own their keys in Navigate mode too;
         // only the Terminal screen keeps the workspace/agent list keys.
         if self.screen != TuiScreen::Terminal {
             self.handle_panel_key(key);
+            return;
+        }
+        // Split/move overlays own the keyboard while open (design:
+        // hjkl/arrows walk, Tab flips, p cycles, Enter commits, Esc
+        // cancels). They sit above the pane-scroll and sidebar keys so
+        // no accidental scroll moves anything mid-preview.
+        if self.split_mode.is_some() {
+            self.handle_split_mode_key(key);
+            return;
+        }
+        if self.move_mode.is_some() {
+            self.handle_move_mode_key(key);
             return;
         }
         // Focus walker (Ctrl+B . / ,) regions: when the main screen
@@ -3658,16 +3766,27 @@ impl TuiApp {
                 KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
                 KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
                 KeyCode::Enter => self.attach_selected(),
-                // Pane scroll (main region owns the pane): arrows and
-                // vim keys walk the scrollback, page keys jump by ten,
-                // G/End snap back to the newest line, g/Home to the
-                // oldest held one.
+                // Split-active tile walk (design: hjkl/arrows walk focus
+                // between tiles): when a walk finds a neighbor the focus
+                // moves there; with a single tile the keys fall back to
+                // pane scroll so the pre-split behavior stays.
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.scroll_pane_up(1);
+                    if !self.split_walk_fallback(0, -1) {
+                        self.scroll_pane_up(1);
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.scroll_pane_down(1);
+                    if !self.split_walk_fallback(0, 1) {
+                        self.scroll_pane_down(1);
+                    }
                 }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if !self.split_walk_fallback(-1, 0) {
+                        // Horizontal keys had no pre-split scroll binding;
+                        // with a single tile they stay inert.
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => if !self.split_walk_fallback(1, 0) {},
                 KeyCode::PageUp => {
                     self.scroll_pane_up(10);
                 }
@@ -4007,6 +4126,80 @@ impl TuiApp {
     fn reset_terminal_output_buffer(&mut self) {
         self.terminal_raw_output.clear();
         self.terminal_raw_terminal_id = None;
+    }
+
+    /// Fetch the tail of every visible non-focused tile. The focused
+    /// tile keeps the full `refresh_tail` pipeline (styles, scroll,
+    /// deep history); the rest get plain text at the same cadence, one
+    /// `pane.read` per tile. Entries for panes that left the tree are
+    /// dropped so the cache never outlives its tiles. Fetches run on a
+    /// short-lived worker per tick (same pattern as `spawn_refresh`):
+    /// a dead backend must not freeze keys and redraws.
+    pub(crate) fn refresh_tile_tails(&mut self) {
+        let focused = self.focused_pane_id();
+        let visible: Vec<String> = self
+            .split_tree
+            .leaves()
+            .into_iter()
+            .filter(|id| Some(*id) != focused.as_deref())
+            .map(|id| id.to_string())
+            .collect();
+        self.tile_tails.retain(|id, _| visible.contains(id));
+        if visible.is_empty() {
+            return;
+        }
+        // One worker per tick fetches every tile tail and ships the
+        // whole batch back; the next tick drains it. A worker still
+        // running means no new spawn until it lands (same re-arm rule
+        // as `spawn_refresh`).
+        if self.tile_tail_rx.is_some() {
+            return;
+        }
+        let client = self.client.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<(String, String)>>();
+        std::thread::spawn(move || {
+            let mut tails = Vec::with_capacity(visible.len());
+            for pane_id in &visible {
+                let text = client
+                    .read_pane(pane_id)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("read")
+                            .and_then(|read| read.get("text"))
+                            .and_then(Value::as_str)
+                            .or_else(|| value.get("text").and_then(Value::as_str))
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default();
+                tails.push((pane_id.clone(), text));
+            }
+            let _ = tx.send(tails);
+        });
+        self.tile_tail_rx = Some(rx);
+    }
+
+    /// Drain a finished tile-tail worker into the cache. Called from
+    /// the tick; `Empty` keeps the receiver for the next tick, a dead
+    /// worker clears it so the next refresh can spawn a new one. A
+    /// failed fetch keeps the previous tail (a missing tile shows its
+    /// last content, not a blank).
+    pub(crate) fn poll_tile_tails(&mut self) {
+        let Some(rx) = self.tile_tail_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(tails) => {
+                for (pane_id, text) in tails {
+                    self.tile_tails.insert(pane_id, text);
+                }
+                self.mark_dirty();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.tile_tail_rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
     }
 
     /// Lines the pane view and the lens scroll over: the deep history

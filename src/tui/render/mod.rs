@@ -14,6 +14,9 @@ use crate::tui::theme::Palette;
 use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
 use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen, TuiWorkspace};
 
+mod split_tiles;
+pub(crate) use split_tiles::TileRectOwned;
+
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
 
@@ -200,10 +203,22 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     if area.is_empty() {
         return;
     }
-    let [tab_bar, pane_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    // AGENTS summary bar (split design): one line between the tab bar
+    // and the pane area, always present on the Terminal screen so the
+    // layout never jumps when a split opens.
+    let [tab_bar, status_bar, pane_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(area);
     render_tab_bar(frame, tab_bar, app, p);
-    render_pane(frame, pane_area, app, p);
+    split_tiles::render_status_bar(frame, status_bar, app, p);
+    split_tiles::render_panes_or_split(frame, pane_area, app, p);
+    // Key walks score against this frame's geometry.
+    let focus = app.focused_pane_id();
+    let tiles = split_tiles::layout_tiles(&app.split_tree, pane_area, focus.as_deref());
+    split_tiles::record_tile_geometry(app, &tiles);
 }
 
 /// Pane viewport (cols, rows) the attached pty must be sized to:
@@ -1972,6 +1987,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         app.status.clone()
     };
     let message = message.as_str();
+    // Split/move mode hint (design: Zellij-style mode bar): while an
+    // overlay owns the keyboard the help slot swaps to the mode
+    // verbs so the user sees the keys without the overlay.
+    let help = split_tiles::mode_hint(app).unwrap_or(help);
     let used = label_width + help.chars().count() + prefix.chars().count();
     let status_budget = area.width.saturating_sub(used as u16) as usize;
     let line = Line::from(vec![
