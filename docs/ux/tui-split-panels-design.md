@@ -143,7 +143,7 @@ One AGENTS summary bar sits between the tab bar and the pane area:
    in `keys.rs`; mode-scoped key handlers; hjkl/arrows route to the
    active walk when a mode is open. DONE.
    Key collision resolution (user-approved): prefix s/m/z are
-   Terminal-screen scoped — split/move/zoom there — while the Git and
+   Terminal-screen scoped (split/move/zoom there), while the Git and
    Files screens keep settings (s), blame (m), stash-file (z). Settings
    is reachable from any non-Terminal screen.
 5. Footer hints per mode; help overlay rows; docs/tui-shortcuts.md
