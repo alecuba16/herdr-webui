@@ -976,7 +976,18 @@ impl TuiApp {
                 self.snapshot.agents.len(),
             );
         }
-        self.error = None;
+        // A terminal-drain error keeps the line for the same
+        // STATUS_HOLD the status notice uses: refreshes must not wipe
+        // why a pane dropped before the user reads it. Any other error
+        // (stale validation, a failed action the user just retried)
+        // stays clearable by a healthy refresh.
+        if !self
+            .status_hold_until
+            .is_some_and(|deadline| Instant::now() < deadline)
+            || self.error.is_none()
+        {
+            self.error = None;
+        }
         self.last_refresh = Some(Instant::now());
         // Worktree identity for the new rows: serve fresh cached
         // replies first (no round trip), then arm a fetch per cwd the
@@ -3710,6 +3721,17 @@ impl TuiApp {
         self.status_hold_until = Some(Instant::now() + STATUS_HOLD);
     }
 
+    /// Report a live-terminal failure (server shutdown, broken pipe)
+    /// and arm the hold so the next refresh cannot wipe the reason
+    /// before the user reads it: `apply_refresh` clears `error` on
+    /// every successful snapshot, and a drain-detach error is exactly
+    /// the "action that just reported its outcome" the hold exists
+    /// for. The footer already ranks `error` above `status`.
+    pub fn report_terminal_error(&mut self, message: String) {
+        self.error = Some(message);
+        self.status_hold_until = Some(Instant::now() + STATUS_HOLD);
+    }
+
     /// Arm the hold when a key path replaced the status line.
     fn hold_status_if_changed(&mut self, before: &str) {
         if self.status != before {
@@ -4013,6 +4035,10 @@ impl TuiApp {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
             self.mode = TuiMode::Navigate;
             self.status = "detached".to_string();
+            // The detach acknowledges whatever killed the pane: a
+            // drain error holds the footer for STATUS_HOLD, so it
+            // would otherwise outrank "detached" until the hold lapses.
+            self.error = None;
             return;
         }
         let Some(terminal_id) = self.view_terminal_id().map(str::to_string) else {

@@ -8190,6 +8190,35 @@ fn attach_mode_key_attach_failure_surfaces_the_error() {
 }
 
 #[test]
+fn terminal_drain_error_survives_the_refresh_hold() {
+    // A drain-detach error (server shutdown, broken pipe) must own
+    // the footer for STATUS_HOLD: apply_refresh clears plain errors on
+    // every successful snapshot, so without the hold the reason a pane
+    // dropped could vanish before the first draw renders it.
+    let mut app = app_with_snapshot();
+    app.report_terminal_error("maintenance".to_string());
+    assert_eq!(app.error.as_deref(), Some("maintenance"));
+    assert!(app.status_hold_until.is_some());
+    // A completed refresh within the hold keeps the error visible.
+    app.apply_refresh(
+        json!({}),
+        json!({"snapshot": {"workspaces": [], "panes": [], "agents": []}}),
+    );
+    assert_eq!(
+        app.error.as_deref(),
+        Some("maintenance"),
+        "refresh inside the hold must not wipe the drain error"
+    );
+    // Past the hold the next refresh clears it again, like any error.
+    app.status_hold_until = Some(std::time::Instant::now());
+    app.apply_refresh(
+        json!({}),
+        json!({"snapshot": {"workspaces": [], "panes": [], "agents": []}}),
+    );
+    assert!(app.error.is_none());
+}
+
+#[test]
 fn history_load_without_a_terminal_is_a_silent_no_op() {
     // The no-terminal early return: no panes means no history to
     // load, so the call must not touch the backend at all.
