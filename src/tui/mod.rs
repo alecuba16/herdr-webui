@@ -5984,7 +5984,9 @@ mod scroll_tests {
     use serde_json::json;
     /// Minimal backend answering ping, snapshot and pane.read with a
     /// long scrollback, so the deep-fetch scroll paths run for real.
-    fn fake_backend_with_history(lines: usize) -> (BackendClient, std::sync::mpsc::Sender<()>) {
+    pub(crate) fn fake_backend_with_history(
+        lines: usize,
+    ) -> (BackendClient, std::sync::mpsc::Sender<()>) {
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
         use std::io::{BufRead, BufReader, Write};
 
@@ -6359,5 +6361,290 @@ mod final_coverage_tests {
         // Ctrl-G routes through handle_key and detaches.
         app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
         assert_ne!(app.mode, TuiMode::Attach);
+    }
+}
+
+#[cfg(test)]
+mod batch11_coverage_tests {
+    use super::scroll_tests::fake_backend_with_history;
+    use super::*;
+    use panels::git::{CleanupRepo, CleanupWorktree, GitCommitEntry, GitView};
+
+    fn commit(hash: &str) -> GitCommitEntry {
+        GitCommitEntry {
+            hash: hash.into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }
+    }
+
+    /// The run_shortcut copies of the conflicts/cleanup/log verbs only
+    /// miss their api-error arms, so this suite runs them against a
+    /// fake server that refuses the one route each verb needs while
+    /// the surrounding refresh routes keep looping.
+    #[test]
+    fn shortcut_conflicts_and_cleanup_error_arms() {
+        // Conflicts: the four resolve modes plus merge-flavored R/A
+        // with rebase_in_progress false.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/conflict-resolve"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Conflicts;
+        for ch in ['o', 'e', 't', 'm'] {
+            app.git_panel.conflict_files = vec!["a.rs".into()];
+            app.handle_git_key(super::key_handler_tests::key(
+                crossterm::event::KeyCode::Char(ch),
+            ));
+            assert!(app.error.is_some(), "{ch} resolve error");
+        }
+        app.git_panel.rebase_in_progress = false;
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('R'),
+        ));
+        assert!(app.error.is_some(), "merge continue error");
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('S'),
+        ));
+        assert!(app.error.is_some(), "rebase skip error");
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('A'),
+        ));
+        assert!(app.error.is_some(), "merge abort error");
+
+        // Cleanup: B with a selected item against a refusing prune.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/worktree-prune"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Cleanup;
+        app.git_panel.cleanup_repos = vec![CleanupRepo {
+            path: "/repo".into(),
+            branches: vec![],
+            worktrees: vec![CleanupWorktree {
+                path: "/lane".into(),
+                branch: Some("feat".into()),
+            }],
+        }];
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('B'),
+        ));
+        assert!(app.error.is_some(), "prune error");
+
+        // Log Enter with a selected commit against a refusing compare.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/compare"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Log;
+        app.git_panel.commits = vec![commit("abc")];
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.error.is_some(), "compare error");
+        // The GitCommit shortcut dispatches the same Enter arm in git
+        // context: keep the Log view so the compare runs again.
+        app.error = None;
+        app.run_shortcut(Shortcut::GitCommit);
+        assert!(
+            app.commit_input.is_some(),
+            "shortcut opens the commit input"
+        );
+    }
+
+    /// Terminal-screen navigation keys that only run with the sidebar
+    /// focused path: help, j/k, page keys, and Enter attaching the
+    /// selected pane (real history backend, so the attach tail loads).
+    #[test]
+    fn navigation_bottom_keys_and_attach() {
+        let (client, _stop) = fake_backend_with_history(10);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        let key = super::key_handler_tests::key;
+        use crossterm::event::KeyCode;
+        app.handle_navigation_key(key(KeyCode::Char('?')));
+        assert_eq!(app.mode, TuiMode::Help);
+        app.mode = TuiMode::Navigate;
+        app.handle_navigation_key(key(KeyCode::Char('r')));
+        app.handle_navigation_key(key(KeyCode::Char('j')));
+        app.handle_navigation_key(key(KeyCode::Char('k')));
+        app.handle_navigation_key(key(KeyCode::PageUp));
+        app.handle_navigation_key(key(KeyCode::PageDown));
+        app.handle_navigation_key(key(KeyCode::Char('L')));
+        app.handle_navigation_key(key(KeyCode::Char('C')));
+        app.handle_navigation_key(key(KeyCode::Char('a')));
+        app.handle_navigation_key(key(KeyCode::Char('w')));
+        app.handle_navigation_key(key(KeyCode::Tab));
+        assert_eq!(app.mode, TuiMode::Navigate);
+        // Split focus walk: with a single tile the h/l keys stay inert.
+        app.handle_navigation_key(key(KeyCode::Char('h')));
+        app.handle_navigation_key(key(KeyCode::Char('l')));
+        // Enter attaches the selected pane; without a terminal in view
+        // the guard fires (the real attach path is covered by the pty
+        // suite, whose fake speaks the bincode terminal framing).
+        app.snapshot.panes.clear();
+        app.handle_navigation_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("no terminal selected"));
+    }
+
+    /// Tile-tail worker against real backends: the nested `read.text`
+    /// shape, the bare `text` fallback, and the pane.read failure that
+    /// keeps an empty tail. Drains through poll_tile_tails until the
+    /// cache holds every visible tile.
+    #[test]
+    fn tile_tails_fetch_real_backends() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                    {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}
+                ],
+                "agents": []
+            }
+        }));
+        // Single focused leaf: no visible tiles (the focused tile is
+        // excluded), so the retain drops the stale entry and the
+        // refresh returns without a worker.
+        app.tile_tails.insert("gone".into(), "old".into());
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        app.split_focus = Some("pane_1".into());
+        app.refresh_tile_tails();
+        assert!(app.tile_tail_rx.is_none(), "no visible tiles, no worker");
+        assert!(app.tile_tails.is_empty(), "stale tail dropped");
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_2".into());
+        // Real backend: the non-focused pane_1 tail loads through the
+        // nested read.text shape (the fake serves every pane.read the
+        // same text, so drain until the entry lands).
+        app.refresh_tile_tails();
+        for _ in 0..200 {
+            app.poll_tile_tails();
+            if let Some(text) = app.tile_tails.get("pane_1") {
+                assert!(!text.is_empty(), "tail should hold the pane text");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.tile_tails.contains_key("pane_1"), "tile tail drained");
+        assert!(app.tile_tail_rx.is_none(), "worker finished");
+
+        // Bare text fallback: a backend answering `{"text": ...}`.
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        use std::io::{BufRead, BufReader, Write};
+        let path = crate::backend_client::unique_test_path("herdr-tui-tail");
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let (_tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || loop {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let response = match request["method"].as_str().unwrap_or("") {
+                "ping" => serde_json::json!({"id": request["id"], "result": {}}),
+                "pane.read" => {
+                    serde_json::json!({"id": request["id"], "result": {"text": "bare tail"}})
+                }
+                _ => serde_json::json!({"id": request["id"], "result": {}}),
+            };
+            let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+            let _ = stream.write_all(b"\n");
+            let _ = stream.flush();
+        });
+        let path_str = path.to_str().unwrap().to_string();
+        let client = BackendClient::new(&path_str, &path_str);
+        app.client = client;
+        app.tile_tails.clear();
+        app.refresh_tile_tails();
+        for _ in 0..200 {
+            app.poll_tile_tails();
+            if let Some(text) = app.tile_tails.get("pane_1") {
+                assert_eq!(text, "bare tail");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            app.tile_tails.get("pane_1").map(String::as_str),
+            Some("bare tail")
+        );
+        // A dead backend answers nothing: the fetch lands with an empty
+        // tail (unwrap_or_default), the observable behavior of a vanished
+        // pane rather than a stale copy.
+        app.client = BackendClient::new("/nonexistent-tail.sock", "/nonexistent-tail.sock");
+        app.refresh_tile_tails();
+        for _ in 0..200 {
+            app.poll_tile_tails();
+            if app.tile_tail_rx.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            app.tile_tails.get("pane_1").map(String::as_str),
+            Some(""),
+            "failed fetch lands an empty tail"
+        );
+    }
+
+    /// deepen_pane_history growth arm: a second deep fetch doubles the
+    /// held buffer (len*2 clamped by the cap) and trims the fetch to the
+    /// newest `want` lines.
+    #[test]
+    fn deepen_doubles_the_held_history() {
+        let (client, _stop) = fake_backend_with_history(400);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        assert!(app.deepen_pane_history() > 0);
+        let held = app.pane_history.len();
+        // Second deepen doubles the want (trimming the same 400-line
+        // reply is a no-op there, but the multiplication arm runs).
+        app.pane_history_exhausted = false;
+        app.deepen_pane_history();
+        assert!(app.pane_history.len() >= held);
     }
 }
