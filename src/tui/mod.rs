@@ -6368,6 +6368,7 @@ mod final_coverage_tests {
 mod batch11_coverage_tests {
     use super::scroll_tests::fake_backend_with_history;
     use super::*;
+    use crate::model::TuiAgentSession;
     use panels::git::{CleanupRepo, CleanupWorktree, GitCommitEntry, GitView};
 
     fn commit(hash: &str) -> GitCommitEntry {
@@ -6649,5 +6650,157 @@ mod batch11_coverage_tests {
         app.pane_history_exhausted = false;
         app.deepen_pane_history();
         assert!(app.pane_history.len() >= held);
+    }
+
+    #[test]
+    fn conflicts_enter_noop_and_rebase_flavored_abort() {
+        // Enter in the Conflicts view is the no-op arm of the view match,
+        // and the rebase-flavored abort arm needs rebase_in_progress true.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/conflict-action"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Conflicts;
+        app.git_panel.rebase_in_progress = true;
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('A'),
+        ));
+        assert!(app.error.is_some(), "rebase abort error");
+        app.error = None;
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.error.is_none(), "enter is a no-op in conflicts");
+    }
+
+    #[test]
+    fn main_focused_h_and_l_walk_single_tile() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.main_focused = true;
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('h'),
+        ));
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('l'),
+        ));
+        assert_eq!(app.mode, TuiMode::Navigate);
+    }
+
+    #[test]
+    fn tile_tail_worker_reentry_guard_and_disconnected_drain() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_2".into());
+        // While a worker is in flight a second refresh must not spawn one.
+        app.refresh_tile_tails();
+        assert!(app.tile_tail_rx.is_some(), "worker spawned");
+        app.refresh_tile_tails();
+        // Still the same receiver: re-entry guard. Drain the finished
+        // worker; the last poll after Disconnected clears the receiver.
+        let mut drained = false;
+        for _ in 0..300 {
+            app.poll_tile_tails();
+            if app.tile_tail_rx.is_none() {
+                drained = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(drained, "worker drained including disconnected poll");
+    }
+
+    #[test]
+    fn fake_api_server_break_and_continue_arms() {
+        // The server stop sender breaks the accept loop; a fresh server
+        // then serves one request so the read-empty continue arm runs.
+        let (api, stop) = super::prompt_action_tests::fake_api_server(&[]);
+        stop.send(()).unwrap();
+        // Give the accept-loop thread a moment to observe the stop.
+        std::thread::sleep(Duration::from_millis(50));
+        // A request after the stop reaches a closed listener: connect
+        // failure is fine, the point is the break arm already ran.
+        let _ = api.session_cleanup();
+
+        let (api, _stop) = super::prompt_action_tests::fake_api_server(&[]);
+        // A well-formed call proves the loop serves requests.
+        assert!(api.session_cleanup().is_ok());
+    }
+
+    #[test]
+    fn deepen_trims_to_the_newest_window() {
+        // 3000 lines against the 2000-line start window: the trim arm
+        // keeps the newest 2000 and the exhausted flag stays off.
+        let (client, _stop) = fake_backend_with_history(3000);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        assert!(app.deepen_pane_history() > 0);
+        assert_eq!(app.pane_history.len(), 2000);
+        assert!(!app.pane_history_exhausted, "trim means not exhausted");
+        assert_eq!(
+            app.pane_history.first().map(String::as_str),
+            Some("line 1000")
+        );
+    }
+
+    #[test]
+    fn lens_gate_kinds_from_the_snapshot() {
+        // lens_chat_supported gates on agent_session: unsupported kind,
+        // supported kind, and no session at all.
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        let pane = serde_json::json!({
+            "pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1",
+            "agent":"claude","display_agent":"claude","agent_status":"idle","cwd":"/repo","focused":true,
+            "agent_session": {"kind":"claude","resolvable":true,"session_id":"s1"}
+        });
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [pane],
+                "agents": []
+            }
+        }));
+        app.main_focused = true;
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(!app.lens.active, "unsupported kind keeps the lens closed");
+        // Supported kind opens the lens.
+        app.snapshot.panes[0].agent_session = Some(TuiAgentSession {
+            kind: "jcode".into(),
+            resolvable: true,
+            session_id: Some("s1".into()),
+            reason: None,
+        });
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(app.lens.active, "supported kind opens the lens");
+        // No session: the gate refuses and stays closed.
+        app.lens.active = false;
+        app.snapshot.panes[0].agent_session = None;
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(!app.lens.active, "no session keeps the lens closed");
     }
 }
