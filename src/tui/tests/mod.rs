@@ -12496,9 +12496,21 @@ fn move_mode_key_handler_routes_tab_esc_and_walking() {
     app.handle_move_mode_key(KeyEvent::from(KeyCode::Tab));
     assert!(!app.move_mode.as_ref().unwrap().insert);
 
-    // hjkl walk the target.
+    // hjkl and the arrow keys walk the target.
     app.handle_move_mode_key(KeyEvent::from(KeyCode::Char('l')));
     assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Char('h')));
+    // The picked tile (pane_1) is skipped by walks, so the target
+    // stays on pane_3 through the left/up/down steps; Right re-lands
+    // on it too.
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Left));
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Right));
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Up));
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.move_mode.as_ref().unwrap().target, "pane_3");
+
+    // An inert key falls through without touching the mode.
+    app.handle_move_mode_key(KeyEvent::from(KeyCode::Char('x')));
 
     // Esc cancels.
     app.handle_move_mode_key(KeyEvent::from(KeyCode::Esc));
@@ -12575,10 +12587,23 @@ fn resize_mode_opens_walks_and_guards() {
 
     // Key handler routing: j/k drive the col axis (no col dividers
     // on a flat row, so the move reports the outer boundary).
-    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('l')));
-    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('k')));
-    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('j')));
-    app.handle_resize_mode_key(KeyEvent::from(KeyCode::Char('h')));
+    for key in [
+        KeyCode::Char('l'),
+        KeyCode::Char('k'),
+        KeyCode::Char('j'),
+        KeyCode::Char('h'),
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Char('x'),
+    ] {
+        app.handle_resize_mode_key(KeyEvent::from(key));
+    }
+    assert_eq!(
+        app.status, "no horizontal divider to move",
+        "col verbs on a flat row refuse with the divider note"
+    );
 
     // No mode: inert.
     app.resize_mode = None;
@@ -12938,4 +12963,235 @@ fn browser_row_matches_searches_paths_names_branches_and_labels() {
         path: "/repo".into(),
     };
     assert!(this.matches("repo"));
+}
+
+#[test]
+fn drain_auto_split_queue_waits_when_no_neighbor_is_alive() {
+    let mut app = app_with_two_panes();
+    // Queue a workspace whose spare pane exists but the captured
+    // neighbor is dead and the current focus IS the spare pane (it
+    // cannot host a tile beside itself): the request is kept.
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_2".to_string());
+    app.split_panes_of_workspaces = vec![("ws_1".to_string(), Some("dead".to_string()))];
+    app.drain_auto_split_queue();
+    assert_eq!(
+        app.split_panes_of_workspaces,
+        vec![("ws_1".to_string(), Some("dead".to_string()))],
+        "request kept while nothing alive can host it"
+    );
+
+    // Queue for a workspace that vanished from the snapshot: dropped.
+    app.split_panes_of_workspaces = vec![("ws_missing".to_string(), None)];
+    app.drain_auto_split_queue();
+    assert!(app.split_panes_of_workspaces.is_empty());
+}
+
+#[test]
+fn open_split_mode_reports_no_focus_when_nothing_is_alive() {
+    let mut app = app_with_two_panes();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({"snapshot": {
+        "workspaces": [], "tabs": [], "panes": [], "agents": []
+    }}));
+    app.open_split_mode();
+    assert_eq!(app.status, "no pane to split");
+    assert!(app.split_mode.is_none());
+}
+
+#[test]
+fn open_resize_mode_reports_no_focus_when_nothing_is_alive() {
+    let mut app = app_with_two_panes();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({"snapshot": {
+        "workspaces": [], "tabs": [], "panes": [], "agents": []
+    }}));
+    app.open_resize_mode();
+    assert_eq!(app.status, "no pane to resize");
+    assert!(app.resize_mode.is_none());
+}
+
+#[test]
+fn split_move_ghost_without_a_preview_is_silent() {
+    let mut app = app_with_two_panes();
+    app.split_mode = None;
+    app.split_move_ghost(1, 0);
+    assert!(app.split_mode.is_none());
+}
+
+#[test]
+fn move_mode_guards_pick_eq_target_missing_mode_and_last_leaf_insert() {
+    let mut app = app_with_two_panes();
+
+    // No mode: silent return.
+    app.move_commit();
+    assert!(app.move_mode.is_none());
+
+    // Picked equals target: silent no-op (mode consumed).
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "pane_1".into(),
+        target: "pane_1".into(),
+        insert: true,
+        side: crate::tui::split::Side::Right,
+    });
+    app.move_commit();
+    assert!(app.move_mode.is_none());
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+
+    // Toggle with no mode: silent.
+    app.move_mode = None;
+    app.move_toggle_insert();
+    assert!(app.move_mode.is_none());
+
+    // Insert where the picked pane is not on the tree at all: the
+    // vanished guard fires.
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "ghost".into(),
+        target: "pane_1".into(),
+        insert: false,
+        side: crate::tui::split::Side::Right,
+    });
+    app.move_commit();
+    assert_eq!(app.status, "move target vanished");
+
+    // Insert with a 2-leaf tree where the target is not on the tree
+    // after the earlier guards: the vanished-target guard inside the
+    // insert branch fires (target checked again after the pull).
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "pane_1".into(),
+        target: "pane_1".into(),
+        insert: true,
+        side: crate::tui::split::Side::Right,
+    });
+    app.move_commit();
+    // Note: the "move picked the last tile" arm is unreachable — it
+    // needs remove_leaf to return None, which only happens when the
+    // tree is a lone leaf equal to picked, but picked == target
+    // returns first. The "target vanished after pull" arm is likewise
+    // unreachable with a consistent tree.
+}
+
+#[test]
+fn split_ghost_axis_break_flips_a_col_side_to_right_on_horizontal_moves() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    // Preview family is col (Below) but the move is horizontal: the
+    // family switches to Right.
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".into(),
+        pane: "pane_2".into(),
+        side: crate::tui::split::Side::Below,
+    });
+    draw(&app, 150, 40);
+    app.split_move_ghost(1, 0);
+    assert_eq!(app.split_mode.as_ref().unwrap().neighbor, "pane_3");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Right
+    );
+}
+
+#[test]
+fn move_toggle_insert_flips_the_verb_with_a_live_state() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "pane_1".into(),
+        target: "pane_1".into(),
+        insert: false,
+        side: crate::tui::split::Side::Right,
+    });
+    app.move_toggle_insert();
+    assert!(app.move_mode.as_ref().unwrap().insert);
+    app.move_toggle_insert();
+    assert!(!app.move_mode.as_ref().unwrap().insert);
+}
+
+#[test]
+fn resize_step_on_the_outer_boundary_names_itself() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.resize_mode = Some(crate::tui::split_mode::ResizeState {
+        pane: "pane_1".into(),
+    });
+    // Bounded walk left: the status lands on one of the three
+    // outcomes (moved, outer, clamped) without looping forever.
+    for _ in 0..16 {
+        app.resize_step_direction(
+            crate::tui::split::SplitDir::Row,
+            crate::tui::split::ResizeDir::Narrow,
+        );
+    }
+    assert!(matches!(
+        app.status.as_str(),
+        "tile resized" | "resized outer boundary" | "already at minimum size"
+    ));
+}
+
+#[test]
+fn move_panel_selects_the_tab_of_the_pane_the_agent_list_points_at() {
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":2,"active_tab_id":"tab_2"}],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":false,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_1","label":"Server","focused":false,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo","focused":false}
+            ],
+            "agents": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo","focused":false}
+            ]
+        }
+    }));
+    // Cursor on the first agent (pane_1, tab_1): moving selects tab_1
+    // and repoints the agent cursor at its pane's entry.
+    app.selected_agent = 0;
+    let message = app.move_panel(1).unwrap();
+    assert_eq!(message, "panel 2/2");
+    assert_eq!(app.selected_agent, 1, "agent cursor follows tab_2's pane");
+}
+
+#[test]
+fn worktree_stage_picked_reads_the_worktree_row_path() {
+    let mut app = app_with_snapshot();
+    // A real directory so validation passes: use the repo cwd itself.
+    let cwd = std::env::current_dir().unwrap();
+    app.worktree_root = cwd.to_string_lossy().to_string();
+    app.worktree_rows = vec![crate::tui::workspace::WorktreeRow {
+        path: cwd.to_string_lossy().to_string(),
+        branch: "main".into(),
+        label: "wt".into(),
+        is_linked: false,
+    }];
+    app.worktree_selected = 0;
+    let result = app.worktree_stage_picked();
+    assert!(result.is_ok(), "real dir stages, got {result:?}");
 }

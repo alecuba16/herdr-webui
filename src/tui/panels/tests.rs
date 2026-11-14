@@ -2289,12 +2289,42 @@ fn git_panel_verbs_complete_their_refresh_tails_again_a_live_fake_api() {
     // refresh_view after it complete.
     let mut panel = GitPanel::new("/repo");
     panel.view = GitView::Changes;
+    // Stage/unstage/discard on a selected file succeed and refresh.
+    // The refresh wipes the file list, so re-seed before every verb.
+    let one_file = |status: GitFileStatus| {
+        vec![GitFileEntry {
+            path: "a.rs".into(),
+            status,
+        }]
+    };
+    panel.files = one_file(GitFileStatus::Unstaged);
+    panel.file_selected = 0;
+    panel.stage_selected(&api).unwrap();
+    panel.files = one_file(GitFileStatus::Staged);
+    panel.unstage_selected(&api).unwrap();
+    panel.files = one_file(GitFileStatus::Unstaged);
+    panel.discard_selected(&api).unwrap();
+    // Toggle-all with staged entries takes the unstage branch, then
+    // with none staged it stages everything unstaged/untracked.
+    panel.files = one_file(GitFileStatus::Staged);
+    panel.toggle_stage_all(&api).unwrap();
+    panel.files = one_file(GitFileStatus::Unstaged);
+    panel.toggle_stage_all(&api).unwrap();
     panel.stash_changes(&api).unwrap();
     panel.commit(&api, "title", false).unwrap();
     panel.commit(&api, "title", true).unwrap();
     panel.pull(&api).unwrap();
     panel.push(&api).unwrap();
     panel.fetch(&api).unwrap();
+
+    // Stash show loads the diff tail (no refresh after it).
+    panel.stashes = vec![GitStashEntry {
+        name: "stash@{0}".into(),
+        message: "wip".into(),
+    }];
+    panel.stash_selected = 0;
+    panel.load_stash_diff(&api).unwrap();
+    assert_eq!(panel.stash_diff_title, "stash@{0}");
 
     // Stash verbs succeed too. Each refresh_view wipes the stash list
     // (the fake answers with an empty stashes array), so re-seed it
@@ -2379,5 +2409,79 @@ fn cleanup_delete_succeeds_and_deletes_the_branch_too_against_the_fake_api() {
     panel.cleanup_toggle_mark();
     let deleted = panel.cleanup_delete_selected(&api, false).unwrap();
     assert_eq!(deleted, 1);
+    assert!(panel.cleanup_failures.is_empty());
+}
+
+#[test]
+fn cleanup_delete_retries_with_force_when_git_demands_it() {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        // The safe delete fails demanding --force, the forced retry
+        // succeeds, and the refresh_view after the delete needs more
+        // ok answers, so the loop keeps serving.
+        let mut round = 0;
+        loop {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let current_round = round;
+            round += 1;
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                break;
+            }
+            let mut content_length = 0usize;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header
+                    .trim()
+                    .to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut payload = vec![0u8; content_length];
+            if content_length > 0 {
+                let _ = reader.read_exact(&mut payload);
+            }
+            let body = String::from_utf8_lossy(&payload).to_string();
+            let response = if current_round == 0 && !body.contains("\"force\":true") {
+                json!({"error": "branch is not fully merged, use --force"})
+            } else {
+                json!({"ok": true})
+            };
+            let text = serde_json::to_string(&response).unwrap();
+            // The failure body needs a 500 so the client surfaces the
+            // error message the retry heuristics scan for.
+            let status_line = if current_round == 0 {
+                "HTTP/1.1 500 Internal Server Error"
+            } else {
+                "HTTP/1.1 200 OK"
+            };
+            let _ = write!(
+                stream,
+                "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                text.len(),
+                text
+            );
+        }
+    });
+    let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["old".into()],
+        worktrees: vec![],
+    }];
+    panel.cleanup_selected = 0;
+    let deleted = panel.cleanup_delete_selected(&api, false).unwrap();
+    assert_eq!(deleted, 1, "forced retry deletes the branch");
     assert!(panel.cleanup_failures.is_empty());
 }

@@ -281,3 +281,16 @@ mod coverage_tests_round2 {
         assert_eq!(ranges.last(), Some(&(9999, 10000)));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2b {
+
+    #[test]
+    fn editor_save_delegates_to_save_preview() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = crate::tui::panels::FileExplorer::new("/repo");
+        // No preview open: the delegated guard fires.
+        let err = explorer.editor_save(&api).unwrap_err();
+        assert!(err.to_string().contains("no file preview open"));
+    }
+}
