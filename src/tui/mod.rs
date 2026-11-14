@@ -5867,3 +5867,113 @@ mod shortcut_tests {
         assert!(app.status.is_empty() || app.error.is_none());
     }
 }
+
+#[cfg(test)]
+mod files_nav_key_tests {
+    use super::key_handler_tests::key;
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::KeyCode;
+    use panels::git::{GitFileEntry, GitFileStatus};
+
+    #[test]
+    fn files_keys_reveal_log_and_tab_recents() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        // L opens the git log scoped to the selected file.
+        app.handle_files_key(key(KeyCode::Char('L')));
+        assert_eq!(app.screen, TuiScreen::Git);
+        assert_eq!(app.git_panel.view, panels::git::GitView::Log);
+        assert_eq!(app.git_panel.log_file.as_deref(), Some("a.rs"));
+        assert_eq!(app.status, "log: a.rs");
+        // L without a file selection refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.file_explorer.selected = usize::MAX; // no selection
+        app.handle_files_key(key(KeyCode::Char('L')));
+        assert_eq!(app.error.as_deref(), Some("select a file first"));
+        // Tab with no recents reports it; a dirty buffer blocks.
+        app.error = None;
+        app.handle_files_key(key(KeyCode::Tab));
+        assert_eq!(app.status, "no recent previews");
+        app.file_explorer.preview.dirty = true;
+        app.handle_files_key(key(KeyCode::Tab));
+        assert_eq!(app.status, "save or discard before switching");
+        // w reveals the git-panel selected file in the tree (the
+        // explorer may refuse under the dirty buffer, so the verb runs
+        // against a clean preview first).
+        app.file_explorer.preview.dirty = false;
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.handle_files_key(key(KeyCode::Char('w')));
+        assert_eq!(app.status, "revealed a.rs");
+        app.git_panel.files.clear();
+        app.handle_files_key(key(KeyCode::Char('w')));
+        assert_eq!(
+            app.error.as_deref(),
+            Some("no file selected in the git panel")
+        );
+        // `/` opens the filter bar.
+        app.error = None;
+        app.handle_files_key(key(KeyCode::Char('/')));
+        assert!(app.file_explorer.filter_active);
+    }
+
+    #[test]
+    fn navigation_main_focus_keys_scroll_and_route_panels() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.main_focused = true;
+        // Ctrl+j/k scroll the focused pane.
+        app.pane_tail = vec!["line".to_string(); 40];
+        app.handle_navigation_key(key_mod_down());
+        app.handle_navigation_key(key_mod_up());
+        // Page keys scroll by pages, G/g jump to the ends.
+        app.handle_navigation_key(key(KeyCode::PageDown));
+        app.handle_navigation_key(key(KeyCode::PageUp));
+        app.handle_navigation_key(key(KeyCode::Char('G')));
+        app.handle_navigation_key(key(KeyCode::Char('g')));
+        // Enter attaches the selected pane (dead socket: error arm).
+        app.handle_navigation_key(key(KeyCode::Enter));
+        assert!(app.error.is_some() || app.status.is_empty());
+        // Files/Git screens delegate to the panel handlers.
+        app.screen = TuiScreen::Files;
+        app.handle_navigation_key(key(KeyCode::Char('j')));
+        app.screen = TuiScreen::Terminal;
+        // Sidebar focus keys: a/w switch the region, Tab toggles.
+        app.main_focused = false;
+        app.handle_navigation_key(key(KeyCode::Char('a')));
+        assert!(matches!(app.sidebar_focus, SidebarFocus::Agents));
+        app.handle_navigation_key(key(KeyCode::Char('w')));
+        assert!(matches!(app.sidebar_focus, SidebarFocus::Workspaces));
+        app.handle_navigation_key(key(KeyCode::Tab));
+        // Lens and composer footer chords route through.
+        app.handle_navigation_key(key(KeyCode::Char('L')));
+        app.handle_navigation_key(key(KeyCode::Char('C')));
+        // r refreshes the active screen against the fake.
+        app.handle_navigation_key(key(KeyCode::Char('r')));
+    }
+
+    fn key_mod_down() -> KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )
+    }
+
+    fn key_mod_up() -> KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )
+    }
+}
