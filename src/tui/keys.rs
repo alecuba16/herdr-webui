@@ -171,6 +171,7 @@ pub enum Shortcut {
     SplitPane,
     MovePane,
     ZoomPane,
+    ResizePane,
 }
 
 impl Shortcut {
@@ -228,6 +229,7 @@ impl Shortcut {
             Self::SplitPane => "split mode",
             Self::MovePane => "move tile",
             Self::ZoomPane => "zoom tile",
+            Self::ResizePane => "resize tile",
         }
     }
 }
@@ -301,6 +303,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('u'), false) => Some(Shortcut::GitUnstageFile),
         (KeyCode::Char('d'), false) => Some(Shortcut::GitDiscardFile),
         (KeyCode::Char('z'), false) => Some(Shortcut::GitStashFile),
+        // Split resize (Shift+Z pairs with z zoom on the same
+        // mnemonic): h/l move the tile's horizontal divider, j/k the
+        // vertical one, Enter/Esc closes.
+        (KeyCode::Char('Z'), true) => Some(Shortcut::ResizePane),
         (KeyCode::Char('v'), false) => Some(Shortcut::GitSwitchBranch),
         // Webui `edit: KeyE` is the plain `e` key, so muscle memory maps plain
         // `e` to EditFile. Amend has no webui prefix shortcut (it is a checkbox
@@ -364,7 +370,7 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
 pub fn prefix_legend(screen: TuiScreen, mode: TuiMode) -> &'static str {
     let split_s = screen == TuiScreen::Terminal && mode == TuiMode::Navigate;
     if split_s {
-        "q quit · C compose · L lens · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s split · w worktrees · g git · f files · ? help"
+        "q quit · C compose · L lens · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s split · m move · Z resize · z zoom · w worktrees · g git · f files · ? help"
     } else {
         "q quit · C compose · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s settings · w worktrees · g git · f files · ? help"
     }
@@ -496,6 +502,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "the new workspace appears as a split tile beside the focus",
         ),
         ("z (terminal)", "zoom focused tile (Ctrl+B z restores)"),
+        (
+            "Shift+Z (terminal)",
+            "resize mode: h/l narrower/wider, j/k shorter/taller, Enter/Esc done",
+        ),
         (
             "hjkl (split)",
             "walk tile focus · Ctrl+hjkl scrolls the focused pane",

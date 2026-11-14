@@ -47,13 +47,27 @@ fn layout_node(node: &SplitNode, area: Rect, focus: Option<&str>, out: &mut Vec<
                 });
             }
         }
-        SplitNode::Split { dir, children } => {
+        SplitNode::Split {
+            dir,
+            weights,
+            children,
+        } => {
             if children.is_empty() || area.is_empty() {
                 return;
             }
-            let constraints =
-                std::iter::repeat_n(Constraint::Ratio(1, children.len() as u32), children.len())
-                    .collect::<Vec<_>>();
+            // Per-child flex weights (WebUI `sizes` parity): equal
+            // seeds render equal shares, resize mode moves weight
+            // between siblings. A missing weight falls back to the
+            // equal share so a hand-built tree never panics layout.
+            let total: u32 = weights.iter().copied().sum();
+            let constraints = children
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    let weight = weights.get(index).copied().unwrap_or(1).max(1);
+                    Constraint::Ratio(weight, total.max(weight))
+                })
+                .collect::<Vec<_>>();
             let areas = match dir {
                 SplitDir::Row => Layout::horizontal(constraints).split(area),
                 SplitDir::Col => Layout::vertical(constraints).split(area),
@@ -470,7 +484,7 @@ pub(crate) fn split_active(app: &TuiApp) -> bool {
     app.split_tree.leaves().len() > 1 || app.split_zoomed
 }
 
-/// Mode-hint text for the footer when split/move mode is open.
+/// Mode-hint text for the footer when split/move/resize mode is open.
 pub(crate) fn mode_hint(app: &TuiApp) -> Option<String> {
     if let Some(preview) = &app.split_mode {
         return Some(format!(
@@ -484,6 +498,12 @@ pub(crate) fn mode_hint(app: &TuiApp) -> Option<String> {
             "MOVE · {} · hjkl target · Tab verb (now {}) · Enter confirm · Esc cancel",
             truncate(&state.picked, 24),
             verb,
+        ));
+    }
+    if let Some(state) = &app.resize_mode {
+        return Some(format!(
+            "RESIZE · {} · h/l narrower/wider · j/k shorter/taller · Enter/Esc done",
+            truncate(&state.pane, 24),
         ));
     }
     if app.split_zoomed {

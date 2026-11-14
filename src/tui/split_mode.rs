@@ -3,9 +3,17 @@
 //! tree ops live in `split`; this file wires them to the snapshot and
 //! the app state (design: docs/ux/tui-split-panels-design.md).
 
-use super::split::{self, Side, SplitNode};
+use super::split::{self, ResizeDir, ResizeStep, Side, SplitDir, SplitNode};
 use super::{TuiApp, TuiScreen};
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
+
+/// Resize-mode state (Ctrl+B Shift+Z): the tile whose edges the keys
+/// move. `pane` pins the origin so focus drift mid-mode never
+/// redirects a keypress to a different tile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResizeState {
+    pub pane: String,
+}
 
 impl TuiApp {
     /// Focus pane id for the split view: the focused tile when set.
@@ -114,6 +122,11 @@ impl TuiApp {
             let target_ok = self.split_tree.contains_pane(&state.target);
             if !picked_ok || !target_ok {
                 self.move_mode = None;
+            }
+        }
+        if let Some(state) = self.resize_mode.clone() {
+            if !self.split_tree.contains_pane(&state.pane) {
+                self.resize_mode = None;
             }
         }
         self.drain_auto_split_queue();
@@ -506,6 +519,60 @@ impl TuiApp {
         self.mark_dirty();
     }
 
+    /// Open resize mode for the focused tile (Ctrl+B Shift+Z). The
+    /// preamble mirrors `open_split_mode`: auto-unzoom so the grid is
+    /// visible, one overlay at a time, single-tile guard mirrors
+    /// `open_move_mode`.
+    pub(crate) fn open_resize_mode(&mut self) {
+        if self.split_zoomed {
+            self.split_zoomed = false;
+            self.status = "zoom off".to_string();
+        }
+        self.split_mode = None;
+        self.move_mode = None;
+        let Some(focus) = self.focused_pane_id() else {
+            self.status = "no pane to resize".to_string();
+            return;
+        };
+        if self.split_tree.leaves().len() < 2 {
+            self.status = "nothing to resize (single tile)".to_string();
+            return;
+        }
+        self.resize_mode = Some(ResizeState { pane: focus });
+        self.mark_dirty();
+    }
+
+    /// One resize step in resize mode: `axis` is the divider family
+    /// (Row = h/l, Col = j/k), `dir` the verb (Narrow for h/j, Wider
+    /// for l/k). The preferred divider falls back to the opposite
+    /// side at the boundary, and an outer-boundary move names itself
+    /// so the user knows which divider traveled.
+    pub(crate) fn resize_step_direction(&mut self, axis: SplitDir, dir: ResizeDir) {
+        let Some(state) = self.resize_mode.clone() else {
+            return;
+        };
+        match split::resize_step(&self.split_tree, &state.pane, axis, dir, 1) {
+            ResizeStep::Moved { tree, outer } => {
+                self.split_tree = tree;
+                self.status = if outer {
+                    "resized outer boundary".to_string()
+                } else {
+                    "tile resized".to_string()
+                };
+            }
+            ResizeStep::Clamped => {
+                self.status = "already at minimum size".to_string();
+            }
+            ResizeStep::Refused => {
+                self.status = match axis {
+                    SplitDir::Row => "no vertical divider to move".to_string(),
+                    SplitDir::Col => "no horizontal divider to move".to_string(),
+                };
+            }
+        }
+        self.mark_dirty();
+    }
+
     /// Toggle zoom on the focused tile (Ctrl+B z).
     pub(crate) fn split_toggle_zoom(&mut self) {
         if self.split_focus.is_none() && self.snapshot.panes.is_empty() {
@@ -535,7 +602,6 @@ impl TuiApp {
 /// access; the pure movement logic stays above.
 impl TuiApp {
     pub(crate) fn handle_split_mode_key(&mut self, key: KeyEvent) {
-        use crossterm::event::KeyCode;
         let dx = match key.code {
             KeyCode::Left | KeyCode::Char('h') => -1,
             KeyCode::Right | KeyCode::Char('l') => 1,
@@ -562,7 +628,6 @@ impl TuiApp {
     }
 
     pub(crate) fn handle_move_mode_key(&mut self, key: KeyEvent) {
-        use crossterm::event::KeyCode;
         let dx = match key.code {
             KeyCode::Left | KeyCode::Char('h') => -1,
             KeyCode::Right | KeyCode::Char('l') => 1,
@@ -582,6 +647,40 @@ impl TuiApp {
             KeyCode::Enter => self.move_commit(),
             KeyCode::Tab => self.move_toggle_insert(),
             _ if dx != 0 || dy != 0 => self.move_walk_target(dx, dy),
+            _ => {}
+        }
+        self.mark_dirty();
+    }
+
+    /// Key routing while resize mode owns the keyboard: h/l move the
+    /// horizontal dividers (narrower/wider), j/k the vertical ones
+    /// (shorter/taller), Enter or Esc closes (Esc arms the
+    /// double-Esc guard like the sibling modes). Arrow keys alias the
+    /// same four directions.
+    pub(crate) fn handle_resize_mode_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.resize_mode = None;
+                self.just_closed_mode = true;
+                self.status = "resize done".to_string();
+            }
+            KeyCode::Enter => {
+                self.resize_mode = None;
+                self.just_closed_mode = true;
+                self.status = "resize done".to_string();
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.resize_step_direction(SplitDir::Row, ResizeDir::Narrow)
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.resize_step_direction(SplitDir::Row, ResizeDir::Wider)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.resize_step_direction(SplitDir::Col, ResizeDir::Wider)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.resize_step_direction(SplitDir::Col, ResizeDir::Narrow)
+            }
             _ => {}
         }
         self.mark_dirty();

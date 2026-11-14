@@ -376,6 +376,9 @@ pub struct TuiApp {
     pub(crate) split_mode: Option<split::SplitPreview>,
     /// Move mode state (Ctrl+B m): picked tile, target, and verb.
     pub(crate) move_mode: Option<split::MoveState>,
+    /// Resize mode state (Ctrl+B Shift+Z): the tile whose dividers the
+    /// keys move.
+    pub(crate) resize_mode: Option<split_mode::ResizeState>,
     /// The previous keypress closed a split/move overlay: the immediate
     /// next Esc must not fall through to the quit confirm (double-Esc
     /// reflex). Any other key clears it.
@@ -775,6 +778,7 @@ impl TuiApp {
             split_panes_of_workspaces: Vec::new(),
             split_mode: None,
             move_mode: None,
+            resize_mode: None,
             just_closed_mode: false,
             tile_tails: std::collections::HashMap::new(),
             tile_tail_rx: None,
@@ -2569,6 +2573,11 @@ impl TuiApp {
                     self.split_toggle_zoom();
                 }
             }
+            Shortcut::ResizePane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.open_resize_mode();
+                }
+            }
         }
     }
 
@@ -3818,6 +3827,10 @@ impl TuiApp {
         }
         if self.move_mode.is_some() {
             self.handle_move_mode_key(key);
+            return;
+        }
+        if self.resize_mode.is_some() {
+            self.handle_resize_mode_key(key);
             return;
         }
         // Double-Esc reflex: when the previous key closed a split/move

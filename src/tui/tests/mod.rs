@@ -9929,6 +9929,7 @@ fn move_mode_swaps_and_inserts_tiles() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_1".to_string());
 
@@ -9971,6 +9972,7 @@ fn zoom_toggles_and_restores_the_split() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
 
@@ -9998,6 +10000,7 @@ fn sync_split_tree_prunes_dead_panes_and_reseeds() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("gone_pane"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("gone_pane".to_string());
     app.sync_split_tree();
@@ -10045,6 +10048,7 @@ fn auto_split_queue_inserts_opened_workspace_pane_beside_focus() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_1".to_string());
     push_pane_3(&mut app);
@@ -10084,6 +10088,7 @@ fn auto_split_queue_skips_panes_already_on_the_tree() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_1".to_string());
     app.split_panes_of_workspaces
@@ -10208,6 +10213,7 @@ fn agnets_status_bar_lists_tiles_with_dots_and_counts() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_1".to_string());
     let drawn = draw(&app, 150, 40);
@@ -10228,6 +10234,7 @@ fn sidebar_moves_do_not_steal_split_focus() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
 
@@ -10253,6 +10260,7 @@ fn dead_split_focus_falls_back_to_tree_leaf_not_sidebar() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     // Dead focus, sidebar selection on pane_1: focus must come from the
     // tree, not the sidebar.
@@ -10269,6 +10277,7 @@ fn opening_split_mode_while_zoomed_auto_unzooms() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
     app.handle_key(ctrl('b'));
@@ -10321,6 +10330,7 @@ fn split_and_move_modes_never_coexist() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_1".to_string());
     app.handle_key(ctrl('b'));
@@ -10367,6 +10377,7 @@ fn footer_shows_zoom_hint_while_zoomed() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
     app.handle_key(ctrl('b'));
@@ -10411,6 +10422,7 @@ fn move_insert_commit_status_names_the_new_focus() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_1".to_string());
     app.handle_key(ctrl('b'));
@@ -10435,6 +10447,7 @@ fn ctrl_hjkl_scrolls_focused_pane_instead_of_walking() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_1".to_string());
     app.main_focused = true;
@@ -10496,6 +10509,7 @@ fn attach_viewport_sizes_to_focused_tile_in_split() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
     app.set_terminal_size(150, 40);
@@ -10557,6 +10571,7 @@ fn tile_titles_carry_workspace_label_folder_and_chips() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
 
@@ -10606,6 +10621,7 @@ fn tile_titles_fall_back_to_workspace_id_without_label() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
     let drawn = draw(&app, 150, 40);
@@ -10625,6 +10641,7 @@ fn pane_buffers_follow_view_pane_on_focus_walk() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
+        weights: vec![8; 2],
     };
     app.split_focus = Some("pane_2".to_string());
     app.pane_buffers_pane_id = Some("pane_1".to_string());
@@ -10637,4 +10654,167 @@ fn pane_buffers_follow_view_pane_on_focus_walk() {
     // switch, before the request).
     assert_eq!(app.pane_buffers_pane_id.as_deref(), Some("pane_2"));
     assert_eq!(app.pane_scroll, 0);
+}
+
+#[test]
+fn resize_mode_opens_steps_and_closes_with_enter() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+
+    // Ctrl+B Shift+Z opens resize mode on the focused tile.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    let state = app.resize_mode.clone().expect("resize mode open");
+    assert_eq!(state.pane, "pane_1");
+
+    // l widens pane_1: weight flows from pane_2.
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.status, "tile resized");
+    let crate::tui::split::SplitNode::Split { weights, .. } = &app.split_tree else {
+        panic!("row split survives resize");
+    };
+    assert_eq!(weights, &[9, 7]);
+
+    // Enter closes the mode.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.resize_mode.is_none());
+    assert_eq!(app.status, "resize done");
+    assert!(app.just_closed_mode);
+}
+
+#[test]
+fn resize_mode_esc_closes_and_next_esc_does_not_quit() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+
+    // Esc closes the mode and arms the double-Esc guard.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.resize_mode.is_none());
+    assert_eq!(app.status, "resize done");
+    // The very next Esc must not open the quit confirm.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_ne!(app.mode, TuiMode::ConfirmQuit, "double-Esc reflex guarded");
+    assert!(!app.should_quit());
+}
+
+#[test]
+fn resize_mode_narrows_with_h_and_reports_clamps() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::weighted(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+        vec![1, 15],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+
+    // pane_1 is at the floor: narrowing reports the clamp.
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    assert_eq!(app.status, "already at minimum size");
+    let crate::tui::split::SplitNode::Split { weights, .. } = &app.split_tree else {
+        panic!("row split survives resize");
+    };
+    assert_eq!(weights, &[1, 15]);
+
+    // Widening still works: weight flows in from pane_2.
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.status, "tile resized");
+    let crate::tui::split::SplitNode::Split { weights, .. } = &app.split_tree else {
+        panic!("row split survives resize");
+    };
+    assert_eq!(weights, &[2, 14]);
+}
+
+#[test]
+fn resize_mode_reports_when_no_divider_exists() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Col,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+
+    // A col split has no vertical divider: h/l report the refusal.
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.status, "no vertical divider to move");
+}
+
+#[test]
+fn resize_mode_closes_when_the_pane_dies() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert!(app.resize_mode.is_some());
+
+    // pane_1 vanishes from the snapshot: sync must close resize mode
+    // instead of stepping into a dead pane.
+    app.snapshot.panes.retain(|pane| pane.id != "pane_1");
+    app.sync_split_tree();
+    assert!(app.resize_mode.is_none(), "dead pane closes resize mode");
+}
+
+#[test]
+fn resize_mode_single_tile_and_no_focus_guard() {
+    let mut app = app_with_two_panes();
+    // Single leaf: nothing to resize.
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert!(app.resize_mode.is_none());
+    assert_eq!(app.status, "nothing to resize (single tile)");
+}
+
+#[test]
+fn resize_mode_hint_names_the_pane() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn
+            .contains("RESIZE · pane_1 · h/l narrower/wider · j/k shorter/taller · Enter/Esc done"),
+        "footer shows the resize hint, got: {drawn}"
+    );
 }
