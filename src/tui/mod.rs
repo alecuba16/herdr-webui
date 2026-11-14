@@ -6717,6 +6717,107 @@ mod batch11_coverage_tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(drained, "worker drained including disconnected poll");
+        // Disconnected arm: a receiver whose sender died without
+        // sending drains into the empty branch and clears the slot.
+        let (_dead_tx, dead_rx) = std::sync::mpsc::channel::<Vec<(String, String)>>();
+        drop(_dead_tx);
+        app.tile_tail_rx = Some(dead_rx);
+        app.poll_tile_tails();
+        assert!(app.tile_tail_rx.is_none(), "disconnected worker cleared");
+    }
+
+    #[test]
+    fn lens_gate_force_off_and_view_pane_split_hit() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.main_focused = true;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false,"agent_session":{"kind":"jcode","resolvable":true,"session_id":"s1"}},
+                    {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_1","agent":"claude","display_agent":"claude","agent_status":"idle","cwd":"/repo","focused":true}
+                ],
+                "agents": []
+            }
+        }));
+        // view_pane with the split active: the focused pane_1 must be
+        // found through the split branch, not the sidebar selection.
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_1".into());
+        assert_eq!(app.view_pane_id().as_deref(), Some("pane_1"));
+        // Open the lens on the supported pane, then force it off through
+        // the refresh_tail gate when the session goes missing and when
+        // the kind is unsupported: both Supported and UnsupportedKind/
+        // NoSession arms of lens_chat_supported run.
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(app.lens.active);
+        app.snapshot.panes[0].agent_session = Some(TuiAgentSession {
+            kind: "claude".into(),
+            resolvable: true,
+            session_id: Some("s1".into()),
+            reason: None,
+        });
+        app.refresh_tail();
+        assert!(!app.lens.active, "unsupported kind force-closes the lens");
+        assert_eq!(
+            app.status.as_str(),
+            "lens closed (pane has no transcript provider)"
+        );
+        app.lens.active = true;
+        app.snapshot.panes[0].agent_session = None;
+        app.refresh_tail();
+        assert!(!app.lens.active, "missing session force-closes the lens");
+    }
+
+    #[test]
+    fn lens_scroll_hits_the_exhausted_deep_fetch_arm() {
+        // Lens open on a supported pane, history exhausted: the up-scroll
+        // deep fetch returns 0 so the lens re-observes and returns.
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.main_focused = true;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true,"agent_session":{"kind":"jcode","resolvable":true,"session_id":"s1"}}],
+                "agents": []
+            }
+        }));
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(app.lens.active);
+        app.pane_history_exhausted = true;
+        app.handle_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('k'),
+        ));
+        assert!(app.lens.active, "exhausted deep fetch keeps the lens open");
+    }
+
+    #[test]
+    fn attach_input_error_surfaces_on_a_dead_backend() {
+        // Attach mode with a terminal selected but a dead backend: the
+        // typed key fails at attach_terminal and the error lands.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Attach;
+        app.handle_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('x'),
+        ));
+        assert!(app.error.is_some(), "dead backend attach input errors");
     }
 
     #[test]
