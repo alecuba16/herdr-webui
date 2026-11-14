@@ -104,7 +104,7 @@ answered from the webui's chat lens card. The server-side parser
 | `a` / `A` | next / previous agent |
 | `]` / `[` | next / previous panel in the workspace (wraps) |
 | `p` / `x` | new / close tab (last tab closes its workspace) |
-| `n`, `N` | new workspace (folder browser, Enter picks, second prompt names it) |
+| `n`, `N` | new workspace (folder browser, Enter picks, second prompt names it; the new workspace opens as a split tile) |
 | `Shift+S` | rename workspace |
 | `Shift+R` | rename panel (webui `renamePanel`) |
 | `Shift+X` | close workspace (y confirms) |

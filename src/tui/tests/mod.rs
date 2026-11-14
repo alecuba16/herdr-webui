@@ -9914,6 +9914,138 @@ fn sync_split_tree_prunes_dead_panes_and_reseeds() {
     assert_eq!(fresh.split_tree.leaves(), vec!["pane_1"]);
 }
 
+/// Third pane helper for auto-split tests: a pane on ws_2 not yet on
+/// the tree, pushed straight into the snapshot like a backend refresh
+/// that carries the just-opened workspace's pane.
+fn push_pane_3(app: &mut TuiApp) {
+    app.snapshot.panes.push(crate::tui::model::TuiPane {
+        id: "pane_3".to_string(),
+        terminal_id: "term_3".to_string(),
+        workspace_id: "ws_2".to_string(),
+        tab_id: "tab_2".to_string(),
+        label: None,
+        agent: None,
+        display_agent: None,
+        agent_status: "idle".to_string(),
+        cwd: "/other".to_string(),
+        focused: false,
+        agent_session: None,
+    });
+}
+
+#[test]
+fn auto_split_queue_inserts_opened_workspace_pane_beside_focus() {
+    // Auto-split on open: a queued workspace id makes the next
+    // sync_split_tree insert the workspace's first off-tree pane
+    // beside the current focus, and the tile focus lands on the new
+    // pane (the just-opened workspace greets the user).
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_1".to_string());
+    push_pane_3(&mut app);
+    app.split_panes_of_workspaces.push("ws_2".to_string());
+
+    app.sync_split_tree();
+
+    let leaves = app.split_tree.leaves();
+    assert_eq!(leaves.len(), 3, "the opened pane joined the tree");
+    assert!(
+        leaves.contains(&"pane_3"),
+        "pane_3 (ws_2's fresh pane) is on the tree"
+    );
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_3"),
+        "focus lands on the just-opened tile"
+    );
+    assert!(
+        app.split_panes_of_workspaces.is_empty(),
+        "queue drains once the pane joined"
+    );
+    // Zoom must not hide the new tile: auto-split clears it.
+    assert!(!app.split_zoomed);
+}
+
+#[test]
+fn auto_split_queue_skips_panes_already_on_the_tree() {
+    // An open that lands on an already-tiled pane (backend focused an
+    // existing workspace) must not duplicate the tile: no spare pane
+    // means the request waits, and a vanished workspace drops.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_1".to_string());
+    app.split_panes_of_workspaces.push("ws_2".to_string());
+
+    app.sync_split_tree();
+
+    assert_eq!(
+        app.split_tree.leaves().len(),
+        2,
+        "no duplication: every ws_2 pane is already a tile"
+    );
+    assert_eq!(
+        app.split_panes_of_workspaces,
+        vec!["ws_2".to_string()],
+        "workspace alive without a spare pane stays queued"
+    );
+
+    // Workspace gone from the snapshot: the queue drops it.
+    app.snapshot.workspaces.retain(|ws| ws.id != "ws_2");
+    app.snapshot
+        .panes
+        .retain(|pane| pane.workspace_id != "ws_2");
+    app.sync_split_tree();
+    assert!(
+        app.split_panes_of_workspaces.is_empty(),
+        "vanished workspace drops from the queue"
+    );
+    assert_eq!(app.split_tree.leaves().len(), 1, "its dead tiles pruned");
+}
+
+#[test]
+fn auto_split_queue_waits_for_the_pane_to_exist() {
+    // The queue defers by design: opening queues the workspace id
+    // before its first pane exists, and the insertion happens at the
+    // first sync that sees a pane. A workspace whose pane is already
+    // off-tree (pane_2 here) takes it immediately instead of waiting,
+    // so this scenario holds ws_2 back to zero panes.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.snapshot
+        .panes
+        .retain(|pane| pane.workspace_id != "ws_2");
+    app.split_panes_of_workspaces.push("ws_2".to_string());
+
+    // First sync: workspace exists, pane not yet born.
+    app.sync_split_tree();
+    assert_eq!(
+        app.split_panes_of_workspaces,
+        vec!["ws_2".to_string()],
+        "still waiting for the pane"
+    );
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"], "tree untouched");
+
+    // The refresh that carries the pane lands.
+    push_pane_3(&mut app);
+    app.sync_split_tree();
+    assert!(app.split_tree.leaves().contains(&"pane_3"));
+    assert!(app.split_panes_of_workspaces.is_empty());
+    assert_eq!(app.split_focus.as_deref(), Some("pane_3"));
+}
+
 #[test]
 fn agnets_status_bar_lists_tiles_with_dots_and_counts() {
     let mut app = app_with_two_panes();

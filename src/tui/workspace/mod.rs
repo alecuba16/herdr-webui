@@ -179,6 +179,11 @@ impl TuiApp {
             .record_recent_workspace(expanded_path, label, Some("workspace"));
         self.refresh().map_err(|err| err.to_string())?;
         self.focus_workspace_by_id(&id);
+        // Auto-split on create: the fresh workspace opens as its own
+        // tile beside whatever the user was looking at.
+        if !id.is_empty() {
+            self.split_panes_of_workspaces.push(id);
+        }
         Ok(format!("workspace created: {expanded_path}"))
     }
 
@@ -464,6 +469,9 @@ impl TuiApp {
             .map(|ws| ws.id.clone())
         {
             self.focus_workspace_by_id(&id);
+            // Auto-split on open: the new workspace greets the user as
+            // its own tile beside the current focus.
+            self.split_panes_of_workspaces.push(id);
         }
         self.autoclose_left_workspace(previous_workspace_id.as_deref());
         // Opening a worktree is a context switch (the webui navigates to

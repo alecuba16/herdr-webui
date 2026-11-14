@@ -116,6 +116,68 @@ impl TuiApp {
                 self.move_mode = None;
             }
         }
+        self.drain_auto_split_queue();
+    }
+
+    /// Auto-split on open: insert every queued workspace's first pane
+    /// into the tree beside the current focus (Right side, like the
+    /// split mode's default ghost) and hand the tile focus to it, so
+    /// the just-opened workspace greets the user as its own tile.
+    /// The pane exists only after the refresh that queued it landed,
+    /// so this runs at the end of sync_split_tree. A queued workspace
+    /// stays queued while it exists without a spare pane (pane not yet
+    /// created, or every pane already on the tree); one that vanished
+    /// from the snapshot drops from the queue.
+    pub(crate) fn drain_auto_split_queue(&mut self) {
+        if self.split_panes_of_workspaces.is_empty() {
+            return;
+        }
+        let queued = std::mem::take(&mut self.split_panes_of_workspaces);
+        let mut keep = Vec::new();
+        for workspace_id in queued {
+            let workspace_alive = self
+                .snapshot
+                .workspaces
+                .iter()
+                .any(|ws| ws.id == workspace_id);
+            if !workspace_alive {
+                // The open never landed (or the workspace closed at
+                // once); stop waiting for its pane.
+                continue;
+            }
+            // First pane of the workspace not already on the tree:
+            // an open that lands on an existing pane (backend focused
+            // an already-open workspace) must not duplicate a tile.
+            let Some(pane) = self
+                .snapshot
+                .panes
+                .iter()
+                .find(|pane| {
+                    pane.workspace_id == workspace_id && !self.split_tree.contains_pane(&pane.id)
+                })
+                .map(|pane| pane.id.clone())
+            else {
+                // Workspace alive but no spare pane yet: wait one more
+                // refresh before giving up on the auto-split.
+                keep.push(workspace_id);
+                continue;
+            };
+            let Some(neighbor) = self.focused_pane_id() else {
+                // No live focus to split beside (empty session): the
+                // reseed path plants the pane as the tree next round.
+                keep.push(workspace_id);
+                continue;
+            };
+            if neighbor == pane {
+                continue;
+            }
+            self.split_tree = split::insert_beside(&self.split_tree, &neighbor, &pane, Side::Right);
+            self.split_focus = Some(pane);
+            // Auto-split beats zoom: the new tile must be visible, not
+            // hidden behind the previous pane's fullscreen.
+            self.split_zoomed = false;
+        }
+        self.split_panes_of_workspaces = keep;
     }
 
     /// Move tile focus by (dx, dy) using the laid-out tile rects the

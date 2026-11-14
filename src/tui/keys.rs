@@ -468,6 +468,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "Ctrl+B Shift+E",
             "settings overlay from any screen (works where Ctrl+B s splits)",
         ),
+        (
+            "open/create workspace",
+            "the new workspace appears as a split tile beside the focus",
+        ),
         ("z (terminal)", "zoom focused tile (Ctrl+B z restores)"),
         (
             "hjkl (split)",
