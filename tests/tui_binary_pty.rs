@@ -1604,3 +1604,148 @@ fn tui_binary_terminal_attach_and_resize_pty() {
     assert!(status.success());
     child_guard.disarm();
 }
+
+/// Framed terminal fake that answers the handshake, replays the
+/// attach history, then immediately announces a server shutdown with a
+/// reason string. The reader thread surfaces the shutdown through the
+/// output channel and the drain path detaches the live terminal, so
+/// the ServerShutdown and drain error arms run inside the real binary.
+#[test]
+fn tui_binary_terminal_server_shutdown_pty() {
+    use std::os::unix::net::UnixListener;
+
+    let api_path = herdr_webui::backend_client::unique_test_path("herdr-tui-shut-api");
+    let term_path = herdr_webui::backend_client::unique_test_path("herdr-tui-shut-term");
+    let _stop_api = serve_fake_backend_at(&api_path, "/repo");
+
+    let _ = std::fs::remove_file(&term_path);
+    let listener = UnixListener::bind(&term_path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (_tx, rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                std::thread::spawn(move || {
+                    use std::io::{Read, Write};
+                    fn write_frame(s: &mut std::os::unix::net::UnixStream, payload: &[u8]) {
+                        let len = u32::try_from(payload.len()).unwrap();
+                        let _ = s.write_all(&len.to_le_bytes());
+                        let _ = s.write_all(payload);
+                        let _ = s.flush();
+                    }
+                    fn read_frame(s: &mut std::os::unix::net::UnixStream) -> Option<Vec<u8>> {
+                        let mut len_buf = [0u8; 4];
+                        s.read_exact(&mut len_buf).ok()?;
+                        let len = u32::from_le_bytes(len_buf) as usize;
+                        let mut payload = vec![0u8; len];
+                        s.read_exact(&mut payload).ok()?;
+                        Some(payload)
+                    }
+                    fn varint(value: u64) -> Vec<u8> {
+                        match value {
+                            0..=250 => vec![value as u8],
+                            _ => {
+                                let mut out = vec![0xFC];
+                                out.extend_from_slice(&(value as u32).to_le_bytes());
+                                out
+                            }
+                        }
+                    }
+                    let _hello = read_frame(&mut stream);
+                    let mut welcome = varint(0);
+                    welcome.extend(varint(22));
+                    welcome.extend(varint(1));
+                    welcome.push(0);
+                    write_frame(&mut stream, &welcome);
+                    let _attach = read_frame(&mut stream);
+                    // Replay one line so attach completes and renders.
+                    let mut replay = varint(1);
+                    replay.extend(varint(0));
+                    replay.extend(varint(120));
+                    replay.extend(varint(32));
+                    replay.push(1);
+                    replay.extend(varint(b"attached\n".len() as u64));
+                    replay.extend_from_slice(b"attached\n");
+                    write_frame(&mut stream, &replay);
+                    // ServerShutdown (variant 3 after Welcome/
+                    // Terminal/Graphics) with a reason string: bincode
+                    // Option is a u8 tag (1 = Some) before the
+                    // length-prefixed UTF-8 bytes.
+                    let mut shutdown = varint(3);
+                    shutdown.push(1);
+                    shutdown.extend(varint(b"maintenance".len() as u64));
+                    shutdown.extend_from_slice(b"maintenance");
+                    write_frame(&mut stream, &shutdown);
+                    // Keep the stream open until the client goes away;
+                    // read_frame returning None ends the helper.
+                    let _ = read_frame(&mut stream);
+                });
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    });
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        api_path.to_str().unwrap(),
+        "--terminal-socket",
+        term_path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    // Main screen, then attach; the shutdown reason must surface as
+    // the drain error on screen and the live terminal must detach.
+    wait_for(&log, "Enter attach");
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(b"\r");
+    let _ = writer.flush();
+    wait_for(&log, "maintenance");
+
+    // The app stays alive after the detach; leave attach mode first
+    // (raw Ctrl-G, same as the attach test) so the plain `q` below
+    // opens the quit modal instead of being forwarded as terminal
+    // input, then quit through the confirm.
+    let _ = writer.write_all(&[0x07]);
+    let _ = writer.flush();
+    wait_for(&log, "detached");
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    wait_for(&log, "Quit herdr-webui-tui?");
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+    let mut killer = child.clone_killer();
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+    child_guard.disarm();
+}
