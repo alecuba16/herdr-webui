@@ -13410,7 +13410,17 @@ fn tile_titles_stamp_worktree_and_branch_chip() {
 
     // A three-row terminal: tab bar and AGENTS bar take the body, the
     // pane area collapses to zero and the split view early-returns.
+    // The tree needs two tiles for the split path to run at all.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    let _ = draw(&app, 150, 2);
     let _ = draw(&app, 150, 3);
+    let _ = draw(&app, 150, 4);
 
     // A tile whose workspace vanished from the snapshot still renders:
     // the workspace lookup falls back to the raw id.
