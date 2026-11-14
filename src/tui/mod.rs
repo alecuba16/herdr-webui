@@ -5977,3 +5977,114 @@ mod files_nav_key_tests {
         )
     }
 }
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use serde_json::json;
+    /// Minimal backend answering ping, snapshot and pane.read with a
+    /// long scrollback, so the deep-fetch scroll paths run for real.
+    fn fake_backend_with_history(lines: usize) -> (BackendClient, std::sync::mpsc::Sender<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        use std::io::{BufRead, BufReader, Write};
+
+        let path = crate::backend_client::unique_test_path("herdr-tui-scroll");
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let history: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        std::thread::spawn(move || loop {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let response = match request["method"].as_str().unwrap_or("") {
+                "ping" => {
+                    json!({"id": request["id"], "result": {"version": "scroll", "protocol": 1}})
+                }
+                "session.snapshot" => json!({"id": request["id"], "result": {"snapshot": {
+                    "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                    "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                    "agents": []
+                }}}),
+                "pane.read" => json!({"id": request["id"], "result": {"read": {"text": history}}}),
+                _ => json!({"id": request["id"], "result": {}}),
+            };
+            let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+            let _ = stream.write_all(b"\n");
+            let _ = stream.flush();
+        });
+        let path_str = path.to_str().unwrap().to_string();
+        (BackendClient::new(&path_str, &path_str), tx)
+    }
+
+    #[test]
+    fn scroll_up_deep_fetches_history_and_down_follows() {
+        let (client, _stop) = fake_backend_with_history(400);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        // Scrolling up past the held tail deep-fetches real history.
+        let grew = app.scroll_pane_up(50);
+        assert!(grew > 0, "expected a deep fetch, grew {grew}");
+        assert!(app.pane_history.len() >= 50);
+        // Scrolling down lowers the offset back toward the tail.
+        let offset = app.pane_scroll;
+        app.scroll_pane_down(10);
+        assert_eq!(app.pane_scroll, offset.saturating_sub(10));
+        // Once exhausted, further up-scrolls return without fetching.
+        app.pane_history_exhausted = true;
+        let grew = app.scroll_pane_up(5000);
+        assert_eq!(grew, 0);
+    }
+
+    #[test]
+    fn deepen_without_pane_or_backend_errors_cleanly() {
+        // No pane in view: deepen returns 0 without touching anything.
+        let (client, _stop) = fake_backend_with_history(10);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = Default::default();
+        assert_eq!(app.deepen_pane_history(), 0);
+        // Dead backend: the read error surfaces and deepen returns 0.
+        let client = BackendClient::new("/nonexistent-scroll.sock", "/nonexistent-scroll.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        assert_eq!(app.deepen_pane_history(), 0);
+        assert!(app.error.is_some());
+        // Exhausted flag short-circuits before any request.
+        app.error = None;
+        app.pane_history_exhausted = true;
+        assert_eq!(app.deepen_pane_history(), 0);
+        assert!(app.error.is_none());
+    }
+}
