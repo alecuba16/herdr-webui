@@ -4604,7 +4604,7 @@ mod recent_open_tests {
 }
 
 #[cfg(test)]
-mod prompt_action_tests {
+pub(crate) mod prompt_action_tests {
     use super::*;
     use serde_json::json;
     use std::io::{BufRead as _, Read as _, Write as _};
@@ -4613,7 +4613,9 @@ mod prompt_action_tests {
     /// plus the route-shaped payloads the verbs need (files list, tree
     /// refresh), except paths listed in `failures`, which answer 500 with
     /// an error body. The refresh tails after each verb need the loop.
-    fn fake_api_server(failures: &[&str]) -> (WebApiClient, std::sync::mpsc::Sender<()>) {
+    pub(crate) fn fake_api_server(
+        failures: &[&str],
+    ) -> (WebApiClient, std::sync::mpsc::Sender<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let failures: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
@@ -4679,7 +4681,7 @@ mod prompt_action_tests {
         (WebApiClient::new("127.0.0.1", port), tx)
     }
 
-    fn app_with_api(api: WebApiClient) -> TuiApp {
+    pub(crate) fn app_with_api(api: WebApiClient) -> TuiApp {
         let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
         let mut app = TuiApp::new(client, Duration::from_secs(1));
         app.snapshot = TuiSnapshot::from_backend_response(&json!({
@@ -4694,7 +4696,7 @@ mod prompt_action_tests {
         app
     }
 
-    fn explorer_with_selection() -> crate::tui::panels::FileExplorer {
+    pub(crate) fn explorer_with_selection() -> crate::tui::panels::FileExplorer {
         let mut explorer = crate::tui::panels::FileExplorer::new("/repo");
         explorer.entries.push(crate::tui::panels::FileEntry {
             name: "a.rs".into(),
@@ -5038,5 +5040,207 @@ mod prompt_action_tests {
         assert_eq!(app.error.as_deref(), Some("type a session name"));
         app.run_prompt_action(PromptKind::CreateSession, "lane");
         assert!(app.status.contains("lane") || app.error.is_some());
+    }
+}
+
+#[cfg(test)]
+mod key_handler_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use panels::files::content_search::{ContentSearchChunk, ContentSearchFile, ContentSearchRow};
+    use panels::files::SearchKind;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn key_mod(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    fn content_file(path: &str) -> ContentSearchFile {
+        ContentSearchFile {
+            path: path.to_string(),
+            name: path.to_string(),
+            match_count: 1,
+            chunks: vec![ContentSearchChunk {
+                start: 1,
+                end: 3,
+                rows: vec![
+                    ContentSearchRow {
+                        line: 1,
+                        text: "ctx".into(),
+                        matched: false,
+                    },
+                    ContentSearchRow {
+                        line: 2,
+                        text: "match here".into(),
+                        matched: true,
+                    },
+                ],
+            }],
+            truncated: false,
+            first_match_line: 2,
+        }
+    }
+
+    fn app_with_results() -> (TuiApp, std::sync::mpsc::Sender<()>) {
+        let (api, stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = SearchKind::Content;
+        app.file_explorer.content_search.query = "match".into();
+        app.file_explorer.filter = "match".into();
+        app.file_explorer.content_search.files = vec![content_file("a.rs")];
+        app.file_explorer.content_search.expanded = vec![true];
+        (app, stop)
+    }
+
+    #[test]
+    fn content_search_keys_walk_toggle_open_and_clear() {
+        // j/k move over the flat rows: file header then line rows.
+        let (mut app, _stop) = app_with_results();
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        assert_eq!(app.file_explorer.content_search.selected, 1);
+        app.handle_content_search_key(key(KeyCode::Char('k')));
+        assert_eq!(app.file_explorer.content_search.selected, 0);
+        // Enter on the file header collapses/expands the group.
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(!app.file_explorer.content_search.expanded[0]);
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(app.file_explorer.content_search.expanded[0]);
+        // Enter on a line row opens the preview at that line: walk
+        // down past the header to the first line row.
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "a.rs:2");
+        // Esc clears the results and refreshes the tree.
+        app.handle_content_search_key(key(KeyCode::Esc));
+        assert!(!app.file_explorer.search_mode);
+        assert!(!app.file_explorer.content_search.has_results());
+        assert_eq!(app.status, "content search closed");
+    }
+
+    #[test]
+    fn content_search_load_more_and_toggles() {
+        // `+` hits the fake server; the empty reply marks the page
+        // done (no truncated flag), so the status reports a load.
+        let (mut app, _stop) = app_with_results();
+        app.file_explorer.content_search.done = false;
+        app.handle_content_search_key(key(KeyCode::Char('+')));
+        assert_eq!(app.status, "loaded more results");
+        assert!(app.file_explorer.content_search.done);
+        // `+` when done reports no more.
+        app.file_explorer.content_search.done = true;
+        app.handle_content_search_key(key(KeyCode::Char('+')));
+        assert_eq!(app.status, "no more results");
+        // A/X flip match-case/regex and re-run against the fake.
+        app.handle_content_search_key(key(KeyCode::Char('A')));
+        assert!(app.file_explorer.content_search.match_case);
+        assert!(app.status.starts_with("search re-run"));
+        app.handle_content_search_key(key(KeyCode::Char('X')));
+        assert!(app.file_explorer.content_search.regex);
+        // A dead server surfaces the re-run error instead of a status.
+        let (mut app, _stop) = app_with_results();
+        drop(app.web_api);
+        app.web_api = WebApiClient::new("127.0.0.1", 1);
+        app.handle_content_search_key(key(KeyCode::Char('X')));
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn editor_find_keys_type_and_navigate() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer.editor_find.active = true;
+        app.file_explorer.preview.content = "old old".into();
+        app.handle_editor_find_key(key(KeyCode::Char('o')));
+        app.handle_editor_find_key(key(KeyCode::Char('l')));
+        app.handle_editor_find_key(key(KeyCode::Char('d')));
+        assert_eq!(app.file_explorer.editor_find.query, "old");
+        app.handle_editor_find_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "match 2/2");
+        assert_eq!(app.file_explorer.editor_find.selected, 1);
+        app.handle_editor_find_key(key_mod(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert_eq!(app.file_explorer.editor_find.selected, 0);
+        assert_eq!(app.status, "match 1/2");
+        app.handle_editor_find_key(key(KeyCode::Backspace));
+        assert_eq!(app.file_explorer.editor_find.query, "ol");
+        app.handle_editor_find_key(key(KeyCode::Char('A')));
+        assert!(app.file_explorer.editor_find.match_case);
+        app.handle_editor_find_key(key(KeyCode::Char('X')));
+        assert!(app.file_explorer.editor_find.regex);
+        app.handle_editor_find_key(key(KeyCode::Esc));
+        assert!(!app.file_explorer.editor_find.active);
+        assert_eq!(app.status, "find closed");
+    }
+
+    #[test]
+    fn commit_input_keys_commit_and_cancel() {
+        // Empty message refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.commit_input = Some(CommitInput {
+            text: String::new(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("commit message is empty"));
+        assert!(app.commit_input.is_none());
+        // Typing and Ctrl+U clearing, then a real commit.
+        app.commit_input = Some(CommitInput {
+            text: String::new(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Char('f')));
+        app.handle_commit_key(key(KeyCode::Char('i')));
+        app.handle_commit_key(key_mod(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(app.commit_input.as_ref().unwrap().text.is_empty());
+        app.handle_commit_key(key(KeyCode::Char('x')));
+        assert_eq!(app.commit_input.as_ref().unwrap().text, "x");
+        app.handle_commit_key(key(KeyCode::Enter));
+        assert!(app.commit_input.is_none());
+        assert_eq!(app.status, "committed: x");
+        // Esc cancels the input without committing.
+        app.commit_input = Some(CommitInput {
+            text: "wip".into(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Esc));
+        assert!(app.commit_input.is_none());
+        // A refused commit surfaces the error.
+        let (api, _stop) = fake_api_server(&["/commit"]);
+        let mut app = app_with_api(api);
+        app.commit_input = Some(CommitInput {
+            text: "y".into(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Enter));
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn navigation_just_closed_esc_and_help_reflexes() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        // Double-Esc reflex: the first Esc after a closed overlay is
+        // swallowed into a status hint, not the quit confirm.
+        app.just_closed_mode = true;
+        app.handle_navigation_key(key(KeyCode::Esc));
+        assert_eq!(app.status, "press q to quit");
+        assert!(app.mode != TuiMode::ConfirmQuit);
+        // A second Esc opens the quit confirm.
+        app.handle_navigation_key(key(KeyCode::Esc));
+        assert!(app.mode == TuiMode::ConfirmQuit);
+        // ? opens the help overlay; Esc closes it again.
+        app.mode = TuiMode::Navigate;
+        app.handle_navigation_key(key(KeyCode::Char('?')));
+        assert!(app.mode == TuiMode::Help);
+        app.handle_navigation_key(key(KeyCode::Esc));
+        assert!(app.mode != TuiMode::Help);
     }
 }
