@@ -88,7 +88,8 @@ enum SplitDir { Row, Col }
   ghost half on the target's `side` (i3 drop-as-sibling).
 - `Enter` commits: swap swaps leaf ids in place (tree shape never
   changes); insert pulls the picked leaf then re-inserts it beside the
-  target. `Esc` cancels.
+  target. Focus on commit lands on the picked pane (insert: its new
+  location; swap: the picked pane). `Esc` cancels.
 
 ### Zoom
 

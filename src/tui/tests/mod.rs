@@ -9824,3 +9824,236 @@ fn agnets_status_bar_lists_tiles_with_dots_and_counts() {
     assert!(drawn.contains("(Repo)"));
     assert!(drawn.contains("(Other)"));
 }
+
+#[test]
+fn sidebar_moves_do_not_steal_split_focus() {
+    let mut app = app_with_two_panes();
+    // Multi-leaf tree, focus on pane_2 (the workspace-2 pane).
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+
+    // Sidebar j (workspaces list) moves the workspace cursor but not
+    // the focused tile. Hand the sidebar the keyboard first: main_focused
+    // owns hjkl on the pane otherwise.
+    app.main_focused = false;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.selected_workspace, 1);
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_2"),
+        "multi-leaf split owns focus"
+    );
+}
+
+#[test]
+fn dead_split_focus_falls_back_to_tree_leaf_not_sidebar() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    // Dead focus, sidebar selection on pane_1: focus must come from the
+    // tree, not the sidebar.
+    app.split_focus = Some("gone".to_string());
+    assert_eq!(app.focused_pane_id().as_deref(), Some("pane_1"));
+}
+
+#[test]
+fn opening_split_mode_while_zoomed_auto_unzooms() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert!(app.split_zoomed);
+
+    // Zoom needs a split candidate off the tree, so add a third pane.
+    app.snapshot.panes.push(crate::tui::model::TuiPane {
+        id: "pane_3".to_string(),
+        terminal_id: "term_3".to_string(),
+        workspace_id: "ws_2".to_string(),
+        tab_id: "tab_2".to_string(),
+        label: None,
+        agent: None,
+        display_agent: None,
+        agent_status: "idle".to_string(),
+        cwd: "/other".to_string(),
+        focused: false,
+        agent_session: None,
+    });
+
+    // Ctrl+B s unzooms first, then opens split mode; focus stays.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(!app.split_zoomed);
+    assert!(app.split_mode.is_some());
+    assert_eq!(app.status, "zoom off");
+
+    // Same for move mode from a zoomed state.
+    app.split_mode = None;
+    app.split_zoomed = true;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert!(!app.split_zoomed);
+    assert!(app.move_mode.is_some());
+
+    // Guards: a stray zoomed flag pins the target walk.
+    app.split_zoomed = true;
+    let before = app.move_mode.clone().unwrap().target;
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.move_mode.as_ref().unwrap().target, before);
+}
+
+#[test]
+fn split_and_move_modes_never_coexist() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_1".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_none(), "no candidate: both panes on tree");
+
+    // Give the tree a third pane to open and re-open both modes.
+    app.snapshot.panes.push(crate::tui::model::TuiPane {
+        id: "pane_3".to_string(),
+        terminal_id: "term_3".to_string(),
+        workspace_id: "ws_2".to_string(),
+        tab_id: "tab_2".to_string(),
+        label: None,
+        agent: None,
+        display_agent: None,
+        agent_status: "idle".to_string(),
+        cwd: "/other".to_string(),
+        focused: false,
+        agent_session: None,
+    });
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+
+    // Opening move mode closes split mode.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert!(app.split_mode.is_none());
+    assert!(app.move_mode.is_some());
+
+    // And back: opening split mode closes move mode.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.move_mode.is_none());
+    assert!(app.split_mode.is_some());
+}
+
+#[test]
+fn footer_shows_zoom_hint_while_zoomed() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_2".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("ZOOM"), "footer names the zoom state");
+}
+
+#[test]
+fn double_esc_after_mode_close_does_not_open_quit_confirm() {
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+
+    // First Esc closes the mode, the second is swallowed.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.split_mode.is_none());
+    assert_eq!(app.mode, TuiMode::Navigate);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(app.status, "press q to quit");
+
+    // q still reaches the quit confirm and y confirms.
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    assert_eq!(app.status, "quit");
+
+    // Plain Esc with no mode just closed still opens the confirm.
+    let mut fresh = app_with_two_panes();
+    fresh.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(fresh.mode, TuiMode::ConfirmQuit);
+}
+
+#[test]
+fn move_insert_commit_status_names_the_new_focus() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_1".to_string());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        target: "pane_2".to_string(),
+        insert: true,
+        ..state
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+    assert_eq!(app.status, "moved pane_1 · focus pane_1");
+}
+
+#[test]
+fn ctrl_hjkl_scrolls_focused_pane_instead_of_walking() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    };
+    app.split_focus = Some("pane_1".to_string());
+    app.main_focused = true;
+    app.pane_tail = vec![
+        "line one".to_string(),
+        "line two".to_string(),
+        "line three".to_string(),
+    ];
+    app.pane_scroll = 2;
+
+    // Ctrl+j scrolls toward the tail: the offset drops, focus stays.
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    assert_eq!(app.pane_scroll, 1);
+    assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+}

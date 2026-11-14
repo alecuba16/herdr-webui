@@ -359,6 +359,10 @@ pub struct TuiApp {
     pub(crate) split_mode: Option<split::SplitPreview>,
     /// Move mode state (Ctrl+B m): picked tile, target, and verb.
     pub(crate) move_mode: Option<split::MoveState>,
+    /// The previous keypress closed a split/move overlay: the immediate
+    /// next Esc must not fall through to the quit confirm (double-Esc
+    /// reflex). Any other key clears it.
+    pub(crate) just_closed_mode: bool,
     /// Last tail text per visible tile pane, for the non-focused tiles
     /// (the focused tile keeps the full pane_tail pipeline: styles,
     /// scroll, deep history). Only panes on the tree get entries.
@@ -753,6 +757,7 @@ impl TuiApp {
             split_zoomed: false,
             split_mode: None,
             move_mode: None,
+            just_closed_mode: false,
             tile_tails: std::collections::HashMap::new(),
             tile_tail_rx: None,
             tile_geometry: std::cell::RefCell::new(Vec::new()),
@@ -3748,6 +3753,18 @@ impl TuiApp {
             self.handle_move_mode_key(key);
             return;
         }
+        // Double-Esc reflex: when the previous key closed a split/move
+        // overlay, the immediate next Esc swallows here instead of
+        // opening the quit confirm. Any other key clears the flag.
+        if key.code == KeyCode::Esc {
+            if self.just_closed_mode {
+                self.just_closed_mode = false;
+                self.status = "press q to quit".to_string();
+                return;
+            }
+        } else {
+            self.just_closed_mode = false;
+        }
         // Focus walker (Ctrl+B . / ,) regions: when the main screen
         // owns focus, j/k and Enter stop moving the sidebar cursor and
         // act on the pane instead (Enter attach, j/k pane scroll is not
@@ -3770,6 +3787,19 @@ impl TuiApp {
                 // between tiles): when a walk finds a neighbor the focus
                 // moves there; with a single tile the keys fall back to
                 // pane scroll so the pre-split behavior stays.
+                // Ctrl+hjkl/arrows scroll the focused pane instead of
+                // walking: the explicit scroll escape when the walk
+                // would move to a neighbor (docs: tui-shortcuts).
+                KeyCode::Up | KeyCode::Char('k')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.scroll_pane_up(1);
+                }
+                KeyCode::Down | KeyCode::Char('j')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.scroll_pane_down(1);
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if !self.split_walk_fallback(0, -1) {
                         self.scroll_pane_up(1);
@@ -3957,6 +3987,11 @@ impl TuiApp {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        // While a multi-leaf split exists the tile view owns focus:
+        // sidebar moves still update the selection, but the tail
+        // refresh (which loads the sidebar pane into the single-pane
+        // pipeline) is skipped so the focused tile never chases the
+        // sidebar cursor.
         match self.sidebar_focus {
             SidebarFocus::Workspaces => {
                 self.selected_workspace = move_index(
@@ -3964,13 +3999,14 @@ impl TuiApp {
                     self.snapshot.workspaces.len(),
                     delta,
                 );
-                self.refresh_tail();
             }
             SidebarFocus::Agents => {
                 self.selected_agent =
                     move_index(self.selected_agent, self.snapshot.agents.len(), delta);
-                self.refresh_tail();
             }
+        }
+        if self.split_tree.leaves().len() < 2 {
+            self.refresh_tail();
         }
     }
 

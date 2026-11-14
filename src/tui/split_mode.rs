@@ -8,13 +8,25 @@ use super::{TuiApp, TuiScreen};
 use crossterm::event::KeyEvent;
 
 impl TuiApp {
-    /// Focus pane id for the split view: the focused tile when set,
-    /// else the sidebar selection (pre-split behavior).
+    /// Focus pane id for the split view: the focused tile when set.
+    /// With a multi-leaf tree `split_focus` is the only owner: a dead
+    /// or unset focus falls back to the first alive leaf, never the
+    /// sidebar selection (the tile view must not chase the lists).
+    /// Single leaf keeps the pre-split fallback to the sidebar
+    /// selection, which also seeds the tree on refresh.
     pub(crate) fn focused_pane_id(&self) -> Option<String> {
         if let Some(focus) = self.split_focus.as_deref() {
             if self.snapshot.panes.iter().any(|pane| pane.id == focus) {
                 return Some(focus.to_string());
             }
+        }
+        if self.split_tree.leaves().len() >= 2 {
+            return self
+                .split_tree
+                .leaves()
+                .into_iter()
+                .find(|id| self.snapshot.panes.iter().any(|pane| pane.id == *id))
+                .map(|id| id.to_string());
         }
         self.selected_pane().map(|pane| pane.id.clone())
     }
@@ -62,6 +74,18 @@ impl TuiApp {
                 .or_else(|| self.snapshot.panes.first().map(|pane| pane.id.clone()))
                 .unwrap_or_default();
             self.split_tree = SplitNode::leaf(seed);
+        }
+        // When the tree gains its second leaf (or reseeds into a
+        // multi-leaf), the tile view takes focus ownership: seed
+        // split_focus once so walks and zoom always have an origin.
+        if self.split_tree.leaves().len() >= 2 && self.split_focus.is_none() {
+            let seed = self
+                .split_tree
+                .leaves()
+                .into_iter()
+                .find(|id| alive.contains(id))
+                .map(|id| id.to_string());
+            self.split_focus = seed;
         }
         // Focus must sit on the tree: dead focus falls back to the
         // first leaf so walks always have an origin.
@@ -125,6 +149,14 @@ impl TuiApp {
 
     /// Open split mode over the focused tile (Ctrl+B s).
     pub(crate) fn open_split_mode(&mut self) {
+        // Opening a mode while zoomed auto-unzooms first: the ghost
+        // needs the full tile grid, and the focused tile stays focused.
+        if self.split_zoomed {
+            self.split_zoomed = false;
+            self.status = "zoom off".to_string();
+        }
+        // Only one overlay at a time (footer hint already is).
+        self.move_mode = None;
         let Some(focus) = self.focused_pane_id() else {
             self.status = "no pane to split".to_string();
             return;
@@ -218,6 +250,9 @@ impl TuiApp {
     /// horizontal move keeps a row side, a vertical move keeps a col
     /// side, so the preview never teleports axes on the user.
     pub(crate) fn split_move_ghost(&mut self, dx: i32, dy: i32) {
+        if self.split_zoomed {
+            return;
+        }
         let Some(preview) = self.split_mode.clone() else {
             return;
         };
@@ -278,6 +313,12 @@ impl TuiApp {
 
     /// Open move mode for the focused tile (Ctrl+B m).
     pub(crate) fn open_move_mode(&mut self) {
+        if self.split_zoomed {
+            self.split_zoomed = false;
+            self.status = "zoom off".to_string();
+        }
+        // Only one overlay at a time (footer hint already is).
+        self.split_mode = None;
         let Some(focus) = self.focused_pane_id() else {
             self.status = "no pane to move".to_string();
             return;
@@ -298,6 +339,9 @@ impl TuiApp {
     /// Walk the move target (hjkl in move mode); the side tracks the
     /// approach direction so the insert preview hugs the target edge.
     pub(crate) fn move_walk_target(&mut self, dx: i32, dy: i32) {
+        if self.split_zoomed {
+            return;
+        }
         let Some(state) = self.move_mode.clone() else {
             return;
         };
@@ -377,9 +421,12 @@ impl TuiApp {
         } else {
             self.split_tree = split::swap_leaves(&self.split_tree, &state.picked, &state.target);
         }
+        let picked = state.picked.clone();
         self.split_focus = Some(state.picked);
         self.status = if state.insert {
-            "tile moved".to_string()
+            // Say where focus landed: insert commits land on the picked
+            // pane, and the user needs to know that.
+            format!("moved {picked} · focus {picked}")
         } else {
             "tiles swapped".to_string()
         };
@@ -429,6 +476,7 @@ impl TuiApp {
         match key.code {
             KeyCode::Esc => {
                 self.split_mode = None;
+                self.just_closed_mode = true;
                 self.status = "split cancelled".to_string();
             }
             KeyCode::Enter => self.split_commit(),
@@ -455,6 +503,7 @@ impl TuiApp {
         match key.code {
             KeyCode::Esc => {
                 self.move_mode = None;
+                self.just_closed_mode = true;
                 self.status = "move cancelled".to_string();
             }
             KeyCode::Enter => self.move_commit(),

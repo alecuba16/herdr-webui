@@ -471,6 +471,9 @@ pub(crate) fn mode_hint(app: &TuiApp) -> Option<String> {
             verb,
         ));
     }
+    if app.split_zoomed {
+        return Some("ZOOM · Ctrl+B z off · hjkl walk".to_string());
+    }
     None
 }
 

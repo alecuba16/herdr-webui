@@ -455,6 +455,11 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "Ctrl+B s",
             "settings overlay (t cycles) · terminal: split tile mode",
         ),
+        ("z (terminal)", "zoom focused tile (Ctrl+B z restores)"),
+        (
+            "hjkl (split)",
+            "walk tile focus · Ctrl+hjkl scrolls the focused pane",
+        ),
         (
             "Ctrl+B Shift+P",
             "session manager (Enter targets, l launch, x close, c cleanup, n new)",
