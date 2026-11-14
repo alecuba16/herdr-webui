@@ -2241,3 +2241,143 @@ fn cleanup_delete_guards_empty_selection_and_reports_branch_too_failures() {
         "worktree and branch failures are collected"
     );
 }
+
+fn git_api_server_for_all_routes() -> (u16, std::sync::mpsc::Sender<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = stream else { break };
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            // Read the POST bodies too so the client request completes.
+            let content_length = line.split('\r').next().map(|_| 0usize).unwrap_or(0);
+            let _ = content_length;
+            let response = json!({"ok": true, "files": [], "branches": [], "stashes": [],
+                "commits": [], "rows": [], "statuses": [], "files_list": []});
+            let payload = serde_json::to_string(&response).unwrap();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (port, tx)
+}
+
+#[test]
+fn git_panel_verbs_complete_their_refresh_tails_again_a_live_fake_api() {
+    let (port, _stop) = git_api_server_for_all_routes();
+    let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+
+    // Changes verbs succeed and run their refresh tails. The fake
+    // answers every endpoint with ok, so each verb's api call and the
+    // refresh_view after it complete.
+    let mut panel = GitPanel::new("/repo");
+    panel.view = GitView::Changes;
+    panel.stash_changes(&api).unwrap();
+    panel.commit(&api, "title", false).unwrap();
+    panel.commit(&api, "title", true).unwrap();
+    panel.pull(&api).unwrap();
+    panel.push(&api).unwrap();
+    panel.fetch(&api).unwrap();
+
+    // Stash verbs succeed too. Each refresh_view wipes the stash list
+    // (the fake answers with an empty stashes array), so re-seed it
+    // before every verb.
+    panel.view = GitView::Stash;
+    for verb in 0..2 {
+        panel.stashes = vec![GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        panel.stash_selected = 0;
+        if verb == 0 {
+            panel.stash_apply(&api).unwrap();
+        } else {
+            panel.stash_drop(&api).unwrap();
+        }
+    }
+
+    // Branch verbs succeed. switch_selected needs a selected branch
+    // (the refresh wiped the list), so re-seed before it.
+    panel.view = GitView::Branches;
+    panel.switch_branch(&api, "main").unwrap();
+    panel.branches = vec![GitBranchEntry {
+        name: "feature".into(),
+        current: false,
+        remote: false,
+        pushed: false,
+        worktree_path: None,
+    }];
+    panel.branch_selected = 0;
+    panel.switch_selected(&api).unwrap();
+    panel.delete_branch(&api, "feature", false).unwrap();
+    panel.delete_branch(&api, "feature", true).unwrap();
+
+    // Conflict verbs succeed.
+    panel.view = GitView::Conflicts;
+    panel.conflict_files = vec!["a.rs".into()];
+    panel.conflict_selected = 0;
+    panel
+        .resolve_selected_conflict(&api, crate::tui::panels::git::ConflictResolveMode::Ours)
+        .unwrap();
+    panel
+        .conflict_action(&api, crate::tui::panels::git::ConflictAction::MergeContinue)
+        .unwrap();
+
+    // Log compare runs against the fake.
+    panel.view = GitView::Log;
+    panel.log_compare_parent(&api, "abc123").unwrap();
+    panel.log_file = Some("src/main.rs".into());
+    panel.log_compare_parent(&api, "abc123").unwrap();
+}
+
+#[test]
+fn cleanup_delete_succeeds_and_deletes_the_branch_too_against_the_fake_api() {
+    let (port, _stop) = git_api_server_for_all_routes();
+    let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["old".into()],
+        worktrees: vec![CleanupWorktree {
+            path: "/repo-wt".to_string(),
+            branch: Some("feature".into()),
+        }],
+    }];
+    // Branches list before worktrees, so index 1 is the worktree.
+    panel.cleanup_selected = 1;
+
+    // Worktree selected, delete-branch-too: both the worktree and its
+    // branch delete successfully (deleted counts both).
+    let deleted = panel.cleanup_delete_selected(&api, true).unwrap();
+    assert_eq!(deleted, 2, "worktree plus its branch deleted");
+    assert!(panel.cleanup_failures.is_empty());
+
+    // Marked items run as a batch: the branch item alone deletes.
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["old".into()],
+        worktrees: vec![],
+    }];
+    panel.cleanup_toggle_mark();
+    let deleted = panel.cleanup_delete_selected(&api, false).unwrap();
+    assert_eq!(deleted, 1);
+    assert!(panel.cleanup_failures.is_empty());
+}

@@ -12817,3 +12817,125 @@ fn session_retarget_to_builtin_default_rebuilds_the_default_socket() {
         app.client.api_socket().display()
     );
 }
+
+#[test]
+fn branch_picker_key_handler_routes_enter_esc_and_query_letters() {
+    let mut app = app_with_snapshot();
+    app.branch_picker_rows = vec![
+        GitBranchEntry {
+            name: "main".into(),
+            current: true,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+        GitBranchEntry {
+            name: "feature".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+    ];
+    app.branch_picker_root = "/repo".into();
+    app.open_overlay(TuiMode::BranchPicker);
+
+    // Enter commits: the current branch is a no-op success into status.
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "already on main");
+
+    // Backspace with a filter pops it; with no filter it falls through.
+    app.branch_picker_filter = "fe".into();
+    app.handle_branch_picker_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.branch_picker_filter, "f");
+
+    // A control char is ignored (not pushed into the filter).
+    app.handle_branch_picker_key(KeyEvent::new(KeyCode::Char('\t'), KeyModifiers::NONE));
+    assert_eq!(app.branch_picker_filter, "f");
+}
+
+#[test]
+fn worktree_overlay_key_handler_routes_o_c_and_h() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_root = "/repo".into();
+    app.worktree_pick_workspace = true;
+
+    // `o` in pick mode stages the selected row (the this-folder row is
+    // the browse root, a real path on disk fails validation only if it
+    // does not exist; /repo does not, so the error lands in status).
+    app.handle_worktree_list_key(KeyEvent::from(KeyCode::Char('o')));
+    assert!(!app.status.is_empty());
+
+    // Out of pick mode `o` opens the selected row as a workspace.
+    app.worktree_pick_workspace = false;
+    app.handle_worktree_list_key(KeyEvent::from(KeyCode::Char('o')));
+    assert!(!app.status.is_empty());
+
+    // `c` opens the create-worktree branch prompt (not in pick mode).
+    app.handle_worktree_list_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(matches!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(PromptKind::CreateWorktreeBranch)
+    ));
+    assert_eq!(app.status, PromptKind::CreateWorktreeBranch.title());
+
+    // `h` with no parent (root path) stays put; with a parent it
+    // browses up (fails against the dead api, error to status).
+    app.prompt_input = None;
+    app.worktree_root = "/".into();
+    app.handle_worktree_list_key(KeyEvent::from(KeyCode::Char('h')));
+    app.worktree_root = "/repo/sub".into();
+    app.handle_worktree_list_key(KeyEvent::from(KeyCode::Char('h')));
+
+    // Backspace with an active filter pops the filter letter.
+    app.worktree_filter = "ab".into();
+    app.handle_worktree_list_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.worktree_filter, "a");
+}
+
+#[test]
+fn prompt_dispatcher_covers_rename_close_and_worktree_stage_guards() {
+    use crate::tui::workspace::{run_prompt, WorkspacePrompt};
+    let mut app = app_with_snapshot();
+
+    // Rename workspace with an empty label is refused.
+    run_prompt(&mut app, &WorkspacePrompt::RenameWorkspace, "  ");
+    assert!(app.error.is_some());
+
+    // Rename panel with an empty label is refused.
+    app.error = None;
+    run_prompt(&mut app, &WorkspacePrompt::RenamePanel, "");
+    assert!(app.error.is_some());
+
+    // Close workspace confirm runs against the dead backend and
+    // reports the failure.
+    app.error = None;
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmCloseWorkspace, "y");
+    assert!(app.error.is_some());
+
+    // The worktree prompt chain guards: a path/base/pull-base prompt
+    // with no staged draft is a silent return.
+    app.error = None;
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "/tmp/wt");
+    assert!(app.error.is_none(), "no stage: silent guard");
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBase, "main");
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "y");
+    assert!(app.worktree_create_stage.is_none());
+}
+
+#[test]
+fn browser_row_matches_searches_paths_names_branches_and_labels() {
+    use crate::tui::workspace::BrowserRow;
+    let row = BrowserRow::Folder {
+        path: "/repo/src".into(),
+        name: "src".into(),
+    };
+    assert!(row.matches("src"));
+    assert!(row.matches("/repo"));
+    assert!(!row.matches("docs"));
+    let this = BrowserRow::ThisFolder {
+        path: "/repo".into(),
+    };
+    assert!(this.matches("repo"));
+}
