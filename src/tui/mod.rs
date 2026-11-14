@@ -6463,10 +6463,12 @@ mod batch11_coverage_tests {
         let mut app = TuiApp::new(client, Duration::from_secs(1));
         app.screen = TuiScreen::Terminal;
         app.mode = TuiMode::Navigate;
+        // Sidebar focus: the navigation match below the main_focused arm.
+        app.main_focused = false;
         app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
             "snapshot": {
                 "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
-                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "panes": [],
                 "agents": []
             }
         }));
