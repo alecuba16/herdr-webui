@@ -243,3 +243,58 @@ mod tests {
         assert!(!explorer.editor_find.active);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::find_ranges;
+
+    #[test]
+    fn plain_find_ranges_count_overlapping_spots_without_regex_semantics() {
+        // The plain path walks every match position including overlaps
+        // that a regex scan would skip after a consumed hit.
+        let ranges = find_ranges("aaaa", "aa", false, false);
+        assert_eq!(
+            ranges,
+            vec![(0, 2), (2, 4)],
+            "regex scan consumes, no overlap"
+        );
+        // Case-insensitive by default: every spot is listed.
+        let ranges = find_ranges("aAbA", "a", false, false);
+        assert_eq!(ranges, vec![(0, 1), (1, 2), (3, 4)]);
+        // match_case matches only the exact letter.
+        let ranges = find_ranges("aAbA", "A", true, false);
+        assert_eq!(ranges, vec![(1, 2), (3, 4)]);
+        // Zero-width regex matches are skipped: the loop keeps walking
+        // until a real range lands.
+        let ranges = find_ranges("abc", "b*", false, true);
+        assert_eq!(ranges, vec![(1, 2)]);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::find_ranges;
+
+    #[test]
+    fn find_ranges_stops_at_the_match_cap() {
+        // 10001 single-char matches: the range vec stops at the
+        // 10000 cap instead of scanning the whole text.
+        let text = "a".repeat(10001);
+        let ranges = find_ranges(&text, "a", false, false);
+        assert_eq!(ranges.len(), 10000);
+        assert_eq!(ranges.last(), Some(&(9999, 10000)));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2b {
+
+    #[test]
+    fn editor_save_delegates_to_save_preview() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = crate::tui::panels::FileExplorer::new("/repo");
+        // No preview open: the delegated guard fires.
+        let err = explorer.editor_save(&api).unwrap_err();
+        assert!(err.to_string().contains("no file preview open"));
+    }
+}

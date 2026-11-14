@@ -1,3 +1,4 @@
+use crate::tui::{TuiMode, TuiScreen};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
@@ -135,6 +136,10 @@ pub enum Shortcut {
     GitCwdPicker,
     // Settings overlay (webui settings: KeyS).
     Settings,
+    // Settings overlay via the dedicated `Ctrl+B Shift+E` chord
+    // (review F4): unlike `Settings` this one works on the Terminal
+    // screen too, where prefix `s` belongs to split mode.
+    SettingsOverlay,
     // Sidebar visibility (webui sidebar: KeyB is plain B, so the TUI
     // uses Shift+B; plain b stays the git branches shortcut).
     Sidebar,
@@ -160,6 +165,13 @@ pub enum Shortcut {
     // button (no prefix default); the TUI needs a chord, so Shift+P
     // takes it (plain p stays new tab).
     SessionManager,
+    // Split-panel mode entry points (design: docs/ux/
+    // tui-split-panels-design.md). Terminal screen only: the prefix
+    // dispatch scopes them, so the git screen keeps its s/m/z keys.
+    SplitPane,
+    MovePane,
+    ZoomPane,
+    ResizePane,
 }
 
 impl Shortcut {
@@ -205,6 +217,7 @@ impl Shortcut {
             Self::RenameWorkspace => "rename workspace",
             Self::GitCwdPicker => "git cwd",
             Self::Settings => "settings",
+            Self::SettingsOverlay => "settings",
             Self::Sidebar => "toggle sidebar",
             Self::FocusNext => "focus next",
             Self::FocusPrev => "focus previous",
@@ -213,6 +226,10 @@ impl Shortcut {
             Self::GitStageAll => "toggle stage all",
             Self::GitFocusFile => "focus file list",
             Self::SessionManager => "session manager",
+            Self::SplitPane => "split mode",
+            Self::MovePane => "move tile",
+            Self::ZoomPane => "zoom tile",
+            Self::ResizePane => "resize tile",
         }
     }
 }
@@ -286,11 +303,19 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('u'), false) => Some(Shortcut::GitUnstageFile),
         (KeyCode::Char('d'), false) => Some(Shortcut::GitDiscardFile),
         (KeyCode::Char('z'), false) => Some(Shortcut::GitStashFile),
+        // Split resize (Shift+Z pairs with z zoom on the same
+        // mnemonic): h/l move the tile's horizontal divider, j/k the
+        // vertical one, Enter/Esc closes.
+        (KeyCode::Char('Z'), true) => Some(Shortcut::ResizePane),
         (KeyCode::Char('v'), false) => Some(Shortcut::GitSwitchBranch),
         // Webui `edit: KeyE` is the plain `e` key, so muscle memory maps plain
         // `e` to EditFile. Amend has no webui prefix shortcut (it is a checkbox
         // in the commit modal); the TUI keeps it on the in-screen `a` key.
-        (KeyCode::Char('e') | KeyCode::Char('E'), _) => Some(Shortcut::EditFile),
+        // Shift+E stays settings (review F4): `Ctrl+B s` belongs to split
+        // mode on the Terminal screen, so the settings overlay needs a
+        // keyboard path that works from every screen.
+        (KeyCode::Char('e'), false) => Some(Shortcut::EditFile),
+        (KeyCode::Char('E'), true) => Some(Shortcut::SettingsOverlay),
         // Webui `history: KeyH` shows commits for the selected file;
         // `compare: KeyO` returns to the current changes view;
         // `blame: KeyM` toggles blame annotations in the diff.
@@ -326,6 +351,28 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // plain p is already new tab.
         (KeyCode::Char('P'), true) => Some(Shortcut::SessionManager),
         _ => None,
+    }
+}
+
+/// Legend for the footer while the Ctrl+B prefix is armed (zellij
+/// mode-bar style: the hint line swaps to the keys live in the current
+/// mode). Value gradient runs toward the tail: `fit_hint` drops
+/// segments from the front on narrow terminals, so the daily keys
+/// (files, git, worktrees) sit next to the discovery segment (`? help`)
+/// and are the last to go. The full key map stays in the help overlay;
+/// this names only the keys a user reaches for daily. The `s` segment
+/// follows its dual dispatch exactly (review F1): split mode only on
+/// the Terminal screen in Navigate mode, settings everywhere else,
+/// including attach mode where the attach hint arms the prefix most.
+/// `r refresh` rides the Terminal legend because the TerminalMain hint
+/// already names it as a direct key; `E settings` stays in the overlay
+/// (review F4 chord, not a daily key).
+pub fn prefix_legend(screen: TuiScreen, mode: TuiMode) -> &'static str {
+    let split_s = screen == TuiScreen::Terminal && mode == TuiMode::Navigate;
+    if split_s {
+        "q quit · C compose · L lens · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s split · m move · Z resize · z zoom · w worktrees · g git · f files · ? help"
+    } else {
+        "q quit · C compose · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s settings · w worktrees · g git · f files · ? help"
     }
 }
 
@@ -380,7 +427,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "Ctrl+B h/o",
             "git: file history (Enter: commit diff) / back to changes",
         ),
-        ("Ctrl+B m", "git: toggle blame in the diff"),
+        ("Ctrl+B m", "git: toggle blame · terminal: move tile mode"),
         ("Ctrl+B 0", "git: shortcut help"),
         (
             "git: G",
@@ -442,7 +489,31 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "diff search: n/N cycle, Enter keeps, Esc clears",
         ),
         ("git: c (branches)", "create and switch to a new branch"),
-        ("Ctrl+B s", "settings overlay (t cycles the theme)"),
+        (
+            "Ctrl+B s",
+            "settings overlay (t cycles) · terminal: split tile mode",
+        ),
+        (
+            "Ctrl+B Shift+E",
+            "settings overlay from any screen (works where Ctrl+B s splits)",
+        ),
+        (
+            "open/create workspace",
+            "the new workspace appears as a split tile beside the focus",
+        ),
+        ("z (terminal)", "zoom focused tile (Ctrl+B z restores)"),
+        (
+            "Shift+Z (terminal)",
+            "resize mode: h/l narrower/wider, j/k shorter/taller, Enter/Esc done",
+        ),
+        (
+            "hjkl (split)",
+            "walk tile focus · Ctrl+hjkl scrolls the focused pane",
+        ),
+        (
+            "Shift+L / Shift+C",
+            "chat lens / composer (plain keys on terminal, no prefix)",
+        ),
         (
             "Ctrl+B Shift+P",
             "session manager (Enter targets, l launch, x close, c cleanup, n new)",
@@ -630,11 +701,19 @@ mod tests {
             Shortcut::RenameWorkspace,
             Shortcut::GitCwdPicker,
             Shortcut::Settings,
+            Shortcut::SettingsOverlay,
             Shortcut::Sidebar,
             Shortcut::FocusNext,
             Shortcut::FocusPrev,
             Shortcut::Lens,
             Shortcut::Composer,
+            Shortcut::GitStageAll,
+            Shortcut::GitFocusFile,
+            Shortcut::SessionManager,
+            Shortcut::SplitPane,
+            Shortcut::MovePane,
+            Shortcut::ZoomPane,
+            Shortcut::ResizePane,
         ] {
             assert!(!shortcut.label().is_empty());
         }

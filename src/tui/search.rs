@@ -838,3 +838,128 @@ mod tests {
         assert!(matches!(&hits[2], SearchCandidate::Content { line: 1, .. }));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn file_and_content_candidates_label_and_icon() {
+        let file = SearchCandidate::File {
+            path: "/repo/src".into(),
+            name: "src/".into(),
+            is_dir: true,
+        };
+        assert_eq!(file.title(), "src/");
+        assert_eq!(file.icon(), "dir");
+        let file = SearchCandidate::File {
+            path: "/repo/main.rs".into(),
+            name: "main.rs".into(),
+            is_dir: false,
+        };
+        assert_eq!(file.title(), "main.rs");
+        assert_eq!(file.icon(), "file");
+        let content = SearchCandidate::Content {
+            file: "/repo/main.rs".into(),
+            line: 3,
+            name: "main.rs".into(),
+        };
+        assert_eq!(content.title(), "main.rs");
+        assert_eq!(content.icon(), "cnt");
+    }
+
+    #[test]
+    fn commit_content_search_appends_hits_to_the_results() {
+        // One-shot server for the content search commit fetch.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, Read as _, Write as _};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(&stream);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            let mut content_length = 0usize;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                    break;
+                }
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header
+                    .trim()
+                    .to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut payload = vec![0u8; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut payload).unwrap();
+            }
+            let body = json!({
+                "files": [{
+                    "path": "/repo/a.rs",
+                    "name": "a.rs",
+                    "matches": [{"line": 12}]
+                }]
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut palette = SearchPalette {
+            query: "needle".into(),
+            ..Default::default()
+        };
+        let count = palette
+            .commit_content_search(&api, "/repo", "/repo")
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(matches!(
+            &palette.results[0],
+            SearchCandidate::Content { file, line, .. } if file == "/repo/a.rs" && *line == 12
+        ));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+
+    #[test]
+    fn load_recents_caches_and_errors_carry_through() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut state = SearchPalette::default();
+        // First call hits the dead endpoint and fails, but stamps the
+        // cache time so the retry inside the TTL returns Ok without
+        // another request.
+        assert!(state.load_recents(&api).is_err());
+        state
+            .load_recents(&api)
+            .expect("cached failure short-circuits");
+    }
+
+    #[test]
+    fn load_recents_refetches_once_the_ttl_expires() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut state = SearchPalette::default();
+        // A stamp older than the TTL no longer short-circuits: the
+        // dead endpoint is hit again.
+        let stale = std::time::Instant::now()
+            .checked_sub(RECENTS_CACHE_TTL + Duration::from_secs(1))
+            .expect("clock far enough into the epoch");
+        state.recents_fetched_at = Some(stale);
+        assert!(state.load_recents(&api).is_err(), "expired cache refetches");
+    }
+}

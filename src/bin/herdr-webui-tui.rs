@@ -335,8 +335,7 @@ fn drain_live_terminal(live_terminal: &mut Option<LiveTerminal>, app: &mut TuiAp
             match event {
                 Ok(output) => app.ingest_terminal_output(&output),
                 Err(err) => {
-                    app.error = Some(err);
-                    app.mark_dirty();
+                    app.report_terminal_error(err);
                     should_detach = true;
                     break;
                 }

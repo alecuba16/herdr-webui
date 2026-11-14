@@ -29,3 +29,36 @@ pub fn key_to_terminal_bytes(key: KeyEvent) -> Option<Vec<u8>> {
 pub fn is_menu_key(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('b')
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::key_to_terminal_bytes;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn control_keys_only_map_ascii_letters_and_digits() {
+        // Ctrl with a non-letter char falls through to the plain-key map.
+        assert_eq!(
+            key_to_terminal_bytes(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::CONTROL)),
+            Some(b"1".to_vec())
+        );
+        // Ctrl with a non-char key falls through to the plain-key map:
+        // Ctrl+Home serializes like plain Home.
+        assert_eq!(
+            key_to_terminal_bytes(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)),
+            Some(b"\x1b[H".to_vec())
+        );
+        // Media keys have no terminal encoding.
+        assert_eq!(
+            key_to_terminal_bytes(KeyEvent::from(KeyCode::Media(
+                crossterm::event::MediaKeyCode::Play
+            ))),
+            None
+        );
+        // Uppercase letters normalize to the lowercase control byte.
+        assert_eq!(
+            key_to_terminal_bytes(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::CONTROL)),
+            Some(vec![26])
+        );
+    }
+}

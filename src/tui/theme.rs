@@ -128,6 +128,15 @@ impl Palette {
         theme.palette()
     }
 
+    pub(crate) fn accent_dim(&self) -> Color {
+        // Ghost tint: the accent at low brightness over the panel bg
+        // (the mock's translucent overlay in text form).
+        let Color::Rgb(r, g, b) = self.accent else {
+            return self.panel_bg;
+        };
+        Color::Rgb(r / 4 + 17, g / 4 + 17, b / 4 + 17)
+    }
+
     fn system(terminal: TerminalTheme) -> Self {
         let mut palette = match terminal {
             TerminalTheme::Dark => Self::dark(),
@@ -297,5 +306,51 @@ mod tests {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
         }
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn accent_dim_darkens_the_accent_over_the_panel_bg() {
+        let dark = Palette::for_theme(TuiTheme::Dark);
+        let dim = dark.accent_dim();
+        let Color::Rgb(r, g, b) = dim else {
+            panic!("dim accent stays rgb");
+        };
+        let Color::Rgb(ar, ag, ab) = dark.accent else {
+            panic!("accent stays rgb");
+        };
+        assert_eq!((r, g, b), (ar / 4 + 17, ag / 4 + 17, ab / 4 + 17));
+        assert!(r < ar && g < ag && b < ab, "dim is darker than the accent");
+        let light = Palette::for_theme(TuiTheme::Light);
+        assert_eq!(light.accent_dim(), light.accent_dim());
+        assert_ne!(light.accent_dim(), dark.accent_dim());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+
+    #[test]
+    fn accent_dim_falls_back_to_panel_bg_for_named_colors() {
+        // A palette whose accent is a named (non-Rgb) color dims to
+        // the panel background instead of doing channel math.
+        let mut palette = Palette::for_theme(TuiTheme::Dark);
+        palette.accent = Color::Blue;
+        assert_eq!(palette.accent_dim(), palette.panel_bg);
+    }
+
+    #[test]
+    fn system_theme_falls_back_to_dark_when_no_terminal_is_detected() {
+        // Test binaries run without a real terminal: detection
+        // returns None, so System resolves to the dark palette.
+        let system = TuiTheme::System.palette();
+        let dark = Palette::for_theme(TuiTheme::Dark);
+        assert_eq!(system.panel_bg, dark.panel_bg);
+        assert_eq!(system.border, dark.border);
     }
 }

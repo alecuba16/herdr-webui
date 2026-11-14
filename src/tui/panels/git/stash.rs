@@ -56,3 +56,29 @@ impl GitPanel {
         self.refresh_view(api)
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::super::GitStashEntry;
+
+    #[test]
+    fn stash_actions_require_a_selection() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        // No stashes loaded: both guards fire before any api call.
+        let err = panel.stash_apply(&api).unwrap_err();
+        assert!(err.to_string().contains("no stash selected"));
+        let err = panel.stash_drop(&api).unwrap_err();
+        assert!(err.to_string().contains("no stash selected"));
+
+        // With a selection the api call runs and fails against the
+        // dead endpoint.
+        panel.stashes = vec![GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        panel.stash_selected = 0;
+        assert!(panel.stash_apply(&api).is_err());
+        assert!(panel.stash_drop(&api).is_err());
+    }
+}

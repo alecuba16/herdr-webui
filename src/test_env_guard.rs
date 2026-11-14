@@ -122,6 +122,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "helper restores under the caller's env_lock guard; std sync Mutex is not reentrant so locking here would deadlock",
     ),
     (
+        "src/tui/web_api.rs",
+        "persisted_session_tokens_filters_expired_records_and_keeps_open_ended_ones",
+        "takes tests::lock_env (the file's wrapper over crate::test_env_lock) before the first set_var; the guard's resolver cannot prove a lock fn imported cross-module via `use super::tests::lock_env`, a resolver blind spot not a race",
+    ),
+    (
         "src/tui_parity_e2e_tests.rs",
         "drop",
         "EnvRedirectGuard::drop restores XDG_CONFIG_HOME while its creator still holds crate::tests::lock_env()",

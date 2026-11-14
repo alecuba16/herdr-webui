@@ -798,3 +798,153 @@ mod tests {
         assert_eq!(explorer.selected, 1);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn open_preview_at_line_refuses_dirty_buffer_on_a_new_file() {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview = FilePreview {
+            path: Some("src/old.rs".to_string()),
+            content: "unsaved".to_string(),
+            truncated: false,
+            binary: false,
+            hash: "h".to_string(),
+            dirty: true,
+        };
+        // No server needed: the dirty guard fires before any request.
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let err = explorer
+            .open_preview_at_line(&api, "src/other.rs", 3)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unsaved edits"),
+            "dirty buffer blocks the jump"
+        );
+        // Same path jumps even when dirty (reload semantics).
+        assert_eq!(explorer.preview.path.as_deref(), Some("src/old.rs"));
+    }
+
+    #[test]
+    fn cycle_search_kind_resets_selection_outside_content_scope() {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.search_mode = true;
+        explorer.selected = 4;
+        explorer.content_search.files.push(ContentSearchFile {
+            path: "a".into(),
+            name: "a".into(),
+            match_count: 1,
+            chunks: vec![],
+            truncated: false,
+            first_match_line: 1,
+        });
+        explorer.cycle_search_kind();
+        assert_eq!(explorer.search_kind, SearchKind::Dir);
+        assert_eq!(explorer.selected, 0, "non-content scope resets cursor");
+        assert!(explorer.content_search.files.is_empty());
+        // Content scope keeps the cursor (content rows own it).
+        explorer.selected = 2;
+        explorer.cycle_search_kind();
+        assert_eq!(explorer.search_kind, SearchKind::Content);
+        assert_eq!(explorer.selected, 2);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+
+    #[test]
+    fn create_directory_requires_a_name() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = FileExplorer::new("/repo");
+        // Empty name: guard fires before the api call.
+        let err = explorer.create_directory(&api, "  ").unwrap_err();
+        assert!(err.to_string().contains("directory name is required"));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::*;
+
+    fn files_api_server(body: serde_json::Value) -> crate::tui::web_api::WebApiClient {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Loop: each verb is followed by a tree refresh, so every
+            // explorer call needs its own response.
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    use std::io::Read as _;
+                    let _ = reader.read_exact(&mut payload);
+                }
+                let response = body.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+            }
+        });
+        crate::tui::web_api::WebApiClient::new("127.0.0.1", port)
+    }
+
+    #[test]
+    fn create_file_and_directory_succeed_and_refresh_selects_the_new_path() {
+        let api = files_api_server(serde_json::json!({
+            "entries": [
+                {"name": "new.txt", "path": "/repo/new.txt", "is_dir": false}
+            ],
+            "truncated": false
+        }));
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.create_file(&api, "new.txt").unwrap();
+        assert_eq!(explorer.selected, 0, "new file selected after refresh");
+        assert!(explorer.status.is_none(), "refresh clears status");
+
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.create_directory(&api, "sub").unwrap();
+        assert!(explorer.status.is_none(), "refresh clears status");
+    }
+
+    #[test]
+    fn refresh_clamps_a_stale_selection_past_the_entries() {
+        let api = files_api_server(serde_json::json!({
+            "entries": [
+                {"name": "a.txt", "path": "/repo/a.txt", "is_dir": false}
+            ]
+        }));
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.selected = 99;
+        explorer.refresh(&api).unwrap();
+        assert_eq!(explorer.selected, 0, "selection clamped to the last entry");
+    }
+}

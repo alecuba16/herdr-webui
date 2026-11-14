@@ -14,6 +14,10 @@ use crate::tui::theme::Palette;
 use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
 use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen, TuiWorkspace};
 
+mod split_tiles;
+pub(crate) use split_tiles::split_active;
+pub(crate) use split_tiles::TileRectOwned;
+
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
 
@@ -200,10 +204,22 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     if area.is_empty() {
         return;
     }
-    let [tab_bar, pane_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    // AGENTS summary bar (split design): one line between the tab bar
+    // and the pane area, always present on the Terminal screen so the
+    // layout never jumps when a split opens.
+    let [tab_bar, status_bar, pane_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(area);
     render_tab_bar(frame, tab_bar, app, p);
-    render_pane(frame, pane_area, app, p);
+    split_tiles::render_status_bar(frame, status_bar, app, p);
+    split_tiles::render_panes_or_split(frame, pane_area, app, p);
+    // Key walks score against this frame's geometry.
+    let focus = app.focused_pane_id();
+    let tiles = split_tiles::layout_tiles(&app.split_tree, pane_area, focus.as_deref());
+    split_tiles::record_tile_geometry(app, &tiles);
 }
 
 /// Pane viewport (cols, rows) the attached pty must be sized to:
@@ -262,7 +278,7 @@ fn workspace_worktree_token(workspace: &TuiWorkspace) -> Option<String> {
 /// HEAD), mirroring the desktop's disabled branch chip: the desktop
 /// renders a disabled ` branch…` placeholder, the TUI drops the token
 /// instead (a muted placeholder buys no information in text form).
-fn workspace_branch_token(workspace: &TuiWorkspace) -> Option<String> {
+pub(crate) fn workspace_branch_token(workspace: &TuiWorkspace) -> Option<String> {
     workspace.worktree.as_ref().and_then(|stamp| {
         if stamp.branch.is_empty() {
             None
@@ -371,7 +387,7 @@ fn render_lens(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let rect = overlay_rect(area, width, height);
     render_shadow(frame, rect, p);
     let pane_label = app
-        .selected_pane()
+        .view_pane()
         .map(|pane| {
             pane.display_agent
                 .as_deref()
@@ -443,15 +459,29 @@ fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
                 .find(|tab| tab.id == pane.tab_id)
                 .map(|tab| tab.label.as_str())
                 .unwrap_or("panel");
-            format!(
+            // Same composition as the split tile header (feature
+            // parity): the name slot falls back through the terminal
+            // title, and a distinct title rides its own segment so
+            // the single-pane view shows what the pane displays too.
+            let terminal_title = pane.terminal_title.as_deref();
+            let name = pane
+                .label
+                .as_deref()
+                .filter(|label| !label.is_empty())
+                .or(pane.display_agent.as_deref())
+                .or(pane.agent.as_deref())
+                .or(terminal_title)
+                .unwrap_or("shell");
+            let mut title = format!(
                 " {} · {} · {} ",
-                pane.display_agent
-                    .as_deref()
-                    .or(pane.agent.as_deref())
-                    .unwrap_or("shell"),
+                truncate(name, 18),
                 truncate(tab_label, 16),
                 pane.id
-            )
+            );
+            if let Some(terminal_title) = terminal_title.filter(|title| *title != name) {
+                title.push_str(&format!("· {} ", truncate(terminal_title, 12)));
+            }
+            title
         })
         .unwrap_or_else(|| " Pane ".to_string());
     let block = panel(&title, p).border_style(match app.mode {
@@ -1736,7 +1766,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         // counterpart of the webui box's aria-label "Message to this
         // panel".
         crate::tui::PromptKind::ComposerMessage => app
-            .selected_pane()
+            .view_pane()
             .map(|pane| {
                 format!(
                     "{} · {}",
@@ -1804,7 +1834,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
 /// space glued to the word before it, so wrapping never swallows or
 /// invents spaces. The empty input is exactly one cursor row, so the
 /// box height does not jump when the first character arrives.
-fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec!["█".to_string()];
     }
@@ -1934,8 +1964,18 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     } else {
         ""
     };
+    // While the prefix is armed, the hint slot becomes the legend of
+    // keys live under it (zellij mode-bar style, user decision): the
+    // user sees what the next key does instead of remembering blind.
+    // The legend carries the same fit_hint budget path as every hint
+    // below, so narrow terminals keep the tail (? help) and drop the
+    // low-value front segments first.
     let context = app.footer_context();
-    let help = context.hint();
+    let help = if app.prefix.is_armed() {
+        crate::tui::keys::prefix_legend(app.screen, app.mode)
+    } else {
+        context.hint()
+    };
     // On narrow terminals (the classic 80x24) the full hint would push the
     // discovery tail off-screen: the mode label alone eats 14+ columns and
     // the status message needs room. Drop the middle actions first and keep
@@ -1949,6 +1989,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         .saturating_sub(8) as usize;
     let help = if help.chars().count() <= hint_budget {
         help.to_string()
+    } else if app.prefix.is_armed() {
+        // Armed: `help` is already the legend, trim it in place instead
+        // of recomputing it (it has no compact twin).
+        fit_hint(help, hint_budget)
     } else {
         fit_hint(context.compact_hint(), hint_budget)
     };
@@ -1972,6 +2016,16 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         app.status.clone()
     };
     let message = message.as_str();
+    // Split/move mode hint (design: Zellij-style mode bar): while an
+    // overlay owns the keyboard the help slot swaps to the mode
+    // verbs so the user sees the keys without the overlay. The armed
+    // prefix legend outranks the mode hints: while Ctrl+B is armed all
+    // mode keys are dead, so naming them would mislead.
+    let help = if app.prefix.is_armed() {
+        help
+    } else {
+        split_tiles::mode_hint(app).unwrap_or(help)
+    };
     let used = label_width + help.chars().count() + prefix.chars().count();
     let status_budget = area.width.saturating_sub(used as u16) as usize;
     let line = Line::from(vec![

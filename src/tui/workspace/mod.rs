@@ -158,6 +158,9 @@ impl TuiApp {
         expanded_path: &str,
         label: Option<&str>,
     ) -> WorkspaceResult {
+        // Auto-split neighbor: captured before the create moves the
+        // selection to the fresh workspace.
+        let auto_split_neighbor = self.view_pane_id();
         let client = self.client.clone();
         let result = client
             .create_workspace(Some(expanded_path), label)
@@ -179,6 +182,12 @@ impl TuiApp {
             .record_recent_workspace(expanded_path, label, Some("workspace"));
         self.refresh().map_err(|err| err.to_string())?;
         self.focus_workspace_by_id(&id);
+        // Auto-split on create: the fresh workspace opens as its own
+        // tile beside whatever the user was looking at.
+        if !id.is_empty() {
+            self.split_panes_of_workspaces
+                .push((id, auto_split_neighbor));
+        }
         Ok(format!("workspace created: {expanded_path}"))
     }
 
@@ -388,7 +397,7 @@ impl TuiApp {
     /// Stage the selected row's path for the workspace name prompt
     /// (prefix `N` pick mode). Validates on disk like the typed-path
     /// flow (webui "workspace folder must exist") before chaining.
-    fn worktree_stage_picked(&mut self) -> WorkspaceResult {
+    pub(crate) fn worktree_stage_picked(&mut self) -> WorkspaceResult {
         let Some(row) = self
             .filtered_browser_rows()
             .get(self.worktree_selected)
@@ -448,11 +457,14 @@ impl TuiApp {
             .map_err(|err| err.to_string())?;
         let _ = self.web_api.record_recent_workspace(&path, None, kind);
         // Capture the workspace being left behind before the refresh
-        // replaces the selection (desktop `autoCloseLeftWorkspace`).
+        // replaces the selection (desktop `autoCloseLeftWorkspace`),
+        // and the pane the user is looking at now: the auto-split
+        // neighbor must predate the post-open selection move.
         let previous_workspace_id = self
             .selected_workspace()
             .filter(|ws| ws.cwd != path)
             .map(|ws| ws.id.clone());
+        let auto_split_neighbor = self.view_pane_id();
         self.refresh().map_err(|err| err.to_string())?;
         // Focus the opened workspace like the webui post-open navigation;
         // the backend keys it by cwd, so resolve the id first.
@@ -464,6 +476,10 @@ impl TuiApp {
             .map(|ws| ws.id.clone())
         {
             self.focus_workspace_by_id(&id);
+            // Auto-split on open: the new workspace greets the user as
+            // its own tile beside the pane they were looking at.
+            self.split_panes_of_workspaces
+                .push((id, auto_split_neighbor));
         }
         self.autoclose_left_workspace(previous_workspace_id.as_deref());
         // Opening a worktree is a context switch (the webui navigates to

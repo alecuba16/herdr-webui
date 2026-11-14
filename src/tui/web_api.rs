@@ -1417,7 +1417,7 @@ mod tests {
     /// every test that reads or mutates `HERDR_WEBUI_TUI_API` or
     /// `XDG_CONFIG_HOME` must hold the shared lib-wide lock so discovery
     /// cannot race other modules' env-mutating tests either.
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    pub(super) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         crate::test_env_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -2396,5 +2396,186 @@ mod tests {
             json!({})
         );
         handle.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::tests::lock_env;
+    use super::*;
+    use std::net::TcpListener;
+
+    fn display_cases() {
+        // Http with empty message and HttpDetailed with empty note both
+        // use the short form.
+        let err = WebApiError::Http {
+            status: 500,
+            message: String::new(),
+        };
+        assert_eq!(err.to_string(), "WebUI API error 500");
+        let detailed = WebApiError::HttpDetailed {
+            status: 502,
+            message: String::new(),
+            body: serde_json::json!({}),
+        };
+        assert_eq!(detailed.to_string(), "WebUI API error 502");
+        // A detailed error with a message renders the long form.
+        let detailed = WebApiError::HttpDetailed {
+            status: 503,
+            message: "upstream gone".to_string(),
+            body: serde_json::json!({"error": "upstream gone"}),
+        };
+        assert_eq!(detailed.to_string(), "WebUI API error 503: upstream gone");
+    }
+
+    #[test]
+    fn webapi_error_display_short_forms() {
+        display_cases();
+        // note() falls back to Display when the error is not detailed.
+        let err = WebApiError::Api("server said no".to_string());
+        assert_eq!(err.note(), "server said no");
+    }
+
+    #[test]
+    fn replay_session_walks_rejected_tokens_and_reports_the_last_401() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let body = "{\"error\":\"unauthorized\"}";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.flush();
+            }
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let tokens = vec![
+            WebApiSessionToken {
+                token: "dead1".to_string(),
+            },
+            WebApiSessionToken {
+                token: "dead2".to_string(),
+            },
+        ];
+        let result = client.replay_session(&tokens);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "WebUI API error 401: session token from sidecar was rejected"
+        );
+        assert!(
+            client.session_cookie.borrow().is_none(),
+            "no dead cookie cached"
+        );
+        drop(handle);
+    }
+
+    #[test]
+    fn replay_session_with_no_tokens_reports_the_missing_sidecar_401() {
+        let client = WebApiClient::new("127.0.0.1", 1);
+        let result = client.replay_session(&[]);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "WebUI API error 401: no live session token in the sidecar (log in once from a browser)"
+        );
+    }
+
+    #[test]
+    fn replay_session_surfaces_non_401_errors_immediately() {
+        // Port 1 refuses connections: the probe dies with an Io error
+        // before any HTTP status, which must abort the walk.
+        let client = WebApiClient::new("127.0.0.1", 1);
+        let tokens = vec![WebApiSessionToken {
+            token: "tok".to_string(),
+        }];
+        let result = client.replay_session(&tokens);
+        match result {
+            Err(WebApiError::Io(_)) => {}
+            other => panic!("expected Io error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn persisted_session_tokens_filters_expired_records_and_keeps_open_ended_ones() {
+        let dir =
+            std::env::temp_dir().join(format!("herdr-webapi-token-test-{}", std::process::id()));
+        let config = dir.join("herdr-webui");
+        std::fs::create_dir_all(&config).unwrap();
+        let root = config.join("webui-settings.json");
+        std::fs::write(&root, "{}").unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let sidecar = serde_json::json!({
+            "sessions": [
+                {"token": "expired", "expires_at": now - 10},
+                {"token": "live", "expires_at": now + 3600},
+                {"token": "open-ended"}
+            ]
+        });
+        std::fs::write(
+            root.with_file_name("session-token"),
+            serde_json::to_string(&sidecar).unwrap(),
+        )
+        .unwrap();
+
+        // webui_settings_path() reads XDG_CONFIG_HOME; point it at the
+        // temp dir and restore the env var afterwards. The env lock
+        // keeps parallel tests from racing the settings discovery.
+        let _env = lock_env();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let tokens = persisted_session_tokens().expect("sidecar parses");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        assert_eq!(tokens.len(), 2, "expired record dropped");
+        assert_eq!(tokens[0].token, "live");
+        assert_eq!(tokens[1].token, "open-ended");
+
+        // A sidecar with only expired records yields None (the empty
+        // vec collapses so callers skip the replay entirely).
+        let only_expired = serde_json::json!({
+            "sessions": [{"token": "expired", "expires_at": now - 10}]
+        });
+        std::fs::write(
+            root.with_file_name("session-token"),
+            serde_json::to_string(&only_expired).unwrap(),
+        )
+        .unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let tokens = persisted_session_tokens();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        assert!(tokens.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_socket {
+    use super::*;
+
+    #[test]
+    fn socket_transport_dispatches_git_verbs_over_the_backend_socket() {
+        // Socket transport: git/file verbs dispatch to the backend
+        // control socket instead of HTTP. A nonexistent socket path
+        // fails without ever touching a TCP port.
+        let client = WebApiClient::from_backend_socket("/nonexistent-tui-cov.sock");
+        assert!(client.is_socket_transport());
+        let err = client.git_status("/repo").unwrap_err();
+        match err {
+            WebApiError::Api(message) => {
+                assert!(!message.is_empty(), "socket failure maps to Api error");
+            }
+            other => panic!("expected Api error from the socket path, got {other:?}"),
+        }
     }
 }

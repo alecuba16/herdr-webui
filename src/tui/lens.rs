@@ -332,3 +332,24 @@ mod tests {
         assert_eq!(window.first().unwrap(), &LensLine::Output("line 0".into()));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::refusal_reason_copy;
+
+    #[test]
+    fn refusal_reason_copy_matches_the_webui_strings() {
+        assert_eq!(
+            refusal_reason_copy("no_session_path").as_str(),
+            "No jcode conversation found for this panel yet"
+        );
+        assert_eq!(
+            refusal_reason_copy("ambiguous").as_str(),
+            "Multiple jcode conversations match this panel; open one in the terminal to disambiguate"
+        );
+        assert_eq!(
+            refusal_reason_copy("anything-else").as_str(),
+            "Conversation unavailable right now"
+        );
+    }
+}

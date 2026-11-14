@@ -51,3 +51,19 @@ impl GitPanel {
         self.refresh_view(api)
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+
+    #[test]
+    fn branch_actions_hit_the_api_and_refresh() {
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        // The dead endpoint fails every call; each action must run
+        // its api verb before the refresh does.
+        assert!(panel.switch_branch(&api, "main").is_err());
+        assert!(panel.switch_selected(&api).is_err());
+        assert!(panel.delete_branch(&api, "feature", false).is_err());
+        assert!(panel.delete_branch(&api, "feature", true).is_err());
+    }
+}

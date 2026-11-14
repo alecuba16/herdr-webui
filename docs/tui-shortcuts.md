@@ -6,16 +6,17 @@ page is the browsable copy. Every screen keeps the `Ctrl+B ? help`
 tail in the statusbar, so the overlay is discoverable without reading
 docs first.
 
-Shortcut model: `Ctrl+B` arms the prefix (statusbar shows `Ctrl+B>`),
-the next key runs the matching WebUI default shortcut, `Esc` cancels,
-pressing `Ctrl+B` again toggles the prefix off. The prefix works on
-every screen, including while attached.
+Shortcut model: `Ctrl+B` arms the prefix (statusbar shows `Ctrl+B>`
+plus a legend of the keys live under it, so the next key is never a
+guess), the next key runs the matching WebUI default shortcut, `Esc`
+cancels, pressing `Ctrl+B` again toggles the prefix off. The prefix
+works on every screen, including while attached.
 
 ## Terminal screen (navigation)
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | move the workspace/agent selection |
+| `j` / `k`, arrows | move the workspace/agent selection (split active: walk tile focus; `Ctrl+hjkl` scrolls the focused pane) |
 | `Tab` / `BackTab` | switch workspace/agent list focus |
 | `w` | focus workspaces |
 | `a` | focus agents |
@@ -23,6 +24,7 @@ every screen, including while attached.
 | `r` | refresh |
 | `?` | help overlay |
 | `q` | quit confirmation (y confirms, n/Esc stays) |
+| `Shift+L` / `Shift+C` | chat lens / composer (plain keys, no prefix needed) |
 
 ## Attach mode
 
@@ -42,7 +44,8 @@ and attach mode stays.
 
 ## Lens (chat transcript view)
 
-`Ctrl+B Shift+L` opens a reading view over the selected pane's deep
+`Ctrl+B Shift+L` (or the plain `Shift+L` on the Terminal screen) opens
+a reading view over the selected pane's deep
 scrollback (the same buffer the pane scrolls): user turns (❯-marked
 prompt lines) render as accent-bold chat bubbles with gap folding,
 everything else as output. Terminal-screen surface only; it never
@@ -63,7 +66,8 @@ instead of the following state.
 
 ## Chat composer
 
-`Ctrl+B Shift+C` opens a one-line message prompt for the selected
+`Ctrl+B Shift+C` (or the plain `Shift+C` on the Terminal screen) opens
+a one-line message prompt for the selected
 pane (webui composer box). The draft is kept per pane and survives
 closing the prompt: every keystroke syncs it, reopening prefills it.
 
@@ -101,7 +105,7 @@ answered from the webui's chat lens card. The server-side parser
 | `a` / `A` | next / previous agent |
 | `]` / `[` | next / previous panel in the workspace (wraps) |
 | `p` / `x` | new / close tab (last tab closes its workspace) |
-| `n`, `N` | new workspace (folder browser, Enter picks, second prompt names it) |
+| `n`, `N` | new workspace (folder browser, Enter picks, second prompt names it; the new workspace opens as a split tile) |
 | `Shift+S` | rename workspace |
 | `Shift+R` | rename panel (webui `renamePanel`) |
 | `Shift+X` | close workspace (y confirms) |
@@ -114,7 +118,12 @@ answered from the webui's chat lens card. The server-side parser
 | `Shift+L` | chat lens |
 | `Shift+C` | chat composer |
 | `e`, `E` | edit the current file (Files preview or Git Changes selection) |
-| `s` | settings overlay (t cycles the theme) |
+| `E` (Shift+E) | settings overlay from any screen (Terminal keeps `Ctrl+B s` for split mode) |
+| `s` | settings overlay (t cycles the theme) · terminal: split tile mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm) |
+| `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
+| `Shift+Z` | terminal: resize mode (`h`/`l` narrow/widen, `j`/`k` shorten/lengthen, `Enter`/`Esc` close) |
+| `z` | git: stash the selected file · terminal: zoom the focused tile (resize mode closes it first) |
+| `hjkl` / arrows | terminal (split active): walk tile focus, single tile keeps pane scroll · `Ctrl+hjkl` scrolls the focused pane |
 | `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |
 | `i` | git: focus the file list (webui `KeyI` parity) |

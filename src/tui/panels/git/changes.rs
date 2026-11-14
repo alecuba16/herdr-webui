@@ -272,3 +272,256 @@ impl GitPanel {
         self.refresh_view(api)
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::tui::panels::git::GitDiffLineMeta;
+    use serde_json::json;
+
+    /// Drive `refresh_diff` against a one-shot JSON server returning
+    /// `body` for the git diff call, then check the panel state.
+    fn refresh_with(body: serde_json::Value) -> (GitPanel, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            let mut content_length = 0usize;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header
+                    .trim()
+                    .to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut payload = vec![0u8; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut payload).unwrap();
+            }
+            assert!(request.starts_with("GET /api/git-ui/diff"), "{request}");
+            let response = body.to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            )
+            .unwrap();
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut panel = GitPanel::new("/repo");
+        panel.diff_search_active = true;
+        panel.diff_search_query = "needle".into();
+        panel.diff_search_matches = vec![2, 7];
+        panel.diff_search_selected = 1;
+        panel.diff_hunk_selected = 3;
+        panel.show_blame = false;
+        panel.blame_path = Some("stale.rs".into());
+        panel.files.push(crate::tui::panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        });
+        panel.refresh_diff(&api).unwrap();
+        (panel, handle)
+    }
+
+    #[test]
+    fn refresh_diff_resumes_the_search_and_clears_stale_blame() {
+        let body = json!({
+            "files": [{
+                "path": "a.rs",
+                "chunks": [{
+                    "header": "@@ -1,2 +1,2 @@",
+                    "lines": [
+                        {"line_type": "context", "content": " needle", "new_line_number": 1},
+                        {"line_type": "add", "content": " added", "new_line_number": 2}
+                    ]
+                }]
+            }]
+        });
+        let (panel, handle) = refresh_with(body);
+        handle.join().unwrap();
+        assert!(panel.diff_search_active, "bar stays open");
+        assert_eq!(panel.diff_search_query, "needle", "query kept for resume");
+        assert_eq!(panel.diff_search_matches, vec![1], "matches recomputed");
+        assert_eq!(panel.diff_search_selected, 0);
+        assert_eq!(panel.diff_hunk_selected, 0, "hunk cursor reset");
+        assert_eq!(panel.diff_title, "a.rs");
+        assert!(panel.blame_authors.is_empty(), "blame cache dropped");
+    }
+
+    #[test]
+    fn apply_hunk_action_without_hunks_reports_no_selection() {
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut panel = GitPanel::new("/repo");
+        // A working-tree target has no file to patch.
+        panel.diff_title = "working tree".into();
+        let err = panel.apply_hunk_action(&api).unwrap_err();
+        assert!(err.to_string().contains("select a file"));
+        // A file target with no hunks (context-only diff) is refused.
+        panel.diff_title = "flat.rs".into();
+        panel.diff_lines = vec![" no hunks here".into()];
+        panel.diff_meta = vec![Some(GitDiffLineMeta {
+            old_line: Some(1),
+            new_line: Some(1),
+        })];
+        let err = panel.apply_hunk_action(&api).unwrap_err();
+        assert!(matches!(err, WebApiError::Io(ref msg) if msg == "no hunk selected"));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::super::GitFileEntry;
+    use super::*;
+
+    fn panel() -> GitPanel {
+        let mut p = GitPanel::new("/repo");
+        p.files = vec![
+            GitFileEntry {
+                path: "a.rs".into(),
+                status: GitFileStatus::Staged,
+            },
+            GitFileEntry {
+                path: "b.rs".into(),
+                status: GitFileStatus::Unstaged,
+            },
+        ];
+        p
+    }
+
+    fn dead_client() -> crate::tui::web_api::WebApiClient {
+        // Port 1 refuses connections: every api call errors without a
+        // server thread.
+        crate::tui::web_api::WebApiClient::new("127.0.0.1", 1)
+    }
+
+    /// One-shot server that records the request line before answering
+    /// the diff call with `body`.
+    fn diff_server(
+        body: serde_json::Value,
+    ) -> (
+        crate::tui::web_api::WebApiClient,
+        std::sync::mpsc::Receiver<String>,
+    ) {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            for _ in 0..64 {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let _ = tx.send(request);
+            let response = body.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            );
+        });
+        (
+            crate::tui::web_api::WebApiClient::new("127.0.0.1", port),
+            rx,
+        )
+    }
+
+    #[test]
+    fn refresh_diff_scopes_a_staged_file_as_staged() {
+        let (api, request_rx) = diff_server(serde_json::json!({"files": []}));
+        let mut p = panel();
+        p.file_selected = 0;
+        p.refresh_diff(&api).unwrap();
+        let request = request_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            request.contains("scope=staged"),
+            "staged file diffs staged: {request}"
+        );
+        assert_eq!(p.diff_title, "a.rs");
+    }
+
+    #[test]
+    fn stage_unstage_and_toggle_guards_fire_without_selection() {
+        let api = dead_client();
+        let mut p = panel();
+        p.file_selected = 99;
+        assert!(p.stage_selected(&api).is_err());
+        assert!(p.unstage_selected(&api).is_err());
+        assert!(p.discard_selected(&api).is_err());
+    }
+
+    #[test]
+    fn toggle_all_unstages_when_anything_is_staged() {
+        let api = dead_client();
+        let mut p = panel();
+        p.file_selected = 0;
+        // Staged file present: toggle-all takes the unstage branch,
+        // which fails against the dead api.
+        let result = p.toggle_stage_all(&api);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn toggle_all_stages_when_nothing_is_staged() {
+        let api = dead_client();
+        let mut p = panel();
+        p.files[0].status = GitFileStatus::Unstaged;
+        let result = p.toggle_stage_all(&api);
+        assert!(result.is_err(), "dead api fails the stage call");
+    }
+
+    #[test]
+    fn stash_commit_pull_push_fetch_and_discard_hit_the_api() {
+        let api = dead_client();
+        let mut p = panel();
+        p.file_selected = 1;
+        assert!(p.stash_changes(&api).is_err());
+        assert!(p.commit(&api, "title", false).is_err());
+        assert!(p.commit(&api, "title", true).is_err());
+        assert!(p.pull(&api).is_err());
+        assert!(p.push(&api).is_err());
+        assert!(p.fetch(&api).is_err());
+        assert!(p.discard_selected(&api).is_err());
+    }
+
+    #[test]
+    fn toggle_blame_off_keeps_the_cache_and_on_hits_the_api() {
+        let api = dead_client();
+        let mut p = panel();
+        p.show_blame = true;
+        p.blame_authors = std::collections::HashMap::from([(0usize, "alice".to_string())]);
+        // Toggling off returns before any api call.
+        p.toggle_blame(&api).unwrap();
+        assert!(!p.show_blame);
+        assert_eq!(
+            p.blame_authors.get(&0).map(String::as_str),
+            Some("alice"),
+            "cache kept"
+        );
+        // Toggling on hits the api; the dead client fails and blame
+        // resets so the panel does not show a half-loaded state.
+        assert!(p.toggle_blame(&api).is_err());
+        assert!(!p.show_blame, "failed blame load resets the flag");
+    }
+}

@@ -450,4 +450,233 @@ mod tests {
         assert_eq!(explorer.content_search.expanded, vec![true, true]);
         assert!(explorer.content_search.done);
     }
+
+    #[test]
+    fn run_content_search_propagates_a_server_error() {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+            }
+            let _ = request;
+            let body = "{\"error\":\"grep exploded\"}";
+            write!(
+                stream,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.filter = "needle".to_string();
+        assert!(run_content_search(&mut explorer, &api, false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_drops_rows_with_line_zero_or_missing_matched() {
+        let data = json!({
+            "files": [{
+                "path": "a.txt",
+                "name": "a.txt",
+                "chunks": [{
+                    "rows": [
+                        {"line": 0, "matched": true, "text": "line zero drops"},
+                        {"line": 5, "matched": true, "text": "kept"},
+                        {"line": 6, "text": "missing matched drops"}
+                    ]
+                }]
+            }]
+        });
+        let files = parse_content_search(&data);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].chunks[0].rows.len(), 1);
+        assert_eq!(files[0].chunks[0].rows[0].line, 5);
+    }
+
+    #[test]
+    fn run_content_search_append_expands_the_file_list() {
+        // One-shot server answers both the fresh search and the append.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, Read as _, Write as _};
+            for round in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut payload).unwrap();
+                }
+                let body = json!({
+                    "files": [{
+                        "path": format!("f{round}.txt"),
+                        "name": format!("f{round}.txt"),
+                        "chunks": [],
+                        "truncated": round == 0,
+                        "total_files": 2,
+                        "total_matches": 2
+                    }],
+                    "total_files": 2,
+                    "total_matches": 2,
+                    "visited": 10,
+                    "truncated": round == 0
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.filter = "needle".to_string();
+        run_content_search(&mut explorer, &api, false).unwrap();
+        let first_files = explorer.content_search.files.len();
+        assert_eq!(first_files, 1);
+        assert!(!explorer.content_search.done, "truncated continues");
+        // Collapse the fresh file, then append: old state survives.
+        explorer.content_search.expanded = vec![false];
+        run_content_search(&mut explorer, &api, true).unwrap();
+        assert_eq!(explorer.content_search.files.len(), 2);
+        assert_eq!(explorer.content_search.expanded, vec![false, true]);
+        assert!(explorer.content_search.done, "untruncated append closes");
+    }
+
+    #[test]
+    fn set_expanded_grows_a_short_expanded_vector() {
+        let mut state = ContentSearchState {
+            files: vec![
+                ContentSearchFile {
+                    path: "a".into(),
+                    name: "a".into(),
+                    match_count: 0,
+                    chunks: vec![],
+                    truncated: false,
+                    first_match_line: 1,
+                },
+                ContentSearchFile {
+                    path: "b".into(),
+                    name: "b".into(),
+                    match_count: 0,
+                    chunks: vec![],
+                    truncated: false,
+                    first_match_line: 1,
+                },
+            ],
+            expanded: vec![true],
+            ..Default::default()
+        };
+        // Toggle file 1: the shorter vector must grow first.
+        toggle_content_file(&mut state, 1);
+        assert_eq!(state.expanded, vec![true, false]);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::*;
+    use serde_json::json;
+
+    /// Same one-shot server shape as the earlier coverage tests, but
+    /// the body omits the total_files/total_matches summary so the
+    /// fallbacks (files.len() / 0) run.
+    fn search_once(
+        body: serde_json::Value,
+    ) -> (
+        crate::tui::panels::FileExplorer,
+        crate::tui::web_api::WebApiClient,
+    ) {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+            }
+            let response = body.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            );
+        });
+        let explorer = FileExplorer::new("/repo");
+        let client = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        (explorer, client)
+    }
+
+    #[test]
+    fn run_content_search_falls_back_when_the_summary_is_missing() {
+        let (mut explorer, client) = search_once(json!({
+            "files": [{
+                "path": "a.rs",
+                "name": "a.rs",
+                "match_count": 1,
+                "matches": [{"start_line": 2}],
+                "chunks": []
+            }]
+        }));
+        explorer.filter = "needle".into();
+        run_content_search(&mut explorer, &client, false).unwrap();
+        assert_eq!(
+            explorer.content_search.total_files, 1,
+            "falls back to files.len()"
+        );
+        assert_eq!(
+            explorer.content_search.total_matches, 0,
+            "missing matches default 0"
+        );
+    }
 }

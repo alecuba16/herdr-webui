@@ -5,6 +5,8 @@ pub mod panels;
 pub mod render;
 pub mod search;
 pub mod sessions;
+pub mod split;
+mod split_mode;
 pub mod terminal;
 pub mod theme;
 pub mod web_api;
@@ -131,6 +133,10 @@ pub(crate) enum FooterContext {
     /// Session manager overlay (prefix Shift+P): j/k move, Enter
     /// targets a built-in session, l launch, x close, c cleanup, n new.
     SessionManager,
+    /// Terminal screen, main region focused, split view active
+    /// (review F2): j/k walks tiles, so the hint must name the
+    /// Ctrl+j/k scroll escape instead of staying silent about it.
+    TerminalMainSplit,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -205,6 +211,9 @@ impl FooterContext {
             Self::TerminalMain => {
                 " Enter attach · Shift+L chat lens · Shift+C compose · . / , focus sidebar · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
+            Self::TerminalMainSplit => {
+                " hjkl walk tiles · Ctrl+j/k scroll · Enter attach · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ? help "
+            }
             Self::Terminal(TuiMode::Attach) => {
                 " Ctrl-G detach · type sends input · Ctrl+B ? help "
             }
@@ -262,6 +271,7 @@ impl FooterContext {
             Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
             Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
             Self::TerminalMain => " Enter attach · . , focus · Ctrl+B ? help ",
+            Self::TerminalMainSplit => " hjkl walk · Ctrl+j/k scroll · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
             Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
             Self::SessionManager => {
@@ -340,6 +350,50 @@ pub struct TuiApp {
     /// The backend served its whole scrollback (or the retention cap
     /// was reached): further deep fetches cannot grow the buffer.
     pub(crate) pane_history_exhausted: bool,
+    /// Split-panel layout tree (design: docs/ux/tui-split-panels-design.md).
+    /// Leaves hold backend pane ids (any workspace); single leaf = the
+    /// pre-split single-pane view. Rebuilt lazily from the snapshot:
+    /// a leaf whose pane vanished is pruned so the tree never paints a
+    /// dead pane.
+    pub(crate) split_tree: split::SplitNode,
+    /// Pane id of the focused tile; `None` falls back to the sidebar
+    /// selection (the pre-split behavior).
+    pub(crate) split_focus: Option<String>,
+    /// Zoom toggle: the focused tile renders the full pane area
+    /// (WebUI maximized-leaf parity). Tree and ptys stay alive.
+    pub(crate) split_zoomed: bool,
+    /// Workspaces whose panes must join the split view on the next
+    /// refresh (auto-split on open): opening or creating a workspace
+    /// from the browser, worktree list, or search palette queues the
+    /// workspace id plus the pane the user was looking at (the split
+    /// neighbor, captured before the open moves the selection);
+    /// sync_split_tree drains it and inserts the workspace's pane
+    /// beside that neighbor. The pane exists only after the backend
+    /// refresh, hence the deferral.
+    pub(crate) split_panes_of_workspaces: Vec<(String, Option<String>)>,
+    /// Split mode state (Ctrl+B s): the ghost preview over a tile and
+    /// the pane the new tile would open.
+    pub(crate) split_mode: Option<split::SplitPreview>,
+    /// Move mode state (Ctrl+B m): picked tile, target, and verb.
+    pub(crate) move_mode: Option<split::MoveState>,
+    /// Resize mode state (Ctrl+B Shift+Z): the tile whose dividers the
+    /// keys move.
+    pub(crate) resize_mode: Option<split_mode::ResizeState>,
+    /// The previous keypress closed a split/move overlay: the immediate
+    /// next Esc must not fall through to the quit confirm (double-Esc
+    /// reflex). Any other key clears it.
+    pub(crate) just_closed_mode: bool,
+    /// Last tail text per visible tile pane, for the non-focused tiles
+    /// (the focused tile keeps the full pane_tail pipeline: styles,
+    /// scroll, deep history). Only panes on the tree get entries.
+    pub(crate) tile_tails: std::collections::HashMap<String, String>,
+    /// Receiver of the in-flight tile-tail fetch worker. `None` means
+    /// no fetch running: the next tail refresh may spawn one.
+    tile_tail_rx: Option<std::sync::mpsc::Receiver<Vec<(String, String)>>>,
+    /// Tile geometry of the last rendered frame (pane id + rect),
+    /// recorded by the render pass so key walks score against the
+    /// on-screen grid. RefCell: `render` takes `&TuiApp`.
+    pub(crate) tile_geometry: std::cell::RefCell<Vec<crate::tui::render::TileRectOwned>>,
     terminal_raw_output: String,
     terminal_raw_terminal_id: Option<String>,
     /// Full TUI screen size (cols, rows), set by the binary loop at
@@ -718,6 +772,17 @@ impl TuiApp {
             pane_history: Vec::new(),
             pane_buffers_pane_id: None,
             pane_history_exhausted: false,
+            split_tree: split::SplitNode::leaf(""),
+            split_focus: None,
+            split_zoomed: false,
+            split_panes_of_workspaces: Vec::new(),
+            split_mode: None,
+            move_mode: None,
+            resize_mode: None,
+            just_closed_mode: false,
+            tile_tails: std::collections::HashMap::new(),
+            tile_tail_rx: None,
+            tile_geometry: std::cell::RefCell::new(Vec::new()),
             terminal_raw_output: String::new(),
             terminal_raw_terminal_id: None,
             terminal_size: (0, 0),
@@ -773,7 +838,21 @@ impl TuiApp {
     /// (cols, rows) every attach must use: the pane viewport the tail
     /// renders into when the screen size is known, else the legacy
     /// 120x32 fallback (no real screen: --once, embedders, tests).
+    /// With a split on screen the focused tile's inner rect is the
+    /// real viewport (design: "the pty resizes to the focused tile's
+    /// viewport, not the window"); tile borders cost 2 cols/rows,
+    /// the cwd/status/blank rows 3 more when the tail starts.
     pub fn attach_viewport(&self) -> (u16, u16) {
+        if render::split_active(self) {
+            if let Some(focus) = self.focused_pane_id() {
+                let geometry = self.tile_geometry.borrow();
+                if let Some(tile) = geometry.iter().find(|tile| tile.pane_id == focus) {
+                    let cols = tile.width.saturating_sub(2).max(1);
+                    let rows = tile.height.saturating_sub(5).max(1);
+                    return (cols, rows);
+                }
+            }
+        }
         let (width, height) = self.terminal_size;
         if width > 0 && height > 0 {
             render::pane_viewport_size(width, height, self.sidebar_collapsed)
@@ -812,9 +891,11 @@ impl TuiApp {
                 .unwrap_or(true);
             if tail_due && self.mode != TuiMode::Attach && self.screen == TuiScreen::Terminal {
                 self.refresh_tail();
+                self.refresh_tile_tails();
                 self.last_tail_refresh = Some(Instant::now());
             }
         }
+        self.poll_tile_tails();
     }
 
     /// Start the ping+snapshot round-trip off-loop. The old inline call
@@ -875,6 +956,7 @@ impl TuiApp {
             self.select_focused_items();
         }
         self.clamp_selection();
+        self.sync_split_tree();
         if self.mode != TuiMode::Attach {
             self.refresh_tail();
             self.last_tail_refresh = Some(Instant::now());
@@ -894,7 +976,18 @@ impl TuiApp {
                 self.snapshot.agents.len(),
             );
         }
-        self.error = None;
+        // A terminal-drain error keeps the line for the same
+        // STATUS_HOLD the status notice uses: refreshes must not wipe
+        // why a pane dropped before the user reads it. Any other error
+        // (stale validation, a failed action the user just retried)
+        // stays clearable by a healthy refresh.
+        if !self
+            .status_hold_until
+            .is_some_and(|deadline| Instant::now() < deadline)
+            || self.error.is_none()
+        {
+            self.error = None;
+        }
         self.last_refresh = Some(Instant::now());
         // Worktree identity for the new rows: serve fresh cached
         // replies first (no round trip), then arm a fetch per cwd the
@@ -1086,7 +1179,11 @@ impl TuiApp {
                 // the select/attach hint; attach mode owns the hint as
                 // before (the focus walker does not apply there).
                 if self.mode == TuiMode::Navigate && self.main_focused {
-                    FooterContext::TerminalMain
+                    if crate::tui::render::split_active(self) {
+                        FooterContext::TerminalMainSplit
+                    } else {
+                        FooterContext::TerminalMain
+                    }
                 } else {
                     FooterContext::Terminal(self.mode)
                 }
@@ -1314,7 +1411,7 @@ impl TuiApp {
             return;
         }
         let text = prompt.text.clone();
-        if let Some(pane) = self.selected_pane() {
+        if let Some(pane) = self.view_pane() {
             let pane_id = pane.id.clone();
             self.composer_drafts.insert(pane_id, text);
         }
@@ -1584,7 +1681,7 @@ impl TuiApp {
     /// the server's note lands in the status line and the draft stays.
     fn submit_composer_message(&mut self, text: &str) {
         const MAX_COMPOSER_CHARS: usize = 20_000;
-        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+        let Some(pane_id) = self.view_pane_id() else {
             self.error = Some("no pane selected".to_string());
             return;
         };
@@ -1813,6 +1910,9 @@ impl TuiApp {
                 // (`invalidateRecent`), so the next palette open refetches
                 // instead of serving the stale order.
                 self.search_palette.invalidate_recents();
+                // Auto-split neighbor: captured before the open moves the
+                // selection to the reopened workspace.
+                let auto_split_neighbor = self.view_pane_id();
                 self.refresh().map_err(|err| err.to_string())?;
                 // Land on the reopened workspace like the desktop go()
                 // navigation: the response carries the workspace plus its
@@ -1833,6 +1933,12 @@ impl TuiApp {
                     "pane_id",
                 );
                 self.select_search_target(Some(workspace_id.as_str()), tab_id, pane_id);
+                // Auto-split on open (search palette recent): the
+                // reopened workspace appears as its own tile.
+                if !workspace_id.is_empty() {
+                    self.split_panes_of_workspaces
+                        .push((workspace_id.clone(), auto_split_neighbor));
+                }
                 self.status = format!("opened {path}");
                 Ok(())
             }
@@ -2175,9 +2281,25 @@ impl TuiApp {
                 self.prompt_input = Some(PromptInput::new(PromptKind::GitCwd));
                 self.status = PromptKind::GitCwd.title().to_string();
             }
-            Shortcut::Settings => {
-                // Prefix s: settings overlay (webui settings modal).
+            Shortcut::SettingsOverlay => {
+                // Dedicated settings chord (review F4): `Ctrl+B Shift+E`
+                // opens the settings overlay from every screen, including
+                // the Terminal screen where prefix `s` is split mode.
                 self.open_overlay(TuiMode::Settings);
+            }
+            Shortcut::Settings => {
+                // Prefix s: on the git screens this stays the settings
+                // overlay (webui KeyS muscle memory). On the Terminal
+                // screen in Navigate mode the split-panel design takes
+                // the key (Ctrl+B s opens split mode); Shift+E
+                // (Ctrl+B Shift+E, review F4) is the dedicated settings
+                // chord that works from every screen, so the overlay is
+                // no longer mouse-only from Terminal.
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    self.open_split_mode();
+                } else {
+                    self.open_overlay(TuiMode::Settings);
+                }
             }
             Shortcut::Sidebar => {
                 // Prefix Shift+B: collapse/expand the sidebar column
@@ -2191,60 +2313,8 @@ impl TuiApp {
             }
             Shortcut::FocusNext => self.walk_focus(1),
             Shortcut::FocusPrev => self.walk_focus(-1),
-            Shortcut::Lens => {
-                // Chat lens toggle (webui Chat/Terminal switch): only
-                // meaningful over the terminal screen, and only for
-                // panes with a transcript provider (design section 6).
-                // Unsupported panes show positive evidence instead of
-                // silently ignoring the key.
-                if self.screen == TuiScreen::Terminal {
-                    // Read the session snapshot up front: the borrow ends
-                    // before the mutable lens toggle.
-                    let session = self
-                        .selected_pane()
-                        .and_then(|pane| pane.agent_session.as_ref());
-                    match session.map(|s| s.chat_supported()) {
-                        Some(true) => {
-                            // Refusal shape (resolvable: false): the lens
-                            // opens but the hint carries the refusal
-                            // reason (design section 6: "reason drives
-                            // the lens hint text"). Only the open shows
-                            // the copy; closing says "lens closed".
-                            let refusal = session
-                                .filter(|s| !s.resolvable)
-                                .and_then(|s| s.reason.as_deref())
-                                .map(refusal_reason_copy);
-                            self.lens.toggle();
-                            self.status = match (&refusal, self.lens.active) {
-                                (Some(copy), true) => format!("lens: {copy}"),
-                                (Some(_), false) => "lens closed".to_string(),
-                                (None, true) => "lens: j/k scroll · G tail · Esc close".to_string(),
-                                (None, false) => "lens closed".to_string(),
-                            };
-                        }
-                        Some(false) => {
-                            self.status = "lens: unsupported agent".to_string();
-                        }
-                        None => {
-                            self.status = "lens: no agent session on this pane".to_string();
-                        }
-                    }
-                }
-            }
-            Shortcut::Composer => {
-                // Chat composer (webui composer box): message prompt for
-                // the selected pane, prefilled with the pane's draft.
-                if self.screen == TuiScreen::Terminal {
-                    let mut input = PromptInput::new(PromptKind::ComposerMessage);
-                    if let Some(pane) = self.selected_pane() {
-                        if let Some(draft) = self.composer_drafts.get(&pane.id) {
-                            input.text = draft.clone();
-                        }
-                    }
-                    self.prompt_input = Some(input);
-                    self.status = "composer: type the message, Enter sends".to_string();
-                }
-            }
+            Shortcut::Lens => self.toggle_lens_from_footer(),
+            Shortcut::Composer => self.open_composer_from_footer(),
             Shortcut::Quit => self.request_quit(),
             Shortcut::GitChanges => {
                 self.open_git_screen();
@@ -2375,7 +2445,13 @@ impl TuiApp {
             }
             Shortcut::GitBlame => {
                 // Webui `blame: KeyM`: toggle author annotations on the
-                // diff lines of the selected file.
+                // diff lines of the selected file. Terminal screen in
+                // Navigate mode keeps the key for move mode (split
+                // design); the git screen keeps blame.
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    self.open_move_mode();
+                    return;
+                }
                 self.open_git_screen();
                 if self.git_panel.view != GitView::Changes {
                     self.git_panel.view = GitView::Changes;
@@ -2384,7 +2460,10 @@ impl TuiApp {
                 match self.git_panel.toggle_blame(&self.web_api) {
                     Ok(()) => {
                         self.status = if self.git_panel.show_blame {
-                            "blame on".to_string()
+                            // Review F3: `Ctrl+B m` is move-tile on the
+                            // Terminal screen, so the git meaning firing
+                            // names the context to break the surprise.
+                            "blame on (Ctrl+B m moves tiles on terminal)".to_string()
                         } else {
                             "blame off".to_string()
                         };
@@ -2430,7 +2509,21 @@ impl TuiApp {
                     self.run_git_action(|panel, api| panel.discard_selected(api));
                 }
             }
-            Shortcut::GitStashFile => self.run_git_action(|panel, api| panel.stash_changes(api)),
+            Shortcut::GitStashFile => {
+                // Webui `stash: Digit4` is the stash verb; prefix z maps
+                // to per-file stash. Terminal screen in Navigate mode
+                // keeps z for tile zoom (split design).
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    self.split_toggle_zoom();
+                    return;
+                }
+                self.run_git_action(|panel, api| panel.stash_changes(api));
+                // Review F3: `Ctrl+B z` is tile zoom on the Terminal
+                // screen; the git meaning firing names the context.
+                if self.error.is_none() {
+                    self.status = "stashed (Ctrl+B z zooms tiles on terminal)".to_string();
+                }
+            }
             Shortcut::GitPush => self.run_git_action(|panel, api| panel.push(api)),
             Shortcut::GitStageAll => {
                 // Webui `stageAll: KeyG` behind the prefix (audit fix):
@@ -2472,6 +2565,88 @@ impl TuiApp {
                 // close, cleanup, create.
                 self.open_session_manager();
             }
+            // The s/m/z prefix arms dispatch through the git/settings
+            // arms above (Terminal-screen scoped there); these variants
+            // exist for exhaustive matches and any future direct
+            // binding. Keep the behavior identical to the scoped arms.
+            Shortcut::SplitPane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.open_split_mode();
+                }
+            }
+            Shortcut::MovePane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.open_move_mode();
+                }
+            }
+            Shortcut::ZoomPane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.split_toggle_zoom();
+                }
+            }
+            Shortcut::ResizePane => {
+                if self.screen == TuiScreen::Terminal {
+                    self.open_resize_mode();
+                }
+            }
+        }
+    }
+
+    /// Chat lens toggle shared by the footer's plain `Shift+L` and the
+    /// `Ctrl+B Shift+L` chord (review F1: the footer advertised the
+    /// key but only the prefix binding fired). Only meaningful over
+    /// the terminal screen, and only for panes with a transcript
+    /// provider (design section 6). Unsupported panes show positive
+    /// evidence instead of silently ignoring the key.
+    fn toggle_lens_from_footer(&mut self) {
+        if self.screen == TuiScreen::Terminal {
+            // Read the session snapshot up front: the borrow ends
+            // before the mutable lens toggle.
+            let session = self
+                .view_pane()
+                .and_then(|pane| pane.agent_session.as_ref());
+            match session.map(|s| s.chat_supported()) {
+                Some(true) => {
+                    // Refusal shape (resolvable: false): the lens opens
+                    // but the hint carries the refusal reason (design
+                    // section 6: "reason drives the lens hint text").
+                    // Only the open shows the copy; closing says
+                    // "lens closed".
+                    let refusal = session
+                        .filter(|s| !s.resolvable)
+                        .and_then(|s| s.reason.as_deref())
+                        .map(refusal_reason_copy);
+                    self.lens.toggle();
+                    self.status = match (&refusal, self.lens.active) {
+                        (Some(copy), true) => format!("lens: {copy}"),
+                        (Some(_), false) => "lens closed".to_string(),
+                        (None, true) => "lens: j/k scroll · G tail · Esc close".to_string(),
+                        (None, false) => "lens closed".to_string(),
+                    };
+                }
+                Some(false) => {
+                    self.status = "lens: unsupported agent".to_string();
+                }
+                None => {
+                    self.status = "lens: no agent session on this pane".to_string();
+                }
+            }
+        }
+    }
+
+    /// Composer prompt shared by the plain `Shift+C` footer key and the
+    /// `Ctrl+B Shift+C` chord: message prompt for the focused pane,
+    /// prefilled with the pane's draft.
+    fn open_composer_from_footer(&mut self) {
+        if self.screen == TuiScreen::Terminal {
+            let mut input = PromptInput::new(PromptKind::ComposerMessage);
+            if let Some(pane) = self.view_pane() {
+                if let Some(draft) = self.composer_drafts.get(&pane.id) {
+                    input.text = draft.clone();
+                }
+            }
+            self.prompt_input = Some(input);
+            self.status = "composer: type the message, Enter sends".to_string();
         }
     }
 
@@ -3546,6 +3721,17 @@ impl TuiApp {
         self.status_hold_until = Some(Instant::now() + STATUS_HOLD);
     }
 
+    /// Report a live-terminal failure (server shutdown, broken pipe)
+    /// and arm the hold so the next refresh cannot wipe the reason
+    /// before the user reads it: `apply_refresh` clears `error` on
+    /// every successful snapshot, and a drain-detach error is exactly
+    /// the "action that just reported its outcome" the hold exists
+    /// for. The footer already ranks `error` above `status`.
+    pub fn report_terminal_error(&mut self, message: String) {
+        self.error = Some(message);
+        self.status_hold_until = Some(Instant::now() + STATUS_HOLD);
+    }
+
     /// Arm the hold when a key path replaced the status line.
     fn hold_status_if_changed(&mut self, before: &str) {
         if self.status != before {
@@ -3597,7 +3783,7 @@ impl TuiApp {
                 agent.status, agent.pane_id, agent.terminal_id
             ));
         }
-        if let Some(pane) = self.selected_pane() {
+        if let Some(pane) = self.view_pane() {
             out.push(format!(
                 "pane {} · terminal {} · {}",
                 pane.id, pane.terminal_id, pane.agent_status
@@ -3611,7 +3797,7 @@ impl TuiApp {
     }
 
     pub fn ingest_terminal_output(&mut self, output: &TerminalOutput) {
-        let selected_terminal_id = self.selected_terminal_id().map(str::to_string);
+        let selected_terminal_id = self.view_terminal_id().map(str::to_string);
         if output.full || self.terminal_raw_terminal_id != selected_terminal_id {
             self.terminal_raw_output.clear();
             self.terminal_raw_terminal_id = selected_terminal_id;
@@ -3632,12 +3818,54 @@ impl TuiApp {
         self.mark_dirty();
     }
 
+    /// Tile focus walk with scroll fallback: when the split tree has
+    /// neighbors in the (dx, dy) direction the focus moves there and
+    /// the caller skips its fallback. Returns false when the walk
+    /// found nothing (single tile or edge): the pre-split key behavior
+    /// runs instead.
+    fn split_walk_fallback(&mut self, dx: i32, dy: i32) -> bool {
+        if self.split_tree.leaves().len() < 2 {
+            return false;
+        }
+        let before = self.split_focus.clone();
+        self.split_move_focus(dx, dy);
+        self.split_focus != before
+    }
+
     fn handle_navigation_key(&mut self, key: KeyEvent) {
         // The Files and Git screens own their keys in Navigate mode too;
         // only the Terminal screen keeps the workspace/agent list keys.
         if self.screen != TuiScreen::Terminal {
             self.handle_panel_key(key);
             return;
+        }
+        // Split/move overlays own the keyboard while open (design:
+        // hjkl/arrows walk, Tab flips, p cycles, Enter commits, Esc
+        // cancels). They sit above the pane-scroll and sidebar keys so
+        // no accidental scroll moves anything mid-preview.
+        if self.split_mode.is_some() {
+            self.handle_split_mode_key(key);
+            return;
+        }
+        if self.move_mode.is_some() {
+            self.handle_move_mode_key(key);
+            return;
+        }
+        if self.resize_mode.is_some() {
+            self.handle_resize_mode_key(key);
+            return;
+        }
+        // Double-Esc reflex: when the previous key closed a split/move
+        // overlay, the immediate next Esc swallows here instead of
+        // opening the quit confirm. Any other key clears the flag.
+        if key.code == KeyCode::Esc {
+            if self.just_closed_mode {
+                self.just_closed_mode = false;
+                self.status = "press q to quit".to_string();
+                return;
+            }
+        } else {
+            self.just_closed_mode = false;
         }
         // Focus walker (Ctrl+B . / ,) regions: when the main screen
         // owns focus, j/k and Enter stop moving the sidebar cursor and
@@ -3653,20 +3881,50 @@ impl TuiApp {
                     self.open_help_overlay();
                 }
                 KeyCode::Char('r') => self.refresh_active_screen(),
+                // Plain Shift+L / Shift+C (review F1): the TerminalMain
+                // footer advertises these keys, so the main-focus arm
+                // must honor them, not only the Ctrl+B chord. They
+                // share the exact dispatch body with the prefix route.
+                KeyCode::Char('L') => self.toggle_lens_from_footer(),
+                KeyCode::Char('C') => self.open_composer_from_footer(),
                 KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
                 KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
                 KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
                 KeyCode::Enter => self.attach_selected(),
-                // Pane scroll (main region owns the pane): arrows and
-                // vim keys walk the scrollback, page keys jump by ten,
-                // G/End snap back to the newest line, g/Home to the
-                // oldest held one.
-                KeyCode::Up | KeyCode::Char('k') => {
+                // Split-active tile walk (design: hjkl/arrows walk focus
+                // between tiles): when a walk finds a neighbor the focus
+                // moves there; with a single tile the keys fall back to
+                // pane scroll so the pre-split behavior stays.
+                // Ctrl+hjkl/arrows scroll the focused pane instead of
+                // walking: the explicit scroll escape when the walk
+                // would move to a neighbor (docs: tui-shortcuts).
+                KeyCode::Up | KeyCode::Char('k')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
                     self.scroll_pane_up(1);
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Down | KeyCode::Char('j')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
                     self.scroll_pane_down(1);
                 }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if !self.split_walk_fallback(0, -1) {
+                        self.scroll_pane_up(1);
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if !self.split_walk_fallback(0, 1) {
+                        self.scroll_pane_down(1);
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if !self.split_walk_fallback(-1, 0) {
+                        // Horizontal keys had no pre-split scroll binding;
+                        // with a single tile they stay inert.
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => if !self.split_walk_fallback(1, 0) {},
                 KeyCode::PageUp => {
                     self.scroll_pane_up(10);
                 }
@@ -3704,6 +3962,12 @@ impl TuiApp {
                 self.scroll_pane_down(10);
             }
             KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
+            // Footer-advertised lens/composer keys work with the
+            // sidebar focused too: the hint line renders in both
+            // focus states, so the keys must not be focus-dependent
+            // (review F1).
+            KeyCode::Char('L') => self.toggle_lens_from_footer(),
+            KeyCode::Char('C') => self.open_composer_from_footer(),
             KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
             KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
             KeyCode::Enter => self.attach_selected(),
@@ -3771,9 +4035,13 @@ impl TuiApp {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
             self.mode = TuiMode::Navigate;
             self.status = "detached".to_string();
+            // The detach acknowledges whatever killed the pane: a
+            // drain error holds the footer for STATUS_HOLD, so it
+            // would otherwise outrank "detached" until the hold lapses.
+            self.error = None;
             return;
         }
-        let Some(terminal_id) = self.selected_terminal_id().map(str::to_string) else {
+        let Some(terminal_id) = self.view_terminal_id().map(str::to_string) else {
             self.mode = TuiMode::Navigate;
             self.error = Some("selected pane has no terminal".to_string());
             return;
@@ -3799,7 +4067,7 @@ impl TuiApp {
     }
 
     fn attach_selected(&mut self) {
-        if self.selected_terminal_id().is_some() {
+        if self.view_terminal_id().is_some() {
             self.mode = TuiMode::Attach;
             self.status = "attach mode: Ctrl-G detach".to_string();
             self.refresh_tail();
@@ -3811,7 +4079,7 @@ impl TuiApp {
     }
 
     pub fn load_selected_terminal_history(&mut self, cols: u16, rows: u16) {
-        let Some(terminal_id) = self.selected_terminal_id().map(str::to_string) else {
+        let Some(terminal_id) = self.view_terminal_id().map(str::to_string) else {
             return;
         };
         match self.client.attach_terminal(&terminal_id, cols, rows) {
@@ -3837,6 +4105,11 @@ impl TuiApp {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        // While a multi-leaf split exists the tile view owns focus:
+        // sidebar moves still update the selection, but the tail
+        // refresh (which loads the sidebar pane into the single-pane
+        // pipeline) is skipped so the focused tile never chases the
+        // sidebar cursor.
         match self.sidebar_focus {
             SidebarFocus::Workspaces => {
                 self.selected_workspace = move_index(
@@ -3844,13 +4117,14 @@ impl TuiApp {
                     self.snapshot.workspaces.len(),
                     delta,
                 );
-                self.refresh_tail();
             }
             SidebarFocus::Agents => {
                 self.selected_agent =
                     move_index(self.selected_agent, self.snapshot.agents.len(), delta);
-                self.refresh_tail();
             }
+        }
+        if self.split_tree.leaves().len() < 2 {
+            self.refresh_tail();
         }
     }
 
@@ -3896,7 +4170,7 @@ impl TuiApp {
     /// reads the session directly (it needs the reason too).
     fn lens_chat_supported(&self) -> LensGate {
         match self
-            .selected_pane()
+            .view_pane()
             .and_then(|pane| pane.agent_session.as_ref())
         {
             Some(session) if session.chat_supported() => LensGate::Supported,
@@ -3953,6 +4227,31 @@ impl TuiApp {
         self.selected_pane().map(|pane| pane.terminal_id.as_str())
     }
 
+    /// The pane the main view acts on. With a split on screen the
+    /// focused tile owns the tail, scroll, lens, composer, and
+    /// Enter-attach (design: "Enter attaches the focused tile"),
+    /// so the pipeline must follow `split_focus`, not the sidebar
+    /// cursor; the sidebar keeps its own selection untouched.
+    /// Without a split this is exactly `selected_pane()`.
+    pub fn view_pane(&self) -> Option<&TuiPane> {
+        if render::split_active(self) {
+            if let Some(focus) = self.focused_pane_id() {
+                if let Some(pane) = self.snapshot.panes.iter().find(|p| p.id == focus) {
+                    return Some(pane);
+                }
+            }
+        }
+        self.selected_pane()
+    }
+
+    pub fn view_pane_id(&self) -> Option<String> {
+        self.view_pane().map(|pane| pane.id.clone())
+    }
+
+    pub fn view_terminal_id(&self) -> Option<&str> {
+        self.view_pane().map(|pane| pane.terminal_id.as_str())
+    }
+
     pub fn refresh_tail(&mut self) {
         // Lens gate (design section 6): the overlay must not survive a
         // pane switch onto a pane without a transcript provider — same
@@ -3963,7 +4262,7 @@ impl TuiApp {
             self.lens.close();
             self.status = "lens closed (pane has no transcript provider)".to_string();
         }
-        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+        let Some(pane_id) = self.view_pane_id() else {
             self.pane_tail.clear();
             self.pane_tail_styles.clear();
             self.pane_scroll = 0;
@@ -4006,6 +4305,80 @@ impl TuiApp {
     fn reset_terminal_output_buffer(&mut self) {
         self.terminal_raw_output.clear();
         self.terminal_raw_terminal_id = None;
+    }
+
+    /// Fetch the tail of every visible non-focused tile. The focused
+    /// tile keeps the full `refresh_tail` pipeline (styles, scroll,
+    /// deep history); the rest get plain text at the same cadence, one
+    /// `pane.read` per tile. Entries for panes that left the tree are
+    /// dropped so the cache never outlives its tiles. Fetches run on a
+    /// short-lived worker per tick (same pattern as `spawn_refresh`):
+    /// a dead backend must not freeze keys and redraws.
+    pub(crate) fn refresh_tile_tails(&mut self) {
+        let focused = self.focused_pane_id();
+        let visible: Vec<String> = self
+            .split_tree
+            .leaves()
+            .into_iter()
+            .filter(|id| Some(*id) != focused.as_deref())
+            .map(|id| id.to_string())
+            .collect();
+        self.tile_tails.retain(|id, _| visible.contains(id));
+        if visible.is_empty() {
+            return;
+        }
+        // One worker per tick fetches every tile tail and ships the
+        // whole batch back; the next tick drains it. A worker still
+        // running means no new spawn until it lands (same re-arm rule
+        // as `spawn_refresh`).
+        if self.tile_tail_rx.is_some() {
+            return;
+        }
+        let client = self.client.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<(String, String)>>();
+        std::thread::spawn(move || {
+            let mut tails = Vec::with_capacity(visible.len());
+            for pane_id in &visible {
+                let text = client
+                    .read_pane(pane_id)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("read")
+                            .and_then(|read| read.get("text"))
+                            .and_then(Value::as_str)
+                            .or_else(|| value.get("text").and_then(Value::as_str))
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default();
+                tails.push((pane_id.clone(), text));
+            }
+            let _ = tx.send(tails);
+        });
+        self.tile_tail_rx = Some(rx);
+    }
+
+    /// Drain a finished tile-tail worker into the cache. Called from
+    /// the tick; `Empty` keeps the receiver for the next tick, a dead
+    /// worker clears it so the next refresh can spawn a new one. A
+    /// failed fetch keeps the previous tail (a missing tile shows its
+    /// last content, not a blank).
+    pub(crate) fn poll_tile_tails(&mut self) {
+        let Some(rx) = self.tile_tail_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(tails) => {
+                for (pane_id, text) in tails {
+                    self.tile_tails.insert(pane_id, text);
+                }
+                self.mark_dirty();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.tile_tail_rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
     }
 
     /// Lines the pane view and the lens scroll over: the deep history
@@ -4059,7 +4432,7 @@ impl TuiApp {
         if self.pane_history_exhausted {
             return 0;
         }
-        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+        let Some(pane_id) = self.view_pane_id() else {
             return 0;
         };
         let want = if self.pane_history.is_empty() {
@@ -4253,5 +4626,2463 @@ mod recent_open_tests {
         let flat = json!({ "workspace": { "workspace_id": "ws_flat" } });
         let (workspace_id, _, _) = recent_open_target(&flat);
         assert_eq!(workspace_id, "", "no result wrapper resolves nothing");
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod prompt_action_tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::{BufRead as _, Read as _, Write as _};
+
+    /// Looping catch-all HTTP server: every route answers `{"ok": true}`
+    /// plus the route-shaped payloads the verbs need (files list, tree
+    /// refresh), except paths listed in `failures`, which answer 500 with
+    /// an error body. The refresh tails after each verb need the loop.
+    pub(crate) fn fake_api_server(
+        failures: &[&str],
+    ) -> (WebApiClient, std::sync::mpsc::Sender<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let failures: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
+                let Ok(mut stream) = stream else { break };
+                let mut request = String::new();
+                let mut content_length = 0usize;
+                {
+                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                    if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) == 0
+                            || header.trim().is_empty()
+                        {
+                            break;
+                        }
+                        if let Some(value) = header
+                            .trim()
+                            .to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                        {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let mut payload = vec![0u8; content_length];
+                    if content_length > 0 {
+                        let _ = reader.read_exact(&mut payload);
+                    }
+                }
+                let target = request.split(' ').nth(1).unwrap_or_default().to_string();
+                let response = if failures.iter().any(|f| target.contains(f.as_str())) {
+                    json!({"error": "route refused by the fake server"})
+                } else if target.contains("/api/file-browser/list")
+                    || target.contains("/api/file-browser/tree")
+                {
+                    json!({"entries": [], "tree": {"name": "repo", "path": "/repo",
+                        "dirs": [], "files": []}})
+                } else if target.contains("/api/git-ui/branches") {
+                    json!({"branches": [
+                        {"name": "feat", "current": false, "remote": false,
+                         "pushed": false, "worktree_path": null}
+                    ]})
+                } else {
+                    json!({"ok": true})
+                };
+                let text = serde_json::to_string(&response).unwrap();
+                let status_line = if response.get("error").is_some() {
+                    "HTTP/1.1 500 Internal Server Error"
+                } else {
+                    "HTTP/1.1 200 OK"
+                };
+                let _ = write!(
+                    stream,
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    text.len(),
+                    text
+                );
+            }
+        });
+        (WebApiClient::new("127.0.0.1", port), tx)
+    }
+
+    pub(crate) fn app_with_api(api: WebApiClient) -> TuiApp {
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "tabs": [{"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}]
+            }
+        }));
+        app.web_api = api;
+        app
+    }
+
+    pub(crate) fn explorer_with_selection() -> crate::tui::panels::FileExplorer {
+        let mut explorer = crate::tui::panels::FileExplorer::new("/repo");
+        explorer.entries.push(crate::tui::panels::FileEntry {
+            name: "a.rs".into(),
+            path: "a.rs".into(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        });
+        explorer
+    }
+
+    #[test]
+    fn prompt_rename_and_delete_file_cover_all_outcomes() {
+        // No selection: both verbs refuse before any request.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::RenameFile, "b.rs");
+        assert_eq!(app.error.as_deref(), Some("no file selected"));
+        app.run_prompt_action(PromptKind::ConfirmDeleteFile, "");
+        assert_eq!(app.error.as_deref(), Some("no file selected"));
+        assert!(app.status.is_empty() || app.status != "renamed to b.rs");
+
+        // Success: rename then delete against the looping fake. The
+        // rename's refresh wipes the entries list, so re-seed before
+        // the delete.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::RenameFile, "b.rs");
+        assert_eq!(app.status, "renamed to b.rs");
+        assert!(app.error.is_none(), "refresh after rename: {:?}", app.error);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::ConfirmDeleteFile, "");
+        assert_eq!(app.status, "deleted a.rs");
+
+        // Server refusal lands in the error slot.
+        let (api, _stop) = fake_api_server(&["/rename"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::RenameFile, "b.rs");
+        assert!(app.error.is_some(), "rename refusal surfaces");
+
+        let (api, _stop) = fake_api_server(&["/delete"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::ConfirmDeleteFile, "");
+        assert!(app.error.is_some(), "delete refusal surfaces");
+    }
+
+    #[test]
+    fn prompt_delete_branch_and_drop_stash_cover_all_outcomes() {
+        // No branch rows: refusal.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert_eq!(app.error.as_deref(), Some("no branch selected"));
+
+        // A current branch never deletes through the prompt.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.branches = vec![crate::tui::panels::git::GitBranchEntry {
+            name: "main".into(),
+            current: true,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert_eq!(app.error.as_deref(), Some("no branch selected"));
+
+        // Non-current branch deletes.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.branches = vec![crate::tui::panels::git::GitBranchEntry {
+            name: "feature".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert_eq!(app.status, "deleted branch feature");
+
+        // Refused delete and stash drop outcomes.
+        let (api, _stop) = fake_api_server(&["/branch-delete"]);
+        let mut app = app_with_api(api);
+        app.git_panel.branches = vec![crate::tui::panels::git::GitBranchEntry {
+            name: "feature".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert!(app.error.is_some());
+
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.stashes = vec![crate::tui::panels::git::GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDropStash, "");
+        assert_eq!(app.status, "stash dropped");
+
+        let (api, _stop) = fake_api_server(&["/stash-drop"]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ConfirmDropStash, "");
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn prompt_cleanup_delete_reports_count_and_failures() {
+        // One marked merged branch: plain `y` deletes it.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+            path: "/repo".to_string(),
+            branches: vec!["old".into()],
+            worktrees: vec![],
+        }];
+        app.git_panel.cleanup_toggle_mark();
+        app.run_prompt_action(PromptKind::ConfirmCleanupDelete, "y");
+        assert_eq!(app.status, "deleted 1 cleanup item(s)");
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // `yb` also asks for the branch delete; a refusal records the
+        // per-item failure on top of the status.
+        let (api, _stop) = fake_api_server(&["/branch-delete"]);
+        let mut app = app_with_api(api);
+        app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+            path: "/repo".to_string(),
+            branches: vec![],
+            worktrees: vec![crate::tui::panels::git::CleanupWorktree {
+                path: "/repo-wt".to_string(),
+                branch: Some("feature".into()),
+            }],
+        }];
+        app.git_panel.cleanup_toggle_mark();
+        app.run_prompt_action(PromptKind::ConfirmCleanupDelete, "yb");
+        assert!(app.error.is_some(), "branch failure recorded");
+    }
+
+    #[test]
+    fn prompt_tag_reset_rebase_cover_all_branches() {
+        // Empty tag name is refused locally.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateTag, "  ");
+        assert_eq!(app.error.as_deref(), Some("type a tag name"));
+
+        // Tag, soft and mixed resets succeed against the selected
+        // commit.
+        app.git_panel.commits = vec![crate::tui::panels::git::GitCommitEntry {
+            hash: "abc123".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.run_prompt_action(PromptKind::CreateTag, "v1");
+        assert_eq!(app.status, "tagged v1");
+        app.run_prompt_action(PromptKind::ResetMode, "soft");
+        assert_eq!(app.status, "reset soft");
+        app.run_prompt_action(PromptKind::ResetMode, "mixed");
+        assert_eq!(app.status, "reset mixed");
+
+        // Hard reset chains into the typed-y confirm prompt.
+        app.run_prompt_action(PromptKind::ResetMode, "hard");
+        assert_eq!(app.status, PromptKind::ConfirmResetHard.title());
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmResetHard)
+        ));
+        app.run_prompt_action(PromptKind::ConfirmResetHard, "y");
+        assert_eq!(app.status, "reset hard");
+
+        // Unknown reset mode text is refused.
+        app.run_prompt_action(PromptKind::ResetMode, "sideways");
+        assert_eq!(app.error.as_deref(), Some("type soft, mixed or hard"));
+
+        // Rebase: empty upstream refused, then chains into the confirm.
+        app.run_prompt_action(PromptKind::RebaseUpstream, "  ");
+        assert_eq!(app.error.as_deref(), Some("type the upstream ref"));
+        app.run_prompt_action(PromptKind::RebaseUpstream, "origin/main");
+        assert_eq!(app.status, PromptKind::ConfirmRebase.title());
+        app.run_prompt_action(PromptKind::ConfirmRebase, "y");
+        assert_eq!(app.status, "rebase onto origin/main");
+
+        // Confirming with nothing pending is an error.
+        app.run_prompt_action(PromptKind::ConfirmRebase, "y");
+        assert_eq!(app.error.as_deref(), Some("no rebase pending"));
+
+        // Refused tag and hard reset propagate the server error.
+        let (api, _stop) = fake_api_server(&["/tag"]);
+        let mut app = app_with_api(api);
+        app.git_panel.commits = vec![crate::tui::panels::git::GitCommitEntry {
+            hash: "abc123".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.run_prompt_action(PromptKind::CreateTag, "v2");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/reset"]);
+        let mut app = app_with_api(api);
+        app.git_panel.commits = vec![crate::tui::panels::git::GitCommitEntry {
+            hash: "abc123".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.run_prompt_action(PromptKind::ResetMode, "hard");
+        app.run_prompt_action(PromptKind::ConfirmResetHard, "y");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/rebase"]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::RebaseUpstream, "origin/main");
+        app.run_prompt_action(PromptKind::ConfirmRebase, "y");
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn prompt_git_cwd_create_branch_file_and_directory_cover_outcomes() {
+        // Empty cwd refused locally.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::GitCwd, "  ");
+        assert_eq!(app.error.as_deref(), Some("type a directory path"));
+
+        // A real directory sets the cwd and refreshes the view.
+        let repo = std::env::current_dir().unwrap();
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::GitCwd, repo.to_string_lossy().as_ref());
+        assert!(app.status.starts_with("git cwd: "), "{}", app.status);
+
+        // Empty branch and file/dir names refused.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateBranch, "  ");
+        assert_eq!(app.error.as_deref(), Some("type a branch name"));
+        app.run_prompt_action(PromptKind::CreateFile, " ");
+        assert_eq!(app.error.as_deref(), Some("type a file name"));
+        app.run_prompt_action(PromptKind::CreateDirectory, " ");
+        assert_eq!(app.error.as_deref(), Some("type a directory name"));
+
+        // Create branch/file/dir succeed through the fake.
+        app.run_prompt_action(PromptKind::CreateBranch, "feat");
+        assert_eq!(app.status, "switched to feat");
+        app.run_prompt_action(PromptKind::CreateFile, "new.rs");
+        assert_eq!(app.status, "created new.rs");
+        app.run_prompt_action(PromptKind::CreateDirectory, "sub");
+        assert_eq!(app.status, "created sub");
+
+        // Refused variants land in the error slot.
+        let (api, _stop) = fake_api_server(&["/switch"]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateBranch, "feat");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/file-browser/file"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::CreateFile, "new.rs");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/file-browser/file"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::CreateDirectory, "sub");
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn prompt_replace_in_file_counts_and_fails() {
+        // No find matches: the replace refuses before any request.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new");
+        assert!(app.error.is_some());
+
+        // One match: replace-one reports 1 of 1. The replace writes
+        // through the server, so the preview needs real content.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.file_explorer.preview.content = "old line".to_string();
+        app.file_explorer.editor_find.ranges = vec![(0, 3)];
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new");
+        assert_eq!(app.status, "replaced 1 of 1 matches");
+
+        // `!` suffix replaces all.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.file_explorer.preview.content = "old old".to_string();
+        app.file_explorer.editor_find.ranges = vec![(0, 3), (4, 7)];
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new!");
+        assert_eq!(app.status, "replaced 2 matches");
+    }
+
+    #[test]
+    fn prompt_composer_and_session_cover_outcomes() {
+        // No pane selected: the composer refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.snapshot.panes.clear();
+        app.run_prompt_action(PromptKind::ComposerMessage, "hi");
+        assert_eq!(app.error.as_deref(), Some("no pane selected"));
+
+        // Whitespace-only message is a silent no-op.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ComposerMessage, " \r\n ");
+        assert_eq!(app.status, "message empty, nothing sent");
+
+        // A real message sends and clears the draft.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.composer_drafts.insert("pane_1".into(), "draft".into());
+        app.run_prompt_action(PromptKind::ComposerMessage, "hello\n");
+        assert_eq!(app.status, "message sent");
+        assert!(!app.composer_drafts.contains_key("pane_1"));
+
+        // A refused send keeps the draft and shows the note.
+        let (api, _stop) = fake_api_server(&["/submit"]);
+        let mut app = app_with_api(api);
+        app.composer_drafts.insert("pane_1".into(), "draft".into());
+        app.run_prompt_action(PromptKind::ComposerMessage, "hello");
+        assert_ne!(app.status, "message sent");
+        assert!(app.composer_drafts.contains_key("pane_1"));
+
+        // Session: empty name refused, then launch failure surfaces
+        // (the launch endpoint works but the retarget socket is dead).
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateSession, " ");
+        assert_eq!(app.error.as_deref(), Some("type a session name"));
+        app.run_prompt_action(PromptKind::CreateSession, "lane");
+        assert!(app.status.contains("lane") || app.error.is_some());
+    }
+}
+
+#[cfg(test)]
+mod key_handler_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use panels::files::content_search::{ContentSearchChunk, ContentSearchFile, ContentSearchRow};
+    use panels::files::SearchKind;
+
+    pub(crate) fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn key_mod(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    fn content_file(path: &str) -> ContentSearchFile {
+        ContentSearchFile {
+            path: path.to_string(),
+            name: path.to_string(),
+            match_count: 1,
+            chunks: vec![ContentSearchChunk {
+                start: 1,
+                end: 3,
+                rows: vec![
+                    ContentSearchRow {
+                        line: 1,
+                        text: "ctx".into(),
+                        matched: false,
+                    },
+                    ContentSearchRow {
+                        line: 2,
+                        text: "match here".into(),
+                        matched: true,
+                    },
+                ],
+            }],
+            truncated: false,
+            first_match_line: 2,
+        }
+    }
+
+    fn app_with_results() -> (TuiApp, std::sync::mpsc::Sender<()>) {
+        let (api, stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = SearchKind::Content;
+        app.file_explorer.content_search.query = "match".into();
+        app.file_explorer.filter = "match".into();
+        app.file_explorer.content_search.files = vec![content_file("a.rs")];
+        app.file_explorer.content_search.expanded = vec![true];
+        (app, stop)
+    }
+
+    #[test]
+    fn content_search_keys_walk_toggle_open_and_clear() {
+        // j/k move over the flat rows: file header then line rows.
+        let (mut app, _stop) = app_with_results();
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        assert_eq!(app.file_explorer.content_search.selected, 1);
+        app.handle_content_search_key(key(KeyCode::Char('k')));
+        assert_eq!(app.file_explorer.content_search.selected, 0);
+        // Enter on the file header collapses/expands the group.
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(!app.file_explorer.content_search.expanded[0]);
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(app.file_explorer.content_search.expanded[0]);
+        // Enter on a line row opens the preview at that line: walk
+        // down past the header to the first line row.
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "a.rs:2");
+        // Esc clears the results and refreshes the tree.
+        app.handle_content_search_key(key(KeyCode::Esc));
+        assert!(!app.file_explorer.search_mode);
+        assert!(!app.file_explorer.content_search.has_results());
+        assert_eq!(app.status, "content search closed");
+    }
+
+    #[test]
+    fn content_search_load_more_and_toggles() {
+        // `+` hits the fake server; the empty reply marks the page
+        // done (no truncated flag), so the status reports a load.
+        let (mut app, _stop) = app_with_results();
+        app.file_explorer.content_search.done = false;
+        app.handle_content_search_key(key(KeyCode::Char('+')));
+        assert_eq!(app.status, "loaded more results");
+        assert!(app.file_explorer.content_search.done);
+        // `+` when done reports no more.
+        app.file_explorer.content_search.done = true;
+        app.handle_content_search_key(key(KeyCode::Char('+')));
+        assert_eq!(app.status, "no more results");
+        // A/X flip match-case/regex and re-run against the fake.
+        app.handle_content_search_key(key(KeyCode::Char('A')));
+        assert!(app.file_explorer.content_search.match_case);
+        assert!(app.status.starts_with("search re-run"));
+        app.handle_content_search_key(key(KeyCode::Char('X')));
+        assert!(app.file_explorer.content_search.regex);
+        // A dead server surfaces the re-run error instead of a status.
+        let (mut app, _stop) = app_with_results();
+        drop(app.web_api);
+        app.web_api = WebApiClient::new("127.0.0.1", 1);
+        app.handle_content_search_key(key(KeyCode::Char('X')));
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn editor_find_keys_type_and_navigate() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer.editor_find.active = true;
+        app.file_explorer.preview.content = "old old".into();
+        app.handle_editor_find_key(key(KeyCode::Char('o')));
+        app.handle_editor_find_key(key(KeyCode::Char('l')));
+        app.handle_editor_find_key(key(KeyCode::Char('d')));
+        assert_eq!(app.file_explorer.editor_find.query, "old");
+        app.handle_editor_find_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "match 2/2");
+        assert_eq!(app.file_explorer.editor_find.selected, 1);
+        app.handle_editor_find_key(key_mod(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert_eq!(app.file_explorer.editor_find.selected, 0);
+        assert_eq!(app.status, "match 1/2");
+        app.handle_editor_find_key(key(KeyCode::Backspace));
+        assert_eq!(app.file_explorer.editor_find.query, "ol");
+        app.handle_editor_find_key(key(KeyCode::Char('A')));
+        assert!(app.file_explorer.editor_find.match_case);
+        app.handle_editor_find_key(key(KeyCode::Char('X')));
+        assert!(app.file_explorer.editor_find.regex);
+        app.handle_editor_find_key(key(KeyCode::Esc));
+        assert!(!app.file_explorer.editor_find.active);
+        assert_eq!(app.status, "find closed");
+    }
+
+    #[test]
+    fn commit_input_keys_commit_and_cancel() {
+        // Empty message refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.commit_input = Some(CommitInput {
+            text: String::new(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("commit message is empty"));
+        assert!(app.commit_input.is_none());
+        // Typing and Ctrl+U clearing, then a real commit.
+        app.commit_input = Some(CommitInput {
+            text: String::new(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Char('f')));
+        app.handle_commit_key(key(KeyCode::Char('i')));
+        app.handle_commit_key(key_mod(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(app.commit_input.as_ref().unwrap().text.is_empty());
+        app.handle_commit_key(key(KeyCode::Char('x')));
+        assert_eq!(app.commit_input.as_ref().unwrap().text, "x");
+        app.handle_commit_key(key(KeyCode::Enter));
+        assert!(app.commit_input.is_none());
+        assert_eq!(app.status, "committed: x");
+        // Esc cancels the input without committing.
+        app.commit_input = Some(CommitInput {
+            text: "wip".into(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Esc));
+        assert!(app.commit_input.is_none());
+        // A refused commit surfaces the error.
+        let (api, _stop) = fake_api_server(&["/commit"]);
+        let mut app = app_with_api(api);
+        app.commit_input = Some(CommitInput {
+            text: "y".into(),
+            amend: false,
+        });
+        app.handle_commit_key(key(KeyCode::Enter));
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn navigation_just_closed_esc_and_help_reflexes() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        // Double-Esc reflex: the first Esc after a closed overlay is
+        // swallowed into a status hint, not the quit confirm.
+        app.just_closed_mode = true;
+        app.handle_navigation_key(key(KeyCode::Esc));
+        assert_eq!(app.status, "press q to quit");
+        assert!(app.mode != TuiMode::ConfirmQuit);
+        // A second Esc opens the quit confirm.
+        app.handle_navigation_key(key(KeyCode::Esc));
+        assert!(app.mode == TuiMode::ConfirmQuit);
+        // ? opens the help overlay; Esc closes it again.
+        app.mode = TuiMode::Navigate;
+        app.handle_navigation_key(key(KeyCode::Char('?')));
+        assert!(app.mode == TuiMode::Help);
+        app.handle_navigation_key(key(KeyCode::Esc));
+        assert!(app.mode != TuiMode::Help);
+    }
+}
+
+#[cfg(test)]
+mod git_key_tests {
+    use super::key_handler_tests::key;
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::KeyCode;
+    use panels::git::{
+        CleanupItem, CleanupItemKind, CleanupRepo, CleanupWorktree, ConflictAction,
+        ConflictResolveMode, GitBranchEntry, GitCommitEntry, GitStashEntry, GitView,
+    };
+
+    fn commit(hash: &str) -> GitCommitEntry {
+        GitCommitEntry {
+            hash: hash.into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }
+    }
+
+    fn git_app(failures: &[&str]) -> (TuiApp, std::sync::mpsc::Sender<()>) {
+        let (api, stop) = fake_api_server(failures);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.mode = TuiMode::Navigate;
+        (app, stop)
+    }
+
+    #[test]
+    fn git_tab_cycles_views_and_diff_search_keys() {
+        let (mut app, _stop) = git_app(&[]);
+        // Tab walks the view ring all the way around.
+        for view in [
+            GitView::Log,
+            GitView::Branches,
+            GitView::Stash,
+            GitView::History,
+            GitView::Conflicts,
+            GitView::Cleanup,
+            GitView::Changes,
+        ] {
+            app.handle_git_key(key(KeyCode::Tab));
+            assert_eq!(app.git_panel.view, view, "tab cycle");
+        }
+        // `/` opens the diff search, n/N walk it, Esc cancels once
+        // matches exist.
+        app.git_panel.view = GitView::Changes;
+        app.git_panel.diff_lines = vec!["+ match here".into()];
+        app.git_panel.diff_search_matches = vec![0];
+        app.handle_git_key(key(KeyCode::Esc));
+        assert!(
+            app.git_panel.diff_search_matches.is_empty(),
+            "esc clears committed search"
+        );
+        app.handle_git_key(key(KeyCode::Char('/')));
+        assert_eq!(
+            app.status,
+            "diff search: type to match, n/N cycle, Esc closes"
+        );
+        // While the bar is open every printable key types into it and
+        // the status reports the live match count.
+        app.handle_git_key(key(KeyCode::Char('m')));
+        assert_eq!(app.status, "diff search: m (1 matches)");
+        // Enter commits the query; n/N cycle the kept matches.
+        app.handle_git_key(key(KeyCode::Enter));
+        app.handle_git_key(key(KeyCode::Char('n')));
+        assert!(app.status.ends_with("(1 matches)"));
+        app.handle_git_key(key(KeyCode::Char('N')));
+        assert!(app.status.ends_with("(1 matches)"));
+        // Esc closes and forgets; with no matches left n/N report it.
+        app.handle_git_key(key(KeyCode::Esc));
+        // With the bar closed and no matches kept, n/N report it.
+        app.handle_git_key(key(KeyCode::Char('n')));
+        assert_eq!(app.status, "no diff search matches");
+        app.handle_git_key(key(KeyCode::Char('N')));
+        assert_eq!(app.status, "no diff search matches");
+        // J/K without hunks report it.
+        app.handle_git_key(key(KeyCode::Char('J')));
+        assert_eq!(app.status, "no hunks in the loaded diff");
+        app.handle_git_key(key(KeyCode::Char('K')));
+        assert_eq!(app.status, "no hunks in the loaded diff");
+    }
+
+    #[test]
+    fn git_log_keys_select_compare_and_prompt() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Log;
+        app.git_panel.commits = vec![commit("aaa"), commit("bbb")];
+        // Space marks commits; `c` compares the selected pair.
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.git_panel.log_selected, vec!["aaa"]);
+        app.handle_git_key(key(KeyCode::Char('j')));
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.git_panel.log_selected.len(), 2);
+        app.handle_git_key(key(KeyCode::Char('c')));
+        assert_eq!(app.status, "compare loaded");
+        // t/R/b open the tag/reset/rebase prompts on the selection.
+        app.handle_git_key(key(KeyCode::Char('t')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::CreateTag)
+        ));
+        app.handle_git_key(key(KeyCode::Char('R')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ResetMode)
+        ));
+        app.handle_git_key(key(KeyCode::Char('b')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::RebaseUpstream)
+        ));
+        // w opens the worktree creation prompt chain.
+        app.handle_git_key(key(KeyCode::Char('w')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::CreateWorktreeBranch)
+        ));
+        // Enter compares the selected commit with its parent.
+        app.prompt_input = None;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "compare bbb^..bbb");
+        // s cycles the log scope; `+` loads more until refused.
+        app.handle_git_key(key(KeyCode::Char('s')));
+        assert!(app.status.starts_with("log scope: "));
+        app.git_panel.log_has_more = true;
+        app.handle_git_key(key(KeyCode::Char('+')));
+        assert!(app.status.starts_with("log limit: "));
+        // Without a selection, t/R/b and Space refuse.
+        app.git_panel.commits.clear();
+        app.handle_git_key(key(KeyCode::Char('t')));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    }
+
+    #[test]
+    fn git_actions_stage_discard_fetch_pull_push_commit() {
+        let (mut app, _stop) = git_app(&[]);
+        // c opens the commit modal, a the amend modal outside stash.
+        app.handle_git_key(key(KeyCode::Char('c')));
+        let input = app.commit_input.expect("commit modal");
+        assert!(!input.amend);
+        app.commit_input = None;
+        app.handle_git_key(key(KeyCode::Char('a')));
+        assert!(app.commit_input.expect("amend modal").amend);
+        app.commit_input = None;
+        // Stage/discard/fetch/pull/push succeed against the looping
+        // fake (stage and discard need a selected file).
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: panels::git::GitFileStatus::Unstaged,
+        }];
+        for ch in ['s', 'd', 'f', 'p', 'P', 'G'] {
+            app.error = None;
+            // Each mutating verb's refresh wipes the file list, so
+            // re-seed the selection before every key.
+            app.git_panel.files = vec![panels::git::GitFileEntry {
+                path: "a.rs".into(),
+                status: panels::git::GitFileStatus::Unstaged,
+            }];
+            app.git_panel.file_selected = 0;
+            app.handle_git_key(key(KeyCode::Char(ch)));
+            assert!(app.error.is_none(), "{ch} failed: {:?}", app.error);
+        }
+        // Every git verb fails against the dead server.
+        let (mut app, _stop) = git_app(&["/git-ui/"]);
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: panels::git::GitFileStatus::Unstaged,
+        }];
+        for ch in ['s', 'd', 'f', 'p', 'P', 'G', 'H'] {
+            app.error = None;
+            // The failing verb's own refresh also wipes the list.
+            app.git_panel.files = vec![panels::git::GitFileEntry {
+                path: "a.rs".into(),
+                status: panels::git::GitFileStatus::Unstaged,
+            }];
+            app.git_panel.file_selected = 0;
+            app.handle_git_key(key(KeyCode::Char(ch)));
+            assert!(app.error.is_some(), "{ch} should fail: {:?}", app.error);
+        }
+        // Discard under a dirty matching preview refuses instead.
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Changes;
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: panels::git::GitFileStatus::Unstaged,
+        }];
+        app.file_explorer.preview.dirty = true;
+        app.file_explorer.preview.path = Some("a.rs".into());
+        app.handle_git_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            app.error.as_deref(),
+            Some("unsaved edits: save or reload before discarding this file")
+        );
+    }
+
+    #[test]
+    fn git_branch_and_stash_keys_cover_all_guards() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Branches;
+        app.git_panel.branches = vec![GitBranchEntry {
+            name: "main".into(),
+            current: true,
+            remote: false,
+            pushed: true,
+            worktree_path: None,
+        }];
+        // Current branch cannot be deleted.
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert_eq!(
+            app.error.as_deref(),
+            Some("cannot delete the current branch")
+        );
+        // A non-current branch opens the confirm prompt.
+        app.git_panel.branches.push(GitBranchEntry {
+            name: "feat".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        });
+        app.git_panel.branch_selected = 1;
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmDeleteBranch)
+        ));
+        app.prompt_input = None;
+        // No selection refuses.
+        app.git_panel.branches.clear();
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert_eq!(app.error.as_deref(), Some("no branch selected"));
+        // `c` in Branches prompts for a new branch.
+        app.handle_git_key(key(KeyCode::Char('c')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::CreateBranch)
+        ));
+        app.prompt_input = None;
+        // Enter switches the selected branch (fake accepts).
+        app.git_panel.branches = vec![GitBranchEntry {
+            name: "feat".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.git_panel.branch_selected = 0;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "switched to feat");
+        // Stash view: Enter loads a diff, a applies, D guards.
+        app.git_panel.view = GitView::Stash;
+        app.git_panel.stashes = vec![GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "stash diff loaded");
+        app.handle_git_key(key(KeyCode::Char('a')));
+        assert_eq!(app.status, "stash applied");
+        // The apply's refresh wiped the stash list; re-seed for D.
+        app.git_panel.stashes = vec![GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmDropStash)
+        ));
+        app.prompt_input = None;
+        app.git_panel.stashes.clear();
+        app.handle_git_key(key(KeyCode::Char('D')));
+        assert_eq!(app.error.as_deref(), Some("no stash selected"));
+    }
+
+    #[test]
+    fn git_conflicts_and_cleanup_keys() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Conflicts;
+        // o/e/t/m resolve through the fake server. The refresh after
+        // each resolve wipes the conflict list, so re-seed per key.
+        for (ch, expected) in [
+            ('o', "resolved with HEAD"),
+            ('e', "resolved with parent"),
+            ('t', "resolved with remote"),
+            ('m', "marked resolved"),
+        ] {
+            app.git_panel.conflict_files = vec!["a.rs".into()];
+            app.handle_git_key(key(KeyCode::Char(ch)));
+            assert_eq!(app.status, expected, "{ch} resolve");
+        }
+        // R/S/A continue/skip/abort the in-flight operation.
+        app.git_panel.rebase_in_progress = true;
+        app.handle_git_key(key(KeyCode::Char('R')));
+        assert_eq!(app.status, "operation continued");
+        app.handle_git_key(key(KeyCode::Char('S')));
+        assert_eq!(app.status, "rebase commit skipped");
+        app.handle_git_key(key(KeyCode::Char('A')));
+        assert_eq!(app.status, "operation aborted");
+        // Without conflicts the resolve keys surface the error.
+        app.git_panel.conflict_files.clear();
+        app.handle_git_key(key(KeyCode::Char('o')));
+        assert!(app.error.is_some());
+
+        // Cleanup view: Space marks, x guards without selection, B prunes.
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Cleanup;
+        app.git_panel.cleanup_repos = vec![CleanupRepo {
+            path: "/repo".into(),
+            branches: vec![],
+            worktrees: vec![CleanupWorktree {
+                path: "/lane".into(),
+                branch: Some("feat".into()),
+            }],
+        }];
+        app.handle_git_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.status, "marked 1 item(s)");
+        app.handle_git_key(key(KeyCode::Char('x')));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmCleanupDelete)
+        ));
+        app.prompt_input = None;
+        app.git_panel.cleanup_repos.clear();
+        app.handle_git_key(key(KeyCode::Char('x')));
+        assert_eq!(app.error.as_deref(), Some("no cleanup item selected"));
+        app.git_panel.cleanup_repos = vec![CleanupRepo {
+            path: "/repo".into(),
+            branches: vec!["feat".into()],
+            worktrees: vec![],
+        }];
+        app.handle_git_key(key(KeyCode::Char('B')));
+        assert_eq!(app.status, "worktrees pruned");
+        // ? opens help from any git view.
+        app.handle_git_key(key(KeyCode::Char('?')));
+        assert_eq!(app.mode, TuiMode::Help);
+    }
+
+    #[test]
+    fn git_history_enter_loads_commit_diff() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::History;
+        app.git_panel.history_file = Some("a.rs".into());
+        app.git_panel.commits = vec![commit("abc")];
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "commit abc · a.rs");
+        app.git_panel.commits.clear();
+        app.handle_git_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    }
+
+    #[test]
+    fn git_changes_enter_refreshes_diff() {
+        let (mut app, _stop) = git_app(&[]);
+        app.git_panel.view = GitView::Changes;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert!(app.error.is_none());
+        let (mut app, _stop) = git_app(&["/diff"]);
+        app.git_panel.view = GitView::Changes;
+        app.handle_git_key(key(KeyCode::Enter));
+        assert!(app.error.is_some());
+        let _ = CleanupItem {
+            repo: String::new(),
+            name: String::new(),
+            kind: CleanupItemKind::Branch,
+            branch: None,
+            current: false,
+        };
+        let _ = (ConflictAction::MergeContinue, ConflictResolveMode::Ours);
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use panels::git::{GitFileEntry, GitFileStatus, GitView};
+
+    #[test]
+    fn shortcuts_open_screens_overlays_and_cycle_focus() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        // Help overlay, settings overlay, files screen.
+        app.run_shortcut(Shortcut::Help);
+        assert_eq!(app.mode, TuiMode::Help);
+        app.mode = TuiMode::Navigate;
+        // Settings on the Terminal screen in Navigate opens split mode;
+        // the SettingsOverlay chord opens the overlay from anywhere.
+        app.run_shortcut(Shortcut::Settings);
+        assert!(app.split_mode.is_some(), "settings on terminal opens split");
+        app.split_mode = None;
+        app.screen = TuiScreen::Git;
+        app.run_shortcut(Shortcut::Settings);
+        assert_eq!(app.mode, TuiMode::Settings);
+        app.mode = TuiMode::Navigate;
+        app.run_shortcut(Shortcut::SettingsOverlay);
+        assert_eq!(app.mode, TuiMode::Settings);
+        app.mode = TuiMode::Navigate;
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::Files);
+        assert_eq!(app.screen, TuiScreen::Files);
+        // Git and terminal routing plus view shortcuts.
+        app.run_shortcut(Shortcut::Git);
+        assert_eq!(app.screen, TuiScreen::Git);
+        app.run_shortcut(Shortcut::Terminal);
+        assert_eq!(app.screen, TuiScreen::Terminal);
+        app.run_shortcut(Shortcut::GitLog);
+        assert_eq!(app.git_panel.view, GitView::Log);
+        app.run_shortcut(Shortcut::GitStash);
+        assert_eq!(app.git_panel.view, GitView::Stash);
+        app.run_shortcut(Shortcut::GitBranch);
+        assert_eq!(app.git_panel.view, GitView::Branches);
+        app.run_shortcut(Shortcut::GitChanges);
+        assert_eq!(app.git_panel.view, GitView::Changes);
+        app.run_shortcut(Shortcut::GitChangesBack);
+        assert_eq!(app.git_panel.view, GitView::Changes);
+        // Focus walker cycles through the regions.
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::FocusNext);
+        app.run_shortcut(Shortcut::FocusPrev);
+        assert!(app.status.is_empty() || app.error.is_none());
+        // Sidebar toggle flips the flag both ways.
+        app.run_shortcut(Shortcut::Sidebar);
+        assert!(app.sidebar_collapsed);
+        app.run_shortcut(Shortcut::Sidebar);
+        assert!(!app.sidebar_collapsed);
+        // Quit shortcut opens the confirm, not an instant exit.
+        app.run_shortcut(Shortcut::Quit);
+        assert_eq!(app.mode, TuiMode::ConfirmQuit);
+        app.mode = TuiMode::Navigate;
+        // Split entry points only act on the Terminal screen.
+        app.screen = TuiScreen::Files;
+        app.run_shortcut(Shortcut::SplitPane);
+        assert!(app.split_mode.is_none());
+        app.run_shortcut(Shortcut::MovePane);
+        assert!(app.move_mode.is_none());
+        app.run_shortcut(Shortcut::ZoomPane);
+        app.run_shortcut(Shortcut::ResizePane);
+        assert!(app.resize_mode.is_none());
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::SplitPane);
+        assert!(app.split_mode.is_some());
+        app.split_mode = None;
+        // Move needs a focused pane and 2+ tiles; the single-tile
+        // fixture reports it instead of opening the overlay.
+        app.run_shortcut(Shortcut::MovePane);
+        assert!(app.move_mode.is_none());
+        app.run_shortcut(Shortcut::ResizePane);
+        assert!(app.resize_mode.is_none());
+    }
+
+    #[test]
+    fn git_shortcuts_stage_unstage_stash_push_and_blame() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        // run_git_action routes through open_git_screen, whose refresh
+        // wipes the file list; start on the Git screen and re-seed the
+        // selection before every mutating verb.
+        app.screen = TuiScreen::Git;
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitStageFile);
+        assert!(app.error.is_none(), "stage failed: {:?}", app.error);
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Staged,
+        }];
+        app.run_shortcut(Shortcut::GitUnstageFile);
+        assert!(app.error.is_none(), "unstage failed: {:?}", app.error);
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitPush);
+        assert!(app.error.is_none(), "push failed: {:?}", app.error);
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitStageAll);
+        assert_eq!(app.status, "staged state toggled");
+        // No selection guards for stage/unstage/discard.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        app.screen = TuiScreen::Git;
+        app.run_shortcut(Shortcut::GitStageFile);
+        assert!(app.error.is_some());
+        app.error = None;
+        app.run_shortcut(Shortcut::GitUnstageFile);
+        assert!(app.error.is_some());
+        app.error = None;
+        app.run_shortcut(Shortcut::GitDiscardFile);
+        assert!(app.error.is_some());
+        // Empty cwd guards stage-all.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = String::new();
+        app.run_shortcut(Shortcut::GitStageAll);
+        assert_eq!(app.error.as_deref(), Some("git: no repository selected"));
+        // Stash verb on the git screen stashes, on Terminal it zooms.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        app.screen = TuiScreen::Git;
+        app.run_shortcut(Shortcut::GitStashFile);
+        assert!(app.status.contains("stashed"));
+        // Blame toggles on the git screen.
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitBlame);
+        assert!(app.error.is_none(), "blame failed: {:?}", app.error);
+        app.run_shortcut(Shortcut::GitBlame);
+        assert!(app.error.is_none(), "blame off failed: {:?}", app.error);
+        // File history requires a selected file.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".into();
+        app.run_shortcut(Shortcut::GitFileHistory);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("no file selected in git changes")
+        );
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitFileHistory);
+        assert!(app.status.starts_with("history: a.rs"));
+        // Focus-file reports an empty list without a selection.
+        app.git_panel.files.clear();
+        app.run_shortcut(Shortcut::GitFocusFile);
+        assert_eq!(app.status, "git: no files in the list");
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::GitFocusFile);
+        assert_eq!(app.status, "git: file list focused");
+    }
+
+    #[test]
+    fn edit_file_shortcut_opens_git_and_files_editors() {
+        // Files screen: start editing the open preview.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer.preview.path = Some("a.rs".into());
+        app.file_explorer.preview.content = "hi".into();
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(app.status, "editing: Ctrl-S saves, Esc stops");
+        // Git screen: no selection refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.cwd = "/repo".into();
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("no file selected in git changes")
+        );
+        // Git screen with a selection opens the editor through the api.
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.error = None;
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(app.status, "editing: Ctrl-S saves, Esc stops");
+        assert_eq!(app.screen, TuiScreen::Files);
+        // Git screen with a dirty different preview refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.cwd = "/repo".into();
+        app.git_panel.files = vec![GitFileEntry {
+            path: "b.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.file_explorer.preview.dirty = true;
+        app.file_explorer.preview.path = Some("a.rs".into());
+        app.run_shortcut(Shortcut::EditFile);
+        assert_eq!(
+            app.status,
+            "unsaved edits: save or reload before editing another file"
+        );
+    }
+
+    #[test]
+    fn git_commit_shortcut_opens_modal_and_branch_picker_routes() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_shortcut(Shortcut::GitCommit);
+        assert!(app.commit_input.is_some());
+        assert_eq!(app.status, "commit: type message, Enter commits");
+        // Branch switch shortcut opens the picker overlay.
+        app.run_shortcut(Shortcut::GitSwitchBranch);
+        // Session manager opens its overlay.
+        app.run_shortcut(Shortcut::SessionManager);
+        // Composer and lens both route through the footer helpers.
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::Composer);
+        app.run_shortcut(Shortcut::Lens);
+        assert!(app.status.is_empty() || app.error.is_none());
+    }
+}
+
+#[cfg(test)]
+mod files_nav_key_tests {
+    use super::key_handler_tests::key;
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::KeyCode;
+    use panels::git::{GitFileEntry, GitFileStatus};
+
+    #[test]
+    fn files_keys_reveal_log_and_tab_recents() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        // L opens the git log scoped to the selected file.
+        app.handle_files_key(key(KeyCode::Char('L')));
+        assert_eq!(app.screen, TuiScreen::Git);
+        assert_eq!(app.git_panel.view, panels::git::GitView::Log);
+        assert_eq!(app.git_panel.log_file.as_deref(), Some("a.rs"));
+        assert_eq!(app.status, "log: a.rs");
+        // L without a file selection refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.file_explorer.selected = usize::MAX; // no selection
+        app.handle_files_key(key(KeyCode::Char('L')));
+        assert_eq!(app.error.as_deref(), Some("select a file first"));
+        // Tab with no recents reports it; a dirty buffer blocks.
+        app.error = None;
+        app.handle_files_key(key(KeyCode::Tab));
+        assert_eq!(app.status, "no recent previews");
+        app.file_explorer.preview.dirty = true;
+        app.handle_files_key(key(KeyCode::Tab));
+        assert_eq!(app.status, "save or discard before switching");
+        // w reveals the git-panel selected file in the tree (the
+        // explorer may refuse under the dirty buffer, so the verb runs
+        // against a clean preview first).
+        app.file_explorer.preview.dirty = false;
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.git_panel.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        }];
+        app.handle_files_key(key(KeyCode::Char('w')));
+        assert_eq!(app.status, "revealed a.rs");
+        app.git_panel.files.clear();
+        app.handle_files_key(key(KeyCode::Char('w')));
+        assert_eq!(
+            app.error.as_deref(),
+            Some("no file selected in the git panel")
+        );
+        // `/` opens the filter bar.
+        app.error = None;
+        app.handle_files_key(key(KeyCode::Char('/')));
+        assert!(app.file_explorer.filter_active);
+    }
+
+    #[test]
+    fn navigation_main_focus_keys_scroll_and_route_panels() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.main_focused = true;
+        // Ctrl+j/k scroll the focused pane.
+        app.pane_tail = vec!["line".to_string(); 40];
+        app.handle_navigation_key(key_mod_down());
+        app.handle_navigation_key(key_mod_up());
+        // Page keys scroll by pages, G/g jump to the ends.
+        app.handle_navigation_key(key(KeyCode::PageDown));
+        app.handle_navigation_key(key(KeyCode::PageUp));
+        app.handle_navigation_key(key(KeyCode::Char('G')));
+        app.handle_navigation_key(key(KeyCode::Char('g')));
+        // Enter attaches the selected pane (dead socket: error arm).
+        app.handle_navigation_key(key(KeyCode::Enter));
+        assert!(app.error.is_some() || app.status.is_empty());
+        // Files/Git screens delegate to the panel handlers.
+        app.screen = TuiScreen::Files;
+        app.handle_navigation_key(key(KeyCode::Char('j')));
+        app.screen = TuiScreen::Terminal;
+        // Sidebar focus keys: a/w switch the region, Tab toggles.
+        app.main_focused = false;
+        app.handle_navigation_key(key(KeyCode::Char('a')));
+        assert!(matches!(app.sidebar_focus, SidebarFocus::Agents));
+        app.handle_navigation_key(key(KeyCode::Char('w')));
+        assert!(matches!(app.sidebar_focus, SidebarFocus::Workspaces));
+        app.handle_navigation_key(key(KeyCode::Tab));
+        // Lens and composer footer chords route through.
+        app.handle_navigation_key(key(KeyCode::Char('L')));
+        app.handle_navigation_key(key(KeyCode::Char('C')));
+        // r refreshes the active screen against the fake.
+        app.handle_navigation_key(key(KeyCode::Char('r')));
+    }
+
+    fn key_mod_down() -> KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )
+    }
+
+    fn key_mod_up() -> KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use serde_json::json;
+    /// Minimal backend answering ping, snapshot and pane.read with a
+    /// long scrollback, so the deep-fetch scroll paths run for real.
+    pub(crate) fn fake_backend_with_history(
+        lines: usize,
+    ) -> (BackendClient, std::sync::mpsc::Sender<()>) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        use std::io::{BufRead, BufReader, Write};
+
+        let path = crate::backend_client::unique_test_path("herdr-tui-scroll");
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let history: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        std::thread::spawn(move || loop {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let response = match request["method"].as_str().unwrap_or("") {
+                "ping" => {
+                    json!({"id": request["id"], "result": {"version": "scroll", "protocol": 1}})
+                }
+                "session.snapshot" => json!({"id": request["id"], "result": {"snapshot": {
+                    "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                    "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                    "agents": []
+                }}}),
+                "pane.read" => json!({"id": request["id"], "result": {"read": {"text": history}}}),
+                _ => json!({"id": request["id"], "result": {}}),
+            };
+            let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+            let _ = stream.write_all(b"\n");
+            let _ = stream.flush();
+        });
+        let path_str = path.to_str().unwrap().to_string();
+        (BackendClient::new(&path_str, &path_str), tx)
+    }
+
+    #[test]
+    fn scroll_up_deep_fetches_history_and_down_follows() {
+        let (client, _stop) = fake_backend_with_history(400);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        // Scrolling up past the held tail deep-fetches real history.
+        let grew = app.scroll_pane_up(50);
+        assert!(grew > 0, "expected a deep fetch, grew {grew}");
+        assert!(app.pane_history.len() >= 50);
+        // Scrolling down lowers the offset back toward the tail.
+        let offset = app.pane_scroll;
+        app.scroll_pane_down(10);
+        assert_eq!(app.pane_scroll, offset.saturating_sub(10));
+        // Once exhausted, further up-scrolls return without fetching.
+        app.pane_history_exhausted = true;
+        let grew = app.scroll_pane_up(5000);
+        assert_eq!(grew, 0);
+    }
+
+    #[test]
+    fn deepen_without_pane_or_backend_errors_cleanly() {
+        // No pane in view: deepen returns 0 without touching anything.
+        let (client, _stop) = fake_backend_with_history(10);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = Default::default();
+        assert_eq!(app.deepen_pane_history(), 0);
+        // Dead backend: the read error surfaces and deepen returns 0.
+        let client = BackendClient::new("/nonexistent-scroll.sock", "/nonexistent-scroll.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        assert_eq!(app.deepen_pane_history(), 0);
+        assert!(app.error.is_some());
+        // Exhausted flag short-circuits before any request.
+        app.error = None;
+        app.pane_history_exhausted = true;
+        assert_eq!(app.deepen_pane_history(), 0);
+        assert!(app.error.is_none());
+    }
+}
+
+#[cfg(test)]
+mod misc_coverage_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    fn nav_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn lens_keys_scroll_jump_and_close() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.lens.active = true;
+        app.pane_tail = (0..60).map(|i| format!("l{i}")).collect::<Vec<_>>();
+        // j/k walk, pages, G/g jump, Esc/q close.
+        app.handle_lens_key(nav_key(KeyCode::Char('k')));
+        assert!(app.lens.scroll_up >= 1);
+        app.handle_lens_key(nav_key(KeyCode::Char('j')));
+        app.handle_lens_key(nav_key(KeyCode::PageDown));
+        app.handle_lens_key(nav_key(KeyCode::PageUp));
+        app.handle_lens_key(nav_key(KeyCode::Char('G')));
+        app.handle_lens_key(nav_key(KeyCode::Char('g')));
+        app.handle_lens_key(nav_key(KeyCode::Esc));
+        assert!(!app.lens.active);
+        assert_eq!(app.status, "lens closed");
+        // q and i close too.
+        app.lens.active = true;
+        app.handle_lens_key(nav_key(KeyCode::Char('q')));
+        assert!(!app.lens.active);
+        app.lens.active = true;
+        app.handle_lens_key(nav_key(KeyCode::Char('i')));
+        assert!(!app.lens.active);
+    }
+
+    #[test]
+    fn sync_history_suffix_keeps_one_tail_copy() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.pane_history = (0..50).map(|i| format!("h{i}")).collect::<Vec<_>>();
+        app.pane_tail = vec!["t0".into(), "t1".into()];
+        app.sync_history_suffix();
+        assert_eq!(app.pane_history.len(), 50);
+        assert_eq!(app.pane_history[48], "t0");
+        assert_eq!(app.pane_history[49], "t1");
+        // A tail longer than the history rewrites it entirely.
+        app.pane_history.clear();
+        app.pane_tail = vec!["a".into(), "b".into(), "c".into()];
+        app.sync_history_suffix();
+        assert!(app.pane_history.is_empty());
+    }
+
+    #[test]
+    fn helpers_move_index_trim_and_strip() {
+        assert_eq!(move_index(0, 0, 1), 0);
+        assert_eq!(move_index(5, 3, 1), 2);
+        assert_eq!(move_index(0, 3, -1), 0);
+        assert_eq!(strip_ansi_lossy("\u{1b}[31mred\u{1b}[0m"), "red");
+        let mut raw = "x".repeat(TERMINAL_RAW_BUFFER_BYTES + 10);
+        trim_terminal_raw_output(&mut raw);
+        assert!(raw.len() <= TERMINAL_RAW_BUFFER_BYTES + 4);
+    }
+
+    #[test]
+    fn build_client_routes_explicit_and_builtin_sockets() {
+        let options = TuiOptions {
+            api_socket: Some("/tmp/a.sock".into()),
+            terminal_socket: Some("/tmp/t.sock".into()),
+            ..Default::default()
+        };
+        let client = build_client(&options);
+        assert_eq!(client.api_socket(), std::path::Path::new("/tmp/a.sock"));
+        // Without explicit sockets the builtin session namespace wins.
+        let options = TuiOptions::default();
+        let client = build_client(&options);
+        assert!(client.api_socket().to_string_lossy().contains("herdr"));
+    }
+
+    #[test]
+    fn status_notice_and_quit_flag() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.set_status_notice("hello".into());
+        assert_eq!(app.status, "hello");
+        assert!(app.status_hold_until.is_some());
+        assert!(!app.should_quit());
+        app.status = "quit".into();
+        assert!(app.should_quit());
+    }
+}
+
+#[cfg(test)]
+mod final_coverage_tests {
+    use super::key_handler_tests::key;
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use panels::git::{GitView, LOG_PAGE_SIZE};
+
+    #[test]
+    fn content_search_enter_error_arm_and_attach_viewport() {
+        // Enter on a line row whose preview open fails surfaces the
+        // error instead of a jump status.
+        let (api, _stop) = fake_api_server(&["/file-browser/file"]);
+        let mut app = app_with_api(api);
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = panels::files::SearchKind::Content;
+        app.file_explorer.filter = "m".into();
+        app.file_explorer.content_search.query = "m".into();
+        app.file_explorer.content_search.files =
+            vec![panels::files::content_search::ContentSearchFile {
+                path: "a.rs".into(),
+                name: "a.rs".into(),
+                match_count: 1,
+                chunks: vec![panels::files::content_search::ContentSearchChunk {
+                    start: 1,
+                    end: 1,
+                    rows: vec![panels::files::content_search::ContentSearchRow {
+                        line: 1,
+                        text: "m".into(),
+                        matched: true,
+                    }],
+                }],
+                truncated: false,
+                first_match_line: 1,
+            }];
+        app.file_explorer.content_search.expanded = vec![true];
+        // Walk down to the line row and Enter: the refused read errors.
+        app.handle_content_search_key(key(KeyCode::Char('j')));
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(app.error.is_some());
+        // Enter past the end of the rows is a no-op.
+        app.error = None;
+        app.file_explorer.content_search.selected = 9;
+        app.handle_content_search_key(key(KeyCode::Enter));
+        assert!(app.error.is_none());
+
+        // attach_viewport: split geometry for the focused tile, then
+        // the terminal-size fallback and the 120x32 default.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.tile_geometry
+            .borrow_mut()
+            .push(crate::tui::render::TileRectOwned {
+                pane_id: "pane_1".into(),
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24,
+            });
+        // Two leaves make split_active true; the focused pane matches
+        // the seeded tile geometry.
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_1".into());
+        let (cols, rows) = app.attach_viewport();
+        assert_eq!((cols, rows), (78, 19));
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        app.terminal_size = (100, 40);
+        let (cols, rows) = app.attach_viewport();
+        assert_eq!((cols, rows), (64, 33));
+        app.terminal_size = (0, 0);
+        assert_eq!(app.attach_viewport(), (120, 32));
+    }
+
+    #[test]
+    fn diff_search_typing_and_hunk_walk_and_apply() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Changes;
+        // Bar open: typing, backspace, Enter commit, n/N cycle.
+        app.git_panel.diff_lines = vec!["+ alpha".into(), "- beta".into()];
+        app.git_panel.diff_search_active = true;
+        app.handle_git_key(key(KeyCode::Char('a')));
+        assert!(app.status.starts_with("diff search: a (2 matches)"));
+        app.handle_git_key(key(KeyCode::Backspace));
+        assert!(app.status.starts_with("diff search:  (0 matches)"));
+        app.handle_git_key(key(KeyCode::Char('b')));
+        app.handle_git_key(key(KeyCode::Enter));
+        app.handle_git_key(key(KeyCode::Char('n')));
+        // Hunks: J/K walk a loaded diff, H applies through the fake.
+        app.git_panel.diff_search_active = false;
+        app.git_panel.diff_title = "a.rs".into();
+        app.git_panel.diff_lines = vec![
+            "@@ -1,2 +1,3 @@".into(),
+            " context".into(),
+            "+ added".into(),
+        ];
+        // hunk_headers reads diff_meta: header lines carry None.
+        app.git_panel.diff_meta = vec![None, Some(Default::default()), Some(Default::default())];
+        app.handle_git_key(key(KeyCode::Char('J')));
+        assert_eq!(app.status, "hunk 1");
+        app.handle_git_key(key(KeyCode::Char('K')));
+        assert_eq!(app.status, "hunk 1");
+        app.handle_git_key(key(KeyCode::Char('H')));
+        assert!(app.error.is_none(), "hunk apply failed: {:?}", app.error);
+        // H with no file loaded refuses.
+        app.git_panel.diff_title = "working tree".into();
+        app.handle_git_key(key(KeyCode::Char('H')));
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn log_scope_and_limit_refusals() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Log;
+        // `+` with nothing more reports no more commits.
+        app.git_panel.log_has_more = false;
+        app.handle_git_key(key(KeyCode::Char('+')));
+        assert_eq!(app.status, "no more commits");
+        // Scope cycling refreshes and reports the label.
+        app.handle_git_key(key(KeyCode::Char('s')));
+        assert!(app.status.starts_with("log scope: "));
+        assert!(app.git_panel.log_limit >= LOG_PAGE_SIZE);
+    }
+
+    #[test]
+    fn workspace_shortcuts_route_manager_and_panel_ops() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.run_shortcut(Shortcut::NewWorkspace);
+        app.run_shortcut(Shortcut::OpenWorktrees);
+        app.run_shortcut(Shortcut::CreateWorktree);
+        app.run_shortcut(Shortcut::CloseWorkspace);
+        app.run_shortcut(Shortcut::RemoveWorktree);
+        app.run_shortcut(Shortcut::RenamePanel);
+        app.run_shortcut(Shortcut::RenameWorkspace);
+        app.run_shortcut(Shortcut::NextPanel);
+        app.run_shortcut(Shortcut::PrevPanel);
+        app.run_shortcut(Shortcut::NextWorkspace);
+        app.run_shortcut(Shortcut::PrevWorkspace);
+        app.run_shortcut(Shortcut::NewTab);
+        app.run_shortcut(Shortcut::CloseTab);
+        app.run_shortcut(Shortcut::Search);
+        app.run_shortcut(Shortcut::Refresh);
+        // Ctrl+S in the settings overlay: route a save chord through
+        // the palette-free path just to confirm no panic.
+        app.run_shortcut(Shortcut::GitCwdPicker);
+        // All shortcuts ran without panicking; their status/error
+        // text is flow-dependent, so no exact assertion here.
+    }
+
+    #[test]
+    fn terminal_attach_keys_send_and_detach() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Attach;
+        // Plain char keys map to terminal bytes; the dead backend
+        // socket surfaces the attach failure in dispatch, but the
+        // key-to-bytes mapping must still resolve.
+        let bytes = key_to_terminal_bytes(key(KeyCode::Char('x')));
+        assert_eq!(bytes, Some("x".as_bytes().to_vec()));
+        let esc = key_to_terminal_bytes(key(KeyCode::Esc));
+        assert_eq!(esc, Some(b"\x1b".to_vec()));
+        // Ctrl-G routes through handle_key and detaches.
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_ne!(app.mode, TuiMode::Attach);
+    }
+}
+
+#[cfg(test)]
+mod batch11_coverage_tests {
+    use super::scroll_tests::fake_backend_with_history;
+    use super::*;
+    use crate::model::TuiAgentSession;
+    use panels::git::{CleanupRepo, CleanupWorktree, GitCommitEntry, GitView};
+
+    fn commit(hash: &str) -> GitCommitEntry {
+        GitCommitEntry {
+            hash: hash.into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }
+    }
+
+    /// The run_shortcut copies of the conflicts/cleanup/log verbs only
+    /// miss their api-error arms, so this suite runs them against a
+    /// fake server that refuses the one route each verb needs while
+    /// the surrounding refresh routes keep looping.
+    #[test]
+    fn shortcut_conflicts_and_cleanup_error_arms() {
+        // Conflicts: the four resolve modes plus merge-flavored R/A
+        // with rebase_in_progress false.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/conflict-resolve", "/conflict-action"])
+                .0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Conflicts;
+        for ch in ['o', 'e', 't', 'm'] {
+            app.git_panel.conflict_files = vec!["a.rs".into()];
+            app.handle_git_key(super::key_handler_tests::key(
+                crossterm::event::KeyCode::Char(ch),
+            ));
+            assert!(app.error.is_some(), "{ch} resolve error");
+        }
+        app.git_panel.rebase_in_progress = false;
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('R'),
+        ));
+        assert!(app.error.is_some(), "merge continue error");
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('S'),
+        ));
+        assert!(app.error.is_some(), "rebase skip error");
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('A'),
+        ));
+        assert!(app.error.is_some(), "merge abort error");
+
+        // Cleanup: B with a selected item against a refusing prune.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/worktree-prune"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Cleanup;
+        app.git_panel.cleanup_repos = vec![CleanupRepo {
+            path: "/repo".into(),
+            branches: vec![],
+            worktrees: vec![CleanupWorktree {
+                path: "/lane".into(),
+                branch: Some("feat".into()),
+            }],
+        }];
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('B'),
+        ));
+        assert!(app.error.is_some(), "prune error");
+
+        // Log Enter with a selected commit against a refusing compare.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/compare"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Log;
+        app.git_panel.commits = vec![commit("abc")];
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.error.is_some(), "compare error");
+        // The GitCommit shortcut dispatches the same Enter arm in git
+        // context: keep the Log view so the compare runs again.
+        app.error = None;
+        app.run_shortcut(Shortcut::GitCommit);
+        assert!(
+            app.commit_input.is_some(),
+            "shortcut opens the commit input"
+        );
+    }
+
+    /// Terminal-screen navigation keys that only run with the sidebar
+    /// focused path: help, j/k, page keys, and Enter attaching the
+    /// selected pane (real history backend, so the attach tail loads).
+    #[test]
+    fn navigation_bottom_keys_and_attach() {
+        let (client, _stop) = fake_backend_with_history(10);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        // Sidebar focus: the navigation match below the main_focused arm.
+        app.main_focused = false;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [],
+                "agents": []
+            }
+        }));
+        let key = super::key_handler_tests::key;
+        use crossterm::event::KeyCode;
+        app.handle_navigation_key(key(KeyCode::Char('?')));
+        assert_eq!(app.mode, TuiMode::Help);
+        app.mode = TuiMode::Navigate;
+        app.handle_navigation_key(key(KeyCode::Char('r')));
+        app.handle_navigation_key(key(KeyCode::Char('j')));
+        app.handle_navigation_key(key(KeyCode::Char('k')));
+        app.handle_navigation_key(key(KeyCode::PageUp));
+        app.handle_navigation_key(key(KeyCode::PageDown));
+        app.handle_navigation_key(key(KeyCode::Char('L')));
+        app.handle_navigation_key(key(KeyCode::Char('C')));
+        app.handle_navigation_key(key(KeyCode::Char('a')));
+        app.handle_navigation_key(key(KeyCode::Char('w')));
+        app.handle_navigation_key(key(KeyCode::Tab));
+        assert_eq!(app.mode, TuiMode::Navigate);
+        // Split focus walk: with a single tile the h/l keys stay inert.
+        app.handle_navigation_key(key(KeyCode::Char('h')));
+        app.handle_navigation_key(key(KeyCode::Char('l')));
+        // Enter attaches the selected pane; without a terminal in view
+        // the guard fires (the real attach path is covered by the pty
+        // suite, whose fake speaks the bincode terminal framing).
+        app.snapshot.panes.clear();
+        app.handle_navigation_key(key(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("no terminal selected"));
+    }
+
+    /// Tile-tail worker against real backends: the nested `read.text`
+    /// shape, the bare `text` fallback, and the pane.read failure that
+    /// keeps an empty tail. Drains through poll_tile_tails until the
+    /// cache holds every visible tile.
+    #[test]
+    fn tile_tails_fetch_real_backends() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                    {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}
+                ],
+                "agents": []
+            }
+        }));
+        // Single focused leaf: no visible tiles (the focused tile is
+        // excluded), so the retain drops the stale entry and the
+        // refresh returns without a worker.
+        app.tile_tails.insert("gone".into(), "old".into());
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        app.split_focus = Some("pane_1".into());
+        app.refresh_tile_tails();
+        assert!(app.tile_tail_rx.is_none(), "no visible tiles, no worker");
+        assert!(app.tile_tails.is_empty(), "stale tail dropped");
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_2".into());
+        // Real backend: the non-focused pane_1 tail loads through the
+        // nested read.text shape (the fake serves every pane.read the
+        // same text, so drain until the entry lands).
+        app.refresh_tile_tails();
+        for _ in 0..200 {
+            app.poll_tile_tails();
+            if let Some(text) = app.tile_tails.get("pane_1") {
+                assert!(!text.is_empty(), "tail should hold the pane text");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.tile_tails.contains_key("pane_1"), "tile tail drained");
+        assert!(app.tile_tail_rx.is_none(), "worker finished");
+
+        // Bare text fallback: a backend answering `{"text": ...}`.
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        use std::io::{BufRead, BufReader, Write};
+        let path = crate::backend_client::unique_test_path("herdr-tui-tail");
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let (_tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || loop {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let response = match request["method"].as_str().unwrap_or("") {
+                "ping" => serde_json::json!({"id": request["id"], "result": {}}),
+                "pane.read" => {
+                    serde_json::json!({"id": request["id"], "result": {"text": "bare tail"}})
+                }
+                _ => serde_json::json!({"id": request["id"], "result": {}}),
+            };
+            let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+            let _ = stream.write_all(b"\n");
+            let _ = stream.flush();
+        });
+        let path_str = path.to_str().unwrap().to_string();
+        let client = BackendClient::new(&path_str, &path_str);
+        app.client = client;
+        app.tile_tails.clear();
+        app.refresh_tile_tails();
+        for _ in 0..200 {
+            app.poll_tile_tails();
+            if let Some(text) = app.tile_tails.get("pane_1") {
+                assert_eq!(text, "bare tail");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            app.tile_tails.get("pane_1").map(String::as_str),
+            Some("bare tail")
+        );
+        // A dead backend answers nothing: the fetch lands with an empty
+        // tail (unwrap_or_default), the observable behavior of a vanished
+        // pane rather than a stale copy.
+        app.client = BackendClient::new("/nonexistent-tail.sock", "/nonexistent-tail.sock");
+        app.refresh_tile_tails();
+        for _ in 0..200 {
+            app.poll_tile_tails();
+            if app.tile_tail_rx.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            app.tile_tails.get("pane_1").map(String::as_str),
+            Some(""),
+            "failed fetch lands an empty tail"
+        );
+    }
+
+    /// deepen_pane_history growth arm: a second deep fetch doubles the
+    /// held buffer (len*2 clamped by the cap) and trims the fetch to the
+    /// newest `want` lines.
+    #[test]
+    fn deepen_doubles_the_held_history() {
+        let (client, _stop) = fake_backend_with_history(400);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        assert!(app.deepen_pane_history() > 0);
+        let held = app.pane_history.len();
+        // Second deepen doubles the want (trimming the same 400-line
+        // reply is a no-op there, but the multiplication arm runs).
+        app.pane_history_exhausted = false;
+        app.deepen_pane_history();
+        assert!(app.pane_history.len() >= held);
+    }
+
+    #[test]
+    fn conflicts_enter_noop_and_rebase_flavored_abort() {
+        // Enter in the Conflicts view is the no-op arm of the view match,
+        // and the rebase-flavored abort arm needs rebase_in_progress true.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/conflict-action"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Conflicts;
+        app.git_panel.rebase_in_progress = true;
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('A'),
+        ));
+        assert!(app.error.is_some(), "rebase abort error");
+        app.error = None;
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.error.is_none(), "enter is a no-op in conflicts");
+    }
+
+    #[test]
+    fn main_focused_h_and_l_walk_single_tile() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.main_focused = true;
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('h'),
+        ));
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('l'),
+        ));
+        assert_eq!(app.mode, TuiMode::Navigate);
+    }
+
+    #[test]
+    fn tile_tail_worker_reentry_guard_and_disconnected_drain() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_2".into());
+        // While a worker is in flight a second refresh must not spawn one.
+        app.refresh_tile_tails();
+        assert!(app.tile_tail_rx.is_some(), "worker spawned");
+        app.refresh_tile_tails();
+        // Still the same receiver: re-entry guard. Drain the finished
+        // worker; the last poll after Disconnected clears the receiver.
+        let mut drained = false;
+        for _ in 0..300 {
+            app.poll_tile_tails();
+            if app.tile_tail_rx.is_none() {
+                drained = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(drained, "worker drained including disconnected poll");
+        // Disconnected arm: a receiver whose sender died without
+        // sending drains into the empty branch and clears the slot.
+        let (_dead_tx, dead_rx) = std::sync::mpsc::channel::<Vec<(String, String)>>();
+        drop(_dead_tx);
+        app.tile_tail_rx = Some(dead_rx);
+        app.poll_tile_tails();
+        assert!(app.tile_tail_rx.is_none(), "disconnected worker cleared");
+    }
+
+    #[test]
+    fn lens_gate_force_off_and_view_pane_split_hit() {
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.main_focused = true;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false,"agent_session":{"kind":"jcode","resolvable":true,"session_id":"s1"}},
+                    {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_1","agent":"claude","display_agent":"claude","agent_status":"idle","cwd":"/repo","focused":true}
+                ],
+                "agents": []
+            }
+        }));
+        // view_pane with the split active: the focused pane_1 must be
+        // found through the split branch, not the sidebar selection.
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_1".into());
+        assert_eq!(app.view_pane_id().as_deref(), Some("pane_1"));
+        // Open the lens on the supported pane, then force it off through
+        // the refresh_tail gate when the session goes missing and when
+        // the kind is unsupported: both Supported and UnsupportedKind/
+        // NoSession arms of lens_chat_supported run.
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(app.lens.active);
+        app.snapshot.panes[0].agent_session = Some(TuiAgentSession {
+            kind: "claude".into(),
+            resolvable: true,
+            session_id: Some("s1".into()),
+            reason: None,
+        });
+        app.refresh_tail();
+        assert!(!app.lens.active, "unsupported kind force-closes the lens");
+        assert_eq!(
+            app.status.as_str(),
+            "lens closed (pane has no transcript provider)"
+        );
+        app.lens.active = true;
+        app.snapshot.panes[0].agent_session = None;
+        app.refresh_tail();
+        assert!(!app.lens.active, "missing session force-closes the lens");
+    }
+
+    #[test]
+    fn lens_scroll_hits_the_exhausted_deep_fetch_arm() {
+        // Lens open on a supported pane, history exhausted: the up-scroll
+        // deep fetch returns 0 so the lens re-observes and returns.
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.main_focused = true;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true,"agent_session":{"kind":"jcode","resolvable":true,"session_id":"s1"}}],
+                "agents": []
+            }
+        }));
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(app.lens.active);
+        app.pane_history_exhausted = true;
+        app.handle_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('k'),
+        ));
+        assert!(app.lens.active, "exhausted deep fetch keeps the lens open");
+    }
+
+    #[test]
+    fn attach_input_error_surfaces_on_a_dead_backend() {
+        // Attach mode with a terminal selected but a dead backend: the
+        // typed key fails at attach_terminal and the error lands.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Attach;
+        app.handle_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('x'),
+        ));
+        assert!(app.error.is_some(), "dead backend attach input errors");
+    }
+
+    #[test]
+    fn prompt_error_arms_against_refusing_routes() {
+        // CreateTag / GitCwd / CreateBranch / CreateFile through the
+        // handle_prompt_key entry with typed text and a refusing route.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/tag"]).0,
+        );
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Log;
+        app.git_panel.commits = vec![commit("abc")];
+        app.handle_git_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('t'),
+        ));
+        assert!(app.prompt_input.is_some());
+        app.run_prompt_action(PromptKind::CreateTag, "v1.0");
+        assert!(app.error.is_some(), "tag error arm");
+
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/switch"]).0,
+        );
+        app.run_prompt_action(PromptKind::CreateBranch, "feat2");
+        assert!(app.error.is_some(), "create branch error arm");
+
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/git-ui/status"]).0,
+        );
+        app.run_prompt_action(PromptKind::GitCwd, "/repo");
+        assert!(app.error.is_some(), "git cwd refresh error arm");
+
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/file-browser/file"]).0,
+        );
+        app.run_prompt_action(PromptKind::CreateFile, "a.rs");
+        assert!(app.error.is_some(), "create file error arm");
+    }
+
+    #[test]
+    fn composer_too_long_message_refuses() {
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        let long = "x".repeat(20001);
+        app.run_prompt_action(PromptKind::ComposerMessage, &long);
+        assert!(app.status.contains("too long"));
+    }
+
+    #[test]
+    fn search_palette_jk_with_empty_query_and_arrows() {
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.mode = TuiMode::SearchPalette;
+        let key = super::key_handler_tests::key;
+        use crossterm::event::KeyCode;
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('k')));
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(app.search_palette.query, "x", "letters type into the query");
+    }
+
+    #[test]
+    fn commit_search_query_requires_a_cwd() {
+        // No workspace selected: commit_search_query errors.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.snapshot = Default::default();
+        app.search_palette.query = "x".into();
+        assert!(app.commit_search_query().is_err());
+    }
+
+    #[test]
+    fn navigate_recent_already_open_and_palette_zoom() {
+        // The open recent guard fires when the selected row is open.
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&[]).0,
+        );
+        app.search_palette
+            .results
+            .push(crate::tui::search::SearchCandidate::Recent {
+                path: "/repo".into(),
+                title: "Repo".into(),
+                subtitle: "main".into(),
+                label: None,
+                is_worktree: false,
+                is_open: true,
+            });
+        let candidate = app.search_palette.results[0].clone();
+        assert!(app.run_search_candidate(&candidate).is_err());
+        // ZoomPane shortcut on the terminal screen toggles the zoom.
+        app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::ZoomPane);
+        assert!(app.split_zoomed);
+        app.run_shortcut(Shortcut::ZoomPane);
+        assert!(!app.split_zoomed);
+    }
+
+    #[test]
+    fn remove_and_clear_recents_against_the_server() {
+        let mut app = super::prompt_action_tests::app_with_api(
+            super::prompt_action_tests::fake_api_server(&["/recent-workspaces"]).0,
+        );
+        app.search_palette
+            .results
+            .push(crate::tui::search::SearchCandidate::Recent {
+                path: "/repo".into(),
+                title: "Repo".into(),
+                subtitle: "main".into(),
+                label: None,
+                is_worktree: false,
+                is_open: false,
+            });
+        app.remove_selected_recent();
+        assert!(app.error.is_some(), "remove recent error arm");
+        app.error = None;
+        app.clear_recent_workspaces();
+        assert!(app.error.is_some(), "clear recents error arm");
+    }
+
+    #[test]
+    fn close_tab_real_failure_and_last_tab_refresh_error() {
+        // tab.close on a real socket backend whose reply is a live
+        // error (not "not found"): the error arm runs. Then the
+        // was_last_tab path with a dead follow-up refresh surfaces the
+        // refresh error: close ok, then the client socket dies.
+        let (api_socket, _stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.snapshot.tabs[0].id = "tab_err".to_string();
+        app.snapshot.workspaces[0].active_tab_id = Some("tab_err".to_string());
+        app.close_selected_tab();
+        let _ = std::fs::remove_file(&api_socket);
+
+        // was_last_tab with the socket gone after a successful close:
+        // the workspace.close failure arm and the refresh error arm.
+        let (api_socket, stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.close_selected_tab();
+        // Kill the backend and close another workspace: the request now
+        // fails on the socket itself (the error arm without not-found).
+        stop.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = std::fs::remove_file(&api_socket);
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.snapshot.tabs.clear();
+        app.snapshot.workspaces[0].active_tab_id = None;
+        app.close_selected_tab();
+        assert!(app.error.is_some(), "dead backend close surfaces an error");
+    }
+
+    #[test]
+    fn fake_api_server_break_and_continue_arms() {
+        // The server stop sender breaks the accept loop; a fresh server
+        // then serves one request so the read-empty continue arm runs.
+        let (api, stop) = super::prompt_action_tests::fake_api_server(&[]);
+        stop.send(()).unwrap();
+        // Give the accept-loop thread a moment to observe the stop.
+        std::thread::sleep(Duration::from_millis(50));
+        // A request after the stop reaches a closed listener: connect
+        // failure is fine, the point is the break arm already ran.
+        let _ = api.session_cleanup();
+
+        let (api, _stop) = super::prompt_action_tests::fake_api_server(&[]);
+        // A well-formed call proves the loop serves requests.
+        assert!(api.session_cleanup().is_ok());
+    }
+
+    #[test]
+    fn deepen_trims_to_the_newest_window() {
+        // 3000 lines against the 2000-line start window: the trim arm
+        // keeps the newest 2000 and the exhausted flag stays off.
+        let (client, _stop) = fake_backend_with_history(3000);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        assert!(app.deepen_pane_history() > 0);
+        assert_eq!(app.pane_history.len(), 2000);
+        assert!(!app.pane_history_exhausted, "trim means not exhausted");
+        assert_eq!(
+            app.pane_history.first().map(String::as_str),
+            Some("line 1000")
+        );
+    }
+
+    #[test]
+    fn lens_gate_kinds_from_the_snapshot() {
+        // lens_chat_supported gates on agent_session: unsupported kind,
+        // supported kind, and no session at all.
+        let (client, _stop) = fake_backend_with_history(5);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.screen = TuiScreen::Terminal;
+        let pane = serde_json::json!({
+            "pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1",
+            "agent":"claude","display_agent":"claude","agent_status":"idle","cwd":"/repo","focused":true,
+            "agent_session": {"kind":"claude","resolvable":true,"session_id":"s1"}
+        });
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "panes": [pane],
+                "agents": []
+            }
+        }));
+        app.main_focused = true;
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(!app.lens.active, "unsupported kind keeps the lens closed");
+        // Supported kind opens the lens.
+        app.snapshot.panes[0].agent_session = Some(TuiAgentSession {
+            kind: "jcode".into(),
+            resolvable: true,
+            session_id: Some("s1".into()),
+            reason: None,
+        });
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(app.lens.active, "supported kind opens the lens");
+        // No session: the gate refuses and stays closed.
+        app.lens.active = false;
+        app.snapshot.panes[0].agent_session = None;
+        app.handle_navigation_key(super::key_handler_tests::key(
+            crossterm::event::KeyCode::Char('L'),
+        ));
+        assert!(!app.lens.active, "no session keeps the lens closed");
     }
 }
