@@ -4602,3 +4602,441 @@ mod recent_open_tests {
         assert_eq!(workspace_id, "", "no result wrapper resolves nothing");
     }
 }
+
+#[cfg(test)]
+mod prompt_action_tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::{BufRead as _, Read as _, Write as _};
+
+    /// Looping catch-all HTTP server: every route answers `{"ok": true}`
+    /// plus the route-shaped payloads the verbs need (files list, tree
+    /// refresh), except paths listed in `failures`, which answer 500 with
+    /// an error body. The refresh tails after each verb need the loop.
+    fn fake_api_server(failures: &[&str]) -> (WebApiClient, std::sync::mpsc::Sender<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let failures: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
+                let Ok(mut stream) = stream else { break };
+                let mut request = String::new();
+                let mut content_length = 0usize;
+                {
+                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                    if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) == 0
+                            || header.trim().is_empty()
+                        {
+                            break;
+                        }
+                        if let Some(value) = header
+                            .trim()
+                            .to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                        {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let mut payload = vec![0u8; content_length];
+                    if content_length > 0 {
+                        let _ = reader.read_exact(&mut payload);
+                    }
+                }
+                let target = request.split(' ').nth(1).unwrap_or_default().to_string();
+                let response = if failures.iter().any(|f| target.contains(f.as_str())) {
+                    json!({"error": "route refused by the fake server"})
+                } else if target.contains("/api/file-browser/list")
+                    || target.contains("/api/file-browser/tree")
+                {
+                    json!({"entries": [], "tree": {"name": "repo", "path": "/repo",
+                        "dirs": [], "files": []}})
+                } else {
+                    json!({"ok": true})
+                };
+                let text = serde_json::to_string(&response).unwrap();
+                let status_line = if response.get("error").is_some() {
+                    "HTTP/1.1 500 Internal Server Error"
+                } else {
+                    "HTTP/1.1 200 OK"
+                };
+                let _ = write!(
+                    stream,
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    text.len(),
+                    text
+                );
+            }
+        });
+        (WebApiClient::new("127.0.0.1", port), tx)
+    }
+
+    fn app_with_api(api: WebApiClient) -> TuiApp {
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "tabs": [{"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}]
+            }
+        }));
+        app.web_api = api;
+        app
+    }
+
+    fn explorer_with_selection() -> crate::tui::panels::FileExplorer {
+        let mut explorer = crate::tui::panels::FileExplorer::new("/repo");
+        explorer.entries.push(crate::tui::panels::FileEntry {
+            name: "a.rs".into(),
+            path: "a.rs".into(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        });
+        explorer
+    }
+
+    #[test]
+    fn prompt_rename_and_delete_file_cover_all_outcomes() {
+        // No selection: both verbs refuse before any request.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::RenameFile, "b.rs");
+        assert_eq!(app.error.as_deref(), Some("no file selected"));
+        app.run_prompt_action(PromptKind::ConfirmDeleteFile, "");
+        assert_eq!(app.error.as_deref(), Some("no file selected"));
+        assert!(app.status.is_empty() || app.status != "renamed to b.rs");
+
+        // Success: rename then delete against the looping fake. The
+        // rename's refresh wipes the entries list, so re-seed before
+        // the delete.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::RenameFile, "b.rs");
+        assert_eq!(app.status, "renamed to b.rs");
+        assert!(app.error.is_none(), "refresh after rename: {:?}", app.error);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::ConfirmDeleteFile, "");
+        assert_eq!(app.status, "deleted a.rs");
+
+        // Server refusal lands in the error slot.
+        let (api, _stop) = fake_api_server(&["/rename"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::RenameFile, "b.rs");
+        assert!(app.error.is_some(), "rename refusal surfaces");
+
+        let (api, _stop) = fake_api_server(&["/delete"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::ConfirmDeleteFile, "");
+        assert!(app.error.is_some(), "delete refusal surfaces");
+    }
+
+    #[test]
+    fn prompt_delete_branch_and_drop_stash_cover_all_outcomes() {
+        // No branch rows: refusal.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert_eq!(app.error.as_deref(), Some("no branch selected"));
+
+        // A current branch never deletes through the prompt.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.branches = vec![crate::tui::panels::git::GitBranchEntry {
+            name: "main".into(),
+            current: true,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert_eq!(app.error.as_deref(), Some("no branch selected"));
+
+        // Non-current branch deletes.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.branches = vec![crate::tui::panels::git::GitBranchEntry {
+            name: "feature".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert_eq!(app.status, "deleted branch feature");
+
+        // Refused delete and stash drop outcomes.
+        let (api, _stop) = fake_api_server(&["/branch-delete"]);
+        let mut app = app_with_api(api);
+        app.git_panel.branches = vec![crate::tui::panels::git::GitBranchEntry {
+            name: "feature".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDeleteBranch, "");
+        assert!(app.error.is_some());
+
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.stashes = vec![crate::tui::panels::git::GitStashEntry {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+        }];
+        app.run_prompt_action(PromptKind::ConfirmDropStash, "");
+        assert_eq!(app.status, "stash dropped");
+
+        let (api, _stop) = fake_api_server(&["/stash-drop"]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ConfirmDropStash, "");
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn prompt_cleanup_delete_reports_count_and_failures() {
+        // One marked merged branch: plain `y` deletes it.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+            path: "/repo".to_string(),
+            branches: vec!["old".into()],
+            worktrees: vec![],
+        }];
+        app.git_panel.cleanup_toggle_mark();
+        app.run_prompt_action(PromptKind::ConfirmCleanupDelete, "y");
+        assert_eq!(app.status, "deleted 1 cleanup item(s)");
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // `yb` also asks for the branch delete; a refusal records the
+        // per-item failure on top of the status.
+        let (api, _stop) = fake_api_server(&["/branch-delete"]);
+        let mut app = app_with_api(api);
+        app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+            path: "/repo".to_string(),
+            branches: vec![],
+            worktrees: vec![crate::tui::panels::git::CleanupWorktree {
+                path: "/repo-wt".to_string(),
+                branch: Some("feature".into()),
+            }],
+        }];
+        app.git_panel.cleanup_toggle_mark();
+        app.run_prompt_action(PromptKind::ConfirmCleanupDelete, "yb");
+        assert!(app.error.is_some(), "branch failure recorded");
+    }
+
+    #[test]
+    fn prompt_tag_reset_rebase_cover_all_branches() {
+        // Empty tag name is refused locally.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateTag, "  ");
+        assert_eq!(app.error.as_deref(), Some("type a tag name"));
+
+        // Tag, soft and mixed resets succeed against the selected
+        // commit.
+        app.git_panel.commits = vec![crate::tui::panels::git::GitCommitEntry {
+            hash: "abc123".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.run_prompt_action(PromptKind::CreateTag, "v1");
+        assert_eq!(app.status, "tagged v1");
+        app.run_prompt_action(PromptKind::ResetMode, "soft");
+        assert_eq!(app.status, "reset soft");
+        app.run_prompt_action(PromptKind::ResetMode, "mixed");
+        assert_eq!(app.status, "reset mixed");
+
+        // Hard reset chains into the typed-y confirm prompt.
+        app.run_prompt_action(PromptKind::ResetMode, "hard");
+        assert_eq!(app.status, PromptKind::ConfirmResetHard.title());
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(PromptKind::ConfirmResetHard)
+        ));
+        app.run_prompt_action(PromptKind::ConfirmResetHard, "y");
+        assert_eq!(app.status, "reset hard");
+
+        // Unknown reset mode text is refused.
+        app.run_prompt_action(PromptKind::ResetMode, "sideways");
+        assert_eq!(app.error.as_deref(), Some("type soft, mixed or hard"));
+
+        // Rebase: empty upstream refused, then chains into the confirm.
+        app.run_prompt_action(PromptKind::RebaseUpstream, "  ");
+        assert_eq!(app.error.as_deref(), Some("type the upstream ref"));
+        app.run_prompt_action(PromptKind::RebaseUpstream, "origin/main");
+        assert_eq!(app.status, PromptKind::ConfirmRebase.title());
+        app.run_prompt_action(PromptKind::ConfirmRebase, "y");
+        assert_eq!(app.status, "rebase onto origin/main");
+
+        // Confirming with nothing pending is an error.
+        app.run_prompt_action(PromptKind::ConfirmRebase, "y");
+        assert_eq!(app.error.as_deref(), Some("no rebase pending"));
+
+        // Refused tag and hard reset propagate the server error.
+        let (api, _stop) = fake_api_server(&["/tag"]);
+        let mut app = app_with_api(api);
+        app.git_panel.commits = vec![crate::tui::panels::git::GitCommitEntry {
+            hash: "abc123".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.run_prompt_action(PromptKind::CreateTag, "v2");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/reset"]);
+        let mut app = app_with_api(api);
+        app.git_panel.commits = vec![crate::tui::panels::git::GitCommitEntry {
+            hash: "abc123".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.run_prompt_action(PromptKind::ResetMode, "hard");
+        app.run_prompt_action(PromptKind::ConfirmResetHard, "y");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/rebase"]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::RebaseUpstream, "origin/main");
+        app.run_prompt_action(PromptKind::ConfirmRebase, "y");
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn prompt_git_cwd_create_branch_file_and_directory_cover_outcomes() {
+        // Empty cwd refused locally.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::GitCwd, "  ");
+        assert_eq!(app.error.as_deref(), Some("type a directory path"));
+
+        // A real directory sets the cwd and refreshes the view.
+        let repo = std::env::current_dir().unwrap();
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::GitCwd, repo.to_string_lossy().as_ref());
+        assert!(app.status.starts_with("git cwd: "), "{}", app.status);
+
+        // Empty branch and file/dir names refused.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateBranch, "  ");
+        assert_eq!(app.error.as_deref(), Some("type a branch name"));
+        app.run_prompt_action(PromptKind::CreateFile, " ");
+        assert_eq!(app.error.as_deref(), Some("type a file name"));
+        app.run_prompt_action(PromptKind::CreateDirectory, " ");
+        assert_eq!(app.error.as_deref(), Some("type a directory name"));
+
+        // Create branch/file/dir succeed through the fake.
+        app.run_prompt_action(PromptKind::CreateBranch, "feat");
+        assert_eq!(app.status, "switched to feat");
+        app.run_prompt_action(PromptKind::CreateFile, "new.rs");
+        assert_eq!(app.status, "created new.rs");
+        app.run_prompt_action(PromptKind::CreateDirectory, "sub");
+        assert_eq!(app.status, "created sub");
+
+        // Refused variants land in the error slot.
+        let (api, _stop) = fake_api_server(&["/switch"]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateBranch, "feat");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/file-browser/file"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::CreateFile, "new.rs");
+        assert!(app.error.is_some());
+        let (api, _stop) = fake_api_server(&["/file-browser/file"]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.run_prompt_action(PromptKind::CreateDirectory, "sub");
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn prompt_replace_in_file_counts_and_fails() {
+        // No find matches: the replace refuses before any request.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new");
+        assert!(app.error.is_some());
+
+        // One match: replace-one reports 1 of 1. The replace writes
+        // through the server, so the preview needs real content.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.file_explorer.preview.content = "old line".to_string();
+        app.file_explorer.editor_find.ranges = vec![(0, 3)];
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new");
+        assert_eq!(app.status, "replaced 1 of 1 matches");
+
+        // `!` suffix replaces all.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.file_explorer.preview.content = "old old".to_string();
+        app.file_explorer.editor_find.ranges = vec![(0, 3), (4, 7)];
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new!");
+        assert_eq!(app.status, "replaced 2 matches");
+    }
+
+    #[test]
+    fn prompt_composer_and_session_cover_outcomes() {
+        // No pane selected: the composer refuses.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.snapshot.panes.clear();
+        app.run_prompt_action(PromptKind::ComposerMessage, "hi");
+        assert_eq!(app.error.as_deref(), Some("no pane selected"));
+
+        // Whitespace-only message is a silent no-op.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::ComposerMessage, " \r\n ");
+        assert_eq!(app.status, "message empty, nothing sent");
+
+        // A real message sends and clears the draft.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.composer_drafts.insert("pane_1".into(), "draft".into());
+        app.run_prompt_action(PromptKind::ComposerMessage, "hello\n");
+        assert_eq!(app.status, "message sent");
+        assert!(!app.composer_drafts.contains_key("pane_1"));
+
+        // A refused send keeps the draft and shows the note.
+        let (api, _stop) = fake_api_server(&["/submit"]);
+        let mut app = app_with_api(api);
+        app.composer_drafts.insert("pane_1".into(), "draft".into());
+        app.run_prompt_action(PromptKind::ComposerMessage, "hello");
+        assert_ne!(app.status, "message sent");
+        assert!(app.composer_drafts.contains_key("pane_1"));
+
+        // Session: empty name refused, then launch failure surfaces
+        // (the launch endpoint works but the retarget socket is dead).
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.run_prompt_action(PromptKind::CreateSession, " ");
+        assert_eq!(app.error.as_deref(), Some("type a session name"));
+        app.run_prompt_action(PromptKind::CreateSession, "lane");
+        assert!(app.status.contains("lane") || app.error.is_some());
+    }
+}
