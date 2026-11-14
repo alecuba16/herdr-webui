@@ -365,10 +365,12 @@ pub struct TuiApp {
     /// Workspaces whose panes must join the split view on the next
     /// refresh (auto-split on open): opening or creating a workspace
     /// from the browser, worktree list, or search palette queues the
-    /// workspace id here; sync_split_tree drains it and inserts the
-    /// workspace's pane beside the current focus. The pane exists only
-    /// after the backend refresh, hence the deferral.
-    pub(crate) split_panes_of_workspaces: Vec<String>,
+    /// workspace id plus the pane the user was looking at (the split
+    /// neighbor, captured before the open moves the selection);
+    /// sync_split_tree drains it and inserts the workspace's pane
+    /// beside that neighbor. The pane exists only after the backend
+    /// refresh, hence the deferral.
+    pub(crate) split_panes_of_workspaces: Vec<(String, Option<String>)>,
     /// Split mode state (Ctrl+B s): the ghost preview over a tile and
     /// the pane the new tile would open.
     pub(crate) split_mode: Option<split::SplitPreview>,
@@ -1893,6 +1895,9 @@ impl TuiApp {
                 // (`invalidateRecent`), so the next palette open refetches
                 // instead of serving the stale order.
                 self.search_palette.invalidate_recents();
+                // Auto-split neighbor: captured before the open moves the
+                // selection to the reopened workspace.
+                let auto_split_neighbor = self.view_pane_id();
                 self.refresh().map_err(|err| err.to_string())?;
                 // Land on the reopened workspace like the desktop go()
                 // navigation: the response carries the workspace plus its
@@ -1916,7 +1921,8 @@ impl TuiApp {
                 // Auto-split on open (search palette recent): the
                 // reopened workspace appears as its own tile.
                 if !workspace_id.is_empty() {
-                    self.split_panes_of_workspaces.push(workspace_id.clone());
+                    self.split_panes_of_workspaces
+                        .push((workspace_id.clone(), auto_split_neighbor));
                 }
                 self.status = format!("opened {path}");
                 Ok(())

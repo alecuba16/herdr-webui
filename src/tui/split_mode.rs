@@ -120,12 +120,14 @@ impl TuiApp {
     }
 
     /// Auto-split on open: insert every queued workspace's first pane
-    /// into the tree beside the current focus (Right side, like the
-    /// split mode's default ghost) and hand the tile focus to it, so
-    /// the just-opened workspace greets the user as its own tile.
-    /// The pane exists only after the refresh that queued it landed,
-    /// so this runs at the end of sync_split_tree. A queued workspace
-    /// stays queued while it exists without a spare pane (pane not yet
+    /// into the tree beside the pane the user was looking at when the
+    /// open fired (Right side, like the split mode's default ghost)
+    /// and hand the tile focus to it, so the just-opened workspace
+    /// greets the user as its own tile. The neighbor is captured at
+    /// open time, before the post-open selection moves it. The pane
+    /// exists only after the refresh that queued it landed, so this
+    /// runs at the end of sync_split_tree. A queued workspace stays
+    /// queued while it exists without a spare pane (pane not yet
     /// created, or every pane already on the tree); one that vanished
     /// from the snapshot drops from the queue.
     pub(crate) fn drain_auto_split_queue(&mut self) {
@@ -134,7 +136,7 @@ impl TuiApp {
         }
         let queued = std::mem::take(&mut self.split_panes_of_workspaces);
         let mut keep = Vec::new();
-        for workspace_id in queued {
+        for (workspace_id, neighbor) in queued {
             let workspace_alive = self
                 .snapshot
                 .workspaces
@@ -159,19 +161,28 @@ impl TuiApp {
             else {
                 // Workspace alive but no spare pane yet: wait one more
                 // refresh before giving up on the auto-split.
-                keep.push(workspace_id);
+                keep.push((workspace_id, neighbor));
                 continue;
             };
-            let Some(neighbor) = self.focused_pane_id() else {
-                // No live focus to split beside (empty session): the
-                // reseed path plants the pane as the tree next round.
-                keep.push(workspace_id);
+            // The neighbor captured at open time; a dead or missing
+            // one falls back to the current focus. Neither may equal
+            // the pane itself (a self-neighbor would duplicate the
+            // leaf under the sibling).
+            let target = if neighbor
+                .as_ref()
+                .is_some_and(|id| self.split_tree.contains_pane(id) && id != pane.as_str())
+            {
+                neighbor.clone()
+            } else {
+                self.focused_pane_id().filter(|id| id != pane.as_str())
+            };
+            let Some(target) = target else {
+                // Nothing alive to split beside: keep the request, the
+                // reseed path plants the pane next round.
+                keep.push((workspace_id, neighbor));
                 continue;
             };
-            if neighbor == pane {
-                continue;
-            }
-            self.split_tree = split::insert_beside(&self.split_tree, &neighbor, &pane, Side::Right);
+            self.split_tree = split::insert_beside(&self.split_tree, &target, &pane, Side::Right);
             self.split_focus = Some(pane);
             // Auto-split beats zoom: the new tile must be visible, not
             // hidden behind the previous pane's fullscreen.

@@ -514,12 +514,14 @@ fn tui_binary_interactive_loop_pty() {
     );
 
     // Walk the settings overlay through the real binary: Ctrl+B arms
-    // the prefix, `s` opens the overlay, the render must show the
-    // Settings panel, `t` cycles the theme in the status line, and Esc
-    // returns to Navigate before `q` can quit.
+    // the prefix, Shift+E opens the overlay (Terminal's plain `s` is
+    // split mode now; settings moved to Ctrl+B Shift+E, the Git screen
+    // keeps `s`), the render must show the Settings panel, `t` cycles
+    // the theme in the status line, and Esc returns to Navigate before
+    // `q` can quit.
     let mut writer = pair.master.take_writer().unwrap();
     let _ = writer.write_all(&[0x02]); // Ctrl+B
-    let _ = writer.write_all(b"s");
+    let _ = writer.write_all(b"E");
     let _ = writer.flush();
     wait_for(&log, "web api base");
     assert!(

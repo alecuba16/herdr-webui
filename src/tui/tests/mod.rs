@@ -9949,7 +9949,8 @@ fn auto_split_queue_inserts_opened_workspace_pane_beside_focus() {
     };
     app.split_focus = Some("pane_1".to_string());
     push_pane_3(&mut app);
-    app.split_panes_of_workspaces.push("ws_2".to_string());
+    app.split_panes_of_workspaces
+        .push(("ws_2".to_string(), Some("pane_1".to_string())));
 
     app.sync_split_tree();
 
@@ -9986,7 +9987,8 @@ fn auto_split_queue_skips_panes_already_on_the_tree() {
         ],
     };
     app.split_focus = Some("pane_1".to_string());
-    app.split_panes_of_workspaces.push("ws_2".to_string());
+    app.split_panes_of_workspaces
+        .push(("ws_2".to_string(), Some("pane_1".to_string())));
 
     app.sync_split_tree();
 
@@ -9997,7 +9999,7 @@ fn auto_split_queue_skips_panes_already_on_the_tree() {
     );
     assert_eq!(
         app.split_panes_of_workspaces,
-        vec!["ws_2".to_string()],
+        vec![("ws_2".to_string(), Some("pane_1".to_string()))],
         "workspace alive without a spare pane stays queued"
     );
 
@@ -10027,13 +10029,14 @@ fn auto_split_queue_waits_for_the_pane_to_exist() {
     app.snapshot
         .panes
         .retain(|pane| pane.workspace_id != "ws_2");
-    app.split_panes_of_workspaces.push("ws_2".to_string());
+    app.split_panes_of_workspaces
+        .push(("ws_2".to_string(), Some("pane_1".to_string())));
 
     // First sync: workspace exists, pane not yet born.
     app.sync_split_tree();
     assert_eq!(
         app.split_panes_of_workspaces,
-        vec!["ws_2".to_string()],
+        vec![("ws_2".to_string(), Some("pane_1".to_string()))],
         "still waiting for the pane"
     );
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"], "tree untouched");
@@ -10044,6 +10047,57 @@ fn auto_split_queue_waits_for_the_pane_to_exist() {
     assert!(app.split_tree.leaves().contains(&"pane_3"));
     assert!(app.split_panes_of_workspaces.is_empty());
     assert_eq!(app.split_focus.as_deref(), Some("pane_3"));
+}
+
+#[test]
+fn auto_split_uses_the_captured_neighbor_not_the_post_open_selection() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    // No split_focus: pre-split single-leaf state, focused_pane_id()
+    // falls back to the sidebar selection (this is the shape right
+    // after an open moved it).
+    app.selected_workspace = 1;
+    app.split_panes_of_workspaces
+        .push(("ws_2".to_string(), Some("pane_1".to_string())));
+
+    app.sync_split_tree();
+
+    let leaves = app.split_tree.leaves();
+    assert!(leaves.contains(&"pane_1"), "neighbor kept as a tile");
+    assert!(
+        leaves.contains(&"pane_2"),
+        "the new pane inserted beside it"
+    );
+    assert_eq!(leaves.len(), 2);
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_2"),
+        "the just-opened workspace's tile takes the focus"
+    );
+    assert!(app.split_panes_of_workspaces.is_empty());
+}
+
+#[test]
+fn auto_split_dead_neighbor_falls_back_to_current_focus() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_2");
+    app.split_focus = Some("pane_2".to_string());
+    push_pane_3(&mut app);
+    // The pane captured as neighbor is gone from the tree; the drain
+    // must still split beside the live focus instead of waiting.
+    app.split_panes_of_workspaces
+        .push(("ws_2".to_string(), Some("pane_1".to_string())));
+
+    app.sync_split_tree();
+
+    let leaves = app.split_tree.leaves();
+    assert!(leaves.contains(&"pane_2"), "focus kept as a tile");
+    assert!(
+        leaves.contains(&"pane_3"),
+        "ws_2's spare pane inserted beside the live focus"
+    );
+    assert_eq!(app.split_focus.as_deref(), Some("pane_3"));
+    assert!(app.split_panes_of_workspaces.is_empty());
 }
 
 #[test]

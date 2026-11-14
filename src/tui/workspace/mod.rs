@@ -158,6 +158,9 @@ impl TuiApp {
         expanded_path: &str,
         label: Option<&str>,
     ) -> WorkspaceResult {
+        // Auto-split neighbor: captured before the create moves the
+        // selection to the fresh workspace.
+        let auto_split_neighbor = self.view_pane_id();
         let client = self.client.clone();
         let result = client
             .create_workspace(Some(expanded_path), label)
@@ -182,7 +185,8 @@ impl TuiApp {
         // Auto-split on create: the fresh workspace opens as its own
         // tile beside whatever the user was looking at.
         if !id.is_empty() {
-            self.split_panes_of_workspaces.push(id);
+            self.split_panes_of_workspaces
+                .push((id, auto_split_neighbor));
         }
         Ok(format!("workspace created: {expanded_path}"))
     }
@@ -453,11 +457,14 @@ impl TuiApp {
             .map_err(|err| err.to_string())?;
         let _ = self.web_api.record_recent_workspace(&path, None, kind);
         // Capture the workspace being left behind before the refresh
-        // replaces the selection (desktop `autoCloseLeftWorkspace`).
+        // replaces the selection (desktop `autoCloseLeftWorkspace`),
+        // and the pane the user is looking at now: the auto-split
+        // neighbor must predate the post-open selection move.
         let previous_workspace_id = self
             .selected_workspace()
             .filter(|ws| ws.cwd != path)
             .map(|ws| ws.id.clone());
+        let auto_split_neighbor = self.view_pane_id();
         self.refresh().map_err(|err| err.to_string())?;
         // Focus the opened workspace like the webui post-open navigation;
         // the backend keys it by cwd, so resolve the id first.
@@ -470,8 +477,9 @@ impl TuiApp {
         {
             self.focus_workspace_by_id(&id);
             // Auto-split on open: the new workspace greets the user as
-            // its own tile beside the current focus.
-            self.split_panes_of_workspaces.push(id);
+            // its own tile beside the pane they were looking at.
+            self.split_panes_of_workspaces
+                .push((id, auto_split_neighbor));
         }
         self.autoclose_left_workspace(previous_workspace_id.as_deref());
         // Opening a worktree is a context switch (the webui navigates to

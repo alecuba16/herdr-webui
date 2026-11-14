@@ -1453,7 +1453,11 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
     app.handle_key(ctrl_b);
     press(&mut app, 'm');
     assert!(app.git_panel.show_blame, "prefix m enables blame");
-    assert_eq!(app.status, "blame on", "blame status: {}", app.status);
+    assert_eq!(
+        app.status, "blame on (Ctrl+B m moves tiles on terminal)",
+        "blame status carries the dual meaning: {}",
+        app.status
+    );
     assert!(app.error.is_none(), "blame load error: {:?}", app.error);
     app.handle_key(ctrl_b);
     press(&mut app, 'm');
