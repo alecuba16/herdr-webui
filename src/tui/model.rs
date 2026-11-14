@@ -529,3 +529,29 @@ fn strip_terminal_title_suffix(title: &str) -> String {
 fn is_braille(ch: char) -> bool {
     ('\u{2800}'..='\u{28ff}').contains(&ch)
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::same_checkout_path;
+
+    #[test]
+    fn same_checkout_path_canonicalizes_two_spelling_variants() {
+        // Same directory reached through different spellings canonicalizes
+        // to one identity, and unequal paths stay unequal.
+        let here = std::env::temp_dir();
+        let joined = here.join("same-checkout-probe");
+        std::fs::create_dir_all(&joined).unwrap();
+        let direct = joined.to_str().unwrap();
+        let trailing = if direct.ends_with('/') {
+            format!("{direct}.")
+        } else {
+            format!("{direct}/./")
+        };
+        assert!(same_checkout_path(direct, &trailing));
+        assert!(!same_checkout_path(direct, here.to_str().unwrap()));
+        // A missing path cannot canonicalize, so the pair is not equal.
+        assert!(!same_checkout_path(direct, "/definitely/not/here/probe"));
+        // Equal strings shortcut before any filesystem touch.
+        assert!(same_checkout_path("/same/string", "/same/string"));
+    }
+}

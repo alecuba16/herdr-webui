@@ -243,3 +243,26 @@ mod tests {
         assert!(!explorer.editor_find.active);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::find_ranges;
+
+    #[test]
+    fn plain_find_ranges_count_overlapping_spots_without_regex_semantics() {
+        // The plain path walks every match position including overlaps
+        // that a regex scan would skip after a consumed hit.
+        let ranges = find_ranges("aaaa", "aa", false, false);
+        assert_eq!(
+            ranges,
+            vec![(0, 2), (2, 4)],
+            "regex scan consumes, no overlap"
+        );
+        // Case-insensitive by default: every spot is listed.
+        let ranges = find_ranges("aAbA", "a", false, false);
+        assert_eq!(ranges, vec![(0, 1), (1, 2), (3, 4)]);
+        // match_case matches only the exact letter.
+        let ranges = find_ranges("aAbA", "A", true, false);
+        assert_eq!(ranges, vec![(1, 2), (3, 4)]);
+    }
+}

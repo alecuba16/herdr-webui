@@ -325,3 +325,45 @@ impl GitPanel {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn comparison_without_base_branch_is_hidden() {
+        // exists=true but no base_branch: the chip hides (None).
+        assert!(LogBaseComparison::from_log_data(&json!({
+            "comparison": {"exists": true}
+        }))
+        .is_none());
+        // A present base branch with a lone origin slot labels only it.
+        let comparison = LogBaseComparison::from_log_data(&json!({
+            "comparison": {
+                "base_branch": "trunk",
+                "exists": true,
+                "origin": {"ahead": 1, "behind": 4}
+            }
+        }))
+        .unwrap();
+        assert_eq!(comparison.local, None);
+        assert_eq!(
+            comparison.label(),
+            "origin/trunk ↑1 ↓4",
+            "origin-only slot renders without a local pair"
+        );
+        // A broken origin pair (missing behind) drops the slot too.
+        let comparison = LogBaseComparison::from_log_data(&json!({
+            "comparison": {
+                "base_branch": "trunk",
+                "exists": true,
+                "local": {"ahead": 7, "behind": 0},
+                "origin": {"ahead": 7}
+            }
+        }))
+        .unwrap();
+        assert_eq!(comparison.origin, None);
+        assert_eq!(comparison.label(), "trunk ↑7 ↓0");
+    }
+}

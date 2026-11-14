@@ -798,3 +798,56 @@ mod tests {
         assert_eq!(explorer.selected, 1);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn open_preview_at_line_refuses_dirty_buffer_on_a_new_file() {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview = FilePreview {
+            path: Some("src/old.rs".to_string()),
+            content: "unsaved".to_string(),
+            truncated: false,
+            binary: false,
+            hash: "h".to_string(),
+            dirty: true,
+        };
+        // No server needed: the dirty guard fires before any request.
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let err = explorer
+            .open_preview_at_line(&api, "src/other.rs", 3)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unsaved edits"),
+            "dirty buffer blocks the jump"
+        );
+        // Same path jumps even when dirty (reload semantics).
+        assert_eq!(explorer.preview.path.as_deref(), Some("src/old.rs"));
+    }
+
+    #[test]
+    fn cycle_search_kind_resets_selection_outside_content_scope() {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.search_mode = true;
+        explorer.selected = 4;
+        explorer.content_search.files.push(ContentSearchFile {
+            path: "a".into(),
+            name: "a".into(),
+            match_count: 1,
+            chunks: vec![],
+            truncated: false,
+            first_match_line: 1,
+        });
+        explorer.cycle_search_kind();
+        assert_eq!(explorer.search_kind, SearchKind::Dir);
+        assert_eq!(explorer.selected, 0, "non-content scope resets cursor");
+        assert!(explorer.content_search.files.is_empty());
+        // Content scope keeps the cursor (content rows own it).
+        explorer.selected = 2;
+        explorer.cycle_search_kind();
+        assert_eq!(explorer.search_kind, SearchKind::Content);
+        assert_eq!(explorer.selected, 2);
+    }
+}

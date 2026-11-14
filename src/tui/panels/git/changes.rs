@@ -272,3 +272,111 @@ impl GitPanel {
         self.refresh_view(api)
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::tui::panels::git::GitDiffLineMeta;
+    use serde_json::json;
+
+    /// Drive `refresh_diff` against a one-shot JSON server returning
+    /// `body` for the git diff call, then check the panel state.
+    fn refresh_with(body: serde_json::Value) -> (GitPanel, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            let mut content_length = 0usize;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header
+                    .trim()
+                    .to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut payload = vec![0u8; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut payload).unwrap();
+            }
+            assert!(request.starts_with("GET /api/git-ui/diff"), "{request}");
+            let response = body.to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            )
+            .unwrap();
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut panel = GitPanel::new("/repo");
+        panel.diff_search_active = true;
+        panel.diff_search_query = "needle".into();
+        panel.diff_search_matches = vec![2, 7];
+        panel.diff_search_selected = 1;
+        panel.diff_hunk_selected = 3;
+        panel.show_blame = false;
+        panel.blame_path = Some("stale.rs".into());
+        panel.files.push(crate::tui::panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        });
+        panel.refresh_diff(&api).unwrap();
+        (panel, handle)
+    }
+
+    #[test]
+    fn refresh_diff_resumes_the_search_and_clears_stale_blame() {
+        let body = json!({
+            "files": [{
+                "path": "a.rs",
+                "chunks": [{
+                    "header": "@@ -1,2 +1,2 @@",
+                    "lines": [
+                        {"line_type": "context", "content": " needle", "new_line_number": 1},
+                        {"line_type": "add", "content": " added", "new_line_number": 2}
+                    ]
+                }]
+            }]
+        });
+        let (panel, handle) = refresh_with(body);
+        handle.join().unwrap();
+        assert!(panel.diff_search_active, "bar stays open");
+        assert_eq!(panel.diff_search_query, "needle", "query kept for resume");
+        assert_eq!(panel.diff_search_matches, vec![1], "matches recomputed");
+        assert_eq!(panel.diff_search_selected, 0);
+        assert_eq!(panel.diff_hunk_selected, 0, "hunk cursor reset");
+        assert_eq!(panel.diff_title, "a.rs");
+        assert!(panel.blame_authors.is_empty(), "blame cache dropped");
+    }
+
+    #[test]
+    fn apply_hunk_action_without_hunks_reports_no_selection() {
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut panel = GitPanel::new("/repo");
+        // A working-tree target has no file to patch.
+        panel.diff_title = "working tree".into();
+        let err = panel.apply_hunk_action(&api).unwrap_err();
+        assert!(err.to_string().contains("select a file"));
+        // A file target with no hunks (context-only diff) is refused.
+        panel.diff_title = "flat.rs".into();
+        panel.diff_lines = vec![" no hunks here".into()];
+        panel.diff_meta = vec![Some(GitDiffLineMeta {
+            old_line: Some(1),
+            new_line: Some(1),
+        })];
+        let err = panel.apply_hunk_action(&api).unwrap_err();
+        assert!(matches!(err, WebApiError::Io(ref msg) if msg == "no hunk selected"));
+    }
+}

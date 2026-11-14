@@ -308,3 +308,25 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn accent_dim_darkens_the_accent_over_the_panel_bg() {
+        let dark = Palette::for_theme(TuiTheme::Dark);
+        let dim = dark.accent_dim();
+        let Color::Rgb(r, g, b) = dim else {
+            panic!("dim accent stays rgb");
+        };
+        let Color::Rgb(ar, ag, ab) = dark.accent else {
+            panic!("accent stays rgb");
+        };
+        assert_eq!((r, g, b), (ar / 4 + 17, ag / 4 + 17, ab / 4 + 17));
+        assert!(r < ar && g < ag && b < ab, "dim is darker than the accent");
+        let light = Palette::for_theme(TuiTheme::Light);
+        assert_eq!(light.accent_dim(), light.accent_dim());
+        assert_ne!(light.accent_dim(), dark.accent_dim());
+    }
+}

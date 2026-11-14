@@ -90,3 +90,29 @@ impl GitPanel {
             .copied()
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::GitPanel;
+
+    #[test]
+    fn diff_search_typing_is_inert_until_the_bar_opens() {
+        let mut panel = GitPanel::new("/repo");
+        // With the bar closed neither push nor pop touches the query.
+        panel.push_diff_search_char('x');
+        assert_eq!(panel.diff_search_query, "");
+        panel.pop_diff_search_char();
+        assert_eq!(panel.diff_search_query, "");
+        // Open the bar: typing filters, backspace unfilters.
+        panel.start_diff_search();
+        panel.diff_lines = vec!["+ hello world".into(), "- old line".into()];
+        panel.push_diff_search_char('l');
+        assert_eq!(panel.diff_search_matches, vec![0, 1], "l hits both lines");
+        panel.push_diff_search_char('o');
+        assert_eq!(panel.diff_search_query, "lo");
+        assert_eq!(panel.diff_search_matches, vec![0], "lo only in hello");
+        panel.pop_diff_search_char();
+        assert_eq!(panel.diff_search_query, "l");
+        assert_eq!(panel.diff_search_matches, vec![0, 1]);
+    }
+}

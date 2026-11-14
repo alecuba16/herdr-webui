@@ -310,3 +310,36 @@ fn truncate(value: &str, max_width: usize) -> String {
 mod tests;
 
 pub mod input;
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn empty_csi_sequence_is_ignored_by_the_styled_sink() {
+        // An empty CSI string has no final byte: apply_csi returns early.
+        let mut screen = StyledScreen::new(10);
+        <StyledScreen as VtSink>::apply_csi(&mut screen, "");
+        assert!(screen.lines().is_empty(), "no rows and no panic");
+        // A cursor-move CSI delegates to the core and stays unstyled.
+        let mut screen = StyledScreen::new(10);
+        <StyledScreen as VtSink>::apply_csi(&mut screen, "\x1b[2G");
+        <StyledScreen as VtSink>::put(&mut screen, 'x');
+        let lines = screen.lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][0].text, "x");
+    }
+
+    #[test]
+    fn truncate_empty_input_and_short_strings() {
+        assert_eq!(truncate("anything", 0), "");
+        assert_eq!(truncate("fit", 10), "fit");
+        assert_eq!(truncate("exactly", 7), "exactly");
+        assert_eq!(truncate("cut me here", 6), "cut m…");
+        assert_eq!(
+            truncate("123456", 1),
+            "\u{2026}",
+            "single column shows only the ellipsis"
+        );
+    }
+}
