@@ -1,5 +1,27 @@
 # Release notes
 
+## 0.7.46 Release Notes
+- The TUI Terminal screen splits into tiles: Ctrl+B s arms split
+  mode (hjkl places the new pane, Tab flips orientation, p picks the
+  pane, Enter confirms), Ctrl+B m moves tiles, Ctrl+B z zooms one,
+  and closing the last tile promotes its sibling. Auto-split anchors
+  the new tile beside the pane the user was looking at, and opening
+  or creating a workspace splits it beside the focus.
+- Ctrl+B Shift+Z resizes tiles: h/l narrow/widen, j/k
+  shorten/lengthen the focused tile, Enter/Esc close. Sizes live as
+  weights on the split tree, so resized layouts survive inserts,
+  removes, and swaps; tiles clamp at a 4-cell minimum.
+- Tile headers carry workspace identity (label, folder, worktree
+  chip, branch) and the pane's terminal title (OSC 0/2, stripped of
+  activity suffixes and spinner frames). The name slot falls back
+  label -> display agent -> agent -> title -> shell.
+- A pane that dies (server shutdown, broken pipe) keeps its reason
+  on screen for 2 seconds: refreshes used to wipe the error before
+  the first draw could render it, and Ctrl-G acknowledges and clears
+  it on detach.
+- TUI test coverage pushed to 100% line coverage over src/tui/ and
+  the herdr-webui-tui binary.
+
 ## 0.7.45 Release Notes
 - Chat lens conversations render markdown: assistant messages go
   through the shared marked+DOMPurify pipeline with mermaid support,
@@ -700,6 +722,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.46 | 2026-11-14 | [v0.7.46](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.46) |
 | 0.7.45 | 2026-11-11 | [v0.7.45](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.45) |
 | 0.7.44 | 2026-11-10 | [v0.7.44](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.44) |
 | 0.7.43 | 2026-11-10 | [v0.7.43](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.43) |
