@@ -5,6 +5,7 @@ pub mod panels;
 pub mod render;
 pub mod search;
 pub mod sessions;
+pub mod split;
 pub mod terminal;
 pub mod theme;
 pub mod web_api;
