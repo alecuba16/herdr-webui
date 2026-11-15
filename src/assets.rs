@@ -151,6 +151,7 @@ const ICON_HELP: &str = include_str!("assets/icons/help.svg");
 const ICON_SETTINGS: &str = include_str!("assets/icons/settings.svg");
 const ICON_THEME_AUTO: &str = include_str!("assets/icons/theme-auto.svg");
 const ICON_GIT: &str = include_str!("assets/icons/git.svg");
+const ICON_WORKTREE: &str = include_str!("assets/icons/worktree.svg");
 const ICON_TERMINAL: &str = include_str!("assets/icons/terminal.svg");
 const ICON_CHEVRON_RIGHT: &str = include_str!("assets/icons/chevron-right.svg");
 const ICON_CHEVRON_DOWN: &str = include_str!("assets/icons/chevron-down.svg");
@@ -904,6 +905,10 @@ pub(crate) async fn icon_theme_auto_svg(headers: HeaderMap) -> Response {
 
 pub(crate) async fn icon_git_svg(headers: HeaderMap) -> Response {
     static_svg(&headers, ICON_GIT)
+}
+
+pub(crate) async fn icon_worktree_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_WORKTREE)
 }
 
 pub(crate) async fn icon_terminal_svg(headers: HeaderMap) -> Response {

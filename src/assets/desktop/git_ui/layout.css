@@ -307,6 +307,9 @@
   mask: url("/assets/icons/git.svg") center / contain no-repeat;
   width: 12px;
 }
+.git-ui-branch-row-icon-worktree {
+  mask: url("/assets/icons/worktree.svg") center / contain no-repeat;
+}
 .git-ui-branch-row-remote {
   background: var(--panel2);
   border: 1px solid var(--border2);

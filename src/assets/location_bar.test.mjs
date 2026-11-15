@@ -532,6 +532,8 @@ describe("location bar branch popover", () => {
     await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
     ok(bar.innerHTML.includes(">worktree</i>"), "the checked-out-elsewhere row is badged");
     ok(bar.innerHTML.includes(`title="Checked out in ${worktreePath}"`), "the badge names the folder");
+    ok(bar.innerHTML.includes('class="git-ui-branch-row-icon git-ui-branch-row-icon-worktree" title="Checked out in a worktree"'), "the checked-out-elsewhere row carries the worktree icon");
+    ok(!bar.innerHTML.includes('aria-label="Current branch" title="Current branch">✓</b><span class="git-ui-branch-row-name-text">wt-lane<'), "the current-row check does not mark checked-out rows");
     const before = calls.length;
     await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("wt-lane"), false);
     equal(JSON.stringify(opened), JSON.stringify([worktreePath]), "folder-change flow received the worktree path");
@@ -555,6 +557,7 @@ describe("location bar branch popover", () => {
     ctx.HerdrLocationBar.sync();
     await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
     ok(!bar.innerHTML.includes(">worktree</i>"), "own-folder checkout carries no badge");
+    ok(!bar.innerHTML.includes("git-ui-branch-row-icon-worktree"), "own-folder checkout keeps the plain branch icon");
     const before = calls.length;
     await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("feature-x"), false);
     const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");

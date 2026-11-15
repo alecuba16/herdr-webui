@@ -275,7 +275,9 @@
     const subject = String(branch.subject || "");
     const exact = date ? new Date(date).toLocaleString() : "";
     const hover = [author && `${author}`, exact, subject && `"${subject}"`].filter(Boolean).join(" · ");
-    const icon = isCurrent ? `<b class="git-ui-branch-row-check" role="img" aria-label="Current branch" title="Current branch">✓</b>` : `<b class="git-ui-branch-row-icon" aria-hidden="true"></b>`;
+    const icon = isCurrent
+      ? `<b class="git-ui-branch-row-check" role="img" aria-label="Current branch" title="Current branch">✓</b>`
+      : `<b class="git-ui-branch-row-icon${checkout ? " git-ui-branch-row-icon-worktree" : ""}"${checkout ? ` title="Checked out in a worktree"` : ""} aria-hidden="true"></b>`;
     const meta = [author, branchRelativeTime(date)].filter(Boolean).join(" · ");
     // Checked-out-elsewhere rows keep the switch action, which reroutes to
     // the worktree, and say so on the row.

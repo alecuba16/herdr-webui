@@ -146,7 +146,7 @@ pick folder F
   action, not a side effect of picking a folder or typing a filter.
 - **Worktree create, revised by user on 2026-11-04 (v3), footer
   revised by user on 2026-11-15 (v4, v5), cancel revised by user on
-  2026-11-15 (v6).** Clicking
+  2026-11-15 (v6), row icons revised by user on 2026-11-15 (v7).** Clicking
   Create worktree keeps the discovery dialog and its list open. The
   create area shows two labeled inputs, Worktree branch name and Base
   ref; the create action lives in the
@@ -165,6 +165,11 @@ pick folder F
   closing the dialog; a second Esc closes it.
   No existing action modal, directory picker, label input or path input
   is opened by this action. Existing chip creation flows are unchanged.
+  Branch rows whose branch is checked out in a worktree carry the
+  worktree icon (a fork-off-the-tree glyph) with a Checked out in a
+  worktree tooltip; plain branches keep the plain branch icon. The
+  same row builder feeds the chip popover, the discovery view and the
+  Base-ref picker, so the icon reads identically on every surface.
 - **Inline worktree submit.** A nonblank branch name enables the
   footer's Create worktree. The base defaults to the picked checkout's current branch,
   else HEAD. It shares lazy local/cached refs, explicit Fetch remotes,
