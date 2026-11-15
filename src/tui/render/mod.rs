@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use std::time::Duration;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -2325,6 +2325,12 @@ pub(crate) fn is_dark(p: &Palette) -> bool {
 /// Neovim-style drop shadow: a one-cell band on the right and bottom
 /// edges of the overlay rect, painted with the shadow color of the
 /// palette (near-black on dark themes, gray on light ones).
+/// Shadow first, then Clear + widget on top: ratatui's Paragraph only
+/// recolors cells (set_style) and writes its own graphemes, it never
+/// blanks leftover symbols from the screen below, so a modal rendered
+/// without this wipe shows the underlying text through its interior
+/// like a translucent window. Clear resets the cells so the panel bg
+/// paints over a truly empty rect.
 fn render_shadow(frame: &mut Frame<'_>, rect: Rect, p: &Palette) {
     let shadow = shadow_color(p);
     let style = Style::default().bg(shadow);
@@ -2348,6 +2354,9 @@ fn render_shadow(frame: &mut Frame<'_>, rect: Rect, p: &Palette) {
             cell.set_style(style);
         }
     }
+    // Wipe the modal rect AFTER the shadow: the shadow bands sit
+    // outside `rect`, so this Clear only touches the modal itself.
+    frame.render_widget(Clear, rect);
 }
 
 pub(crate) fn shadow_color(p: &Palette) -> Color {
@@ -2421,7 +2430,10 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
     };
     frame.render_widget(
         Paragraph::new(lines)
-            .block(overlay_panel(title, p))
+            .block(
+                overlay_panel(title, p)
+                    .title_bottom(Line::from(format!(" v{HERDR_WEBUI_VERSION} ")).right_aligned()),
+            )
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
         rect,
