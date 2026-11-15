@@ -95,6 +95,16 @@ grid); a return refits from the live slot's box.
   else the workspace label. The label carries the meaning, the accent
   underline is decoration only. Clicking opens the workspace picker
   scoped to that pane (switch the leaf's context).
+- Default-named panels carry a workspace prefix in their tab label (D15):
+  a foreign workspace's default panel reads "<worktree/branch> N"
+  (worktreeDisplayName, else the workspace label), rendered as a muted
+  `data-ws-prefix` pseudo-element before the bare number. The selected
+  workspace's own defaults stay bare, custom names never prefix, and a
+  workspace record that does not resolve keeps the bare number. The
+  prefix flips with the workspace selection (accepted trade-off: the
+  pane badge names the leaf's workspace either way). The button's
+  aria-label spells the full "Panel <prefix> <label>" string, and the
+  hover title leads with "Workspace <id>" for foreign panels.
 - The `+` picker lists workspaces and worktree rows; picking one
   opens a new panel from that workspace in this pane
   (`openPanelInWorkspace`). The picker delegates entirely to that

@@ -2089,3 +2089,116 @@ test("openPanelInWorkspace registers the placement, posts, and routes", async ()
   assert.deepEqual(routed, [["ws-9", "tab_7"]], "route carries the new tab");
   assert.ok(leaves[1].tabs.includes("tab_7"), "placement homed the new tab in the requested pane");
 });
+
+// ---- default-label workspace prefix (D15) ------------------------------
+// Mixed-tree regression: default panel labels number inside their own
+// workspace, so a foreign panel's "1" next to the selected workspace's
+// "1" read as one series. Foreign default panels carry the worktree/
+// workspace name before their number; the selected workspace's own
+// numbers stay bare; custom names never get a prefix.
+
+test("foreign default panels prefix the worktree name on a mixed tree", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main", worktree: { repo_name: "herdr", branch: "main" } },
+    { workspace_id: "ws-2", label: "feat", worktree: { repo_name: "herdr", branch: "feat/panels" } },
+  ];
+  // worktreeDisplayName lives in the shared bundle (render.js), so the
+  // module-scope test stubs it; this pins the exact string the strip's
+  // accessible name and data-ws-prefix attribute carry.
+  ctx.worktreeDisplayName = (w) => ctx.state.workspaceBranches[w.workspace_id] || w.label;
+  ctx.state.workspaceBranches = { "ws-2": "feat/panels" };
+  // Selected workspace's row rides state.tabs; the foreign row rides the
+  // unfiltered map (exactly the filtered-snapshot shape the sync sees).
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 },
+  };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["tab_2"];
+  leaves[0].active = "tab_2";
+  leaves[1].tabs = ["tab_9"];
+  leaves[1].active = "tab_9";
+  panes.renderWorkspacePanes();
+
+  const strips = nodes.container.querySelectorAll(".pane-tab-strip");
+  const ownLabel = strips[0].innerHTML;
+  const foreignLabel = strips[1].innerHTML;
+  // Own workspace: bare number, no prefix machinery in the markup.
+  assert.ok(ownLabel.includes('data-tab-id="tab_2"'), "own panel renders");
+  assert.match(ownLabel, /<span class="pane-tab-label">1<\/span>/, "own default panel stays a bare number");
+  assert.ok(!ownLabel.includes("data-ws-prefix"), "own panel carries no prefix attribute");
+  assert.match(ownLabel, /aria-label="Panel 1"/, "own button names itself Panel 1");
+  // Foreign workspace: prefix attribute with the worktree name, number
+  // as the span text, and the full string as the accessible name.
+  assert.ok(foreignLabel.includes('data-tab-id="tab_9"'), "foreign panel renders");
+  assert.ok(foreignLabel.includes('data-ws-prefix="feat/panels"'), "foreign panel carries the worktree name");
+  assert.match(foreignLabel, /<span class="pane-tab-label" data-ws-prefix="feat\/panels">1<\/span>/, "foreign number renders bare with the prefix beside it");
+  assert.match(foreignLabel, /aria-label="Panel feat\/panels 1"/, "foreign accessible name spells the origin");
+});
+
+test("foreign prefixes flip with the selected workspace and skip custom names", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-2");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.state.tabs = [{ tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 },
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_c: { tab_id: "tab_c", workspace_id: "ws-1", label: "build", number: 2 },
+  };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["tab_9", "tab_2", "tab_c"];
+  leaves[0].active = "tab_9";
+  panes.renderWorkspacePanes();
+
+  // Selected workspace (ws-2) keeps the bare number; ws-1's default
+  // panel prefixes; ws-1's custom name never prefixes.
+  const strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.match(strip.innerHTML, /<span class="pane-tab-label">1<\/span>/, "selected workspace default stays bare");
+  assert.ok(strip.innerHTML.includes('data-ws-prefix="main"'), "ws-1 default prefixes with its label");
+  assert.match(strip.innerHTML, /<span class="pane-tab-label">build<\/span>/, "custom name renders unprefixed");
+  assert.ok(!strip.innerHTML.includes('data-ws-prefix="build"'), "custom tab carries no prefix attribute");
+
+  // Switch the selection: ws-2's panel takes the prefix, ws-1's goes bare.
+  ctx.state.ws = "ws-1";
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  panes.renderWorkspacePanes();
+  const stripAfter = nodes.container.querySelector(".pane-tab-strip");
+  assert.ok(stripAfter.innerHTML.includes('data-ws-prefix="feat"'), "ws-2 default prefixes after the switch");
+  assert.match(stripAfter.innerHTML, /<span class="pane-tab-label">1<\/span>/, "ws-1 default goes bare after the switch");
+});
+
+test("single-workspace trees and unknown foreign workspaces keep bare numbers", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  panes.renderWorkspacePanes();
+  let strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.match(strip.innerHTML, /<span class="pane-tab-label">1<\/span>/, "single-workspace tree keeps bare numbers");
+  assert.ok(!strip.innerHTML.includes("data-ws-prefix"), "no prefix machinery on a clean tree");
+
+  // Foreign row whose workspace record is missing (snapshot race): the
+  // label keeps the bare number instead of a misleading or empty prefix.
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_x: { tab_id: "tab_x", workspace_id: "ws-gone", label: "shell", number: 3 },
+  };
+  panes.renderWorkspacePanes();
+  strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.match(strip.innerHTML, /<span class="pane-tab-label">3<\/span>/, "unknown workspace keeps the bare number");
+  assert.ok(!strip.innerHTML.includes("data-ws-prefix"), "no prefix when the workspace record is missing");
+});

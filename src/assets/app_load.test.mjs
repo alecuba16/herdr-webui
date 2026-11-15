@@ -3792,6 +3792,74 @@ describe("app bundle load", () => {
     equal(ctx.panelVisibleLabel({ label: "shell", number: 1 }, 0), "1");
   });
 
+  it("prefixes foreign default panels with the worktree name on a mixed tree", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(`
+      state.ws = "ws1";
+      state.tab = "tab2";
+      state.workspaces = [
+        { workspace_id: "ws1", label: "main", worktree: { repo_name: "herdr", branch: "main" } },
+        { workspace_id: "ws-2", label: "feat", worktree: { repo_name: "herdr", branch: "feat/panels" } },
+      ];
+      state.workspaceBranches = { "ws-2": "feat/panels" };
+      state.tabs = [
+        { workspace_id: "ws1", tab_id: "tab1", label: "shell", number: 1 },
+        { workspace_id: "ws1", tab_id: "tab2", label: "shell", number: 2 },
+      ];
+      state.tabsById = {
+        tab1: { workspace_id: "ws1", tab_id: "tab1", label: "shell", number: 1 },
+        tab2: { workspace_id: "ws1", tab_id: "tab2", label: "shell", number: 2 },
+        tab9: { workspace_id: "ws-2", tab_id: "tab9", label: "shell", number: 1 },
+        tabc: { workspace_id: "ws-2", tab_id: "tabc", label: "build", number: 2 },
+      };
+    `, ctx);
+    const panes = vm.runInContext("HerdrWorkspacePanes", ctx);
+
+    // Single-workspace tree: every default stays a bare number (D15 gates
+    // on treeIsMixed, so the common case carries zero noise).
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
+    equal(panes.foreignWorkspacePrefix("tab9"), "");
+
+    // Mixed tree: the foreign default prefixes with the branch (the real
+    // worktreeDisplayName chain, no stub), the own default stays bare, and
+    // the custom name never prefixes. state.ws is "ws1": its own rows stay
+    // bare even though leaf 1's own row (tab1) coexists with the foreign
+    // ids in the unfiltered map.
+    vm.runInContext("HerdrWorkspacePanes.splitPaneRight();", ctx);
+    vm.runInContext(`
+      const l = HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRootFor());
+      l[0].tabs = ["tab2"];
+      l[0].active = "tab2";
+      l[1].tabs = ["tab9", "tabc"];
+      l[1].active = "tab9";
+    `, ctx);
+    equal(panes.foreignWorkspacePrefix("tab9"), "feat/panels ");
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab9", ctx), 0), "feat/panels 1");
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tabc", ctx), 1), "build");
+  });
+
+  it("hover titles spell the workspace of foreign panels", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(`
+      state.ws = "ws1";
+      state.tab = "tab2";
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab2", label: "build", number: 2 }];
+    `, ctx);
+    const own = vm.runInContext(
+      "tabHoverInfo({ tab_id: 'tab2', label: 'build', workspace_id: 'ws1' }, new Map())",
+      ctx,
+    );
+    equal(own, "build");
+    const foreign = vm.runInContext(
+      "tabHoverInfo({ tab_id: 'tab9', label: 'build', workspace_id: 'ws-2' }, new Map())",
+      ctx,
+    );
+    equal(foreign, "Workspace ws-2 · build");
+  });
+
   it("keeps session manager buttons on one rounded style", () => {
     match(source, /class="session-button primary" id="newBuiltinSessionTarget"/);
     match(source, /class="session-button" id="newHerdrSessionTarget"/);

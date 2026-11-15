@@ -261,12 +261,19 @@ function pushMapList(map, key, value) {
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
-  if (!pane) return tabTitle(t);
+  // Default foreign panels read "<worktree> N" in the strip (D15); the
+  // hover title spells the association out with the workspace id so the
+  // origin is checkable even when the strip prefix truncates away.
+  const workspace =
+    t.workspace_id && t.workspace_id !== state.ws
+      ? `Workspace ${t.workspace_id} · `
+      : "";
+  if (!pane) return `${workspace}${tabTitle(t)}`;
   const size =
     t.tab_id === state.tab && state.termCols && state.termRows
       ? ` · ${state.termCols}x${state.termRows}`
       : "";
-  return `${tabTitle(t)} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
+  return `${workspace}${tabTitle(t)} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
 }
 function renderSpaces() {
   const groups = new Map(),

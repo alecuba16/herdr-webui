@@ -180,6 +180,22 @@
   white-space: nowrap;
 }
 
+/* Foreign-workspace prefix inside a default label (D15): the workspace
+   or worktree name that sits before the panel number. Muted so the
+   number stays the readable head; inherits hover/active color lifts so
+   the prefix never lags behind its tab. */
+.pane-tab-label[data-ws-prefix] {
+  color: inherit;
+}
+
+.pane-tab-label[data-ws-prefix]::before {
+  content: attr(data-ws-prefix);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  margin-right: 4px;
+}
+
 .pane-tab-close {
   display: inline-flex;
   align-items: center;
