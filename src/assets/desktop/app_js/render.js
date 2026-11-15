@@ -247,7 +247,7 @@ function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
       : w.label
     : tabWorkspaceId || state.session || "herdr";
   const panel = t
-    ? agentTabLabel(tabWorkspaceId, t, tabCountsByWorkspace) || tabTitle(t)
+    ? titlePanelSegment(tabWorkspaceId, t, tabCountsByWorkspace)
     : pane
       ? pane.pane_id
       : "panel";
@@ -261,12 +261,39 @@ function pushMapList(map, key, value) {
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
-  if (!pane) return tabTitle(t);
+  // D15: the tooltip must speak the strip's language. A foreign default
+  // panel reads "<worktree> N" in the strip, so the hover starts from the
+  // same visible label (panelDisplayName), never the raw backend "shell".
+  // The workspace line carries the friendly name the badge shows, plus
+  // the id for exact lookup.
+  const workspace =
+    t.workspace_id && t.workspace_id !== state.ws
+      ? `Workspace ${workspaceHoverName(t.workspace_id)} (${t.workspace_id}) · `
+      : "";
+  const label =
+    typeof panelDisplayName === "function" ? panelDisplayName(t) : tabTitle(t);
+  if (!pane) return `${workspace}${label}`;
   const size =
     t.tab_id === state.tab && state.termCols && state.termRows
       ? ` · ${state.termCols}x${state.termRows}`
       : "";
-  return `${tabTitle(t)} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
+  return `${workspace}${label} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
+}
+
+// The hover's workspace line uses the same friendly name the pane badge
+// shows (worktreeDisplayName, else label), so the two surfaces reconcile
+// without a mental id-to-name mapping.
+function workspaceHoverName(workspaceId) {
+  const workspace = (state.workspaces || []).find(
+    (candidate) => candidate.workspace_id === workspaceId,
+  );
+  if (!workspace) return workspaceId;
+  return (
+    (typeof worktreeDisplayName === "function" &&
+      worktreeDisplayName(workspace)) ||
+    workspace.label ||
+    workspaceId
+  );
 }
 function renderSpaces() {
   const groups = new Map(),
@@ -1017,6 +1044,18 @@ function agentTabLabel(wsId, t, tabCountsByWorkspace) {
   if (count <= 1) return "";
   const label = String(t.label || "").trim();
   return isDefaultPanelTitle(label) ? `#${panelNumberLabel(t)}` : label;
+}
+
+// The title's panel segment (D15): agentTabLabel disambiguates
+// multi-panel workspaces with #N, and every other case must show the
+// same visible name the strip shows (panelDisplayName, prefix included on
+// a foreign default panel). The raw backend "shell" never reaches the
+// window title.
+function titlePanelSegment(wsId, t, tabCountsByWorkspace) {
+  const disambiguated = agentTabLabel(wsId, t, tabCountsByWorkspace);
+  if (disambiguated) return disambiguated;
+  if (typeof panelDisplayName === "function") return panelDisplayName(t);
+  return tabTitle(t);
 }
 function pathBasename(path) {
   // Shared core helper; the local copy was a byte-level duplicate. The

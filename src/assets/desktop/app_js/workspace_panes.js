@@ -1235,9 +1235,24 @@ function rescueLiveSurfaces(container, element) {
 
 function paneTabButtonHtml(tab, isActive, index, tabs) {
   if (state.editingTab === tab.tab_id)
-    return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
-  const label = panelVisibleLabel(tab, index, tabs);
-  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
+    return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
+  // The strip prefix (D15) is the foreign panel's origin, and only a
+  // default-numbered label gets one (a custom name is the identity).
+  // Computed HERE, once, and panelVisibleLabel receives it so the two
+  // never drift: the visible span text, the data-ws-prefix attribute,
+  // and the accessible name all derive from this one result. It renders
+  // as a muted ::before (data-ws-prefix) so the number stays the
+  // readable head; the full string rides aria-label (beats title for
+  // screen readers, and the visible text may truncate).
+  const isDefault = isDefaultPanelTitle(String((tab && tab.label) || "").trim());
+  const prefix = isDefault ? foreignWorkspacePrefix(tab && tab.tab_id) : "";
+  const shown = prefix ? panelNumberLabel(tab, index, tabs) : panelVisibleLabel(tab, index, tabs);
+  const label = prefix ? `${prefix}${shown}` : shown;
+  const labelSpan = prefix
+    ? `<span class="pane-tab-label" data-ws-prefix="${escapeAttr(prefix.trim())}">${escapeHtml(shown)}</span>`
+    : `<span class="pane-tab-label">${escapeHtml(label)}</span>`;
+  const ariaLabel = `Panel ${label}`;
+  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" draggable="true" aria-label="${escapeAttr(ariaLabel)}" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}${labelSpan}<span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
 }
 
 function paneTerminalTabButtonHtml(tab, isActive) {
@@ -2294,9 +2309,46 @@ function panelNumberLabel(tab, index, tabs = state.tabs || []) {
   return String((fallbackIndex >= 0 ? fallbackIndex : 0) + 1);
 }
 
+// ---- default-label workspace prefix (D15) ----------------------------
+// Foreign-workspace default panels number inside their own workspace, so
+// two bare numbers on one strip can read as one series when they are not.
+// Only tabs OUTSIDE the selected workspace carry the prefix: the selected
+// workspace's own numbers stay bare, and a workspace switch flips which
+// side is prefixed (accepted trade-off, the pane badge names the leaf's
+// workspace either way). Custom names never get a prefix: the user named
+// the panel, the name is the identity. A foreign workspace with no
+// matching state.workspaces row keeps the bare number (its row resolves
+// through tabsById, but the display name needs the workspace record).
+function foreignWorkspacePrefix(tabId) {
+  if (!treeIsMixed()) return "";
+  const row = paneTerminalTabById(tabId);
+  const workspaceId = (row && row.workspace_id) || state.ws;
+  if (!workspaceId || workspaceId === state.ws) return "";
+  const workspace = (state.workspaces || []).find(
+    (candidate) => candidate.workspace_id === workspaceId,
+  );
+  if (!workspace) return "";
+  const name =
+    (typeof worktreeDisplayName === "function" &&
+      worktreeDisplayName(workspace)) ||
+    workspace.label;
+  return name ? `${name} ` : "";
+}
+
+// The name every panel-facing surface should speak: the visible strip
+// label, prefix included (D15). Hover title, document title, and the
+// strip itself must never drift apart on a foreign default panel.
+function panelDisplayName(tab, index, tabs = state.tabs || []) {
+  return panelVisibleLabel(tab, index, tabs);
+}
+
 function panelVisibleLabel(tab, index, tabs = state.tabs || []) {
   const label = String((tab && tab.label) || "").trim();
-  return isDefaultPanelTitle(label) ? panelNumberLabel(tab, index, tabs) : label;
+  if (isDefaultPanelTitle(label)) {
+    const prefix = foreignWorkspacePrefix(tab && tab.tab_id);
+    return prefix ? `${prefix}${panelNumberLabel(tab, index, tabs)}` : panelNumberLabel(tab, index, tabs);
+  }
+  return label;
 }
 
 function panelRenameInitialLabel(tab) {
@@ -3050,6 +3102,11 @@ window.HerdrWorkspacePanes = {
   paneTabsForTree,
   paneWorkspaceBadgeHtml,
   workspaceIdForTab,
+  foreignWorkspacePrefix,
+  panelVisibleLabel,
+  panelDisplayName,
+  panelNumberLabel,
+  panelRenameInitialLabel,
   activePane: () => activeLeaf(paneRootFor()),
   activePaneElement,
   splitPaneRight,
