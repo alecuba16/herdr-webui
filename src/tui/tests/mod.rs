@@ -5375,6 +5375,39 @@ fn settings_overlay_bottom_border_shows_version() {
 }
 
 #[test]
+fn help_overlay_bottom_border_shows_version() {
+    // Same placement rule as Settings: the release version rides the
+    // Help overlay's bottom border, right-aligned, so it never eats
+    // wrap budget from the shortcut rows and survives every box width.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Help;
+    let buffer = draw_buffer(&app, 100, 30);
+    let version = format!("v{}", crate::HERDR_WEBUI_VERSION);
+    let row = rendered_row(&buffer, &version);
+    let chars = (0..buffer.area.width as usize)
+        .map(|i| buffer[(i as u16, row.y as u16)].symbol().to_string())
+        .collect::<Vec<_>>();
+    let start_x = row.cell_x_of(&version).unwrap();
+    let left_corner = chars[..start_x]
+        .iter()
+        .rposition(|c| c == "└")
+        .expect("help overlay bottom-left corner left of the version");
+    assert!(chars[left_corner + 1..start_x - 1].iter().all(|c| c == "─"));
+    assert_eq!(chars[start_x - 1], " ");
+    let right_corner = chars[start_x + version.chars().count()..]
+        .iter()
+        .position(|c| c == "┘")
+        .expect("help overlay bottom-right corner right of the version")
+        + start_x
+        + version.chars().count();
+    assert_eq!(
+        right_corner,
+        start_x + version.chars().count() + 1,
+        "only the title's padding space sits between version and corner"
+    );
+}
+
+#[test]
 fn settings_p_toggle_flips_passthrough_and_round_trips_the_file() {
     // Env-writing tests share one lock (PR #240 convention): without
     // it a parallel test can swap XDG_CONFIG_HOME mid-toggle.
@@ -6925,6 +6958,80 @@ fn overlay_depth_effect_dims_backdrop_and_draws_shadow() {
         restored[(5u16, 29u16)].fg,
         plain_footer_fg,
         "backdrop colors must return after the overlay closes"
+    );
+}
+
+#[test]
+fn help_overlay_interior_is_opaque_over_background_text() {
+    // Regression for the translucent-modal bug: ratatui's Paragraph
+    // only recolors cells and writes its own graphemes, it never blanks
+    // the symbols already on screen, so the Help window used to show
+    // the pane text underneath. render_shadow now wipes its rect with
+    // Clear first; this test fails the moment that wipe disappears.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    let buffer = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&buffer, "Help · ? closes");
+    // The sidebar panel also draws `┌`/`┐` on the title row, so pin the
+    // overlay box off the title text itself: the opening `┌` sits right
+    // before the title's leading space, the closing `┐` after the row's
+    // dashes (nearest one right of the title).
+    let title_x = row.cell_x_of("Help · ? closes").unwrap();
+    // `┌` + one padding space + title text.
+    let x_left = title_x - 2;
+    let x_right = (title_x + 1..buffer.area.width as usize)
+        .find(|x| row.chars[*x] == '┐')
+        .expect("help overlay right corner on the title row");
+    // Bottom border row: the `└` aligned under x_left.
+    let bottom_y = (row.y + 1..buffer.area.height as usize)
+        .find(|y| buffer[(x_left as u16, *y as u16)].symbol() == "└")
+        .expect("help overlay bottom border below the title row");
+    for y in row.y + 1..bottom_y {
+        for x in x_left + 1..x_right {
+            let cell = &buffer[(x as u16, y as u16)];
+            // Both failure modes land here: without the Clear wipe the
+            // cells keep the dimmed screen bg (folded toward the border
+            // tone, never exactly panel_bg), without the Paragraph bg
+            // they stay Reset. Only the wiped + repainted overlay reads
+            // panel_bg on every interior cell.
+            assert_eq!(
+                cell.bg,
+                Color::Rgb(17, 17, 27),
+                "interior cell ({x},{y}) must carry the opaque panel bg"
+            );
+        }
+    }
+}
+
+#[test]
+fn help_overlay_interior_blanks_the_screen_underneath() {
+    // The opacity half of the regression: Paragraph recolors the whole
+    // rect but only writes its own graphemes, so without the Clear wipe
+    // the SYMBOLS of the screen below stay visible inside the modal.
+    // Fill the pane tail with a marker, open Help, and assert no
+    // marker glyph survives anywhere inside the overlay interior.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.set_pane_tail_from_text(&vec!["MARKERLINE".to_string(); 40].join("\n"));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    let buffer = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&buffer, "Help · ? closes");
+    let title_x = row.cell_x_of("Help · ? closes").unwrap();
+    let x_left = title_x - 2;
+    let x_right = (title_x + 1..buffer.area.width as usize)
+        .find(|x| row.chars[*x] == '┐')
+        .expect("help overlay right corner on the title row");
+    let bottom_y = (row.y + 1..buffer.area.height as usize)
+        .find(|y| buffer[(x_left as u16, *y as u16)].symbol() == "└")
+        .expect("help overlay bottom border below the title row");
+    let marker = (row.y + 1..bottom_y)
+        .any(|y| (x_left + 1..x_right).any(|x| buffer[(x as u16, y as u16)].symbol() == "M"));
+    assert!(
+        !marker,
+        "screen text must not show through the help overlay interior"
     );
 }
 

@@ -160,6 +160,9 @@ stash, `t`/`R`/`b` tag/reset/rebase.
 `Ctrl+B ?` opens the help overlay. Typing filters the shortcut list
 against key and description; `Ctrl+U` clears the query, `j`/`k` and
 arrows scroll the list while no filter is active, `Esc` closes.
+The overlay is opaque (the screen behind never bleeds through) and
+its bottom border carries the release version, right-aligned
+`v<version>`, the same stamp `herdr-webui --version` prints.
 
 ## Overlay key rules (shared)
 
