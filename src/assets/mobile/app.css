@@ -68,6 +68,8 @@ body {
   --editor-syntax-meta: #b4befe;
   --editor-syntax-invalid: #f38ba8;
   --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font: ui-sans-serif, system-ui;
+  --font-mono: var(--mono-font);
   margin: 0;
   background: var(--bg);
   color: var(--fg);

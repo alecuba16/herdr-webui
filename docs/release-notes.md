@@ -13,6 +13,12 @@
   refresh after `brew upgrade` never happened, and `start`/`stop`/
   `restart` went straight to launchctl/systemctl and failed on
   brew-installed machines (Homebrew keeps its own service label).
+- The desktop and mobile shells now define `--font` and `--font-mono`
+  tokens next to `--mono-font`, so the rules that referenced them
+  (editor find inputs, git log workbench, lens tool output) stop
+  silently falling back to inherited fonts. `font: 12px var(--font)`
+  was an invalid shorthand while the variable stayed undefined; the
+  find inputs rendered in the body font instead of the intended stack.
 
 ## 0.7.49 Release Notes
 - Split-tile previews of fullscreen TUI agents are composed screens
