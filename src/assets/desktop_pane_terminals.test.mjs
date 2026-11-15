@@ -329,6 +329,11 @@ function loadPanes(document, stateWs) {
     currentSessionBackend: () => "",
     wsUrl: null,
     location: { protocol: "http:", host: "localhost:8787" },
+    // schedulePtyResize debounces on real timers; the vm realm has no
+    // setTimeout unless provided. Tests assert before the timer fires
+    // or await the flush, so real timers keep timing honest.
+    setTimeout,
+    clearTimeout,
     WebSocket: WsStub,
     HerdrTerminalRenderer: null,
     HerdrTerminalFit: { cellSize: () => ({ width: 9, height: 20 }) },
@@ -564,6 +569,55 @@ test("divider drag finish refits aux grids to the new slot size", async () => {
   move({ clientX: 220, clientY: 100 });
   up();
   assert.equal(term.resized.length, before + 1, "pointerup refit the aux grid");
+});
+
+// D9: the aux fit also tells the PTY its new grid. The resize message
+// debounces per entry (200ms, trailing edge carries the latest cols/rows),
+// lands on the entry's own socket, and never fires for a disposed entry.
+test("fitAll debounces a resize message to the aux pty socket", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  bootSplitWithTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  WsStub.instances.forEach((ws) => (ws.sent.length = 0));
+  const aux = ctx.HerdrPaneTerminals;
+  assert.ok(aux && typeof aux.fitAll === "function", "fitAll exported");
+  const before = renderer.created[0].resized.length;
+  // Two quick fits inside the debounce window collapse into one message.
+  aux.fitAll();
+  aux.fitAll();
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  const resizeMessages = WsStub.instances.flatMap((ws) =>
+    ws.sent.map((raw) => { try { return JSON.parse(raw); } catch (e) { return null; } }),
+  ).filter((msg) => msg && msg.type === "resize");
+  assert.ok(resizeMessages.length >= 1, "pty resize message sent after the debounce");
+  assert.ok(resizeMessages.every((msg) => Number.isInteger(msg.cols) && Number.isInteger(msg.rows)), "message carries the grid");
+  // The renderer still refit locally on every pass.
+  assert.ok(renderer.created[0].resized.length > before, "local grid refit ran");
+});
+
+test("disposal cancels the pending pty resize", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  bootSplitWithTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const panes = ctx.HerdrWorkspacePanes;
+  // Empty the second leaf's tabs and re-render: the aux disposes while a
+  // resize may still sit in the debounce window.
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[1].tabs = [];
+  leaves[1].active = null;
+  const wsBefore = WsStub.instances.length;
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  // No resize frame ever hits a disposed entry's socket after close: the
+  // stub marks closed sockets, and the scheduler checks the disposed flag
+  // before sending. The assertion is the absence of throws plus closed
+  // sockets staying silent.
+  const closedSent = WsStub.instances.slice(wsBefore).filter((ws) => ws.closed).flatMap((ws) => ws.sent);
+  assert.deepEqual(closedSent, [], "no message leaves after disposal");
 });
 
 // ---- no-workspace dashboard mount -------------------------------------

@@ -8502,7 +8502,10 @@ describe("workspace sidebar order", () => {
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
     "./desktop/app_js/workspace_panes.js",
+    "./desktop/app_js/pane_focus.js",
+    "./desktop/app_js/pane_workspace_picker.js",
     "./desktop/app_js/location_bar.js",
+    "./desktop/app_js/pane_terminals.js",
     "./desktop/app_js/render.js",
     "./desktop/app_js/terminal.js",
     "./desktop/app_js/lens.js",
@@ -8673,7 +8676,9 @@ describe("location bar integration", () => {
     const terminals = served.indexOf("assets/desktop/app_js/pane_terminals.js");
     const render = served.indexOf("assets/desktop/app_js/render.js");
     equal(focus, panes + 1, "pane_focus.js loads right after workspace_panes.js");
-    equal(bar, focus + 1, "location_bar.js loads right after pane_focus.js");
+    const picker = served.indexOf("assets/desktop/app_js/pane_workspace_picker.js");
+    equal(picker, focus + 1, "pane_workspace_picker.js loads right after pane_focus.js");
+    equal(bar, picker + 1, "location_bar.js loads right after pane_workspace_picker.js");
     equal(terminals, bar + 1, "pane_terminals.js follows location_bar.js");
     equal(render, terminals + 1, "render.js still follows pane_terminals.js");
     const cssStart = assetsRs.indexOf("const DESKTOP_CSS: &str = concat!(");

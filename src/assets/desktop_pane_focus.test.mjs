@@ -275,9 +275,11 @@ test("activation persists through the panes store write-through", () => {
 
   // saveWorkspacePanesStates was called (stored tree keeps the pointer).
   // The state entry itself is the witness: the pointer lives on the
-  // entry object the store writes.
-  const entryKey = ctx.workspaceShellKey("ws-1");
-  assert.equal(ctx.state.workspacePanes[entryKey].root.activePaneId, leaves[0].paneId, "pointer persisted on the tree");
+  // entry object the store writes. The session-global tree lives under
+  // its fixed key (D1).
+  const entry = ctx.state.workspacePanes["__session__"];
+  assert.ok(entry, "session tree entry exists");
+  assert.equal(entry.root.activePaneId, leaves[0].paneId, "pointer persisted on the tree");
 });
 
 test("source contract: capture-phase wiring and render hook exist", () => {

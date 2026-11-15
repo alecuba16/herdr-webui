@@ -892,7 +892,11 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
   }
 
   it("cycling shortcuts walk workspaces and panels in order", () => {
-    const d = armedContext(`options.webuiShortcuts = { nextWorkspace: "Digit1", prevWorkspace: "Digit2", nextPanel: "Digit3", prevPanel: "Digit4" };`);
+    const d = armedContext(`options.webuiShortcuts = { nextWorkspace: "Digit1", prevWorkspace: "Digit2", nextPanel: "Digit3", prevPanel: "Digit4" };
+      state.tabs = [
+        { workspace_id: "ws2", tab_id: "tab1", label: "one" },
+        { workspace_id: "ws2", tab_id: "tab2", label: "two" },
+      ];`);
     const fire = (code) => { d.arm(); d.press(code); };
     fire("Digit1");
     fire("Digit1");
@@ -900,6 +904,9 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     fire("Digit3");
     fire("Digit4");
     const goes = JSON.parse(vm.runInContext("JSON.stringify(window.__goCalls)", d.ctx));
+    // Panel cycling routes each tab under its OWN workspace row
+    // (D1 mixed tree): a tab of ws2 stays on ws2 even when the last
+    // workspace cycle parked the selection elsewhere.
     assert.deepEqual(goes, [
       { ws: "ws2" },
       { ws: "ws1" },

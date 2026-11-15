@@ -10,6 +10,15 @@ function render() {
   const tabById = Object.fromEntries(
     state.allTabs.concat(state.tabs).map((t) => [t.tab_id, t]),
   );
+  // The snapshot maps carry rows the workspace filter dropped. Fold
+  // them in (id wins for the row the filter kept): the mixed tree can
+  // focus a cross-workspace panel, and the title (D2) plus hover info
+  // must resolve its row, not fall back to state.ws.
+  if (state.tabsById) {
+    for (const [id, row] of Object.entries(state.tabsById)) {
+      if (row && typeof row === "object" && !tabById[id]) tabById[id] = row;
+    }
+  }
   const panesByTab = panesByTabIndex();
   let tabCountsByWorkspace = null;
   if (state.workspaceCounts) {
@@ -110,6 +119,9 @@ function render() {
   // first moment #workspacePanes exists with panes inside.
   if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.wire === "function")
     window.HerdrPaneFocus.wire();
+  // The strip workspace picker wires its global listeners once.
+  if (window.HerdrPaneWorkspacePicker && typeof window.HerdrPaneWorkspacePicker.wire === "function")
+    window.HerdrPaneWorkspacePicker.wire();
   syncRightSidebarRail();
 }
 // Tracks whether the dedicated shell ResizeObserver owns terminal fitting.
@@ -222,15 +234,20 @@ function renderProjectDashboard() {
   return `<div class="project-dashboard-card"><div class="project-dashboard-hero"><h1>Start with a project</h1><p>Open one project first. Less-used actions stay in one menu and the command palette.</p></div><div class="project-dashboard-actions"><button class="project-dashboard-action primary" title="${escapeAttr(openTitle)}" aria-label="${escapeAttr(openTitle)}" onclick="runSearchAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover linked worktrees, and open the checkout.</span></button><button class="project-dashboard-action" title="${escapeAttr(menuTitle)}" aria-label="${escapeAttr(menuTitle)}" onclick="openSearchPalette()"><strong>${escapeHtml(actionsMenu.title)}</strong><span>${escapeHtml(actionsMenu.subtitle)}</span></button></div></div>`;
 }
 function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
-  const w = wsById[state.ws];
+  // D2 one-indicator rule: the workspace token derives from the ACTIVE
+  // TAB's row (route tab), not state.ws. A cross-workspace panel focused
+  // in the mixed tree names its owning workspace in the title; the
+  // selected-workspace fallback only covers tab-less states.
   const t = tabById[state.tab];
+  const tabWorkspaceId = t && t.workspace_id ? t.workspace_id : state.ws;
+  const w = wsById[tabWorkspaceId];
   const workspace = w
     ? w.worktree
       ? worktreeDisplayName(w)
       : w.label
-    : state.ws || state.session || "herdr";
+    : tabWorkspaceId || state.session || "herdr";
   const panel = t
-    ? agentTabLabel(state.ws, t, tabCountsByWorkspace) || tabTitle(t)
+    ? agentTabLabel(tabWorkspaceId, t, tabCountsByWorkspace) || tabTitle(t)
     : pane
       ? pane.pane_id
       : "panel";

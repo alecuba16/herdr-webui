@@ -390,15 +390,17 @@ test("a stored id absent from the filtered list but present in tabsById survives
   const panes = ctx.HerdrWorkspacePanes;
   ctx.state.tabs = [{ tab_id: "tab_2" }];
   ctx.state.tabsById = { tab_3: { tab_id: "tab_3", workspace_id: "ws-2", label: "other" } };
-  // Seed the tree with both ids: the split path plants tab_3 in the fresh
-  // leaf so the D10 rule, not the placement logic, decides its fate.
+  // Session-global tree (D1): the sync places ids from EVERY workspace,
+  // so tab_3 lands in the tree through the unfiltered map on its own.
+  // The render filter must keep it (terminalTabKnown), and the active
+  // pointer must hold onto it.
   panes.renderWorkspacePanes();
   const root = panes.paneRoot();
-  root.tabs.push("tab_3");
+  assert.deepEqual([...root.tabs].sort(), ["tab_2", "tab_3"], "unfiltered-map id placed and kept");
   root.active = "tab_3";
   panes.renderWorkspacePanes();
-  assert.deepEqual([...root.tabs], ["tab_2", "tab_3"], "unfiltered-map id survives the prune");
   assert.equal(root.active, "tab_3", "active pointer stays on the live id");
+  assert.ok(panes.paneTabsForTree(root).includes("tab_3"), "strip filter keeps the id");
 });
 
 test("a stored id missing from both the filtered list and the unfiltered maps drops", () => {
@@ -836,6 +838,182 @@ test("normalizePaneTree repairs sizes drift and collapses single-child splits", 
   assert.equal(root.children[0].tabs.length, 1, "collapsed leaf kept its tabs");
   assert.equal(root.sizes.length, 2, "sizes repaired to match children");
   assert.ok(root.children.every((child) => !!child.paneId), "pane ids assigned");
+});
+
+// ---- session-global tree (D1) --------------------------------------------
+// One tree per session: the store loads the session entry (or migrates
+// the first legacy entry), an all-empty stored tree resets to the default
+// pane (D13), and the tree survives a workspace switch unchanged.
+test("load imports the stored session tree and keeps foreign workspace ids", () => {
+  const stored = JSON.stringify({
+    __session__: {
+      root: {
+        kind: "row",
+        sizes: [1, 1],
+        activePaneId: "p1",
+        children: [
+          { kind: "pane", paneId: "p1", tabs: ["tab_2"], active: "tab_2" },
+          { kind: "pane", paneId: "p2", tabs: ["tab_9"], active: "tab_9" },
+        ],
+      },
+      at: 123,
+    },
+  });
+  const { document } = buildDom();
+  const ctx = loadPanesModuleWithStorage(document, "ws-1", stored);
+  const panes = ctx.HerdrWorkspacePanes;
+  const root = panes.paneRootFor();
+  assert.equal(root.kind, "row", "stored split restored");
+  deepEqual(panes.paneLeaves(root).map((leaf) => [...leaf.tabs]), [["tab_2"], ["tab_9"]], "leaves and ids restored");
+  assert.equal(root.activePaneId, "p1", "active pane pointer restored");
+});
+
+test("load migrates a legacy per-workspace blob by importing its first entry", () => {
+  const stored = JSON.stringify({
+    "ws|ws-1": {
+      root: { kind: "pane", tabs: ["tab_2"], active: "tab_2" },
+      at: 5,
+    },
+    "ws|ws-2": {
+      root: { kind: "pane", tabs: ["tab_7"], active: "tab_7" },
+      at: 6,
+    },
+  });
+  const { document } = buildDom();
+  const ctx = loadPanesModuleWithStorage(document, "ws-1", stored);
+  const panes = ctx.HerdrWorkspacePanes;
+  const root = panes.paneRootFor();
+  assert.ok(root.tabs.includes("tab_2"), "first legacy entry imported");
+  assert.ok(!root.tabs.includes("tab_7"), "other legacy entries dropped (D1 migration)");
+  assert.equal(Object.keys(ctx.state.workspacePanes).length, 1, "only the session entry lives in state");
+  assert.ok(ctx.state.workspacePanes["__session__"], "session key used");
+});
+
+test("load resets an all-empty stored tree to the single default pane", () => {
+  const stored = JSON.stringify({
+    __session__: {
+      root: {
+        kind: "row",
+        sizes: [1, 1],
+        activePaneId: null,
+        children: [
+          { kind: "pane", paneId: "p1", tabs: [], active: null },
+          { kind: "pane", paneId: "p2", tabs: [], active: null },
+        ],
+      },
+      at: 9,
+    },
+  });
+  const { document } = buildDom();
+  const ctx = loadPanesModuleWithStorage(document, "ws-1", stored);
+  const panes = ctx.HerdrWorkspacePanes;
+  const root = panes.paneRootFor();
+  assert.equal(root.kind, "pane", "D13: all-empty tree reset to one leaf");
+  assert.deepEqual([...root.tabs], ["terminal"], "reset leaf carries only the boot placeholder");
+  assert.equal(root.active, "terminal", "active pointer on the placeholder");
+  assert.ok(root.paneId, "reset leaf has a fresh pane id");
+});
+
+test("the tree survives a workspace switch (no per-workspace swap)", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  panes.renderWorkspacePanes();
+  assert.equal(panes.splitPaneRight(), true, "split the tree");
+  const root = panes.paneRootFor();
+  // Switch the selected workspace: the tree object must stay identical.
+  ctx.state.ws = "ws-2";
+  const rootAfterSwitch = panes.paneRootFor();
+  assert.equal(rootAfterSwitch, root, "same tree object across a workspace switch");
+  assert.equal(panes.paneLeaves(rootAfterSwitch).length, 2, "layout survived the switch");
+});
+
+// ---- mixed tree: badge (D4/D6) -------------------------------------------
+// The badge renders ONLY on a tree hosting multiple workspaces, only on
+// leaves whose tabs resolve to exactly one workspace, and the workspace
+// always comes from the tab rows, never the hosting workspace.
+test("the badge hides on a single-workspace tree and on mixed leaves", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  panes.renderWorkspacePanes();
+  const root = panes.paneRootFor();
+  // Single-workspace tree: no badge anywhere.
+  assert.ok(!JSON.stringify(panes.paneLeaves(root).map((leaf) => ctx.HerdrWorkspacePanes.paneWorkspaceBadgeHtml ? ctx.HerdrWorkspacePanes.paneWorkspaceBadgeHtml(leaf) : null)).includes("pane-ws-badge"), "no badge on a single-workspace tree");
+  // Mixed tree via the unfiltered map.
+  ctx.state.tabsById = { tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "other" } };
+  panes.renderWorkspacePanes();
+  const leaves = panes.paneLeaves(panes.paneRootFor());
+  // Every id resolved a workspace: two ids, one leaf, two workspaces in
+  // that leaf -> no badge (ids.length !== 1).
+  const badge = ctx.HerdrWorkspacePanes.paneWorkspaceBadgeHtml(leaves[0]);
+  assert.equal(badge, "", "no badge on a leaf mixing two workspaces");
+});
+
+test("the badge labels a single-workspace leaf on a mixed tree and routes on click", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main", worktree: { repo_name: "herdr", branch: "main" } },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  ctx.state.tabsById = { tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "other" } };
+  panes.renderWorkspacePanes();
+  assert.equal(panes.splitPaneRight(), true, "split the tree");
+  // Arrange each leaf to one workspace's tabs (drag-equivalent state,
+  // slice 4 wires the interaction): tab_2 (ws-1) left, tab_9 (ws-2)
+  // right.
+  const leaves = panes.paneLeaves(panes.paneRootFor());
+  leaves[0].tabs = ["tab_2"];
+  leaves[0].active = "tab_2";
+  leaves[1].tabs = ["tab_9"];
+  leaves[1].active = "tab_9";
+  const badgeHtml = ctx.HerdrWorkspacePanes.paneWorkspaceBadgeHtml(leaves[1]);
+  assert.ok(badgeHtml.includes("pane-ws-badge"), "badge renders on the single-workspace leaf");
+  assert.ok(badgeHtml.includes("feat"), "badge carries the workspace label");
+  assert.ok(badgeHtml.includes("'switch'"), "badge opens the picker in switch scope");
+  assert.ok(badgeHtml.includes(encodeURIComponent(leaves[1].paneId)), "badge addresses its own pane");
+  const otherBadge = ctx.HerdrWorkspacePanes.paneWorkspaceBadgeHtml(leaves[0]);
+  assert.ok(otherBadge.includes("main"), "sibling leaf badges its own workspace");
+});
+
+test("workspaceIdForTab resolves the row's workspace and falls back on a missing row", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  ctx.state.tabsById = { tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "other" } };
+  assert.equal(panes.workspaceIdForTab("tab_2"), "ws-1", "filtered row resolves");
+  assert.equal(panes.workspaceIdForTab("tab_9"), "ws-2", "unfiltered map row resolves");
+  assert.equal(panes.workspaceIdForTab("tab_missing"), "ws-1", "missing row falls back to state.ws");
+  assert.equal(panes.workspaceIdForTab(null), "ws-1", "empty id falls back to state.ws");
+});
+
+test("the strip + opens the picker with multiple workspaces and stays direct with one", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  panes.renderWorkspacePanes();
+  let strip = nodes.container.querySelector(".pane-tab-strip") || document.getElementById("workspacePanes").children[0];
+  const singlePlus = JSON.stringify(strip ? strip.innerHTML : "");
+  assert.ok(!singlePlus.includes("pane-new-picker"), "single workspace keeps the direct create");
+  // A second workspace switches the + to the picker entry (D3).
+  ctx.state.workspaces.push({ workspace_id: "ws-2", label: "feat" });
+  panes.renderWorkspacePanes();
+  const strips = [...nodes.container.querySelectorAll(".pane-tab-strip")];
+  assert.ok(strips.length >= 1, "strip rendered");
+  assert.ok(strips.some((s) => s.innerHTML.includes("pane-new-picker")), "multi-workspace + opens the picker");
+  assert.ok(strips.every((s) => !s.innerHTML.includes("newTabForPane('')")), "no empty-pane direct create leak");
 });
 
 // ---- Phase 5: maximize + [⋮] pane menu --------------------------------

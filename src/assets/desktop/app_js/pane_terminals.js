@@ -16,7 +16,14 @@
   const inputEncoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
 
   function tabKey(tabId) {
-    return `${state.ws || "__default__"}|${tabId}`;
+    // Session-global tree: the key is the tab id alone. The old
+    // workspace|tab keying broke the mixed tree: a foreign workspace's
+    // tab would collide with a same-id local tab across keys, and the
+    // registry could never tell which surface a leaf was re-rendering.
+    // Builtin backend ids come from one global counter (next_id in
+    // builtin_backend.rs), unique across workspaces; the external
+    // backend's ids come from the daemon's own generator.
+    return `${tabId}`;
   }
 
   function wsUrlFor(path) {
@@ -38,10 +45,17 @@
   }
 
   function terminalIdForTab(tabId) {
+    // Session-global tree: resolve from every pane row the snapshot
+    // ships (state.panes is workspace-filtered, panesById carries the
+    // rest). One row names the terminal either way.
     const panes = state.panes || [];
     const focused = panes.find((p) => p.tab_id === tabId && p.focused);
     const any = focused || panes.find((p) => p.tab_id === tabId);
-    return any ? any.terminal_id : null;
+    if (any) return any.terminal_id;
+    const mapRows = (state.panesById && state.panesById[tabId]) || [];
+    const mapFocused = mapRows.find((p) => p && p.focused);
+    const mapAny = mapFocused || mapRows[0];
+    return mapAny ? mapAny.terminal_id : null;
   }
 
   // Grid from the slot's box: the aux surface has no resize renegotiation
@@ -62,6 +76,11 @@
   function dispose(entry) {
     if (!entry) return;
     entry.disposed = true;
+    const pending = ptyResizeTimers.get(entry.key);
+    if (pending) {
+      clearTimeout(pending);
+      ptyResizeTimers.delete(entry.key);
+    }
     try {
       if (entry.observer && typeof entry.observer.disconnect === "function")
         entry.observer.disconnect();
@@ -264,7 +283,35 @@
       try {
         entry.term.resize(size.cols, size.rows);
       } catch (e) {}
+      // D9 resize-in-place: the wterm grid change must reach the pty
+      // too, or full-screen TUIs (vim, htop, agent TUIs) keep drawing the
+      // pre-drag grid after a divider drag. The socket accepts the same
+      // {type:"resize"} text message the primary surface sends
+      // (terminal_text_messages maps it to ClientMessage::Resize).
+      // Debounced: divider drags fire fitAll per pointerup and window
+      // resizes fire bursts; the pty only needs the final grid.
+      schedulePtyResize(entry, size.cols, size.rows);
     }
+  }
+
+  // One pending resize per entry; the trailing timer carries the latest
+  // grid. A disposed entry cancels itself: the timer callback checks the
+  // registry and the disposed flag before sending.
+  const ptyResizeTimers = new Map();
+  function schedulePtyResize(entry, cols, rows) {
+    if (!entry || !entry.key) return;
+    const pending = ptyResizeTimers.get(entry.key);
+    if (pending) clearTimeout(pending);
+    const timer = setTimeout(() => {
+      ptyResizeTimers.delete(entry.key);
+      if (entry.disposed) return;
+      const ws = entry.ws;
+      if (!ws || ws.readyState !== 1) return;
+      try {
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      } catch (e) {}
+    }, 200);
+    ptyResizeTimers.set(entry.key, timer);
   }
 
   // Re-theme open aux surfaces on theme switch. Panes are the

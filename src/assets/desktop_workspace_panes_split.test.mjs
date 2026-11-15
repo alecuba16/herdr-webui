@@ -284,7 +284,7 @@ test("newLeaf/newEmptyLeaf mint unique pane ids across workspaces", () => {
   assert.ok(!otherIds.includes(ids[1]), "fresh module contexts mint independent ids");
 });
 
-test("stores split trees only while the workspace is open", () => {
+test("the session tree persists to storage and reload restores it", () => {
   const { document } = buildDom();
   const saved = {};
   const ctx = loadPanesModuleWithStorage(document, "ws-1", null, saved);
@@ -296,18 +296,21 @@ test("stores split trees only while the workspace is open", () => {
   leaves[0].tabs.push("editor:src/demo.py");
   panes.saveWorkspacePanesStates();
   const blob = JSON.parse(saved["herdr-web-workspace-panes"]);
-  const entry = blob["ws|ws-1"];
+  const entry = blob["__session__"];
+  assert.ok(entry, "session entry stored under the fixed key");
   assert.equal(entry.root.kind, "row", "root kind persisted");
   assert.equal(entry.root.children.length, 2, "children persisted");
   assert.ok(panes.paneLeaves(entry.root).length >= 3, "leaves persisted");
-  // Reload in a fresh module: the stored tree is discarded and a fresh leaf
-  // is created for the reopened workspace.
+  assert.ok(panes.paneLeaves(entry.root).some((leaf) => leaf.tabs.includes("editor:src/demo.py")), "editor tab persisted");
+  // Reload in a fresh module: the stored session tree comes back (D1),
+  // ids intact. Only genuinely dead ids leave on the first snapshot sync.
   const reloaded = loadPanesModuleWithStorage(buildDom().document, "ws-1", saved["herdr-web-workspace-panes"], null);
   const reRoot = reloaded.HerdrWorkspacePanes.paneRoot();
-  assert.equal(reRoot.kind, "pane", "reload resets the pane tree");
+  assert.equal(reRoot.kind, "row", "reload restores the session split");
   const reLeaves = reloaded.HerdrWorkspacePanes.paneLeaves(reRoot);
-  assert.equal(reLeaves.length, 1, "reload resets to one leaf");
-  assert.ok(!reLeaves.some((leaf) => leaf.tabs.includes("editor:src/demo.py")), "editor tab is removed on reload");
+  assert.equal(reLeaves.length, leaves.length, "layout survives reload");
+  const allIds = reLeaves.flatMap((leaf) => [...leaf.tabs]);
+  assert.ok(allIds.includes("editor:src/demo.py"), "editor tab survives reload");
 });
 
 test("normalizePaneTree mints pane ids for id-less stored leaves", () => {
@@ -332,7 +335,7 @@ test("normalizePaneTree mints pane ids for id-less stored leaves", () => {
   assert.ok(leaves.every((leaf) => !!leaf.paneId), "ids minted on load");
 });
 
-test("forgetWorkspacePanes drops the workspace tree and stored tabs", () => {
+test("forgetWorkspacePanes keeps the session tree and only sweeps the closed workspace's ids", () => {
   const { document } = buildDom();
   const saved = {};
   const ctx = loadPanesModuleWithStorage(document, "ws-1", null, saved);
@@ -344,8 +347,9 @@ test("forgetWorkspacePanes drops the workspace tree and stored tabs", () => {
 
   panes.forgetWorkspacePanes("ws-1");
 
-  assert.equal(ctx.state.workspacePanes["ws|ws-1"], undefined, "closed workspace tree is removed from memory");
-  assert.equal(saved["herdr-web-workspace-panes"], undefined, "closed workspace tree is removed from storage");
+  assert.ok(ctx.state.workspacePanes["__session__"], "session tree survives the workspace close (D1)");
+  assert.equal(ctx.state.workspacePanes["ws|ws-1"], undefined, "legacy per-workspace entries are dropped");
+  assert.ok(saved["herdr-web-workspace-panes"], "session tree stays persisted after the close");
 });
 
 // ---- 2. sync ---------------------------------------------------------------
