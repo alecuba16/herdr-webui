@@ -375,6 +375,8 @@ const MOBILE_BUNDLE_FILES = [
   "./mobile/directory_picker.js",
   "./mobile/file_browser.js",
   "./mobile/notes.js",
+  "./mobile/tour_steps.js",
+  "./mobile/tour.js",
   "./mobile/settings.js",
   "./mobile/search.js",
   "./mobile/git.js",

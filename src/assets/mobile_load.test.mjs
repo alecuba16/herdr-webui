@@ -648,6 +648,8 @@ const MOBILE_BUNDLE_FILES = [
   "./mobile/directory_picker.js",
   "./mobile/file_browser.js",
   "./mobile/notes.js",
+  "./mobile/tour_steps.js",
+  "./mobile/tour.js",
   "./mobile/settings.js",
   "./mobile/search.js",
   "./mobile/git.js",
@@ -1313,6 +1315,9 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     runSource(ctx);
     await ctx.HerdrMobile.refresh();
+    // Drain the boot-time timers (onboarding tour auto-start check) so the
+    // measurement below sees only the socket-refresh timers.
+    await ctx.flushTimers();
     const before = ctx.requests.length;
 
     const eventSocket = ctx.sockets.find((socket) => String(socket.url).includes("/ws/events"));

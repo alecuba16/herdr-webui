@@ -18,15 +18,17 @@ with the live UI as the prop.
 | --- | --- | --- |
 | WebUI | auto-starts ~600ms after boot when no prior record exists | Help modal, "Replay the tour" button |
 | TUI | no auto-start (auto-start is a webui localStorage behavior; the TUI has no persisted first-run store) | Help overlay, `T` key |
+| Mobile | auto-starts ~600ms after boot when no prior record exists | Settings, Tour group, "Replay the onboarding tour" button |
 
 The WebUI tour is desktop-only: the steps ship in the desktop bundle
-(`app_js/`), and the mobile bundle has no tour. The TUI covers terminal
-users.
+(`app_js/`), and the mobile bundle ships its own tour (`mobile/tour.js` +
+`mobile/tour_steps.js`). The TUI covers terminal users.
 
-Persistence (WebUI only): `localStorage` key `herdr-web-tour-done`
-holds `done` when the last step is reached, `skipped` after an early
-exit. Both values suppress the auto-start; only the explicit replay
-paths start it again. The `reset()` export clears the key.
+Persistence: WebUI `localStorage` key `herdr-web-tour-done`, mobile
+`localStorage` key `herdr-mobile-tour-done`. Each holds `done` when the
+last step is reached, `skipped` after an early exit. Both values suppress
+the auto-start; only the explicit replay paths start it again. The
+`reset()` export clears the key. The TUI has no persisted first-run store.
 
 ## The steps (both surfaces, same order)
 
@@ -106,7 +108,6 @@ checks the tour first, so ordering stays safe either way.
 | `src/tui/tour.rs` | `TourRegion`, `TourStep`, `tour_steps()` table, `TuiApp::{open_tour, close_tour, run_tour_demo, handle_tour_key, tour_step}`, `render_tour` (accent border + bottom card). |
 | `src/tui/tour/tests.rs` | 6 tests: first step + demo, forward/back with demo side effects, finish at the last step, no key leakage, Esc close + Help replay, step order parity with the WebUI. |
 | `src/tui/model.rs`, `src/tui/mod.rs`, `src/tui/keys.rs`, `src/tui/render/mod.rs` | `TuiMode::Tour`, `tour_index`/`tour_finished`/`tour_demo_overlay` fields, mode dispatch, footer hints, render wiring. |
-
 Key behavior: the tour owns every key while open (`j`/Right/Enter
 next, `k`/Left back, Esc/q/`?` close); nothing leaks into navigation or
 the panes below. The step's demo surface (search palette) renders
@@ -114,6 +115,25 @@ below the card because the TUI has a single exclusive mode: the demo
 records the overlay it opened, the tour takes the mode back for keys
 and render order, and closing the tour still unwinds the overlay stack
 to the pre-tour context.
+
+## Mobile implementation
+
+| File | Role |
+| --- | --- |
+| `src/assets/mobile/tour_steps.js` | Step table: target selector, title, body, demo closure, `showWhen` guard. Targets the mobile shell (nav bar, header title). Exports `HerdrMobileTourSteps`. |
+| `src/assets/mobile/tour.js` | Driver: spotlight cutout, bottom card, keyboard (Esc/Enter/Arrows) as a secondary path, `localStorage` persistence, stop cleanup. Exports `HerdrMobileTour`. |
+| `src/assets/mobile/tour.css` | Spotlight, card, buttons at the 44px touch standard, reduced-motion support. Served at `/assets/mobile/tour.css`. |
+| `src/assets/mobile_tour.test.mjs` | vm-harness tests (fake DOM), mirroring the desktop tour suite. |
+| `src/assets/mobile/settings.js` | Settings "Tour" group with the replay button (`HerdrMobile.replayTour()`). |
+| `src/assets/mobile/app.js` | Boot auto-start after `connectEvents` (600ms, suppressed when the persisted flag exists). |
+| `src/assets.rs`, `src/main.rs`, `src/assets/app_boot.js` | Asset constants, routes, and mobile bundle wiring. |
+
+Key behavior: touch-first. Back/Next buttons drive the steps; keyboard
+(Esc/Enter/Arrows) works as a secondary path. Demos call the real
+`HerdrMobile` functions (`showScreen`, `openWorkspacesSheet`,
+`openDrawer`), and `stop()` closes the sheets the demos opened. The
+mobile step list follows the desktop story (search, workspaces, home,
+terminal, git, files, more, replay hint) with mobile-specific targets.
 
 ## Step parity table
 
@@ -130,13 +150,18 @@ to the pre-tour context.
 
 ## Maintenance rules
 
-- Adding a step: add the entry in both `tour_steps` tables, same
+- Adding a step: add the entry in every `tour_steps` table, same
   position, same story. Keep the WebUI order as the source of truth
-  (the TUI test asserts the parity).
+  (the TUI test asserts the parity; the mobile table maps the same
+  story onto mobile targets).
 - Chord labels: never hardcode a key string. Store the shortcut
-  identity and resolve it through the configured map.
+  identity and resolve it through the configured map. The mobile tour
+  names no chords: every action has a button or a tap instead.
 - Demos: call the real action function. If a demo opens an overlay,
   the TUI needs the `tour_demo_overlay` record (see `run_tour_demo`);
-  the WebUI needs `hideOnDemo: true` so the spotlight repaints.
-- Tests: `src/assets/tour.test.mjs` (WebUI) and `src/tui/tour/tests.rs`
-  (TUI) must both cover step order and demo side effects.
+  the WebUI needs `hideOnDemo: true` so the spotlight repaints; the
+  mobile driver repaints after every demo and closes opened
+  sheets/drawers in `stop()`.
+- Tests: `src/assets/tour.test.mjs` (WebUI), `src/assets/mobile_tour.test.mjs`
+  (mobile), and `src/tui/tour/tests.rs` (TUI) must all cover step order
+  and demo side effects.
