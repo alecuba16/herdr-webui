@@ -129,6 +129,7 @@ function makeHarness() {
   document.queryResults.set("#mobileTitle", title);
 
   const storage = new Map();
+  const windowListeners = {};
   const flags = { screenShown: [], workspacesSheetOpened: 0, drawerOpened: 0, drawerClosed: 0, searchClosed: 0, timeouts: [] };
   const ctx = {
     document,
@@ -138,7 +139,7 @@ function makeHarness() {
       removeItem: (k) => storage.delete(k),
     },
     setTimeout: (fn) => { flags.timeouts.push(fn); return flags.timeouts.length; },
-    addEventListener() {},
+    addEventListener(type, fn) { (windowListeners[type] || (windowListeners[type] = [])).push(fn); },
     removeEventListener() {},
     matchMedia: () => ({ matches: false }),
     innerWidth: 390,
@@ -157,8 +158,15 @@ function makeHarness() {
   ctx.globalThis = ctx;
   const context = vm.createContext(ctx);
 
-  const stepsScript = new vm.Script(source("mobile/tour_steps.js"), { filename: "tour_steps.js" });
-  const driverScript = new vm.Script(source("mobile/tour.js"), { filename: "tour.js" });
+  // Real absolute filenames (same pattern as mobile_load.test.mjs) so
+  // NODE_V8_COVERAGE attributes the vm-executed statements to the source
+  // files; a bare filename makes the coverage report blind to the tour.
+  const stepsScript = new vm.Script(source("mobile/tour_steps.js"), {
+    filename: fileURLToPath(new URL("mobile/tour_steps.js", import.meta.url)),
+  });
+  const driverScript = new vm.Script(source("mobile/tour.js"), {
+    filename: fileURLToPath(new URL("mobile/tour.js", import.meta.url)),
+  });
   stepsScript.runInContext(context);
   driverScript.runInContext(context);
   return {
@@ -176,6 +184,9 @@ function makeHarness() {
     flushTimeouts() {
       const pending = flags.timeouts.splice(0);
       for (const fn of pending) fn();
+    },
+    resize() {
+      for (const fn of windowListeners.resize || []) fn();
     },
   };
 }
@@ -347,6 +358,122 @@ describe("onboarding tour (mobile)", () => {
       assert.ok(step.title, "title present");
       assert.ok(typeof step.body === "string" || typeof step.body === "function", "body present");
     }
+  });
+
+  it("ArrowLeft goes back without stopping the tour", () => {
+    const h = makeHarness();
+    h.tour.start();
+    h.press("ArrowRight");
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Workspaces");
+    h.press("ArrowLeft");
+    assert.equal(h.tour.isActive(), true, "ArrowLeft moved back, tour still running");
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Search");
+  });
+
+  it("tapping the dim layer stops the tour like Skip", () => {
+    const h = makeHarness();
+    h.tour.start();
+    const root = h.document.body.children.find((node) => String(node.className).includes("tour-root"));
+    assert.ok(root, "tour root mounted");
+    // Real browsers bubble the spot tap up to the root listener; the fake
+    // element dispatches only on the node, so call the root handler with a
+    // spot target the same way the event would arrive.
+    const listeners = root._listeners.click || [];
+    assert.ok(listeners.length, "root has the click-to-stop listener");
+    const spot = root.children.find((node) => String(node.className).includes("tour-spot"));
+    for (const listener of listeners) listener({ target: spot });
+    assert.equal(h.tour.isActive(), false, "tap on the dim layer stopped the tour");
+    assert.equal(h.storage.get("herdr-mobile-tour-done"), "skipped");
+  });
+
+  it("a step whose target cannot resolve advances instead of stalling", () => {
+    const h = makeHarness();
+    h.tour.start();
+    // Break the Workspaces step target: querySelector returns null, the
+    // driver must skip forward to Home rather than render a broken card.
+    h.document.queryResults.delete("#mobileTitle");
+    h.press("ArrowRight");
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Home");
+    assert.equal(h.tour.isActive(), true);
+  });
+
+  it("resize repaints the current step without advancing", () => {
+    const h = makeHarness();
+    h.tour.start();
+    h.resize();
+    assert.equal(h.tour.isActive(), true);
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Search");
+    assert.equal(h.document.getElementById("mobileTourStep").textContent, "1 / 14");
+  });
+
+  it("showWhen guards that throw are treated as excluded, and isDone survives a broken storage", () => {
+    const h = makeHarness();
+    // showWhen throwing: the Search step is filtered out, the tour starts
+    // at Workspaces (first allowed step) instead of crashing.
+    const realSteps = h.stepsApi.steps;
+    h.context.HerdrMobileTourSteps.steps = () => {
+      const list = realSteps.call(h.context.HerdrMobileTourSteps);
+      list[0].showWhen = () => { throw new Error("settings read failed"); };
+      return list;
+    };
+    h.tour.start();
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Workspaces");
+    h.tour.stop(false);
+    // localStorage.getItem throwing: isDone returns false instead of
+    // surfacing the error to boot code.
+    const realGet = h.context.localStorage.getItem;
+    h.context.localStorage.getItem = () => { throw new Error("storage unavailable"); };
+    assert.equal(h.tour.isDone(), false);
+    h.context.localStorage.getItem = realGet;
+  });
+
+  it("a matchMedia that throws degrades to full motion without breaking the tour", () => {
+    const h = makeHarness();
+    h.tour.start();
+    h.context.matchMedia = () => { throw new Error("matchMedia unavailable"); };
+    h.press("ArrowRight");
+    assert.equal(h.tour.isActive(), true, "tour kept running with a broken matchMedia");
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Workspaces");
+  });
+
+  it("the replay-hint step falls back to the full viewport when the nav is missing", () => {
+    const h = makeHarness();
+    h.tour.start();
+    h.document.queryResults.delete(".mobile-nav");
+    for (let i = 0; i < 13; i++) h.document.getElementById("mobileTourNext").click();
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Replay any time");
+    assert.equal(h.tour.isActive(), true, "body step rendered without the nav");
+    h.tour.stop(false);
+  });
+
+  it("a selector that throws skips the step instead of crashing the tour", () => {
+    const h = makeHarness();
+    h.tour.start();
+    const realQuery = h.document.querySelector;
+    h.document.querySelector = (selector) => {
+      if (selector === "#mobileTitle") throw new Error("invalid selector");
+      return realQuery.call(h.document, selector);
+    };
+    h.press("ArrowRight");
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Home", "throwing target skipped forward");
+    assert.equal(h.tour.isActive(), true);
+    h.document.querySelector = realQuery;
+  });
+
+  it("an empty step table starts and finishes immediately with the done flag", () => {
+    const h = makeHarness();
+    h.context.HerdrMobileTourSteps.steps = () => [];
+    h.tour.start();
+    assert.equal(h.tour.isActive(), false, "no steps to show");
+    assert.equal(h.storage.get("herdr-mobile-tour-done"), "done");
+  });
+
+  it("the Search step's showWhen guard defaults to shown when options cannot be read", () => {
+    const h = makeHarness();
+    h.context.HerdrOptions = { read: () => { throw new Error("options unavailable"); } };
+    h.tour.start();
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Search", "broken options still show the Search step");
+    h.tour.stop(false);
   });
 
   it("step selectors match the real shell markup in mobile/app.js and screens.js", () => {

@@ -4923,6 +4923,18 @@ describe("mobile worktrees screen actions", () => {
     );
   });
 
+  it("replayTour from the settings screen starts the onboarding tour", async () => {
+    const ctx = await bootWorktreesScreen();
+    await ctx.flushTimers();
+    ctx.HerdrMobile.showScreen("settings");
+    await ctx.settle();
+    ok(typeof ctx.HerdrMobile.replayTour === "function", "replayTour exported");
+    let started = 0;
+    ctx.HerdrMobileTour.start = () => { started += 1; };
+    ctx.HerdrMobile.replayTour();
+    equal(started, 1, "replayTour delegates to the tour module");
+  });
+
   it("setWorktreeCreateExpanded toggles the create disclosure", async () => {
     const ctx = await bootWorktreesScreen();
     ctx.HerdrMobile.setWorktreeCreateExpanded(true);
