@@ -4315,7 +4315,7 @@ impl TuiApp {
             self.pane_history_exhausted = false;
             self.pane_buffers_pane_id = Some(pane_id.clone());
         }
-        match self.client.read_pane(&pane_id) {
+        match self.client.read_pane_screen(&pane_id) {
             Ok(value) => {
                 let text = value
                     .get("read")
@@ -4375,7 +4375,7 @@ impl TuiApp {
             let mut tails = Vec::with_capacity(visible.len());
             for pane_id in &visible {
                 let text = client
-                    .read_pane(pane_id)
+                    .read_pane_screen(pane_id)
                     .ok()
                     .and_then(|value| {
                         value
@@ -6686,6 +6686,71 @@ mod batch11_coverage_tests {
             Some(""),
             "failed fetch lands an empty tail"
         );
+
+        // Built-in-shaped socket: the worker must request the screen format
+        // (fullscreen agents read as garbage under the strip format) and the
+        // tail cache holds the screen reply verbatim.
+        let base = std::path::PathBuf::from("/tmp")
+            .join(format!("herdr-tui-tail-screen-{}", std::process::id()));
+        let builtin_path = base.join("builtin/default/herdr.sock");
+        std::fs::create_dir_all(builtin_path.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&builtin_path);
+        let builtin_name = builtin_path
+            .clone()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap();
+        let builtin_listener = ListenerOptions::new()
+            .name(builtin_name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let (screen_tx, screen_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let Ok(mut stream) = builtin_listener.accept() else {
+                return;
+            };
+            let mut line = String::new();
+            {
+                use std::io::{BufRead, BufReader, Write};
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let _ = screen_tx.send(line.clone());
+                let response = serde_json::json!({
+                    "id": serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"],
+                    "result": {"read": {"text": "screen tail"}}
+                });
+                let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
+            }
+        });
+        let builtin_path_str = builtin_path.to_str().unwrap().to_string();
+        app.client = BackendClient::new(&builtin_path_str, &builtin_path_str);
+        app.tile_tails.clear();
+        app.refresh_tile_tails();
+        for _ in 0..200 {
+            app.poll_tile_tails();
+            if app.tile_tail_rx.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let requested = screen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker must issue a pane.read against the builtin socket");
+        let request: serde_json::Value = serde_json::from_str(&requested).unwrap();
+        assert_eq!(request["method"], "pane.read");
+        assert_eq!(
+            request["params"]["format"], "screen",
+            "builtin-shaped sockets must request the screen format"
+        );
+        assert_eq!(
+            app.tile_tails.get("pane_1").map(String::as_str),
+            Some("screen tail")
+        );
+        let _ = std::fs::remove_dir_all(base);
     }
 
     /// deepen_pane_history growth arm: a second deep fetch doubles the

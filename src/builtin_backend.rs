@@ -81,6 +81,12 @@ const RESOLVE_TAIL_BYTES: usize = 64 * 1024;
 /// the server side. The bounded tail keeps the visible state (well under
 /// 256KB for any real session) while old scrollback stays server-side only.
 const ATTACH_REPLAY_MAX_BYTES: usize = 256 * 1024;
+/// Screen-format pane.read emulation window. A fullscreen TUI repaints its
+/// whole screen frequently, so the emulated tail needs enough bytes to
+/// cover the last full repaint or the preview renders a half-erased screen.
+/// 256KB matches the attach replay bound: enough for many full repaints of
+/// a dense screen, cheap enough for the 200ms TUI tail poll cadence.
+const PANE_READ_SCREEN_TAIL_BYTES: usize = 256 * 1024;
 /// Mouse + bracketed-paste resets synthesized on agent exit. jcode never
 /// emits DECRST itself (crossterm's try_restore only restores raw mode and
 /// leaves the alternate screen), so its DECSET mouse-tracking bytes would
@@ -1069,9 +1075,19 @@ impl BuiltinState {
             | "file.delete" => crate::file_browser::socket_dispatch(method, params),
             "pane.read" => {
                 let pane_id = required_string(&params, "pane_id")?;
-                let text = self.read_pane_recent(&pane_id)?;
+                let format = optional_string(&params, "format");
+                let screen = format.as_deref() == Some("screen");
+                if !screen && format.is_some() {
+                    return Err(format!("unknown pane.read format: {format:?}"));
+                }
+                let text = if screen {
+                    self.read_pane_screen(&pane_id)?
+                } else {
+                    self.read_pane_recent(&pane_id)?
+                };
+                let format = if screen { "screen" } else { "text" };
                 Ok(
-                    json!({ "type": "pane_read", "read": { "pane_id": pane_id, "text": text, "format": "text" } }),
+                    json!({ "type": "pane_read", "read": { "pane_id": pane_id, "text": text, "format": format } }),
                 )
             }
             "agent.prompt" => {
@@ -1973,18 +1989,7 @@ impl BuiltinState {
     }
 
     fn read_pane_recent(&self, pane_id: &str) -> Result<String, String> {
-        let terminal = {
-            let data = self
-                .data
-                .lock()
-                .map_err(|_| "state unavailable".to_string())?;
-            let pane = data
-                .panes
-                .get(pane_id)
-                .ok_or_else(|| format!("pane {pane_id} not found"))?;
-            data.terminals.get(&pane.terminal_id).cloned()
-        }
-        .ok_or_else(|| "terminal not found".to_string())?;
+        let terminal = self.terminal_for_read(pane_id)?;
         // Match external herdr's pane.read default (strip_ansi: true) so
         // inline-image payloads (Kitty APC, Sixel DCS, iTerm2 OSC 1337)
         // never leak as base64 garbage into API consumers. Drop mode keeps
@@ -1993,6 +1998,37 @@ impl BuiltinState {
             &String::from_utf8_lossy(&terminal.history_bytes()),
             terminal_text::StripCarriageReturn::Drop,
         ))
+    }
+
+    /// Screen-shaped pane.read (`format=screen`): VT-emulates a bounded
+    /// scrollback tail instead of ANSI-stripping the full history. Fullscreen
+    /// TUIs (jcode, claude) address the cursor and erase rows instead of
+    /// printing lines; a plain strip leaves every draw fragment in the text,
+    /// so the TUI tile/tail previews render glued garbage rows. Emulation
+    /// applies erase/move/CR, recovering the composed screen. Bounded tail:
+    /// a full-scrollback emulation on every 200ms tail poll would cost more
+    /// than the strip it replaces (VT core is linear in input either way,
+    /// but the strip walks the whole 8MB cap while this window stays 256KB).
+    fn read_pane_screen(&self, pane_id: &str) -> Result<String, String> {
+        let terminal = self.terminal_for_read(pane_id)?;
+        Ok(terminal.history_tail_text(PANE_READ_SCREEN_TAIL_BYTES))
+    }
+
+    /// Resolve a pane to its terminal for the pane.read family. Shared by
+    /// both formats so the error shape stays identical.
+    fn terminal_for_read(&self, pane_id: &str) -> Result<Arc<TerminalRuntime>, String> {
+        let data = self
+            .data
+            .lock()
+            .map_err(|_| "state unavailable".to_string())?;
+        let pane = data
+            .panes
+            .get(pane_id)
+            .ok_or_else(|| format!("pane {pane_id} not found"))?;
+        data.terminals
+            .get(&pane.terminal_id)
+            .cloned()
+            .ok_or_else(|| "terminal not found".to_string())
     }
 
     fn worktree_list(&self, cwd: Option<String>) -> Result<Value, String> {
@@ -10133,6 +10169,90 @@ mod tests {
                 JcodeDetectionVariant::Vanilla
             ),
             "idle"
+        );
+    }
+
+    #[test]
+    fn builtin_read_pane_screen_format_replays_composed_screen() {
+        // Fullscreen-TUI draw stream (jcode shape): repaint via cursor
+        // addressing and erase ops, spinner frames glued by CR. The plain
+        // strip format keeps every draw fragment, so the tail reads as
+        // garbage rows; format=screen must replay the same bytes into the
+        // composed final screen.
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(hermetic_test_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Screen" }));
+        let (pane_id, terminal) = {
+            let data = state.data.lock().unwrap();
+            let (pane_id, pane) = data.panes.iter().next().unwrap();
+            let terminal = data.terminals.get(&pane.terminal_id).unwrap().clone();
+            (pane_id.clone(), terminal)
+        };
+        let draw = concat!(
+            "\u{1b}[2J\u{1b}[H",
+            " Tasks\r\n",
+            " ⠙ Working…\r\n",
+            "\u{1b}[2;1H", // next frame: repaint the status row in place
+            "\u{1b}[K",
+            " ✓ Done",
+            "\u{1b}[1;3H", // rewrite part of the header row in place
+            "clean",
+            "\r\n",
+        );
+        terminal.append_output(draw.as_bytes());
+
+        let screen = state.read_pane_screen(&pane_id).unwrap();
+        assert!(
+            screen.contains("clean"),
+            "screen format lost the cursor-addressed write: {screen:?}"
+        );
+        assert!(
+            screen.contains("✓ Done"),
+            "screen format lost the rewrite: {screen:?}"
+        );
+        assert!(
+            !screen.contains("asks"),
+            "overwritten header fragment must not survive: {screen:?}"
+        );
+        assert!(
+            !screen.contains("⠙"),
+            "erased spinner frame must not survive: {screen:?}"
+        );
+
+        // Same bytes through the default strip format: the draw fragments
+        // glue into the garbage rows the TUI previews used to show.
+        let stripped = state.read_pane_recent(&pane_id).unwrap();
+        assert!(
+            stripped.contains("⠙"),
+            "strip keeps erased fragments (the old garbage): {stripped:?}"
+        );
+
+        // Wire shape: format param routes to the screen read and reports
+        // itself; unknown formats refuse instead of silently stripping.
+        let response = state.handle_request(
+            "read",
+            "pane.read",
+            json!({ "pane_id": pane_id, "format": "screen" }),
+        );
+        assert_eq!(response["result"]["read"]["format"], "screen");
+        assert_eq!(response["result"]["read"]["text"].as_str().unwrap(), screen);
+        let plain = state.handle_request("read", "pane.read", json!({ "pane_id": pane_id }));
+        assert_eq!(plain["result"]["read"]["format"], "text");
+        let bogus = state.handle_request(
+            "read",
+            "pane.read",
+            json!({ "pane_id": pane_id, "format": "pixels" }),
+        );
+        assert!(
+            bogus["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("unknown pane.read format"),
+            "unknown format must refuse: {bogus}"
         );
     }
 
