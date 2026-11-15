@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { deepEqual } from "node:assert";
 import vm from "node:vm";
 
 // Compiled once so coverage attributes workspace_panes.js lines to the real file.
@@ -376,6 +377,69 @@ test("backend panel ids sync into the pane tree and render in the strip", () => 
   ctx.state.tabs = [];
   panes.renderWorkspacePanes();
   assert.deepEqual([...root.tabs], ["tab_2", "editor:src/demo.py"], "empty panel list keeps the tree");
+});
+
+// ---- unfiltered universe + prune rule (split-panel slice 2, D10) -------
+// The snapshot ships id -> row maps from the UNFILTERED arrays: a stored
+// id whose row the workspace filter dropped must stay (snapshot race,
+// cross-workspace tree), and a genuinely closed id must drop. The eager
+// workspace-close sweep must act before the state rows leave.
+test("a stored id absent from the filtered list but present in tabsById survives the prune", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [{ tab_id: "tab_2" }];
+  ctx.state.tabsById = { tab_3: { tab_id: "tab_3", workspace_id: "ws-2", label: "other" } };
+  // Seed the tree with both ids: the split path plants tab_3 in the fresh
+  // leaf so the D10 rule, not the placement logic, decides its fate.
+  panes.renderWorkspacePanes();
+  const root = panes.paneRoot();
+  root.tabs.push("tab_3");
+  root.active = "tab_3";
+  panes.renderWorkspacePanes();
+  assert.deepEqual([...root.tabs], ["tab_2", "tab_3"], "unfiltered-map id survives the prune");
+  assert.equal(root.active, "tab_3", "active pointer stays on the live id");
+});
+
+test("a stored id missing from both the filtered list and the unfiltered maps drops", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [{ tab_id: "tab_2" }];
+  ctx.state.tabsById = { tab_2: { tab_id: "tab_2", workspace_id: "ws-1" } };
+  panes.renderWorkspacePanes();
+  const root = panes.paneRoot();
+  root.tabs.push("tab_gone");
+  root.active = "tab_gone";
+  panes.renderWorkspacePanes();
+  assert.deepEqual([...root.tabs], ["tab_2"], "dead id pruned from the leaf");
+  assert.equal(root.active, "tab_2", "pointer heals onto the survivor");
+});
+
+test("pruneWorkspaceTabsFromPanes sweeps a closed workspace's ids eagerly and collapses emptied leaves", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  // ws-1 tree: split with tab_2 (ws-1) on the left, tab_3 (ws-2) right.
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  ctx.state.allTabs = [
+    { tab_id: "tab_2", workspace_id: "ws-1" },
+    { tab_id: "tab_3", workspace_id: "ws-2" },
+  ];
+  panes.renderWorkspacePanes();
+  assert.equal(panes.splitPaneRight(), true, "split plants the second leaf");
+  const root = panes.paneRootFor();
+  const rightLeaf = panes.paneLeaves(root).find((leaf) => leaf.tabs.length === 0);
+  rightLeaf.tabs.push("tab_3");
+  rightLeaf.active = "tab_3";
+
+  // ws-2 closes: its ids must leave every tree NOW, not on the next poll.
+  assert.equal(panes.pruneWorkspaceTabsFromPanes("ws-2"), true, "sweep reports a change");
+  // deepEqual, not deepStrictEqual: leaf arrays are vm-realm objects.
+  deepEqual(panes.paneLeaves(root).map((leaf) => [...leaf.tabs]), [["tab_2"], []], "ws-2 id gone, ws-1 id stays");
+  // The emptied right leaf collapsed: the tree is the single left leaf.
+  assert.equal(panes.paneLeaves(panes.paneRootFor()).length, 1, "emptied leaf collapsed");
+  assert.equal(panes.paneLeaves(panes.paneRootFor())[0].tabs[0], "tab_2", "survivor keeps its id");
 });
 
 // ---- git view tabs (Phase 3c) -------------------------------------------

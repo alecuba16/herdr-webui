@@ -7586,6 +7586,32 @@ async fn session_snapshot_filters_rows_by_workspace_and_derives_maps() {
         body["result"]["tab_labels_by_id"],
         json!({ "tab_1": "Shell", "tab_2": "build" })
     );
+    // The full-row maps keep every workspace's records regardless of the
+    // filter: the pane tree resolves bare tab ids through them, so rows
+    // the filter dropped must stay reachable. tabs_by_id keeps every
+    // id-carrying row (label or not: 4 of the 5 tabs; the no-id row never
+    // reaches the map). The pane map groups by tab_id (lists).
+    assert_eq!(body["result"]["tabs_by_id"].as_object().unwrap().len(), 4);
+    assert_eq!(
+        body["result"]["tabs_by_id"]["tab_2"]["workspace_id"],
+        "ws_2"
+    );
+    assert_eq!(
+        body["result"]["tabs_by_id"]["tab_5"],
+        json!({ "workspace_id": "ws_2", "tab_id": "tab_5", "number": 5, "label": null })
+    );
+    assert_eq!(
+        body["result"]["panes_by_id"],
+        json!({
+            "tab_1": [
+                { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_1" },
+                { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_2" }
+            ],
+            "tab_2": [
+                { "workspace_id": "ws_2", "tab_id": "tab_2", "pane_id": "pane_3" }
+            ]
+        })
+    );
     handle.join().unwrap();
     let _ = fs::remove_file(socket);
 }

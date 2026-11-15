@@ -4155,17 +4155,41 @@ fn enrich_session_snapshot(
     // name panels of workspaces whose tab rows the filter just dropped; the
     // label token vanishes without it when the selected workspace differs
     // from the agent's one (filtered snapshot, reported bug).
+    // tabs_by_id / panes_by_id keep the full row records the same way: the
+    // pane tree stores bare tab ids, and its strips/prune logic must resolve
+    // ids whose rows the filter dropped (cross-workspace trees). The tab map
+    // is id -> tab row; the pane map is id -> [pane rows] because multiple
+    // panes share one tab id (the pane-index map consumers already expect).
     let mut tab_labels_by_id = serde_json::Map::new();
+    let mut tabs_by_id = serde_json::Map::new();
+    let mut panes_by_id = serde_json::Map::new();
     if let Some(tabs) = value
         .pointer(&format!("{base}/tabs"))
         .and_then(serde_json::Value::as_array)
     {
         for tab in tabs {
-            if let (Some(tab_id), Some(label)) = (
-                tab.get("tab_id").and_then(serde_json::Value::as_str),
-                tab.get("label").and_then(serde_json::Value::as_str),
-            ) {
+            let Some(tab_id) = tab.get("tab_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if let Some(label) = tab.get("label").and_then(serde_json::Value::as_str) {
                 tab_labels_by_id.insert(tab_id.to_string(), json!(label));
+            }
+            tabs_by_id.insert(tab_id.to_string(), tab.clone());
+        }
+    }
+    if let Some(panes) = value
+        .pointer(&format!("{base}/panes"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for pane in panes {
+            let Some(tab_id) = pane.get("tab_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let entry = panes_by_id
+                .entry(tab_id.to_string())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            if let Some(list) = entry.as_array_mut() {
+                list.push(pane.clone());
             }
         }
     }
@@ -4221,6 +4245,8 @@ fn enrich_session_snapshot(
         result["workspace_counts"] = serde_json::Value::Object(workspace_counts);
         result["workspaces_by_id"] = workspaces_by_id;
         result["tab_labels_by_id"] = serde_json::Value::Object(tab_labels_by_id);
+        result["tabs_by_id"] = serde_json::Value::Object(tabs_by_id);
+        result["panes_by_id"] = serde_json::Value::Object(panes_by_id);
     }
 }
 

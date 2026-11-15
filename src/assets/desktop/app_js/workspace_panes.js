@@ -390,6 +390,49 @@ function forgetWorkspacePanes(id) {
   saveWorkspacePanesStates();
 }
 
+// Eager teardown prune (D10): a closed workspace's terminal ids leave the
+// trees NOW, not on the next refresh tick. The sync's terminalTabKnown
+// prune would drop them a poll later (rows left state.tabs/allTabs in
+// removeClosedWorkspaceFromState), but between close and tick the strips
+// would render dead ids with close buttons that POST against vanished
+// panels. Editor/git tabs carry no workspace binding and stay.
+function pruneWorkspaceTabsFromPanes(workspaceId) {
+  if (!workspaceId) return false;
+  const closedIds = new Set(
+    (state.allTabs || [])
+      .concat(state.tabs || [])
+      .filter((tab) => tab.workspace_id === workspaceId)
+      .map((tab) => String(tab.tab_id)),
+  );
+  if (!closedIds.size) return false;
+  let changed = false;
+  for (const key of Object.keys(state.workspacePanes || {})) {
+    const entry = state.workspacePanes[key];
+    const root = entry && entry.root;
+    if (!root) continue;
+    for (const leaf of paneLeaves(root)) {
+      const kept = leaf.tabs.filter((id) => !closedIds.has(String(id)));
+      if (kept.length !== leaf.tabs.length) {
+        leaf.tabs = kept;
+        changed = true;
+        if (leaf.active && closedIds.has(String(leaf.active)))
+          leaf.active = leaf.tabs[0] || null;
+      }
+    }
+    if (isPaneSplit(root)) {
+      // Same collapse rule as the sync prune: a leaf emptied by this
+      // sweep is dead, a leaf empty by design keeps its strip. The entry
+      // passes explicitly: the collapse rewrites the OWNING entry's root,
+      // and panesStateFor() would target the current workspace instead.
+      for (const leaf of paneLeaves(root)) {
+        if (!leaf.tabs.length && paneLeaves(root).length > 1) collapseEmptyLeafInTree(root, leaf, entry);
+      }
+    }
+  }
+  if (changed) saveWorkspacePanesStates();
+  return changed;
+}
+
 loadWorkspacePanesStates();
 
 function paneRoot(id = state.ws) {
@@ -431,12 +474,34 @@ function paneTabsForTree(leaf) {
   return tabs.filter((tabId) => {
     if (isEditorTab(tabId)) return true;
     if (isGitTab(tabId)) return true;
-    return (state.tabs || []).some((tab) => tab.tab_id === tabId);
+    return terminalTabKnown(tabId);
   });
 }
 
 function paneTerminalTabById(tabId) {
-  return (state.tabs || []).find((tab) => tab.tab_id === tabId) || null;
+  const local = (state.tabs || []).find((tab) => tab.tab_id === tabId);
+  if (local) return local;
+  // The unfiltered map covers rows the workspace filter dropped: the
+  // tree is workspace-scoped today, but a stored id of another workspace
+  // must still resolve (its strip renders, its prune rule holds). Older
+  // servers ship no map; the local miss then reads as unknown, same as
+  // before.
+  const unfiltered = state.tabsById && state.tabsById[tabId];
+  return unfiltered && typeof unfiltered === "object" ? unfiltered : null;
+}
+
+// Prune rule (D10): a stored terminal id is dead only when it is absent
+// from BOTH the workspace-filtered list (state.tabs) and the unfiltered
+// maps (tabsById/panesById, plus allTabs as the pre-map fallback). A
+// snapshot race (filtered list refreshed, maps still stale) must not
+// drop a live id, and a genuinely closed id must drop from every leaf.
+function terminalTabKnown(tabId) {
+  if (!tabId) return false;
+  if ((state.tabs || []).some((tab) => tab.tab_id === tabId)) return true;
+  if (state.tabsById && Object.prototype.hasOwnProperty.call(state.tabsById, tabId)) return true;
+  if (state.panesById && Object.prototype.hasOwnProperty.call(state.panesById, tabId)) return true;
+  if ((state.allTabs || []).some((tab) => tab.tab_id === tabId)) return true;
+  return false;
 }
 
 // Terminal tabs mirror the backend 1:1 (tab_id identity): the tree stores
@@ -543,6 +608,10 @@ function syncTerminalTabsIntoTree(root) {
     // so a sibling whose terminal closed keeps a dead id in its tabs and a
     // dangling active pointer (the strip filter hides the id, leaving an
     // orphan blank pane until something re-targets the sync).
+    // The prune rule is terminalTabKnown (D10): an id missing from the
+    // filtered list but present in the unfiltered maps is live (snapshot
+    // race), and only an id missing from BOTH drops. backendIds alone
+    // (filtered state.tabs) would prune cross-workspace ids.
     // A leaf the prune emptied inside a split is a dead pane: collapse it
     // to the survivor right here. Only prune-emptied leaves qualify: a
     // split-created leaf is empty by design (its strip offers New
@@ -550,7 +619,7 @@ function syncTerminalTabsIntoTree(root) {
     // empty-leaf card.
     const emptiedByPrune = [];
     for (const leaf of paneLeaves(root)) {
-      const kept = leaf.tabs.filter((id) => isEditorTab(id) || isGitTab(id) || backendIds.includes(id));
+      const kept = leaf.tabs.filter((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id));
       if (kept.length !== leaf.tabs.length) {
         leaf.tabs = kept;
         changed = true;
@@ -571,7 +640,7 @@ function syncTerminalTabsIntoTree(root) {
   // clobbers it one tick later. focusLeaf moves the pane focus so the
   // next open lands beside the route tab.
   const routeChanged = lastSyncedRouteTab !== routeTab;
-  const routeIsLivePanel = !!(routeTab && backendIds.includes(routeTab));
+  const routeIsLivePanel = !!(routeTab && terminalTabKnown(routeTab));
   const bootSyncWithFreshActivation = lastSyncedRouteTab === undefined && sawExplicitActive;
   const routeOwner = routeTab ? paneForTab(root, routeTab) : null;
   if (routeChanged && routeIsLivePanel && !bootSyncWithFreshActivation && routeOwner && routeOwner.active !== routeTab) {
@@ -590,7 +659,7 @@ function syncTerminalTabsIntoTree(root) {
   for (const leaf of paneLeaves(root)) {
     if (leaf === target) continue;
     if (!leaf.tabs.includes(leaf.active)) {
-      const nextActive = leaf.tabs.find((id) => isEditorTab(id) || isGitTab(id) || backendIds.includes(id)) || leaf.tabs[0] || null;
+      const nextActive = leaf.tabs.find((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id)) || leaf.tabs[0] || null;
       if (leaf.active !== nextActive) {
         leaf.active = nextActive;
         changed = true;
@@ -598,7 +667,7 @@ function syncTerminalTabsIntoTree(root) {
     }
   }
   if (!target.tabs.includes(target.active)) {
-    const nextActive = target.tabs.find((id) => isEditorTab(id) || isGitTab(id) || backendIds.includes(id)) || target.tabs[0] || null;
+    const nextActive = target.tabs.find((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id)) || target.tabs[0] || null;
     if (target.active !== nextActive) {
       target.active = nextActive;
       changed = true;
@@ -1830,7 +1899,13 @@ function findSplitSlot(root, childrenArray) {
 // tab migration here: the leaf emptied out, so the nearest survivor
 // (route- or tree-order) takes focus instead. Single-leaf trees keep
 // their empty leaf for the New terminal card.
-function collapseEmptyLeafInTree(root, leaf) {
+// Collapse works on any workspace's tree, not just the current one: the
+// entry that owns the root must be the one rewritten. Callers pass the
+// entry explicitly (panesStateFor() default keeps the historical
+// single-workspace call sites unchanged); the root-replacement writes
+// below target it, so a sweep over foreign trees can never swap another
+// workspace's root object.
+function collapseEmptyLeafInTree(root, leaf, entry = panesStateFor()) {
   if (!isPaneSplit(root)) return false;
   const leaves = paneLeaves(root);
   if (leaves.length <= 1 || !leaves.includes(leaf)) return false;
@@ -1838,7 +1913,6 @@ function collapseEmptyLeafInTree(root, leaf) {
   const survivor = migrationTargetForClosedLeaf(root, leaf);
   const slot = findLeafSlot(root, leaf);
   if (!slot || slot.holder === "root") return false;
-  const entry = panesStateFor();
   if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
   const holderArray = slot.holder;
   const sibling = holderArray.length === 2 ? holderArray[1 - slot.index] : null;
@@ -1851,7 +1925,7 @@ function collapseEmptyLeafInTree(root, leaf) {
     holderArray.splice(slot.index, 1);
     normalizeEntryRoot(entry);
   }
-  const liveRoot = paneRootFor();
+  const liveRoot = entry.root;
   const focusTarget = (survivor && paneLeaves(liveRoot).includes(survivor) && survivor !== leaf)
     ? survivor
     : activeLeaf(liveRoot) || paneLeaves(liveRoot)[0];
@@ -2646,6 +2720,7 @@ window.HerdrWorkspacePanes = {
   openPaneEditorFind,
   saveWorkspacePanesStates,
   forgetWorkspacePanes,
+  pruneWorkspaceTabsFromPanes,
   // Phase 4: split tree surface. paneLeaves/activePane expose the tree
   // walk; the commands are the strip buttons and shortcuts' entry points.
   paneLeaves,
