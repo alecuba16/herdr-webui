@@ -1785,7 +1785,7 @@ describe("location bar discovery popover", () => {
       "/api/worktrees": { result: { worktrees: [] } },
       "/api/git-ui/branches": { local: LOCAL, remote: [] },
     } });
-    const { ctx } = harness;
+    const { ctx, bar } = harness;
     const document = installDiscoveryFocusDOM(harness);
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     equal(document.querySelector('[data-discovery-focus="create"]').disabled, true);
@@ -1798,6 +1798,11 @@ describe("location bar discovery popover", () => {
     ctx.HerdrLocationBar.discoveryDraft("newBranch", "   ");
     equal(create.disabled, true);
     equal(document.activeElement, name);
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "");
+    equal(create.disabled, true);
+    bar.innerHTML = "";
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "draft-name");
+    equal(document.querySelector('[data-discovery-focus="create"]'), null);
   });
 
   it("keeps the footer on Create worktree while the create view is open", async () => {
