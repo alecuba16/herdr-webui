@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.7.52 Release Notes
+- The session journal is now fsync-durable: `atomic_write` syncs the
+  payload before the rename and best-effort syncs the parent directory
+  after it, so power loss can no longer leave an empty or stale
+  `session-journal.json` (rename alone was atomic for concurrent
+  readers, not for crashes).
+- Journaling is declared by the events themselves: `publish_event`
+  treats a `.mutated` suffix on the event name as the structural-change
+  marker (stripped before the wire publish) and sets a dirty flag that
+  `handle_request` consumes after the response, so a future mutator
+  journals automatically instead of depending on a parallel method
+  whitelist that could drift. The flag decouples the persist from the
+  data lock some publishers still hold when the event fires.
+- Replay spawns the recovered shell tabs in parallel across workspaces
+  (bounded at 8 workers, one workspace per worker so per-workspace tab
+  order is preserved) instead of sequentially, so cold start stays flat
+  in the number of workspaces. Rows are still created in journal order
+  before any terminal spawns, and everything still completes before the
+  listeners bind.
+
 ## 0.7.51 Release Notes
 - Built-in sessions survive a server restart: the backend journals its
   workspace set (labels, cwds, shell tab labels, focused workspace) to
@@ -832,6 +852,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.52 | 2026-11-15 | [v0.7.52](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.52) |
 | 0.7.51 | 2026-11-15 | [v0.7.51](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.51) |
 | 0.7.50 | 2026-11-15 | [v0.7.50](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.50) |
 | 0.7.49 | 2026-11-15 | [v0.7.49](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.49) |

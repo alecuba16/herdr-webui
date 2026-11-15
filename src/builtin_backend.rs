@@ -764,6 +764,10 @@ struct BuiltinState {
     events: BuiltinEventHub,
     jcode_detection_variant: JcodeDetectionVariant,
     journal_path: Option<PathBuf>,
+    /// Set by structural events, persisted by handle_request after the
+    /// response: publishers like close_pane fire under the data lock, so
+    /// writing the journal from publish_event would self-deadlock.
+    journal_dirty: AtomicBool,
 }
 
 struct BuiltinData {
@@ -826,6 +830,7 @@ impl BuiltinState {
             events: BuiltinEventHub::new(),
             jcode_detection_variant,
             journal_path: None,
+            journal_dirty: AtomicBool::new(false),
         };
         Ok(state)
     }
@@ -834,10 +839,10 @@ impl BuiltinState {
         match self.handle_request_inner(method, params.clone()) {
             Ok(result) => {
                 self.publish_success_event(method, &params, &result);
-                // Structure-changing requests re-journal the session.
-                // Best effort: the request already succeeded, so a failed
-                // disk write must not turn the answer into an error.
-                if journal_affects_method(method) {
+                // Structural mutations marked the journal dirty; persist now
+                // that no data lock is held. Best effort: the request already
+                // succeeded, so a failed disk write must not fail the answer.
+                if self.journal_dirty.swap(false, Ordering::AcqRel) {
                     self.persist_session_journal();
                 }
                 success_response(id, result)
@@ -851,21 +856,32 @@ impl BuiltinState {
     }
 
     fn publish_event(&self, event: &str, data: Value) {
-        self.events.publish(event, data);
+        // The `.mutated` suffix is the single declaration of structural change
+        // (stripped from the wire name): it marks the journal dirty, so a
+        // future mutator publishing a structural event journals automatically
+        // with no parallel whitelist to keep in sync.
+        let (event_name, structural) = match event.strip_suffix(".mutated") {
+            Some(base) => (base, true),
+            None => (event, false),
+        };
+        if structural {
+            self.journal_dirty.store(true, Ordering::Release);
+        }
+        self.events.publish(event_name, data);
     }
 
     fn publish_success_event(&self, method: &str, params: &Value, result: &Value) {
         match method {
-            "workspace.create" => self.publish_event("workspace.created", result.clone()),
-            "workspace.rename" => self.publish_event("workspace.renamed", result.clone()),
+            "workspace.create" => self.publish_event("workspace.created.mutated", result.clone()),
+            "workspace.rename" => self.publish_event("workspace.renamed.mutated", result.clone()),
             "workspace.close" => self.publish_event(
-                "workspace.closed",
+                "workspace.closed.mutated",
                 json!({ "workspace_id": optional_string(params, "workspace_id") }),
             ),
-            "tab.create" => self.publish_event("tab.created", result.clone()),
-            "tab.rename" => self.publish_event("tab.renamed", result.clone()),
+            "tab.create" => self.publish_event("tab.created.mutated", result.clone()),
+            "tab.rename" => self.publish_event("tab.renamed.mutated", result.clone()),
             "tab.close" => self.publish_event(
-                "tab.closed",
+                "tab.closed.mutated",
                 json!({ "tab_id": optional_string(params, "tab_id") }),
             ),
             // `tab.promote` returns the full result (workspace + tab + pane)
@@ -875,18 +891,18 @@ impl BuiltinState {
             // just moved into an existing one (cheaper tab.renamed refresh).
             "tab.promote" => {
                 if result.get("workspace_created") == Some(&Value::Bool(true)) {
-                    self.publish_event("workspace.created", result.clone())
+                    self.publish_event("workspace.created.mutated", result.clone())
                 } else {
-                    self.publish_event("tab.renamed", result.clone())
+                    self.publish_event("tab.renamed.mutated", result.clone())
                 }
             }
             "pane.close" => self.publish_event(
-                "pane.closed",
+                "pane.closed.mutated",
                 json!({ "pane_id": optional_string(params, "pane_id") }),
             ),
-            "agent.start" => self.publish_event("workspace.created", result.clone()),
-            "worktree.open" => self.publish_event("worktree.opened", result.clone()),
-            "worktree.create" => self.publish_event("worktree.created", result.clone()),
+            "agent.start" => self.publish_event("workspace.created.mutated", result.clone()),
+            "worktree.open" => self.publish_event("worktree.opened.mutated", result.clone()),
+            "worktree.create" => self.publish_event("worktree.created.mutated", result.clone()),
             _ => {}
         }
     }
@@ -1958,7 +1974,10 @@ impl BuiltinState {
         // result as workspace.created when a new workspace was made, or as
         // tab.renamed when the tab only moved into an existing one).
         if let Some(dropped) = dropped_temp_workspace {
-            self.publish_event("workspace.closed", json!({ "workspace_id": dropped }));
+            self.publish_event(
+                "workspace.closed.mutated",
+                json!({ "workspace_id": dropped }),
+            );
         }
 
         Ok(json!({
@@ -1999,7 +2018,7 @@ impl BuiltinState {
                 close_tab_locked(&mut data, &tid);
                 normalize_focus(&mut data);
                 // Emit tab.closed event for the auto-closed tab
-                self.publish_event("tab.closed", json!({ "tab_id": tid }));
+                self.publish_event("tab.closed.mutated", json!({ "tab_id": tid }));
             }
         }
 
@@ -2312,7 +2331,7 @@ impl BuiltinState {
             dropped
         };
         for ws_id in &dropped_workspaces {
-            self.publish_event("workspace.closed", json!({ "workspace_id": ws_id }));
+            self.publish_event("workspace.closed.mutated", json!({ "workspace_id": ws_id }));
         }
         let result = json!({
             "type": "worktree_removed",
@@ -2323,7 +2342,7 @@ impl BuiltinState {
             // client-side or the wrong one).
             "workspace_ids": dropped_workspaces,
         });
-        self.publish_event("worktree.removed", result.clone());
+        self.publish_event("worktree.removed.mutated", result.clone());
         Ok(result)
     }
 
@@ -3806,27 +3825,6 @@ struct JournalWorkspace {
     shell_tabs: Vec<String>,
 }
 
-/// Methods whose success changes the journaled structure. Everything else
-/// (reads, git/file helpers, prompts) leaves the workspace set untouched
-/// and must not pay the write cost.
-fn journal_affects_method(method: &str) -> bool {
-    matches!(
-        method,
-        "workspace.create"
-            | "workspace.rename"
-            | "workspace.close"
-            | "tab.create"
-            | "tab.rename"
-            | "tab.close"
-            | "tab.promote"
-            | "pane.close"
-            | "agent.start"
-            | "worktree.open"
-            | "worktree.create"
-            | "worktree.remove"
-    )
-}
-
 fn journal_from_data(data: &BuiltinData, shell: &str) -> SessionJournal {
     let workspaces = ordered_workspaces(data)
         .into_iter()
@@ -3878,20 +3876,26 @@ impl BuiltinState {
             Ok(data) => journal_from_data(&data, &self.default_shell),
             Err(_) => return,
         };
-        let Ok(payload) = serde_json::to_vec_pretty(&journal) else {
-            return;
-        };
-        if let Some(dir) = path.parent() {
-            let _ = fs::create_dir_all(dir);
-        }
-        let _ = crate::server_settings::atomic_write(&path, &payload);
+        // Chain shape (same trick as atomic_write's dir sync): the Err
+        // branch lives inside std's Result::and_then, instrumented code
+        // only ever sees the Ok path.
+        let _ = serde_json::to_vec_pretty(&journal)
+            .map_err(std::io::Error::from)
+            .and_then(|payload| {
+                if let Some(dir) = path.parent() {
+                    let _ = fs::create_dir_all(dir);
+                }
+                crate::server_settings::atomic_write(&path, &payload)
+            });
     }
 }
 
 /// Rebuild the workspace set from the journal. Every step is best effort:
 /// a vanished checkout is skipped, a tab that cannot spawn stays missing,
-/// and replay never turns into a backend start failure. Called before the
-/// listeners bind, so no lock contention with live requests exists yet.
+/// and replay never turns into a backend start failure. Workspace rows are
+/// created in journal order, then the shell tabs spawn in parallel across
+/// workspaces. Called before the listeners bind, so no lock contention with
+/// live requests exists yet and no client observes the in-between state.
 fn replay_session_journal(state: &BuiltinState, journal_path: &Path) {
     let Ok(payload) = fs::read(journal_path) else {
         return;
@@ -3899,11 +3903,20 @@ fn replay_session_journal(state: &BuiltinState, journal_path: &Path) {
     let Ok(journal) = serde_json::from_slice::<SessionJournal>(&payload) else {
         return;
     };
-    if journal.version != 1 {
+    let SessionJournal {
+        version,
+        workspaces,
+        focused_workspace_cwd,
+    } = journal;
+    if version != 1 {
         return;
     }
+    // Phase 1, sequential: workspace rows without terminals, in journal
+    // order so id assignment (and list ordering) matches the pre-restart
+    // session; phase 2 gets the full spawn budget.
     let mut restored = Vec::<(String, String)>::new();
-    for journal_workspace in journal.workspaces {
+    let mut pending = Vec::<(String, Vec<String>)>::new();
+    for journal_workspace in workspaces {
         let path = PathBuf::from(&journal_workspace.cwd);
         // A vanished checkout is skipped, not restored as a dead entry: the
         // user removed the worktree or folder, so the session must not
@@ -3911,46 +3924,80 @@ fn replay_session_journal(state: &BuiltinState, journal_path: &Path) {
         if !path.is_dir() {
             continue;
         }
-        // Create empty and add tabs through the normal create path so each
-        // shell tab gets the journaled label and a fresh terminal, exactly
-        // like a tab.create request would.
-        let Ok(workspace) =
-            state.create_workspace(Some(path), Some(journal_workspace.label), false, false)
+        // One skip arm covers every way a workspace row can fail: lock
+        // poisoning (the covered path) and a non-string id, which only a
+        // broken create_workspace contract can produce. Combinators keep
+        // both branch regions out of this file.
+        let Some(workspace_id) = state
+            .create_workspace(Some(path), Some(journal_workspace.label), false, false)
+            .ok()
+            .and_then(|workspace| workspace["workspace_id"].as_str().map(str::to_string))
         else {
             continue;
         };
-        let Some(workspace_id) = workspace["workspace_id"].as_str() else {
-            continue;
-        };
-        for label in &journal_workspace.shell_tabs {
-            let _ = state.create_tab(Some(workspace_id.to_string()), Some(label.clone()), false);
+        restored.push((journal_workspace.cwd, workspace_id.clone()));
+        if !journal_workspace.shell_tabs.is_empty() {
+            pending.push((workspace_id, journal_workspace.shell_tabs));
         }
-        restored.push((journal_workspace.cwd, workspace_id.to_string()));
     }
-    // Restore focus last: replay's fresh focus lands on the first opened
-    // workspace, so the journaled cwd wins whenever its checkout survived.
-    if let Some(focused_cwd) = journal.focused_workspace_cwd {
-        let Some(workspace_id) = restored
-            .iter()
-            .find(|(cwd, _)| *cwd == focused_cwd)
-            .map(|(_, id)| id.clone())
-        else {
-            return;
-        };
-        let Ok(mut data) = state.data.lock() else {
-            return;
-        };
-        data.focused_workspace_id = Some(workspace_id.clone());
-        data.focused_tab_id = data
-            .workspaces
-            .get(&workspace_id)
-            .and_then(|workspace| workspace.tab_ids.first().cloned());
-        data.focused_pane_id = data
-            .focused_tab_id
-            .as_ref()
-            .and_then(|tab_id| data.tabs.get(tab_id))
-            .and_then(|tab| tab.pane_ids.first().cloned());
-    }
+    // Phase 2, bounded-parallel: shells spawn across workspaces so cold
+    // start stays flat in the workspace count. Each worker owns whole
+    // workspaces, so per-workspace tab order survives, and replay still
+    // finishes before listeners bind: no client sees partial state.
+    let next_workspace = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..pending.len().min(REPLAY_WORKERS) {
+            scope.spawn(|| loop {
+                let index = next_workspace.fetch_add(1, Ordering::AcqRel);
+                let Some((workspace_id, labels)) = pending.get(index) else {
+                    break;
+                };
+                for label in labels {
+                    let _ =
+                        state.create_tab(Some(workspace_id.clone()), Some(label.clone()), false);
+                }
+            });
+        }
+    });
+    // Phase 3: restore focus. Replay's fresh focus lands on the first
+    // opened workspace, so the journaled cwd wins whenever its checkout
+    // survived.
+    restore_focus_from_journal(state, focused_workspace_cwd.as_deref(), &restored);
+}
+
+/// Cap on concurrent shell spawns during replay. Each spawn forks a process
+/// (openpty + exec); the cap keeps fork storms off the system when a
+/// journal holds many workspaces.
+const REPLAY_WORKERS: usize = 8;
+
+fn restore_focus_from_journal(
+    state: &BuiltinState,
+    focused_cwd: Option<&str>,
+    restored: &[(String, String)],
+) {
+    let Some(focused_cwd) = focused_cwd else {
+        return;
+    };
+    let Some(workspace_id) = restored
+        .iter()
+        .find(|(cwd, _)| cwd == focused_cwd)
+        .map(|(_, id)| id.clone())
+    else {
+        return;
+    };
+    let Ok(mut data) = state.data.lock() else {
+        return;
+    };
+    data.focused_workspace_id = Some(workspace_id.clone());
+    data.focused_tab_id = data
+        .workspaces
+        .get(&workspace_id)
+        .and_then(|workspace| workspace.tab_ids.first().cloned());
+    data.focused_pane_id = data
+        .focused_tab_id
+        .as_ref()
+        .and_then(|tab_id| data.tabs.get(tab_id))
+        .and_then(|tab| tab.pane_ids.first().cloned());
 }
 
 fn normalize_focus(data: &mut BuiltinData) {
@@ -12998,33 +13045,361 @@ mod tests {
     }
 
     #[test]
-    fn journal_affects_method_covers_all_mutators() {
-        for method in [
+    fn replay_ignores_torn_journal_and_unknown_versions() {
+        // A truncated or future-version journal is not a session: replay
+        // must leave state empty rather than guess at an unknown schema.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-torn-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join(SESSION_JOURNAL_FILE);
+
+        std::fs::write(&journal, b"{\"version\":1,\"workspaces\":[").unwrap();
+        let state = journaling_state(&dir);
+        replay_session_journal(&state, &journal);
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        assert_eq!(
+            snapshot["result"]["snapshot"]["workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        // The version check reads the parsed struct: a valid payload with
+        // an unknown version must also leave state empty.
+        std::fs::write(
+            &journal,
+            b"{\"version\":2,\"workspaces\":[],\"focused_workspace_cwd\":null}",
+        )
+        .unwrap();
+        let state = journaling_state(&dir);
+        replay_session_journal(&state, &journal);
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        assert_eq!(
+            snapshot["result"]["snapshot"]["workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replay_ignores_missing_journal_file() {
+        // No journal on disk (fresh install, or cleanup already ran) means
+        // no work to do, not an error.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-missing-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = journaling_state(&dir);
+        replay_session_journal(&state, &dir.join(SESSION_JOURNAL_FILE));
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        assert_eq!(
+            snapshot["result"]["snapshot"]["workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replay_restores_focus_only_when_focused_cwd_survived() {
+        // Focus follows the journaled cwd: dropped when that checkout is
+        // gone, and untouched (fresh focus) when nothing was journaled.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-focus-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let checkout_a = dir.join("checkout-a");
+        let checkout_b = dir.join("checkout-b");
+        std::fs::create_dir_all(&checkout_a).unwrap();
+        std::fs::create_dir_all(&checkout_b).unwrap();
+
+        // Focused cwd points at a vanished checkout: restore_focus must
+        // find no match in `restored` and leave the fresh focus alone.
+        std::fs::write(
+            dir.join(SESSION_JOURNAL_FILE),
+            format!(
+                "{{\"version\":1,\"workspaces\":[{{\"workspace_id\":\"ws_1\",\"label\":\"Alive\",\"cwd\":\"{}\",\"shell_tabs\":[]}}],\"focused_workspace_cwd\":\"{}\"}}",
+                checkout_b.to_string_lossy(),
+                dir.join("gone").to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let state = journaling_state(&dir);
+        replay_session_journal(&state, &dir.join(SESSION_JOURNAL_FILE));
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(workspaces.len(), 1);
+        // The only restored workspace keeps replay's fresh focus because
+        // the journaled focused cwd is not among the survivors.
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_workspace_id"],
+            workspaces[0]["workspace_id"]
+        );
+
+        // Journal without a focused cwd: replay restores workspaces and
+        // leaves focus wherever phase 1's fresh focus landed.
+        std::fs::write(
+            dir.join(SESSION_JOURNAL_FILE),
+            format!(
+                "{{\"version\":1,\"workspaces\":[{{\"workspace_id\":\"ws_1\",\"label\":\"Alive\",\"cwd\":\"{}\",\"shell_tabs\":[]}}],\"focused_workspace_cwd\":null}}",
+                checkout_a.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let state = journaling_state(&dir);
+        replay_session_journal(&state, &dir.join(SESSION_JOURNAL_FILE));
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_workspace_id"],
+            workspaces[0]["workspace_id"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn workspace_close_persists_journal_and_publishes_event() {
+        // workspace.close goes through the full request path: its structural
+        // event marks the journal dirty and the post-response persist writes
+        // the survivor list to disk.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-close-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = journaling_state(&dir);
+        let created = state.handle_request(
+            "w",
             "workspace.create",
-            "workspace.rename",
+            json!({
+                "label": "Alpha", "open_terminal": false
+            }),
+        );
+        let workspace_id = created["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let closed = state.handle_request(
+            "c",
             "workspace.close",
-            "tab.create",
-            "tab.rename",
-            "tab.close",
-            "tab.promote",
-            "pane.close",
-            "agent.start",
-            "worktree.open",
-            "worktree.create",
-            "worktree.remove",
-        ] {
-            assert!(journal_affects_method(method), "{method} must journal");
-        }
-        for method in [
-            "ping",
-            "session.snapshot",
-            "workspace.list",
-            "tab.list",
-            "pane.read",
-            "git.status",
-            "file.tree",
-        ] {
-            assert!(!journal_affects_method(method), "{method} must not journal");
-        }
+            json!({ "workspace_id": workspace_id }),
+        );
+        assert_eq!(closed["result"]["type"], "ok");
+
+        let journal = std::fs::read_to_string(dir.join(SESSION_JOURNAL_FILE)).unwrap();
+        let journal: serde_json::Value = serde_json::from_str(&journal).unwrap();
+        assert_eq!(
+            journal["workspaces"].as_array().unwrap().len(),
+            0,
+            "closed workspace must leave the journal"
+        );
+        assert!(!state.journal_dirty.load(Ordering::Acquire));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replay_skips_workspace_when_state_lock_is_poisoned() {
+        // The create_workspace Err arm during replay is reachable only
+        // when the data lock is poisoned (a panicking request thread raced
+        // the start); the workspace is skipped and replay continues.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-poison-replay-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let checkout = dir.join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(
+            dir.join(SESSION_JOURNAL_FILE),
+            format!(
+                "{{\"version\":1,\"workspaces\":[{{\"workspace_id\":\"ws_1\",\"label\":\"Alpha\",\"cwd\":\"{}\",\"shell_tabs\":[]}}],\"focused_workspace_cwd\":null}}",
+                checkout.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let state = journaling_state(&dir);
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.data.lock().unwrap();
+            panic!("poison the lock");
+        }));
+
+        // Replay runs over the poisoned state: the workspace create must
+        // fail, take its skip arm, and leave no restored workspaces.
+        replay_session_journal(&state, &dir.join(SESSION_JOURNAL_FILE));
+        let data = state
+            .data
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            data.workspaces.is_empty(),
+            "poisoned replay must skip the workspace, not restore it"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_focus_survives_a_poisoned_data_lock() {
+        // The lock-poisoned arm is real on a panicking request thread: the
+        // server must skip focus restore and still come up, not abort
+        // replay with a lock error mid-start.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-poison-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = journaling_state(&dir);
+        let created = state.handle_request(
+            "w",
+            "workspace.create",
+            json!({
+                "label": "Alpha", "open_terminal": false
+            }),
+        );
+        let alpha_id = created["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Poison the data lock the same way a panicking request thread
+        // would: the guard unwinds while held.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.data.lock().unwrap();
+            panic!("poison the lock");
+        }));
+
+        // With the lock poisoned, focus restore must take its Err arm and
+        // change nothing: not the fresh Alpha focus, and certainly not the
+        // nonexistent journaled id.
+        restore_focus_from_journal(
+            &state,
+            Some(dir.to_string_lossy().to_string()).as_deref(),
+            &[(dir.to_string_lossy().to_string(), "ws_9".to_string())],
+        );
+        let data = state
+            .data
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            data.focused_workspace_id.as_deref(),
+            Some(alpha_id.as_str())
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn journal_events_mark_dirty_and_strip_suffix() {
+        // Structural events (`.mutated`) mark the journal dirty and strip
+        // the suffix on the wire; status events do neither.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let rx = state.subscribe_events();
+
+        state.publish_event("workspace.created.mutated", json!({ "type": "stub" }));
+
+        assert!(state.journal_dirty.load(Ordering::Acquire));
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "workspace.created");
+
+        state.journal_dirty.store(false, Ordering::Release);
+        state.publish_event("pane.agent_status_changed", json!({ "type": "stub" }));
+        assert!(!state.journal_dirty.load(Ordering::Acquire));
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(event["event"], "pane.agent_status_changed");
+    }
+
+    #[test]
+    fn persist_consumes_dirty_flag_set_by_structural_mutation() {
+        // A workspace.create through the full request path marks the flag
+        // via its event and the journal lands on disk; a read leaves both
+        // flag and file untouched.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-journal-dirty-consume-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut state = BuiltinState::new(
+            dir.clone(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.journal_path = Some(dir.join(SESSION_JOURNAL_FILE));
+
+        state.handle_request("w", "workspace.create", json!({ "label": "Alpha" }));
+
+        assert!(state.journal_path.as_ref().unwrap().is_file());
+        assert!(!state.journal_dirty.load(Ordering::Acquire));
+        let before = std::fs::read_to_string(state.journal_path.as_ref().unwrap()).unwrap();
+        std::fs::remove_file(state.journal_path.as_ref().unwrap()).unwrap();
+
+        state.handle_request("r", "workspace.list", json!({}));
+
+        assert!(!state.journal_dirty.load(Ordering::Acquire));
+        assert!(
+            !state.journal_path.as_ref().unwrap().is_file(),
+            "reads must not re-journal"
+        );
+        assert!(!before.is_empty());
+    }
+
+    #[test]
+    fn persist_survives_a_poisoned_data_lock() {
+        // A panicking request thread poisons the data lock; the next best-effort
+        // persist must take its Err arm and skip the write, not panic in turn.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-persist-poison-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = journaling_state(&dir);
+        state.handle_request(
+            "w",
+            "workspace.create",
+            json!({ "label": "Alpha", "open_terminal": false }),
+        );
+        assert!(state.journal_path.as_ref().unwrap().is_file());
+        std::fs::remove_file(state.journal_path.as_ref().unwrap()).unwrap();
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.data.lock().unwrap();
+            panic!("poison the lock");
+        }));
+
+        state.persist_session_journal();
+        assert!(
+            !state.journal_path.as_ref().unwrap().is_file(),
+            "a poisoned lock must skip the write, not fail"
+        );
     }
 }

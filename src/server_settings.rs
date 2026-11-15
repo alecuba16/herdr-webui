@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::io;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -404,13 +405,26 @@ pub fn save_persisted_session_token(record: &PersistedSessionToken) -> io::Resul
 /// with every persisted session gone. The settings file shares the risk.
 pub fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     let temp = path.with_extension("new");
-    fs::write(&temp, content)?;
+    // Sync the payload before the rename: rename alone is atomic against
+    // concurrent readers, not against power loss, which can otherwise leave
+    // a zero-length or stale target after a crash.
+    let mut file = fs::File::create(&temp)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    drop(file);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600));
     }
     fs::rename(&temp, path)?;
+    // Best-effort directory sync so the rename survives power loss. The
+    // chain shape keeps coverage honest: no unreachable if-let region, and
+    // parent() is Some for every path that reached the rename.
+    #[cfg(unix)]
+    let _ = path
+        .parent()
+        .map(|dir| fs::File::open(dir).and_then(|dir_fd| dir_fd.sync_all()));
     Ok(())
 }
 
