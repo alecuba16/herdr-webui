@@ -1235,17 +1235,19 @@ function rescueLiveSurfaces(container, element) {
 
 function paneTabButtonHtml(tab, isActive, index, tabs) {
   if (state.editingTab === tab.tab_id)
-    return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
-  const label = panelVisibleLabel(tab, index, tabs);
+    return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
   // The strip prefix (D15) is the foreign panel's origin, and only a
   // default-numbered label gets one (a custom name is the identity).
-  // It renders as a muted ::before (data-ws-prefix) so the number stays
-  // the readable head, and the combined string rides the button's
-  // accessible name (aria-label beats title for screen readers, and the
-  // visible text may truncate).
+  // Computed HERE, once, and panelVisibleLabel receives it so the two
+  // never drift: the visible span text, the data-ws-prefix attribute,
+  // and the accessible name all derive from this one result. It renders
+  // as a muted ::before (data-ws-prefix) so the number stays the
+  // readable head; the full string rides aria-label (beats title for
+  // screen readers, and the visible text may truncate).
   const isDefault = isDefaultPanelTitle(String((tab && tab.label) || "").trim());
   const prefix = isDefault ? foreignWorkspacePrefix(tab && tab.tab_id) : "";
-  const shown = prefix && label.startsWith(prefix) ? label.slice(prefix.length) : label;
+  const shown = prefix ? panelNumberLabel(tab, index, tabs) : panelVisibleLabel(tab, index, tabs);
+  const label = prefix ? `${prefix}${shown}` : shown;
   const labelSpan = prefix
     ? `<span class="pane-tab-label" data-ws-prefix="${escapeAttr(prefix.trim())}">${escapeHtml(shown)}</span>`
     : `<span class="pane-tab-label">${escapeHtml(label)}</span>`;
@@ -2333,6 +2335,13 @@ function foreignWorkspacePrefix(tabId) {
   return name ? `${name} ` : "";
 }
 
+// The name every panel-facing surface should speak: the visible strip
+// label, prefix included (D15). Hover title, document title, and the
+// strip itself must never drift apart on a foreign default panel.
+function panelDisplayName(tab, index, tabs = state.tabs || []) {
+  return panelVisibleLabel(tab, index, tabs);
+}
+
 function panelVisibleLabel(tab, index, tabs = state.tabs || []) {
   const label = String((tab && tab.label) || "").trim();
   if (isDefaultPanelTitle(label)) {
@@ -3095,7 +3104,9 @@ window.HerdrWorkspacePanes = {
   workspaceIdForTab,
   foreignWorkspacePrefix,
   panelVisibleLabel,
+  panelDisplayName,
   panelNumberLabel,
+  panelRenameInitialLabel,
   activePane: () => activeLeaf(paneRootFor()),
   activePaneElement,
   splitPaneRight,

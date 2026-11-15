@@ -181,10 +181,15 @@
 }
 
 /* Foreign-workspace prefix inside a default label (D15): the workspace
-   or worktree name that sits before the panel number. Muted so the
-   number stays the readable head; inherits hover/active color lifts so
-   the prefix never lags behind its tab. */
+   or worktree name that sits before the panel number. The label span is
+   a flex row so the prefix clamps INDEPENDENTLY of the number: a long
+   branch ellipsizes inside its own box while the number keeps its full
+   width (the number is the readable head, it must never truncate). The
+   prefix reads muted so the number stays primary. */
 .pane-tab-label[data-ws-prefix] {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
   color: inherit;
 }
 
@@ -194,6 +199,18 @@
   font-size: 10px;
   letter-spacing: 0.02em;
   margin-right: 4px;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pane-tab-label[data-ws-prefix]::after {
+  /* No content: the pseudo only exists to lift the number out of the
+     prefix's flex item so it shrinks last. */
+  content: "";
+  flex: 0 0 auto;
 }
 
 .pane-tab-close {

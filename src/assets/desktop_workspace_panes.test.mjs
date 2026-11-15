@@ -2202,3 +2202,62 @@ test("single-workspace trees and unknown foreign workspaces keep bare numbers", 
   assert.match(strip.innerHTML, /<span class="pane-tab-label">3<\/span>/, "unknown workspace keeps the bare number");
   assert.ok(!strip.innerHTML.includes("data-ws-prefix"), "no prefix when the workspace record is missing");
 });
+
+test("pane menu rename seeds empty for defaults and the name for customs", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [
+    { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    { tab_id: "tab_c", workspace_id: "ws-1", label: "build", number: 2 },
+  ];
+  // panelRenameInitialLabel is a module function; expose it on the ctx
+  // before the render so paneTabButtonHtml's inline rename wiring can
+  // resolve it (the loadPanesModule stub starts with a fake).
+  ctx.panelRenameInitialLabel = (tab) => panes.panelRenameInitialLabel(tab);
+  panes.renderWorkspacePanes();
+  const root = panes.paneRoot();
+  const defaultItems = panes.paneMenuItemsFor(root, root);
+  const renameDefault = defaultItems.find((item) => item.id === "rename-tab");
+  assert.ok(renameDefault, "default terminal tab offers rename");
+  // panelRenameInitialLabel comes from the module; the pane menu passes
+  // it to startTabRename, so a default seeds "" (fresh name) and a
+  // custom seeds its own name.
+  assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[0]), "");
+  assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[1]), "build");
+});
+
+test("a slash branch name rides the prefix attribute through escapeAttr", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.worktreeDisplayName = (w) => (w.workspace_id === "ws-2" ? "feature/slash-branch name" : w.label);
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 2 },
+  };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["tab_2"];
+  leaves[0].active = "tab_2";
+  leaves[1].tabs = ["tab_9"];
+  leaves[1].active = "tab_9";
+  panes.renderWorkspacePanes();
+  const strips = nodes.container.querySelectorAll(".pane-tab-strip");
+  const foreign = strips[1].innerHTML;
+  // "/" and spaces survive the attribute round trip; the number stays
+  // the span text; the accessible name carries the full string.
+  assert.ok(foreignLabelAttr(foreign, "feature/slash-branch name"), "slash branch rides data-ws-prefix");
+  assert.match(foreign, /<span class="pane-tab-label" data-ws-prefix="feature\/slash-branch name">2<\/span>/, "number stays the span text");
+  assert.match(foreign, /aria-label="Panel feature\/slash-branch name 2"/, "accessible name carries the full string");
+});
+
+function foreignLabelAttr(html, value) {
+  return html.includes(`data-ws-prefix="${value}"`);
+}

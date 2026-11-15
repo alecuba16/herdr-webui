@@ -3846,6 +3846,11 @@ describe("app bundle load", () => {
     vm.runInContext(`
       state.ws = "ws1";
       state.tab = "tab2";
+      state.workspaces = [
+        { workspace_id: "ws1", label: "main" },
+        { workspace_id: "ws-2", label: "feat", worktree: { repo_name: "herdr", branch: "feat/panels" } },
+      ];
+      state.workspaceBranches = { "ws-2": "feat/panels" };
       state.tabs = [{ workspace_id: "ws1", tab_id: "tab2", label: "build", number: 2 }];
     `, ctx);
     const own = vm.runInContext(
@@ -3853,11 +3858,68 @@ describe("app bundle load", () => {
       ctx,
     );
     equal(own, "build");
-    const foreign = vm.runInContext(
+    // The hover carries the friendly workspace name (worktreeDisplayName
+    // chain) plus the raw id for exact lookup, and the label segment
+    // matches the strip's visible language (panelDisplayName), never the
+    // raw backend "shell" for a default panel.
+    const foreignCustom = vm.runInContext(
       "tabHoverInfo({ tab_id: 'tab9', label: 'build', workspace_id: 'ws-2' }, new Map())",
       ctx,
     );
-    equal(foreign, "Workspace ws-2 · build");
+    equal(foreignCustom, "Workspace feat/panels (ws-2) · build");
+    const foreignDefault = vm.runInContext(
+      "tabHoverInfo({ tab_id: 'tab8', label: 'shell', number: 1, workspace_id: 'ws-2' }, new Map())",
+      ctx,
+    );
+    equal(foreignDefault, "Workspace feat/panels (ws-2) · 1");
+  });
+
+  it("window title shows the visible panel name, never the raw shell label", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(`
+      state.ws = "ws1";
+      state.tab = "tab9";
+      state.workspaces = [
+        { workspace_id: "ws1", label: "main" },
+        { workspace_id: "ws-2", label: "feat", worktree: { repo_name: "herdr", branch: "feat/panels" } },
+      ];
+      state.workspaceBranches = { "ws-2": "feat/panels" };
+      state.tabs = [];
+      state.allTabs = [];
+      state.tabsById = {
+        tab9: { workspace_id: "ws-2", tab_id: "tab9", label: "shell", number: 1 },
+      };
+      state.panes = [];
+    `, ctx);
+    // Single-panel foreign workspace focused on a single-workspace tree:
+    // agentTabLabel stays empty (count <= 1) and the title segment falls
+    // through to the strip language (D15), not the raw "shell".
+    vm.runInContext("updateTitle(Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w])), state.tabsById, new Map(), null)", ctx);
+    equal(ctx.document.title, "feat/panels • 1");
+
+    // Multi-panel foreign workspace keeps the #N disambiguation.
+    vm.runInContext(`
+      updateTitle(
+        Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w])),
+        state.tabsById,
+        new Map([["ws-2", 2]]),
+        null,
+      );
+    `, ctx);
+    equal(ctx.document.title, "feat/panels • #1");
+
+    // Custom-named panel keeps its name in the title either way.
+    vm.runInContext(`
+      state.tabsById.tab9 = { workspace_id: "ws-2", tab_id: "tab9", label: "build", number: 1 };
+      updateTitle(
+        Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w])),
+        state.tabsById,
+        new Map([["ws-2", 1]]),
+        null,
+      );
+    `, ctx);
+    equal(ctx.document.title, "feat/panels • build");
   });
 
   it("keeps session manager buttons on one rounded style", () => {
