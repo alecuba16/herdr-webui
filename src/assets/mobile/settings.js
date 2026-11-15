@@ -293,7 +293,7 @@
     }
 
     function tourSection() {
-      return `<div class="mobile-settings-group"><h3>Tour</h3><div class="mobile-settings-tour-row"><button class="mobile-btn mobile-wide" onclick="HerdrMobile.replayTour()">Replay the onboarding tour</button><small>Walk the main screens again: search, workspaces, terminal, git, files, and the More drawer.</small></div></div>`;
+      return `<div class="mobile-settings-group"><h3>Tour</h3><div class="mobile-settings-tour-row"><button class="mobile-btn mobile-wide" onclick="HerdrMobile.replayTour()">Replay the onboarding tour</button><small>Walk every screen again: search, workspaces, home, terminal, git, files, and the six More drawer screens.</small></div></div>`;
     }
 
     // Explicit sign-out from the server (POST /api/logout rotates the token

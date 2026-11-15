@@ -113,6 +113,15 @@ function makeHarness() {
   nav.className = "mobile-nav";
   nav.rect = { x: 0, y: 790, width: 390, height: 50 };
   document.queryResults.set(".mobile-nav", nav);
+  const drawerItems = {};
+  for (const screen of ["agents", "panels", "worktrees", "sessions", "notes", "settings"]) {
+    const node = new FakeElement(document, "button");
+    node.dataset.screen = screen;
+    node.rect = { x: 12, y: 140 + drawerItemsCount() * 56, width: 280, height: 52 };
+    document.queryResults.set(`.mobile-drawer-item[data-screen="${screen}"]`, node);
+    drawerItems[screen] = node;
+  }
+  function drawerItemsCount() { return Object.keys(drawerItems).length; }
   const title = new FakeElement(document);
   title.id = "mobileTitle";
   title.rect = { x: 10, y: 20, width: 200, height: 40 };
@@ -120,7 +129,7 @@ function makeHarness() {
   document.queryResults.set("#mobileTitle", title);
 
   const storage = new Map();
-  const flags = { screenShown: [], workspacesSheetOpened: 0, drawerOpened: 0, timeouts: [] };
+  const flags = { screenShown: [], workspacesSheetOpened: 0, drawerOpened: 0, drawerClosed: 0, searchClosed: 0, timeouts: [] };
   const ctx = {
     document,
     localStorage: {
@@ -139,8 +148,9 @@ function makeHarness() {
       showScreen: (screen) => { flags.screenShown.push(screen); },
       openWorkspacesSheet: () => { flags.workspacesSheetOpened += 1; },
       closeWorkspacesSheet: () => {},
+      closeSearch: () => { flags.searchClosed += 1; },
       openDrawer: () => { flags.drawerOpened += 1; },
-      closeDrawer: () => {},
+      closeDrawer: () => { flags.drawerClosed += 1; },
     },
   };
   ctx.window = ctx;
@@ -157,6 +167,7 @@ function makeHarness() {
     flags,
     storage,
     navButtons,
+    drawerItems,
     tour: context.HerdrMobileTour,
     stepsApi: context.HerdrMobileTourSteps,
     press(key) {
@@ -270,7 +281,7 @@ describe("onboarding tour (mobile)", () => {
     assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Search");
   });
 
-  it("step order keeps the shared story: search, workspaces, home, terminal, git, files, more, replay hint", () => {
+  it("step order keeps the shared story: nav screens, then every drawer screen, then the replay hint", () => {
     const h = makeHarness();
     const titles = h.stepsApi.steps().map((step) => step.title);
     assert.deepEqual([...titles], [
@@ -281,8 +292,52 @@ describe("onboarding tour (mobile)", () => {
       "Git",
       "Files",
       "More",
+      "Agents",
+      "Panels",
+      "Worktrees",
+      "Sessions",
+      "Notes",
+      "Settings",
       "Replay any time",
     ]);
+  });
+
+  it("the six drawer steps walk the same order as the drawer item list", () => {
+    const h = makeHarness();
+    const drawerScreens = ["agents", "panels", "worktrees", "sessions", "notes", "settings"];
+    const drawerSteps = h.stepsApi.steps().filter((step) => step.target.startsWith(".mobile-drawer-item"));
+    assert.equal(drawerSteps.length, 6, "one step per drawer screen");
+    assert.deepEqual(
+      [...drawerSteps.map((step) => step.title.toLowerCase())],
+      drawerScreens,
+      "drawer steps match the renderDrawerItems order"
+    );
+  });
+
+  it("drawer steps keep the drawer open and the replay hint closes it", () => {
+    const h = makeHarness();
+    h.tour.start();
+    // Walk to the first drawer step (More is step 7): the drawer opens
+    // once per entry into More and every drawer step keeps re-asserting it.
+    for (let i = 0; i < 6; i++) h.document.getElementById("mobileTourNext").click();
+    const drawerOpenedAtMore = h.flags.drawerOpened;
+    assert.ok(drawerOpenedAtMore >= 1, "More opened the drawer");
+    h.document.getElementById("mobileTourNext").click();
+    assert.ok(h.flags.drawerOpened > drawerOpenedAtMore, "the Agents drawer step re-opened the drawer");
+    // Walk the remaining drawer steps to the replay hint.
+    for (let i = 0; i < 6; i++) h.document.getElementById("mobileTourNext").click();
+    assert.equal(h.flags.drawerClosed, 1, "the replay hint demo closed the drawer once");
+    assert.equal(h.document.getElementById("mobileTourTitle").textContent, "Replay any time");
+  });
+
+  it("each drawer step spotlights a real drawer item", () => {
+    const h = makeHarness();
+    h.tour.start();
+    for (let i = 0; i < 7; i++) h.document.getElementById("mobileTourNext").click();
+    for (const screen of ["agents", "panels", "worktrees", "sessions", "notes", "settings"]) {
+      assert.equal(h.document.getElementById("mobileTourTitle").textContent.toLowerCase(), screen);
+      h.document.getElementById("mobileTourNext").click();
+    }
   });
 
   it("every step has a target, title, and body", () => {
@@ -294,12 +349,13 @@ describe("onboarding tour (mobile)", () => {
     }
   });
 
-  it("step selectors match the real shell markup in mobile/app.js", () => {
+  it("step selectors match the real shell markup in mobile/app.js and screens.js", () => {
     // The harness used to fake-verify selectors the real DOM could not
     // match ("nav .mobile-nav ..." against <nav class="mobile-nav">), so
     // every nav step silently auto-skipped in the real app. Tie each
     // non-body target to a literal string in the shipped markup instead.
     const appSource = source("mobile/app.js");
+    const screensSource = source("mobile/screens.js");
     const ids = [
       "#mobileTitle",
     ];
@@ -312,10 +368,25 @@ describe("onboarding tour (mobile)", () => {
         `.mobile-nav button[data-screen="${screen}"] exists in the shell markup`
       );
     }
+    // The drawer markup renders data-screen from the items array, so the
+    // literal "data-screen=\"agents\"" never appears in source; tie the
+    // guard to the screen list the map call iterates instead.
+    for (const screen of ["agents", "panels", "worktrees", "sessions", "notes", "settings"]) {
+      assert.ok(
+        screensSource.includes(`screen: "${screen}"`),
+        `drawer item screen "${screen}" exists in the screens.js item list`
+      );
+      assert.ok(
+        screensSource.includes("data-screen=\"${item.screen}\""),
+        "drawer markup still renders data-screen for tour targets"
+      );
+    }
     for (const step of makeHarness().stepsApi.steps()) {
       if (step.target === "body") continue;
       assert.ok(
-        step.target.startsWith("#mobile") || step.target.startsWith(".mobile-nav button[data-screen="),
+        step.target.startsWith("#mobile") ||
+          step.target.startsWith(".mobile-nav button[data-screen=") ||
+          step.target.startsWith(".mobile-drawer-item[data-screen="),
         `target "${step.target}" uses a selector covered by the shell markup check`
       );
     }

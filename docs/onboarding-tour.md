@@ -131,9 +131,14 @@ to the pre-tour context.
 Key behavior: touch-first. Back/Next buttons drive the steps; keyboard
 (Esc/Enter/Arrows) works as a secondary path. Demos call the real
 `HerdrMobile` functions (`showScreen`, `openWorkspacesSheet`,
-`openDrawer`), and `stop()` closes the sheets the demos opened. The
-mobile step list follows the desktop story (search, workspaces, home,
-terminal, git, files, more, replay hint) with mobile-specific targets.
+`openDrawer`, `closeSearch`), and `stop()` closes the surfaces the demos
+opened. The mobile step list follows the desktop story for the nav
+screens (search, workspaces, home, terminal, git, files, more), then
+walks every More drawer screen with its own step (agents, panels,
+worktrees, sessions, notes, settings, each spotlighting the drawer
+item), and closes with the replay hint: 14 steps total. Drawer item
+buttons carry `data-screen` in `mobile/screens.js` so the tour targets
+stay queryable and drift-guarded.
 
 ## Step parity table
 
