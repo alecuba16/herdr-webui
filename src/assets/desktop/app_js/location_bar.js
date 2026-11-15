@@ -924,9 +924,13 @@
     const current = samePath(path, currentPath);
     const label = String(worktree.label || pathBasename(path) || "worktree");
     const branch = String(worktree.branch || "detached");
+    // Every selector row carries the worktree glyph left of the label,
+    // so the chip popover and the discovery selector read the same as
+    // the branch lists' worktree-iconed rows.
+    const icon = `<b class="git-ui-branch-row-icon git-ui-branch-row-icon-worktree" aria-hidden="true"></b>`;
     const check = current ? `<b class="git-ui-worktree-check" role="img" aria-label="Current worktree" title="Current worktree">✓</b>` : "";
     const action = onclick || `HerdrLocationBar.selectWorktreeFromPopover('${encodeArg(path)}')`;
-    return `<button class="git-ui-worktree-option${current ? " current" : ""}"${onclick ? ` data-discovery-focus="worktree-${encodeArg(path)}"` : ""} onclick="${action}"><strong>${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
+    return `<button class="git-ui-worktree-option${current ? " current" : ""}${onclick ? ` data-discovery-focus="worktree-${encodeArg(path)}"` : ""}" onclick="${action}"><strong>${icon}${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
   }
 
   function renderWorktreePopover() {

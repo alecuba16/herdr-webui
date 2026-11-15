@@ -170,6 +170,9 @@ pick folder F
   worktree tooltip; plain branches keep the plain branch icon. The
   same row builder feeds the chip popover, the discovery view and the
   Base-ref picker, so the icon reads identically on every surface.
+  The worktree selector rows (worktree chip popover and discovery's
+  worktree mode) lead with the same glyph too: every checkout row
+  carries it left of the label, current-row check following it.
 - **Inline worktree submit.** A nonblank branch name enables the
   footer's Create worktree. The base defaults to the picked checkout's current branch,
   else HEAD. It shares lazy local/cached refs, explicit Fetch remotes,

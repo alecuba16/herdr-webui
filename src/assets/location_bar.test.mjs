@@ -1014,6 +1014,7 @@ describe("location bar worktree popover", () => {
     ok(bar.innerHTML.includes("location-bar-worktree-popover"), "popover renders in the bar");
     ok(bar.innerHTML.includes("repo-lane"), "row lists the other checkout");
     ok(bar.innerHTML.includes('class="git-ui-worktree-option current"'), "current checkout row carries the check");
+    ok(bar.innerHTML.includes('<strong><b class="git-ui-branch-row-icon git-ui-branch-row-icon-worktree" aria-hidden="true"></b><b class="git-ui-worktree-check"'), "every selector row leads with the worktree icon");
     ok(bar.innerHTML.includes("Create worktree"), "create action renders");
   });
 

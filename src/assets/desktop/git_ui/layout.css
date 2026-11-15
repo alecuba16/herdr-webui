@@ -299,6 +299,7 @@
 }
 .git-ui-worktree-option.current { background: var(--panel2); }
 .git-ui-worktree-check { color: #3fb950; margin-right: 5px; }
+.git-ui-worktree-option .git-ui-branch-row-icon { margin-right: 5px; vertical-align: -1px; }
 .git-ui-branch-row-icon {
   background: currentColor;
   display: inline-block;
