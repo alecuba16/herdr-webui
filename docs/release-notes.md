@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.7.53 Release Notes
+- Default-named panels from another workspace carry their worktree
+  branch as a prefix in the pane strip (a mixed tree with two "1" tabs
+  now reads "feat 1" next to "1"), so cross-workspace panels are
+  distinguishable at a glance. Editor and git tabs keep their own
+  names; the prefix is a muted `::before` on the label span and the
+  number stays the span text, so the number never ellipsizes away and
+  the accessible name spells the full origin (`aria-label="Panel feat
+  1"`).
+- One label language across surfaces: the pane strip, the tab hover,
+  and the window title all derive from the same visible-label chain
+  (worktree branch, then workspace label, then number), so a foreign
+  panel reads identically everywhere and the hover adds the workspace
+  id for exact lookup.
+- Every branch of the changed functions is pinned by tests: ghost
+  tab ids, missing workspace records, empty name chains, the number
+  fallback ladder, bare-context guards, the maximized-pane rail, the
+  rename input, and the CSS clamp rules (2579 JS tests, cargo suites
+  green).
+
 ## 0.7.52 Release Notes
 - The session journal is now fsync-durable: `atomic_write` syncs the
   payload before the rename and best-effort syncs the parent directory
@@ -852,6 +872,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.53 | 2026-11-15 | [v0.7.53](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.53) |
 | 0.7.52 | 2026-11-15 | [v0.7.52](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.52) |
 | 0.7.51 | 2026-11-15 | [v0.7.51](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.51) |
 | 0.7.50 | 2026-11-15 | [v0.7.50](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.50) |
