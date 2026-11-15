@@ -1260,6 +1260,48 @@ fn local_worktree_branch_name_strips_remote_prefixes() {
 }
 
 #[test]
+fn suggested_checkout_path_empty_repo_name_falls_back_to_the_branch_slug() {
+    let source = WorktreeSourceInfo {
+        repo_name: String::new(),
+        repo_root: "/repos/r".to_string(),
+        default_worktree_directory: "../worktrees".to_string(),
+    };
+    // An empty branch slug never exists (branch_path_slug defaults to
+    // "worktree"), so with no repo name the slug alone is the tail.
+    assert_eq!(
+        suggested_checkout_path(&source, ""),
+        "/repos/worktrees/worktree"
+    );
+    assert_eq!(
+        suggested_checkout_path(&source, "feature/x"),
+        "/repos/worktrees/feature-x"
+    );
+}
+
+#[test]
+fn worktree_defaults_yield_none_without_workspace_cwd() {
+    // A workspace whose cwd is blank (snapshot not resolved yet) has
+    // nothing to list branches or worktrees in: both defaults open
+    // their prompts empty instead of guessing.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.snapshot.workspaces[0].cwd = String::new();
+    assert!(app.worktree_default_base().is_none());
+    assert!(app.worktree_suggested_checkout_path("topic").is_none());
+}
+
+#[test]
+fn worktree_list_c_opens_empty_base_prompt_when_default_base_fails() {
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_filter.clear();
+    app.worktree_pick_workspace = false;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBase);
+    assert!(prompt.text.is_empty(), "dead API prefill stays empty");
+}
+
+#[test]
 fn worktree_create_prompt_stays_empty_without_source_envelope() {
     // Dead backend: every suggestion call fails, so the base prompt
     // opens empty (no default base) and the path prompt opens empty

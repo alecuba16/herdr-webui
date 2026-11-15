@@ -5173,6 +5173,88 @@ fn renders_content_search_scroll_empty_cleanup_and_settings_modes() {
 }
 
 #[test]
+fn settings_file_edge_paths_garbage_non_object_and_unwritable_dir() {
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("herdr-tui-settings-edge-{stamp}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    std::env::set_var("XDG_CONFIG_HOME", &dir);
+    let settings_path = dir.join("herdr-webui/webui-settings.json");
+    std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+
+    // Garbage (non-JSON) file: the reader must fail closed to false.
+    std::fs::write(&settings_path, "not json at all").unwrap();
+    assert!(!crate::tui::tui_terminal_prefix_passthrough());
+
+    // Non-object root: the writer resets to a fresh object instead of
+    // indexing into an array or string.
+    std::fs::write(&settings_path, "[]").unwrap();
+    crate::tui::tui_set_terminal_prefix_passthrough(true).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(value["terminalPrefixPassthrough"], json!(true));
+
+    // Settings overlay p with an unwritable config dir: persistence
+    // fails, the error slot says so, and the status line stays silent
+    // (the in-memory flag keeps the user's choice).
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, "file").unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", dir.join("blocker/sub"));
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Settings;
+    app.status.clear();
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    let error = app.error.as_deref().unwrap();
+    assert!(error.starts_with("settings file:"), "error: {error}");
+    assert!(app.status.is_empty());
+    assert!(app.terminal_prefix_passthrough);
+
+    match prior_xdg {
+        Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn settings_file_write_fails_when_config_parent_is_a_file() {
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("herdr-tui-settings-notdir-{stamp}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("f"), "regular file").unwrap();
+    let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    // .config would live inside a regular file, so create_dir_all fails.
+    std::env::set_var("XDG_CONFIG_HOME", dir.join("f/sub"));
+    assert!(crate::tui::tui_set_terminal_prefix_passthrough(true).is_err());
+    match prior_xdg {
+        Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn settings_overlay_shows_passthrough_on_state() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Settings;
+    app.terminal_prefix_passthrough = true;
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("on (shell keeps Ctrl+B while attached)"));
+}
+
+#[test]
 fn settings_p_toggle_flips_passthrough_and_round_trips_the_file() {
     // Env-writing tests share one lock (PR #240 convention): without
     // it a parallel test can swap XDG_CONFIG_HOME mid-toggle.
@@ -6633,10 +6715,6 @@ fn footer_context_hints_exist_for_every_variant() {
     ];
     for ctx in contexts {
         assert!(!ctx.hint().trim().is_empty(), "{ctx:?} hint empty");
-        assert!(
-            !ctx.compact_hint().trim().is_empty(),
-            "{ctx:?} compact hint empty"
-        );
     }
     // The worktree overlay hint names its keys.
     let hint = FooterContext::WorktreeList.hint();
@@ -7744,11 +7822,6 @@ fn footer_names_walk_and_scroll_keys_when_split_active() {
         split.contains("Ctrl+j/k scroll"),
         "split hint names the scroll escape"
     );
-
-    // Narrow-terminal shrink keeps the essentials.
-    let compact = app.footer_context().compact_hint();
-    assert!(compact.contains("hjkl walk"));
-    assert!(compact.contains("Ctrl+j/k scroll"));
 }
 
 #[test]

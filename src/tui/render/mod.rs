@@ -2097,14 +2097,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         // Shrink the FULL hint first (end-drop with the discovery
         // segment protected): it names more actions than the compact
         // twin, so prefer it whenever a couple of trailing actions fit.
-        let trimmed = fit_hint(help, hint_budget);
-        if trimmed.width() <= hint_budget {
-            trimmed
-        } else {
-            // Even the shrunk hint overflows: fall back to the compact
-            // twin, shrunk the same way.
-            fit_hint(context.compact_hint(), hint_budget)
-        }
+        // fit_hint always returns a string within the budget (it
+        // clip-cuts the tail as the last resort), so no second pass is
+        // needed.
+        fit_hint(help, hint_budget)
     };
     // Backend wait feedback: past the 500ms grace a healthy loopback
     // reply never needs, the message slot animates a spinner + hint so a
@@ -2182,7 +2178,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
 /// segment (`Ctrl+B ? help`) is protected wherever it sits: it joins every
 /// shrinking round because it is the one hint every screen needs. The
 /// single-segment fallback keeps its end chars for the same reason.
-fn fit_hint(hint: &str, budget: usize) -> String {
+pub(crate) fn fit_hint(hint: &str, budget: usize) -> String {
     let segments: Vec<&str> = hint.trim().split(" · ").collect();
     let joined = format!(" {} ", segments.join(" · "));
     if joined.width() <= budget {
@@ -2208,8 +2204,16 @@ fn fit_hint(hint: &str, budget: usize) -> String {
         }
     }
     // Only the discovery segment fits (very narrow terminal): keep its
-    // end, which carries the help hint itself.
-    let tail_line = format!(" {discovery} ");
+    // end, which carries the help hint itself. Hints with no discovery
+    // tail (the quit prompt and the tour capture all keys) fall back
+    // to their first segment so the shrink never collapses to a blank
+    // line.
+    let tail = if discovery.is_empty() {
+        segments[0]
+    } else {
+        discovery
+    };
+    let tail_line = format!(" {tail} ");
     if tail_line.width() > budget {
         // Column-based skip, not char-based: a wide char counts for
         // two columns, so dropping its char would overshoot.
@@ -3036,4 +3040,35 @@ fn truncate(value: &str, max_width: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_hint, wrap_plain};
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn wrap_plain_zero_budget_word_wrap_and_no_blank_rows() {
+        // Zero budget means no wrapping contract: the text rides as one row.
+        assert_eq!(wrap_plain("hello", 0), vec!["hello".to_string()]);
+        assert_eq!(
+            wrap_plain("abc def", 4),
+            vec!["abc ".to_string(), "def".to_string()]
+        );
+        assert!(wrap_plain("a  b", 4)
+            .iter()
+            .all(|row| !row.trim().is_empty()));
+    }
+
+    #[test]
+    fn fit_hint_keeps_discovery_tail_within_budget() {
+        // Early return: the padded hint already fits, unchanged.
+        assert_eq!(fit_hint(" short ", 50), " short ");
+        // Segment shrink keeps the protected discovery tail.
+        let trimmed = fit_hint(" a · b · c · ? help ", 8);
+        assert!(trimmed.width() <= 8);
+        assert!(trimmed.contains("? help"));
+        // Char-clip path: only the discovery tail fits, clipped by columns.
+        assert_eq!(fit_hint(" x · ? help ", 3), " ? ");
+    }
 }

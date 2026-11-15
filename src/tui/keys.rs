@@ -780,6 +780,28 @@ mod tests {
     }
 
     #[test]
+    fn chord_labels_pin_terminal_and_in_screen_variants() {
+        // Terminal-pane chords and the in-screen git P have no
+        // prefix-chord echo test above, so their labels are pinned here
+        // verbatim (terminal chords are context-swapped variants of the
+        // same physical keys as settings/git chords).
+        assert_eq!(chord_label(Shortcut::RemoveWorktree), "Ctrl+B Del");
+        assert_eq!(chord_label(Shortcut::GitPush), "git P (in-screen)");
+        assert_eq!(
+            chord_label(Shortcut::SplitPane),
+            "Ctrl+B s (split · other screens: settings)"
+        );
+        assert_eq!(
+            chord_label(Shortcut::MovePane),
+            "Ctrl+B m (move tile · git: blame)"
+        );
+        assert_eq!(
+            chord_label(Shortcut::ZoomPane),
+            "Ctrl+B z (zoom tile · git: stash file)"
+        );
+    }
+
+    #[test]
     fn every_prefix_chord_appears_in_both_legend_variants() {
         // Drift guard (b3): the chord_label test only pins the echo
         // labels; this one pins the armed legend instead. Every chord

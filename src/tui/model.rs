@@ -612,7 +612,8 @@ fn is_braille(ch: char) -> bool {
 
 #[cfg(test)]
 mod coverage_tests {
-    use super::same_checkout_path;
+    use super::{same_checkout_path, worktree_root_for_source, worktree_source_from_response};
+    use serde_json::json;
 
     #[test]
     fn same_checkout_path_canonicalizes_two_spelling_variants() {
@@ -633,5 +634,32 @@ mod coverage_tests {
         assert!(!same_checkout_path(direct, "/definitely/not/here/probe"));
         // Equal strings shortcut before any filesystem touch.
         assert!(same_checkout_path("/same/string", "/same/string"));
+    }
+
+    #[test]
+    fn worktree_source_rejects_blank_identity_fields() {
+        // Blank-after-trim is as useless as missing: the prompt must
+        // stay empty rather than default to a wrong checkout location.
+        let blank_name = json!({"source": {"repo_name": "  ", "repo_root": "/repo"}});
+        assert!(worktree_source_from_response(&blank_name).is_none());
+    }
+
+    #[test]
+    fn worktree_root_normalizes_dot_and_parent_parts() {
+        let source = crate::tui::model::WorktreeSourceInfo {
+            repo_name: "r".to_string(),
+            repo_root: "/a/b/../c".to_string(),
+            default_worktree_directory: "../worktrees".to_string(),
+        };
+        // `..` pops the last pushed part, `.` and empty parts vanish,
+        // so /a/b/../c + ../worktrees collapses to /a/worktrees.
+        assert_eq!(worktree_root_for_source(&source), "/a/worktrees");
+        let dotted = crate::tui::model::WorktreeSourceInfo {
+            repo_name: "r".to_string(),
+            repo_root: "/a/./b//".to_string(),
+            default_worktree_directory: "".to_string(),
+        };
+        // Empty default falls back to ../worktrees.
+        assert_eq!(worktree_root_for_source(&dotted), "/a/worktrees");
     }
 }

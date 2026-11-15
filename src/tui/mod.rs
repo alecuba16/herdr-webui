@@ -309,49 +309,6 @@ impl FooterContext {
             }
         }
     }
-
-    /// Compact hint for narrow terminals: same discovery tail, fewer
-    /// actions. `fit_hint` trims whole segments if even this is too wide.
-    pub(crate) fn compact_hint(self) -> &'static str {
-        match self {
-            Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " ? closes help · T replays tour · type filters · j/k scrolls ",
-            Self::TourOverlay => " j/Enter next step · k back · Esc closes ",
-            Self::SettingsOverlay => " t theme · p passthrough · Esc closes ",
-            Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
-            Self::BranchPicker => " Enter switch/worktree · j/k moves · type filters or creates · Esc closes ",
-            Self::SearchPalette => " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help ",
-            Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
-            Self::PromptInput(PromptKind::ReplaceInFile) => {
-                " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
-            }
-            Self::PromptInput(PromptKind::ComposerMessage) => {
-                " Enter send · Ctrl+U clear · Esc cancel · Ctrl+B ? help "
-            }
-            Self::PromptInput(_) => " Enter accept · Esc cancel · Ctrl+B ? help ",
-            Self::DiffSearch => " n/N cycle · Esc close · Ctrl+B ? help ",
-            Self::EditorFind => " Enter next · Esc close · Ctrl+B ? help ",
-            Self::FileEdit => " Ctrl-S save · Esc stop · Ctrl+B ? help ",
-            Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
-            Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
-            Self::TerminalMain => " Enter attach · Ctrl+B . , focus sidebar · Ctrl+B ? help ",
-            Self::TerminalMainSplit => " hjkl walk · Ctrl+j/k scroll · Ctrl+B ? help ",
-            Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
-            Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
-            Self::SessionManager => {
-                " Enter switch · l launch · x close · c cleanup · n new · Esc closes · Ctrl+B ? help "
-            }
-            Self::Terminal(_) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
-            Self::Files(_) => " j/k · Enter · e edit · / search · L file log · Ctrl+B ? help ",
-            Self::Git(_, GitView::Changes) => " s stage · d discard · c commit · Tab view · Ctrl+B ? help ",
-            Self::Git(_, GitView::Log) => " Space mark · Enter compare · Ctrl+B ? help ",
-            Self::Git(_, GitView::Branches) => " B create · D delete · Ctrl+B ? help ",
-            Self::Git(_, GitView::Stash) => " Enter diff · a apply · Ctrl+B ? help ",
-            Self::Git(_, GitView::History) => " Enter commit diff · Ctrl+B ? help ",
-            Self::Git(_, GitView::Conflicts) => " o/e/t resolve · R continue · Ctrl+B ? help ",
-            Self::Git(_, GitView::Cleanup) => " Space mark · x delete · Ctrl+B ? help ",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
