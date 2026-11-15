@@ -207,7 +207,7 @@ Still pending:
 - typed event wrappers in `BackendClient`; built-in `events.subscribe` now has a server-side event hub, but the Rust client layer does not yet expose a high-level typed subscription API
 - observe/control/takeover semantics for multiple terminal clients
 - server-side scroll offsets, scroll metrics, search, and selection/copy APIs
-- persistence of the named built-in session registry (`/api/sessions` with launch/cleanup exists in-memory) across WebUI restarts; auth sessions themselves already survive a restart
+- ~~persistence of the named built-in session registry across WebUI restarts~~ shipped: session rows are discovered by scanning the `builtin/` config directory, and the fsync-durable `session-journal.json` keeps each session's directory alive, so named sessions and their workspaces survive a restart; the manager's cleanup action deletes stale session directories together with their journals (auth sessions themselves already survived a restart)
 - layout split/move/resize/zoom parity
 - stress tests for large output, large paste, reconnect, and multi-client attach at the Rust backend level (the browser reconnect backoff is covered by `src/assets/terminal_reconnect_backoff.test.mjs`)
 

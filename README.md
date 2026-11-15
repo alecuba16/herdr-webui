@@ -108,6 +108,7 @@ The README is the project summary and documentation index. Detailed functionalit
 ## Functionality summary
 
 - Multi-workspace terminal UI with desktop and mobile layouts, backed by the built-in backend by default. With no workspace open, the desktop shows a project dashboard whose actions open the folder picker.
+- Built-in sessions recover their workspaces after a server restart: the backend journals the workspace set (labels, cwds, shell tab labels, focused workspace) to `session-journal.json` in the canonical session directory on every structural mutation, fsync-durable through the atomic write, and replays it on the next cold start before the listeners bind, so every client sees the recovered workspaces with no extra round-trips. Vanished checkouts are skipped and a closed session relaunches empty.
 - Browser terminals use a shared wterm/Ghostty renderer adapter with Settings-backed renderer choice, link detection, mouse-reporting opt-in, scroll speed, Tail follow, large-paste chunking, and inline Kitty graphics on the Ghostty core.
 - Chat lens over agent terminals (transcript reading view with a per-pane composer) and a server-synced notes scratchpad shared by desktop and mobile.
 - Server authentication stores the password as an Argon2id hash (plaintext credentials migrate on load), keeps login sessions in a persisted `session-token` sidecar, and ships a `herdr-webui set-password` subcommand for offline credential changes.
