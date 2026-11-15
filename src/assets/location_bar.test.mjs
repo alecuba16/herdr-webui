@@ -1800,7 +1800,7 @@ describe("location bar discovery popover", () => {
     equal(document.activeElement, name);
   });
 
-  it("swaps the footer to the create action on a drafted worktree name", async () => {
+  it("keeps the footer on Create worktree while the create view is open", async () => {
     const harness = loadDiscovery({ routes: {
       "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },
       "/api/git-ui/branches": { local: LOCAL, remote: [] },
@@ -1812,15 +1812,37 @@ describe("location bar discovery popover", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     ok(bar.innerHTML.includes('data-discovery-focus="footer"'), "footer renders in the create view");
     ok(!bar.innerHTML.includes('data-discovery-focus="create"'), "the worktree form carries no inline submit");
-    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoveryOpenPlain\(\)">Open folder as workspace/);
+    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoverySubmitWorktree\(\)">Create worktree/, "empty name keeps the create footer but disabled");
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, true, "empty name disables the create footer");
     document.getElementById("locationBarDiscoveryName").focus();
     ctx.HerdrLocationBar.discoveryDraft("newBranch", "draft-name");
-    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoverySubmitWorktree\(\)">Create worktree/);
-    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false);
+    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoverySubmitWorktree\(\)">Create worktree/, "typed name keeps the same create action");
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false, "typed name enables the create footer");
     equal(document.activeElement.id, "locationBarDiscoveryName", "typing keeps focus in the name field");
     ctx.HerdrLocationBar.discoveryDraft("newBranch", "   ");
-    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoveryOpenPlain\(\)">Open folder as workspace/);
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, true, "cleared draft disables the create footer again");
     equal(document.activeElement.id, "locationBarDiscoveryName", "clearing the draft keeps focus in the name field");
+  });
+
+  it("Escape collapses the create view back to the selector rows, and a second Escape closes the dialog", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },
+      "/api/git-ui/branches": { local: LOCAL, remote: [] },
+    } });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    ok(harness.listeners.keydown, "the bar registers a document keydown listener");
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    match(bar.innerHTML, /Worktree branch name/, "create view is open");
+    harness.listeners.keydown({ key: "Escape", stopPropagation() {}, preventDefault() {}, target: { closest: () => null } });
+    ok(!bar.innerHTML.includes("Worktree branch name"), "first Escape collapses the create view");
+    ok(bar.innerHTML.includes("location-bar-discovery-popover"), "the discovery dialog stays open");
+    equal(document.activeElement.getAttribute("data-discovery-focus"), "create-worktree", "focus returns to the Create worktree row");
+    match(bar.innerHTML, /onclick="HerdrLocationBar\.discoveryOpenPlain\(\)">Open folder as workspace/, "selector view footer is back");
+    harness.listeners.keydown({ key: "Escape", stopPropagation() {}, preventDefault() {}, target: { closest: () => null } });
+    ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "second Escape closes the dialog");
   });
 
   it("preserves input focus and exact selection through picker repaints and shell sync", async () => {

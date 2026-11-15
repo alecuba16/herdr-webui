@@ -800,11 +800,18 @@
           event.stopPropagation();
           event.preventDefault();
           // The Base dropdown is a layer inside the discovery popover:
-          // Escape closes it before the popover itself.
+          // Escape closes it before anything else.
           if (bar.discoveryList && bar.discoveryList.basePickerOpen && !bar.discoveryList.creating) {
             bar.discoveryList.basePickerOpen = false;
             sync();
             restoreDiscoveryFocus({ id: "locationBarDiscoveryBase" });
+            return;
+          }
+          // The worktree create view is a layer above the selector rows:
+          // Escape collapses it back (same as Cancel worktree) instead
+          // of closing the whole dialog.
+          if (bar.discoveryList && bar.discoveryList.createMode === "worktree" && !bar.discoveryList.creating) {
+            discoveryCancelWorktree();
             return;
           }
           closeBranchPopover();
@@ -1112,20 +1119,21 @@
     const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px;--discovery-top:${anchor.top}px`;
     const label = escapeHtml(list.repoLabel || pathBasename(list.folder) || list.folder);
     const head = `<div class="git-ui-branch-list-section">${label}${list.folder ? `<div class="location-bar-discovery-path">${escapeHtml(list.folder)}</div>` : ""}</div>`;
-    // The footer owns the worktree create action: a drafted branch name
-    // swaps Open folder as workspace for Create worktree (and back when
-    // cleared), so the form itself carries no second submit button.
+    // The footer owns the worktree create action: in the create view it
+    // is always Create worktree, disabled until a name is drafted and the
+    // source probe is settled. The selector view keeps Open folder as
+    // workspace; the two views never share a footer action.
     const creatingWorktree = list.createMode === "worktree";
     const named = !!String(list.newBranch || "").trim();
-    const footerAction = creatingWorktree && named ? "discoverySubmitWorktree" : "discoveryOpenPlain";
-    const footerLabel = creatingWorktree && named
+    const footerAction = creatingWorktree ? "discoverySubmitWorktree" : "discoveryOpenPlain";
+    const footerLabel = creatingWorktree
       ? list.creating
         ? "Creating worktree"
         : list.createError
           ? "Retry worktree creation"
           : "Create worktree"
       : "Open folder as workspace";
-    const footerDisabled = list.creating || (creatingWorktree && named && (!list.source || list.sourceLoading || !!list.sourceError));
+    const footerDisabled = list.creating || (creatingWorktree && (!named || !list.source || list.sourceLoading || !!list.sourceError));
     const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button"${footerDisabled ? " disabled" : ""} onclick="HerdrLocationBar.${footerAction}()">${footerLabel}</button></div>`;
     if (list.loading)
       return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-loading" role="status"><span></span><strong>Discovering folder</strong></div>${footer}</div>`;
@@ -1734,8 +1742,8 @@
       list.basePickerOpen = false;
       sync();
     }
-    // Worktree mode swaps the footer action on the first typed name,
-    // so it needs a repaint; branch mode keeps its inline Create button
+    // Worktree mode repaints per keystroke so the footer's disabled
+    // flag tracks the draft; branch mode keeps its inline Create button
     // and only flips its disabled flag.
     if (list.createMode === "worktree") {
       sync();
