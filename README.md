@@ -25,7 +25,7 @@ brew services start alecuba16/tap/herdr-webui   # run it as a background service
 # or run it in the foreground: herdr-webui --https off --backend-mode builtin
 ```
 
-The formula pours both `herdr-webui` and `herdr-webui-tui`, and its service block lets `brew services` run WebUI at login and restart it on upgrade. The tap polls releases daily and regenerates the formula, so `brew upgrade` picks up new versions.
+The formula pours both `herdr-webui` and `herdr-webui-tui`, and its service block lets `brew services` run WebUI at login. `brew upgrade` swaps the keg but does not restart the running service, so follow it with `brew services restart alecuba16/tap/herdr-webui` (or `herdr-webui update-mac`, which does the same through the brew delegation) to serve the new binary. The tap polls releases daily and regenerates the formula, so `brew upgrade` picks up new versions.
 
 To build from source instead, the same quick start works with the Rust toolchain. From a fresh clone:
 

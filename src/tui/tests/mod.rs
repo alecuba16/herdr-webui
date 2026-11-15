@@ -5336,6 +5336,45 @@ fn settings_overlay_shows_passthrough_on_state() {
 }
 
 #[test]
+fn settings_overlay_bottom_border_shows_version() {
+    // The version rides the bottom border so it never competes with
+    // the key/value rows for wrap budget: right-aligned, it survives
+    // every box width the overlay can take.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Settings;
+    let buffer = draw_buffer(&app, 100, 30);
+    let version = format!("v{}", crate::HERDR_WEBUI_VERSION);
+    let row = rendered_row(&buffer, &version);
+    let chars = (0..buffer.area.width as usize)
+        .map(|i| buffer[(i as u16, row.y as u16)].symbol().to_string())
+        .collect::<Vec<_>>();
+    // The version row is the overlay's bottom border: the closest `└`
+    // left of the version opens that border, dashes sit between, and
+    // the overlay corner `┘` follows after the title's padding spaces
+    // (the title is ` v{version} `, so one space pads each side; other
+    // panels share the row, so pin against the nearest corners, not
+    // the row's outermost glyphs).
+    let start_x = row.cell_x_of(&version).unwrap();
+    let left_corner = chars[..start_x]
+        .iter()
+        .rposition(|c| c == "└")
+        .expect("overlay bottom-left corner left of the version");
+    assert!(chars[left_corner + 1..start_x - 1].iter().all(|c| c == "─"));
+    assert_eq!(chars[start_x - 1], " ");
+    let right_corner = chars[start_x + version.chars().count()..]
+        .iter()
+        .position(|c| c == "┘")
+        .expect("overlay bottom-right corner right of the version")
+        + start_x
+        + version.chars().count();
+    assert_eq!(
+        right_corner,
+        start_x + version.chars().count() + 1,
+        "only the title's padding space sits between version and corner"
+    );
+}
+
+#[test]
 fn settings_p_toggle_flips_passthrough_and_round_trips_the_file() {
     // Env-writing tests share one lock (PR #240 convention): without
     // it a parallel test can swap XDG_CONFIG_HOME mid-toggle.

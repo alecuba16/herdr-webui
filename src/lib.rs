@@ -8,6 +8,12 @@ pub mod prompt_cards;
 pub mod socket_paths;
 pub mod tui;
 
+/// Product version stamped by build.rs (release tag, or `main-<sha>` /
+/// `snapshot-<sha>` for local builds). Both binaries render it so an
+/// installed webui and TUI can be identified on screen without a
+/// `--version` round trip.
+pub const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
+
 // Compatibility re-exports: the public TUI surface stays `herdr_webui::tui_*`
 // for the binary and the e2e test module.
 pub use tui::keys;

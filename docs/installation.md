@@ -10,7 +10,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.7.49` | `0.9.0`-`0.9.5` | `22` exact match | Current | Split-tile previews of fullscreen TUI agents are composed screens: builtin pane.read takes format=screen and VT-emulates a bounded scrollback tail, so unfocused tiles show composed rows instead of glued draw fragments; src/tui reaches literal 100% changed-line coverage (827 tests, unreachable lines carry why-comments) and the git fetch test fixture is deterministic. |
+| `0.7.50` | `0.9.0`-`0.9.5` | `22` exact match | Current | TUI settings overlay shows the running version in the bottom border; every service subcommand (install/update/start/stop/restart/uninstall, mac and linux) detects a Homebrew install and delegates to `brew services`, and update uses `restart` so the post-upgrade refresh actually happens (`start` is a no-op on a running service). |
+| `0.7.49` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | Split-tile previews of fullscreen TUI agents are composed screens: builtin pane.read takes format=screen and VT-emulates a bounded scrollback tail, so unfocused tiles show composed rows instead of glued draw fragments; src/tui reaches literal 100% changed-line coverage (827 tests, unreachable lines carry why-comments) and the git fetch test fixture is deterministic. |
 | `0.7.48` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | TUI UX: display-width-aware wrapping and scroll in modals, fields and overlays (CJK included, tiny terminals never panic); footer hints keep the discovery tail at any budget and the armed prefix lists every dispatchable chord per screen; worktree create defaults align across TUI, desktop and mobile (base tiers, branch seeding, <root>/<repo>/<slug> path); shortcut collisions drop out of the prefix map in favor of in-screen verbs and attach gains a Ctrl+B passthrough toggle. |
 | `0.7.47` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | Onboarding tour on WebUI and TUI: 8-step guided walkthrough that spotlights each region, runs the real shortcut while explaining it, owns every key while active, and restores the pre-tour state on close; the WebUI auto-starts once per browser profile and replays from Help, the TUI opens it with T. |
 | `0.7.46` | `0.9.0`-`0.9.5` | `22` exact match | Superseded | TUI terminal tiles: split (Ctrl+B s), move, zoom and Shift+Z resize with weight-based layouts that survive inserts/removes; tile headers show workspace identity and OSC terminal titles; dead panes keep their shutdown reason on screen for 2s. |
@@ -208,7 +209,7 @@ brew install alecuba16/tap/herdr-webui
 
 The formula pours both `herdr-webui` and `herdr-webui-tui` into the brew prefix. The tap tracks the latest GitHub release automatically: a scheduled workflow polls releases daily and regenerates the formula, so `brew upgrade` moves you forward.
 
-The formula ships a service block, so brew can run WebUI as a background service that starts at login and restarts on upgrade:
+The formula ships a service block, so brew can run WebUI as a background service that starts at login. Note `brew upgrade` replaces the keg but does not restart a running service by itself: the plist keeps the old process alive and Homebrew prints `brew services restart` as the follow-up step, so run it after every upgrade to move the service onto the new binary.
 
 ```sh
 brew services start alecuba16/tap/herdr-webui
@@ -216,13 +217,14 @@ brew services start alecuba16/tap/herdr-webui
 
 Logs land in `$(brew --prefix)/var/log/herdr-webui.log` and `herdr-webui.err.log` (WebUI logs to stderr, so the err file carries most output). The service runs the binary without flags; set bind, TLS, and credentials in `~/.config/herdr-webui/webui-settings.json` instead of command-line arguments.
 
-If you brew-installed the formula, `install-mac`/`update-mac` detect it and
-delegate to `brew services` instead of maintaining a second LaunchAgent:
-brew already restarts its own service on upgrade, and the keg binary is
-managed by brew, so there is nothing to copy. On a tarball-only machine (no
-brew formula present) they keep the private layout unchanged. On the brew
-path `update-mac` after `brew upgrade` just restarts the service, and
-`uninstall-mac` stops it and points you to `brew uninstall`.
+If you brew-installed the formula, every service subcommand detects it and
+delegates to `brew services` instead of the private LaunchAgent/systemd
+unit: `install-mac`/`install-linux` start the brew service, `update-mac`/
+`update-linux` run `brew services restart` (the refresh `brew upgrade`
+leaves pending), and `start`/`stop`/`restart`/`uninstall-*` map to the
+matching brew verbs. The keg binary is managed by brew, so there is nothing
+to copy. On a tarball-only machine (no brew formula present) they keep the
+private layout unchanged.
 
 If you prefer the built-in per-user installers on a machine without the
 formula (they copy binaries into `~/.local/bin` and manage the

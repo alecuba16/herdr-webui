@@ -26,6 +26,7 @@ use serde_json::json;
 use crate::auth::{AuthConfig, LoginRateLimiter, LoginRequest, DEFAULT_SESSION_EXPIRATION_MINUTES};
 #[cfg(test)]
 use crate::builtin_detection::JcodeDetectionVariant;
+use herdr_webui::HERDR_WEBUI_VERSION;
 use server_settings::{
     apply_cli_overrides, load_runtime_server_settings, log_event, save_runtime_server_settings,
     server_settings_path, settings_public_json, BackendMode, LogLevel, RecentWorkspace,
@@ -88,7 +89,6 @@ use compat::{backend_compatibility, BackendCompatibility};
 use protocol::*;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
-const HERDR_WEBUI_VERSION: &str = env!("HERDR_WEBUI_VERSION");
 const INSTALL_LABEL: &str = "herdr-web";
 const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
