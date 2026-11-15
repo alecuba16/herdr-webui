@@ -357,6 +357,8 @@ Use **New built-in** to create or start a built-in session inside the WebUI proc
 
 The session manager can also retry connection, reset workspaces, or close the current selected session. Closing a built-in session drops the in-process backend handle; closing an external Herdr session sends `server.stop` to that Herdr backend.
 
+Built-in sessions persist their workspace set: labels, cwd paths, shell tab labels, and the focused workspace are journaled to `session-journal.json` inside the session's config directory (for example `~/.config/herdr-webui/builtin/default/`) and replayed on the next cold start before the listeners bind. A restart therefore recovers the workspaces with fresh shells; agent tabs stay closed, vanished checkouts are skipped, and pane layouts and split states are transient. **Reset workspaces** closes every workspace, so the journal is rewritten empty and the next start comes up clean. Closing a session (or the cleanup action) deletes the journal, so a closed session relaunches empty.
+
 If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION=NAME`.
 
 ## FAQ
