@@ -191,6 +191,26 @@
   width: auto;
 }
 
+/* Esc hint row in the worktree create view: same kbd chip idiom as the
+   shortcuts reference and the empty-leaf hint, so the way back to the
+   selector rows is visible without a cancel button. */
+.location-bar-discovery-esc {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 6px;
+  margin-top: 4px;
+}
+.location-bar-discovery-esc kbd {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  font: 12px var(--mono-font);
+  padding: 1px 6px;
+}
+
 .location-bar-discovery-popover > * {
   flex-shrink: 0;
 }

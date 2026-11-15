@@ -275,7 +275,9 @@
     const subject = String(branch.subject || "");
     const exact = date ? new Date(date).toLocaleString() : "";
     const hover = [author && `${author}`, exact, subject && `"${subject}"`].filter(Boolean).join(" · ");
-    const icon = isCurrent ? `<b class="git-ui-branch-row-check" role="img" aria-label="Current branch" title="Current branch">✓</b>` : `<b class="git-ui-branch-row-icon" aria-hidden="true"></b>`;
+    const icon = isCurrent
+      ? `<b class="git-ui-branch-row-check" role="img" aria-label="Current branch" title="Current branch">✓</b>`
+      : `<b class="git-ui-branch-row-icon${checkout ? " git-ui-branch-row-icon-worktree" : ""}"${checkout ? ` title="Checked out in a worktree"` : ""} aria-hidden="true"></b>`;
     const meta = [author, branchRelativeTime(date)].filter(Boolean).join(" · ");
     // Checked-out-elsewhere rows keep the switch action, which reroutes to
     // the worktree, and say so on the row.
@@ -800,11 +802,18 @@
           event.stopPropagation();
           event.preventDefault();
           // The Base dropdown is a layer inside the discovery popover:
-          // Escape closes it before the popover itself.
+          // Escape closes it before anything else.
           if (bar.discoveryList && bar.discoveryList.basePickerOpen && !bar.discoveryList.creating) {
             bar.discoveryList.basePickerOpen = false;
             sync();
             restoreDiscoveryFocus({ id: "locationBarDiscoveryBase" });
+            return;
+          }
+          // The worktree create view is a layer above the selector rows:
+          // Escape collapses it back, keeping drafts and rows, instead of
+          // closing the whole dialog.
+          if (bar.discoveryList && bar.discoveryList.createMode === "worktree" && !bar.discoveryList.creating) {
+            discoveryCancelWorktree();
             return;
           }
           closeBranchPopover();
@@ -915,9 +924,13 @@
     const current = samePath(path, currentPath);
     const label = String(worktree.label || pathBasename(path) || "worktree");
     const branch = String(worktree.branch || "detached");
+    // Every selector row carries the worktree glyph left of the label,
+    // so the chip popover and the discovery selector read the same as
+    // the branch lists' worktree-iconed rows.
+    const icon = `<b class="git-ui-branch-row-icon git-ui-branch-row-icon-worktree" aria-hidden="true"></b>`;
     const check = current ? `<b class="git-ui-worktree-check" role="img" aria-label="Current worktree" title="Current worktree">✓</b>` : "";
     const action = onclick || `HerdrLocationBar.selectWorktreeFromPopover('${encodeArg(path)}')`;
-    return `<button class="git-ui-worktree-option${current ? " current" : ""}"${onclick ? ` data-discovery-focus="worktree-${encodeArg(path)}"` : ""} onclick="${action}"><strong>${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
+    return `<button class="git-ui-worktree-option${current ? " current" : ""}${onclick ? ` data-discovery-focus="worktree-${encodeArg(path)}"` : ""}" onclick="${action}"><strong>${icon}${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
   }
 
   function renderWorktreePopover() {
@@ -1112,7 +1125,22 @@
     const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px;--discovery-top:${anchor.top}px`;
     const label = escapeHtml(list.repoLabel || pathBasename(list.folder) || list.folder);
     const head = `<div class="git-ui-branch-list-section">${label}${list.folder ? `<div class="location-bar-discovery-path">${escapeHtml(list.folder)}</div>` : ""}</div>`;
-    const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button"${list.creating ? " disabled" : ""} onclick="HerdrLocationBar.discoveryOpenPlain()">Open folder as workspace</button></div>`;
+    // The footer owns the worktree create action: in the create view it
+    // is always Create worktree, disabled until a name is drafted and the
+    // source probe is settled. The selector view keeps Open folder as
+    // workspace; the two views never share a footer action.
+    const creatingWorktree = list.createMode === "worktree";
+    const named = !!String(list.newBranch || "").trim();
+    const footerAction = creatingWorktree ? "discoverySubmitWorktree" : "discoveryOpenPlain";
+    const footerLabel = creatingWorktree
+      ? list.creating
+        ? "Creating worktree"
+        : list.createError
+          ? "Retry worktree creation"
+          : "Create worktree"
+      : "Open folder as workspace";
+    const footerDisabled = list.creating || (creatingWorktree && (!named || !list.source || list.sourceLoading || !!list.sourceError));
+    const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button"${footerDisabled ? " disabled" : ""} onclick="HerdrLocationBar.${footerAction}()">${footerLabel}</button></div>`;
     if (list.loading)
       return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-loading" role="status"><span></span><strong>Discovering folder</strong></div>${footer}</div>`;
     if (list.error)
@@ -1201,10 +1229,12 @@
 
   function discoveryCreateForm(list) {
     const worktree = list.createMode === "worktree";
-    const unavailable = worktree && (!list.source || list.sourceLoading || !!list.sourceError);
     // The Base input is the only dropdown trigger: a caret drawn inside
     // the field shows it opens. In worktree mode the input itself opens
     // the panel; branch mode keeps free-text Base with no dropdown.
+    // The worktree form carries no inline submit and no cancel button:
+    // the footer owns the create action, and Esc collapses the view back
+    // to the chooser rows. The hint row says so with the app's kbd idiom.
     const baseCaret = worktree
       ? `<span class="location-bar-base-picker-indicator" aria-hidden="true">${list.basePickerOpen ? "▾" : "▸"}</span>`
       : "";
@@ -1213,7 +1243,8 @@
       : "";
     const pullControl = worktree ? `<label class="git-ui-discovery-pull option" for="locationBarDiscoveryPullBase"><input id="locationBarDiscoveryPullBase" type="checkbox" data-discovery-focus="pull-base"${list.pullBase ? " checked" : ""}${list.creating ? " disabled" : ""} onchange="HerdrLocationBar.discoveryTogglePullBase(this.checked)"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first. If the branch diverged, you can continue without pulling.</small></span></label>` : "";
     const feedback = worktree ? (list.sourceLoading ? `<div role="status">Loading worktree source…</div>` : list.sourceError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.sourceError)}</div><button class="git-ui-btn" type="button" data-discovery-focus="retry-worktree-source" onclick="HerdrLocationBar.discoveryRetryWorktreeSource()">Retry worktree source</button>` : "") + (list.creating ? `<div role="status" data-discovery-focus="worktree-status">Creating worktree</div><div class="git-ui-muted">Closing this dialog does not cancel creation</div>` : list.createError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.createError)}</div>` : "") : "";
-    return `<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field location-bar-base-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")}${baseInputAttrs} oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)">${baseCaret}<button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || unavailable || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.${worktree ? "discoverySubmitWorktree" : "discoveryCreateBranch"}()">${worktree ? (list.creating ? "Creating worktree" : list.createError ? "Retry worktree creation" : "Create worktree") : "Create"}</button>${worktree ? `<button class="git-ui-btn" type="button" data-discovery-focus="cancel-worktree" onclick="HerdrLocationBar.discoveryCancelWorktree()">Cancel worktree</button>` : ""}</div>${pullControl}${feedback}</div>`;
+    const escapeHint = worktree ? `<div class="location-bar-discovery-esc" aria-hidden="true"><kbd>Esc</kbd><span>back to list</span></div>` : "";
+    return `<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field location-bar-base-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")}${baseInputAttrs} oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)">${baseCaret}${worktree ? "" : `<button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.discoveryCreateBranch()">Create</button>`}</div>${pullControl}${feedback}${escapeHint}</div>`;
   }
 
   // A failed switch leaves the successfully opened folder on its original branch.
@@ -1617,7 +1648,9 @@
   }
 
   function revealDiscoveryWorktreeError() {
-    restoreDiscoveryFocus({ key: "create" });
+    // The worktree create action lives in the footer, so a failed
+    // create returns keyboard focus there for the retry.
+    restoreDiscoveryFocus({ key: "footer" });
     const alert = document.querySelector('.location-bar-discovery-worktree-form .git-ui-error[role="alert"]');
     if (alert && alert.scrollIntoView) alert.scrollIntoView({ block: "nearest" });
   }
@@ -1716,8 +1749,15 @@
       list.basePickerOpen = false;
       sync();
     }
+    // Worktree mode repaints per keystroke so the footer's disabled
+    // flag tracks the draft; branch mode keeps its inline Create button
+    // and only flips its disabled flag.
+    if (list.createMode === "worktree") {
+      sync();
+      return;
+    }
     const createButton = document.querySelector && document.querySelector('.location-bar-discovery-popover [data-discovery-focus="create"]');
-    if (createButton) createButton.disabled = list.creating || !String(list.newBranch || "").trim() || (list.createMode === "worktree" && (!list.source || list.sourceLoading || !!list.sourceError));
+    if (createButton) createButton.disabled = list.creating || !String(list.newBranch || "").trim();
   }
 
   function refocusPathChip() {

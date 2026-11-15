@@ -532,6 +532,8 @@ describe("location bar branch popover", () => {
     await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
     ok(bar.innerHTML.includes(">worktree</i>"), "the checked-out-elsewhere row is badged");
     ok(bar.innerHTML.includes(`title="Checked out in ${worktreePath}"`), "the badge names the folder");
+    ok(bar.innerHTML.includes('class="git-ui-branch-row-icon git-ui-branch-row-icon-worktree" title="Checked out in a worktree"'), "the checked-out-elsewhere row carries the worktree icon");
+    ok(!bar.innerHTML.includes('aria-label="Current branch" title="Current branch">✓</b><span class="git-ui-branch-row-name-text">wt-lane<'), "the current-row check does not mark checked-out rows");
     const before = calls.length;
     await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("wt-lane"), false);
     equal(JSON.stringify(opened), JSON.stringify([worktreePath]), "folder-change flow received the worktree path");
@@ -555,6 +557,7 @@ describe("location bar branch popover", () => {
     ctx.HerdrLocationBar.sync();
     await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
     ok(!bar.innerHTML.includes(">worktree</i>"), "own-folder checkout carries no badge");
+    ok(!bar.innerHTML.includes("git-ui-branch-row-icon-worktree"), "own-folder checkout keeps the plain branch icon");
     const before = calls.length;
     await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("feature-x"), false);
     const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
@@ -1011,6 +1014,7 @@ describe("location bar worktree popover", () => {
     ok(bar.innerHTML.includes("location-bar-worktree-popover"), "popover renders in the bar");
     ok(bar.innerHTML.includes("repo-lane"), "row lists the other checkout");
     ok(bar.innerHTML.includes('class="git-ui-worktree-option current"'), "current checkout row carries the check");
+    ok(bar.innerHTML.includes('<strong><b class="git-ui-branch-row-icon git-ui-branch-row-icon-worktree" aria-hidden="true"></b><b class="git-ui-worktree-check"'), "every selector row leads with the worktree icon");
     ok(bar.innerHTML.includes("Create worktree"), "create action renders");
   });
 
@@ -1785,7 +1789,7 @@ describe("location bar discovery popover", () => {
       "/api/worktrees": { result: { worktrees: [] } },
       "/api/git-ui/branches": { local: LOCAL, remote: [] },
     } });
-    const { ctx } = harness;
+    const { ctx, bar } = harness;
     const document = installDiscoveryFocusDOM(harness);
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     equal(document.querySelector('[data-discovery-focus="create"]').disabled, true);
@@ -1798,6 +1802,58 @@ describe("location bar discovery popover", () => {
     ctx.HerdrLocationBar.discoveryDraft("newBranch", "   ");
     equal(create.disabled, true);
     equal(document.activeElement, name);
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "");
+    equal(create.disabled, true);
+    bar.innerHTML = "";
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "draft-name");
+    equal(document.querySelector('[data-discovery-focus="create"]'), null);
+  });
+
+  it("keeps the footer on Create worktree while the create view is open", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },
+      "/api/git-ui/branches": { local: LOCAL, remote: [] },
+    } });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes('data-discovery-focus="footer"'), "footer renders in the create view");
+    ok(!bar.innerHTML.includes('data-discovery-focus="create"'), "the worktree form carries no inline submit");
+    ok(!bar.innerHTML.includes("Cancel worktree"), "the worktree form carries no cancel button");
+    match(bar.innerHTML, /location-bar-discovery-esc[^>]*><kbd>Esc<\/kbd><span>back to list<\/span>/, "the Esc hint row replaces the cancel button");
+    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoverySubmitWorktree\(\)">Create worktree/, "empty name keeps the create footer but disabled");
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, true, "empty name disables the create footer");
+    document.getElementById("locationBarDiscoveryName").focus();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "draft-name");
+    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoverySubmitWorktree\(\)">Create worktree/, "typed name keeps the same create action");
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false, "typed name enables the create footer");
+    equal(document.activeElement.id, "locationBarDiscoveryName", "typing keeps focus in the name field");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "   ");
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, true, "cleared draft disables the create footer again");
+    equal(document.activeElement.id, "locationBarDiscoveryName", "clearing the draft keeps focus in the name field");
+  });
+
+  it("Escape collapses the create view back to the selector rows, and a second Escape closes the dialog", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },
+      "/api/git-ui/branches": { local: LOCAL, remote: [] },
+    } });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    ok(harness.listeners.keydown, "the bar registers a document keydown listener");
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    match(bar.innerHTML, /Worktree branch name/, "create view is open");
+    harness.listeners.keydown({ key: "Escape", stopPropagation() {}, preventDefault() {}, target: { closest: () => null } });
+    ok(!bar.innerHTML.includes("Worktree branch name"), "first Escape collapses the create view");
+    ok(bar.innerHTML.includes("location-bar-discovery-popover"), "the discovery dialog stays open");
+    equal(document.activeElement.getAttribute("data-discovery-focus"), "create-worktree", "focus returns to the Create worktree row");
+    match(bar.innerHTML, /onclick="HerdrLocationBar\.discoveryOpenPlain\(\)">Open folder as workspace/, "selector view footer is back");
+    harness.listeners.keydown({ key: "Escape", stopPropagation() {}, preventDefault() {}, target: { closest: () => null } });
+    ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "second Escape closes the dialog");
   });
 
   it("preserves input focus and exact selection through picker repaints and shell sync", async () => {
@@ -2620,13 +2676,13 @@ describe("location bar discovery popover", () => {
     match(bar.innerHTML, /role="alert">source offline/);
     ok(bar.innerHTML.includes('data-discovery-focus="retry-worktree-source"'));
     ctx.HerdrLocationBar.discoveryDraft("newBase", "kept/base");
-    equal(document.querySelector('[data-discovery-focus="create"]').disabled, true);
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, true, "failed source keeps the create footer disabled");
     await ctx.HerdrLocationBar.discoverySubmitWorktree();
     equal(calls.filter((call) => call.init && call.init.method === "POST").length, 0);
     await ctx.HerdrLocationBar.discoveryRetryWorktreeSource();
     equal(sourceCalls, 3);
     ok(!bar.innerHTML.includes("source offline"));
-    equal(document.querySelector('[data-discovery-focus="create"]').disabled, false);
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false, "recovered source enables the create footer");
     equal(document.getElementById("locationBarDiscoveryName").value, "kept");
     equal(document.getElementById("locationBarDiscoveryBase").value, "kept/base");
   });
@@ -2684,10 +2740,10 @@ describe("location bar discovery popover", () => {
       finish({ error: "path already exists" });
       await pending;
       match(bar.innerHTML, /role="alert">path already exists/);
-      equal(document.querySelector('[data-discovery-focus="create"]').disabled, false);
+      equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false);
       equal(document.getElementById("locationBarDiscoveryName").disabled, false);
       ok(bar.innerHTML.includes("Retry worktree creation"));
-      equal(document.activeElement.getAttribute("data-discovery-focus"), "create", "failed creation returns keyboard focus to retry");
+      equal(document.activeElement.getAttribute("data-discovery-focus"), "footer", "failed creation returns keyboard focus to the retry");
       const navigation = [];
       ctx.go = (...args) => navigation.push(args);
       const retry = ctx.HerdrLocationBar.discoverySubmitWorktree();

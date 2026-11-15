@@ -66,12 +66,12 @@ use assets::{
     icon_folder_svg, icon_folder_up_svg, icon_git_svg, icon_help_svg, icon_link_svg,
     icon_lock_open_svg, icon_lock_svg, icon_pencil_svg, icon_refresh_svg, icon_save_svg,
     icon_search_svg, icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg,
-    icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_actions_js,
-    mobile_attention_js, mobile_backend_js, mobile_composer_js, mobile_core_js, mobile_css,
-    mobile_directory_picker_js, mobile_events_js, mobile_file_browser_js, mobile_git_js, mobile_js,
-    mobile_lens_js, mobile_notes_js, mobile_panels_js, mobile_screens_js, mobile_search_js,
-    mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js, mobile_tour_css,
-    mobile_tour_js, mobile_tour_steps_js, mobile_workmeta_js, mobile_worktrees_js,
+    icon_worktree_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js,
+    mobile_actions_js, mobile_attention_js, mobile_backend_js, mobile_composer_js, mobile_core_js,
+    mobile_css, mobile_directory_picker_js, mobile_events_js, mobile_file_browser_js,
+    mobile_git_js, mobile_js, mobile_lens_js, mobile_notes_js, mobile_panels_js, mobile_screens_js,
+    mobile_search_js, mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
+    mobile_tour_css, mobile_tour_js, mobile_tour_steps_js, mobile_workmeta_js, mobile_worktrees_js,
     shared_actions_js, shared_alert_card_css, shared_alert_card_js, shared_attention_js,
     shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
     shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
@@ -1631,6 +1631,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/icons/settings.svg", get(icon_settings_svg))
         .route("/assets/icons/theme-auto.svg", get(icon_theme_auto_svg))
         .route("/assets/icons/git.svg", get(icon_git_svg))
+        .route("/assets/icons/worktree.svg", get(icon_worktree_svg))
         .route("/assets/icons/terminal.svg", get(icon_terminal_svg))
         .route(
             "/assets/icons/chevron-right.svg",

@@ -129,7 +129,7 @@ try {
     if (!pop || !panel) return null;
     const view = window.innerHeight;
     const pr = panel.getBoundingClientRect();
-    const createBtn = pop.querySelector('[data-discovery-focus="create"]');
+    const createBtn = pop.querySelector('.location-bar-discovery-footer [data-discovery-focus="footer"]');
     const pull = pop.querySelector("#locationBarDiscoveryPullBase");
     const footer = pop.querySelector(".location-bar-discovery-footer");
     const visible = (el) => {
@@ -206,12 +206,10 @@ try {
   recorder.record("Escape closes only the Base dropdown",
     escapeCheck && escapeCheck.reopened && escapeCheck.closedAfterEscape && escapeCheck.popSurvives, JSON.stringify(escapeCheck));
 
-  // Cleanup: cancel the draft and dismiss.
-  await evalJs(cdp, `(() => {
-    const cancel = Array.from(document.querySelectorAll(".location-bar-discovery-popover button")).find((b) => /cancel/i.test(b.textContent || ""));
-    if (cancel) cancel.click();
-    return "done";
-  })()`);
+  // Cleanup: Esc collapses the create view, a second Esc dismisses.
+  await evalJs(cdp, `(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return "esc1"; })()`);
+  await sleep(400);
+  await evalJs(cdp, `(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return "esc2"; })()`);
   await sleep(400);
   await evalJs(cdp, `(() => { document.dispatchEvent(new MouseEvent("click", { bubbles: true })); return "done"; })()`);
   await sleep(400);
