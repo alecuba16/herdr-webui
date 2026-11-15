@@ -235,9 +235,12 @@ fn shortcut_key_hint_covers_every_hint_arm() {
     assert_eq!(hint(Shortcut::Lens), "L");
     assert_eq!(hint(Shortcut::Composer), "C");
     assert_eq!(hint(Shortcut::SessionManager), "Shift+P");
-    assert_eq!(hint(Shortcut::GitChanges), "1");
-    assert_eq!(hint(Shortcut::GitLog), "3");
-    assert_eq!(hint(Shortcut::GitBranch), "b");
+    // Git chords removed in the chord reduction: GitChanges and GitLog
+    // lost their arms and fall to the catch-all, so the tour teaches the
+    // in-screen git keys (Tab cycle + c/l) instead.
+    assert_eq!(hint(Shortcut::GitChanges), "see help");
+    assert_eq!(hint(Shortcut::GitLog), "see help");
+    assert_eq!(hint(Shortcut::GitBranch), "see help");
     assert_eq!(hint(Shortcut::GitSwitchBranch), "v");
     assert_eq!(hint(Shortcut::NewWorkspace), "n");
     assert_eq!(hint(Shortcut::OpenWorktrees), "w");

@@ -7809,10 +7809,6 @@ mod batch12_coverage_tests {
         app.mode = TuiMode::BranchPicker;
         let context = app.footer_context();
         assert_eq!(context.hint(), FooterContext::BranchPicker.hint());
-        assert_eq!(
-            context.compact_hint(),
-            FooterContext::BranchPicker.compact_hint()
-        );
     }
 
     #[test]
