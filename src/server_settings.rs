@@ -1394,3 +1394,29 @@ mod tests {
         assert_eq!(never.to_system_time(), crate::auth::never_expires_at());
     }
 }
+
+/// C3 drift guard: the TUI reads and writes the shared settings file
+/// through `tui_settings_path` (crate::tui), while this module owns
+/// `server_settings_path` for the server process. The two are identical
+/// by eye today; if either side ever drifts (a renamed subdir, a
+/// different XDG fallback), the TUI toggle and the server would read
+/// and write DIFFERENT files with no error, so pin them here.
+#[cfg(test)]
+mod settings_path_parity {
+    use super::server_settings_path;
+    use crate::tests::lock_env;
+
+    #[test]
+    fn tui_settings_path_matches_server_settings_path() {
+        let _guard = lock_env();
+        let (dir, _dir_guard) = crate::tests::temp_guard("herdr-settings-path-parity");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let tui_path = herdr_webui::tui::tui_settings_path();
+        let server_path = server_settings_path();
+        assert_eq!(
+            tui_path, server_path,
+            "TUI and server must read and write the same settings file"
+        );
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+}

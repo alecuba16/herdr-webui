@@ -560,6 +560,7 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
   color: var(--backend-herdr);
 }
 .mobile-btn {
+  cursor: pointer;
   min-width: 44px;
   min-height: 44px;
   border: 1px solid var(--border2);

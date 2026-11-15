@@ -205,6 +205,7 @@
         { title: "Agents", keywords: "agents sorting stuck working dismiss blocked done idle prompt cards", html: agentsSection(agentSortMode, stuckWorking, promptCards, dismissMinutes) },
         { title: "Energy", keywords: "no sleep energy coffee awake power", html: energySection(noSleep.mode, noSleep.error, noSleep.supported === false) },
         { title: "Terminal", keywords: "terminal renderer core ghostty font links mouse reporting scroll speed wheel lines", html: terminalSection(font, core, links, mouseReporting, scrollLines) },
+        { title: "Tour", keywords: "onboarding tour replay walkthrough intro guide first run", html: tourSection() },
         { title: "Data", keywords: "refresh reload data logout sign out", html: dataSection() },
       ];
       const anyVisible = groups.some(settingsGroupVisible);
@@ -282,6 +283,17 @@
 
     function dataSection() {
       return `<div class="mobile-settings-group"><h3>Data</h3><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.refresh()">Refresh data</button><button class="mobile-btn mobile-wide" onclick="location.reload()">Reload selected layout</button><button class="mobile-btn mobile-wide" onclick="HerdrMobile.logout()">Logout</button><small>Logout ends the server session. Every logged-in browser needs to log in again.</small><small class="mobile-version-footer" id="mobileVersionFooter" title="${escapeHtml(state.versionsTitle || "")}">${escapeHtml(state.versionsText || "webui - · backend -")}</small></div>`;
+    }
+
+    // Onboarding tour replay (webui Help modal parity). The tour module
+    // owns the done/skipped flag, so replay just starts it; nothing here
+    // needs to clear storage first.
+    function replayTour() {
+      if (globalThis.HerdrMobileTour) globalThis.HerdrMobileTour.start();
+    }
+
+    function tourSection() {
+      return `<div class="mobile-settings-group"><h3>Tour</h3><div class="mobile-settings-tour-row"><button class="mobile-btn mobile-wide" onclick="HerdrMobile.replayTour()">Replay the onboarding tour</button><small>Walk every screen again: search, workspaces, home, terminal, git, files, and the six More drawer screens.</small></div></div>`;
     }
 
     // Explicit sign-out from the server (POST /api/logout rotates the token
@@ -966,6 +978,7 @@
       setThemeMode,
       setWorktreeDefaultDirectory,
       setCloseWorkspaceOnLastTerminal,
+      replayTour,
       setSettingDebounced,
       commitSettingFromChange,
       flushSettingCommit,

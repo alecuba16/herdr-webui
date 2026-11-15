@@ -127,6 +127,9 @@ const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
 const MOBILE_DIRECTORY_PICKER_JS: &str = include_str!("assets/mobile/directory_picker.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_NOTES_JS: &str = include_str!("assets/mobile/notes.js");
+const MOBILE_TOUR_STEPS_JS: &str = include_str!("assets/mobile/tour_steps.js");
+const MOBILE_TOUR_JS: &str = include_str!("assets/mobile/tour.js");
+const MOBILE_TOUR_CSS: &str = include_str!("assets/mobile/tour.css");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
 const MOBILE_COMPOSER_JS: &str = include_str!("assets/mobile/composer.js");
@@ -148,6 +151,7 @@ const ICON_HELP: &str = include_str!("assets/icons/help.svg");
 const ICON_SETTINGS: &str = include_str!("assets/icons/settings.svg");
 const ICON_THEME_AUTO: &str = include_str!("assets/icons/theme-auto.svg");
 const ICON_GIT: &str = include_str!("assets/icons/git.svg");
+const ICON_WORKTREE: &str = include_str!("assets/icons/worktree.svg");
 const ICON_TERMINAL: &str = include_str!("assets/icons/terminal.svg");
 const ICON_CHEVRON_RIGHT: &str = include_str!("assets/icons/chevron-right.svg");
 const ICON_CHEVRON_DOWN: &str = include_str!("assets/icons/chevron-down.svg");
@@ -716,6 +720,26 @@ pub(crate) async fn mobile_notes_js(headers: HeaderMap) -> Response {
     )
 }
 
+pub(crate) async fn mobile_tour_steps_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_TOUR_STEPS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_tour_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_TOUR_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_tour_css(headers: HeaderMap) -> Response {
+    static_text(&headers, MOBILE_TOUR_CSS, "text/css; charset=utf-8")
+}
+
 pub(crate) async fn mobile_css(headers: HeaderMap) -> Response {
     static_text(&headers, MOBILE_CSS, "text/css; charset=utf-8")
 }
@@ -881,6 +905,10 @@ pub(crate) async fn icon_theme_auto_svg(headers: HeaderMap) -> Response {
 
 pub(crate) async fn icon_git_svg(headers: HeaderMap) -> Response {
     static_svg(&headers, ICON_GIT)
+}
+
+pub(crate) async fn icon_worktree_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_WORKTREE)
 }
 
 pub(crate) async fn icon_terminal_svg(headers: HeaderMap) -> Response {
@@ -1249,6 +1277,18 @@ mod tests {
     fn shared_skeleton_assets_define_runtime_contract() {
         assert!(SHARED_SKELETON_JS.contains("HerdrSkeleton"));
         assert!(SHARED_SKELETON_CSS.contains(".herdr-skeleton"));
+    }
+
+    #[test]
+    fn mobile_tour_assets_define_runtime_contract() {
+        // The mobile tour ships as three assets: the step table, the
+        // driver, and the styles. Each must keep its global/route hooks so
+        // the boot loader and the Settings replay row find them.
+        assert!(MOBILE_TOUR_STEPS_JS.contains("HerdrMobileTourSteps"));
+        assert!(MOBILE_TOUR_JS.contains("HerdrMobileTour"));
+        assert!(MOBILE_TOUR_JS.contains("herdr-mobile-tour-done"));
+        assert!(MOBILE_TOUR_CSS.contains(".tour-root"));
+        assert!(MOBILE_TOUR_CSS.contains(".mobile-settings-tour-row"));
     }
 
     #[test]

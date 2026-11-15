@@ -16,7 +16,7 @@ states including tab create/switch/close.
 | `01-terminal-claude-agent.png` | Terminal screen, claude agent workspace selected, blocked permission dialog in the pane tail |
 | `02-help-overlay.png` | `?` overlay listing all prefix shortcuts |
 | `03-help-filter.png` | Help overlay with the filter box typed (`file`) |
-| `04-prefix-hint.png` | `Ctrl+B` armed: footer shows the prefix hint, waiting for the shortcut key |
+| `04-prefix-hint.png` | `Ctrl+B` armed: footer shows the enriched prefix hint (segments the width can hold, `+N more` when folded, `Ctrl+B ? help` tail kept), waiting for the shortcut key. Current footer screenshots predate the enriched hints; re-capture when convenient. |
 | `05-palette.png` | Prefix `/` search palette with a live query (`aurora`) |
 | `06-git-changes.png` | Git changes list: staged/unstaged/untracked files with the diff pane |
 | `07-git-changes-staged-diff.png` | Staged diff for `docs/architecture.md` selected |

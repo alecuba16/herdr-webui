@@ -388,6 +388,92 @@ describe("worktree create modal", () => {
     assert.equal(ctx.state.createWorktreeDefaultPath, "/worktrees/app/feature-b");
   });
 
+  it("syncCreateWorktreeCheckoutPath never overwrites a hand-typed path", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.createWorktreeSource = {
+      repo_root: "/repo",
+      repo_name: "app",
+      default_worktree_directory: "../worktrees",
+    };
+    getElement("worktreeBranch").value = "feat-a";
+    getElement("worktreePath").value = "/custom/path";
+    ctx.syncCreateWorktreeCheckoutPath();
+    assert.equal(getElement("worktreePath").value, "/custom/path");
+  });
+
+  it("syncCreateWorktreeCheckoutPath re-syncs when the branch changes and the field held the previous default", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.createWorktreeSource = {
+      repo_root: "/repo",
+      repo_name: "app",
+      default_worktree_directory: "../worktrees",
+    };
+    getElement("worktreeBranch").value = "feat-a";
+    getElement("worktreePath").value = "";
+    ctx.syncCreateWorktreeCheckoutPath();
+    assert.equal(getElement("worktreePath").value, "/worktrees/app/feat-a");
+    getElement("worktreeBranch").value = "feat-b";
+    ctx.syncCreateWorktreeCheckoutPath();
+    assert.equal(getElement("worktreePath").value, "/worktrees/app/feat-b");
+  });
+
+  it("syncCreateWorktreeCheckoutPath honors the user setting over the source default", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.createWorktreeSource = {
+      repo_root: "/repo",
+      repo_name: "app",
+      default_worktree_directory: "../worktrees",
+    };
+    ctx.options.worktreeDefaultDirectory = "/wt-user";
+    getElement("worktreeBranch").value = "feat-a";
+    getElement("worktreePath").value = "";
+    ctx.syncCreateWorktreeCheckoutPath();
+    assert.equal(getElement("worktreePath").value, "/wt-user/app/feat-a");
+  });
+
+  it("syncCreateWorktreeBranchFromBase seeds the branch name from a non-default base and strips the remote prefix", async () => {
+    const { ctx, getElement } = boot();
+    getElement("worktreeBase").value = "origin/feature-x";
+    getElement("worktreeBranch").value = "";
+    ctx.syncCreateWorktreeBranchFromBase();
+    assert.equal(getElement("worktreeBranch").value, "feature-x");
+    assert.equal(ctx.state.createWorktreeBranchFromBase, "feature-x");
+  });
+
+  it("syncCreateWorktreeBranchFromBase never overwrites a user-typed branch name", async () => {
+    const { ctx, getElement } = boot();
+    getElement("worktreeBase").value = "origin/feature-x";
+    getElement("worktreeBranch").value = "my-own-name";
+    ctx.syncCreateWorktreeBranchFromBase();
+    assert.equal(getElement("worktreeBranch").value, "my-own-name");
+  });
+
+  it("syncCreateWorktreeBranchFromBase clears the seeded name when the base returns to the default", async () => {
+    const { ctx, getElement } = boot();
+    getElement("worktreeBase").value = "origin/feature-x";
+    getElement("worktreeBranch").value = "";
+    ctx.syncCreateWorktreeBranchFromBase();
+    assert.equal(getElement("worktreeBranch").value, "feature-x");
+    getElement("worktreeBase").value = "main";
+    ctx.syncCreateWorktreeBranchFromBase();
+    assert.equal(getElement("worktreeBranch").value, "");
+  });
+
+  it("syncCreateWorktreeBranchFromBase leaves an empty field empty on a default base and re-syncs the path", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.createWorktreeSource = {
+      repo_root: "/repo",
+      repo_name: "app",
+      default_worktree_directory: "../worktrees",
+    };
+    getElement("worktreeBase").value = "main";
+    getElement("worktreeBranch").value = "";
+    getElement("worktreePath").value = "";
+    ctx.syncCreateWorktreeBranchFromBase();
+    assert.equal(getElement("worktreeBranch").value, "");
+    assert.equal(getElement("worktreePath").value, "");
+  });
+
   it("discoverCreateWorktreeSource stamps the source from the api reply", async () => {
     const { ctx, getElement, calls } = boot({ "/api/worktrees": DISCOVER_REPLY });
     getElement("worktreeCreateSource").value = "/repo/main";
@@ -642,6 +728,16 @@ describe("pure worktree helpers", () => {
     assert.equal(ctx.defaultBaseBranch(), "dev");
     ctx.state.openWorktreeBranches = [];
     assert.equal(ctx.defaultBaseBranch(), "");
+  });
+
+  it("defaultBaseBranch falls back to origin/main when local main and master are absent", async () => {
+    const { ctx } = boot();
+    ctx.state.openWorktreeBranches = ["dev", "origin/main"];
+    assert.equal(ctx.defaultBaseBranch(), "origin/main");
+    ctx.state.openWorktreeBranches = ["dev", "origin/main", "main"];
+    assert.equal(ctx.defaultBaseBranch(), "main");
+    ctx.state.openWorktreeBranches = ["dev", "origin/main", "master"];
+    assert.equal(ctx.defaultBaseBranch(), "master");
   });
 });
 describe("workspace drag and drop ordering", () => {
@@ -1205,6 +1301,26 @@ describe("closeTab and closeWorkspace variants", () => {
 });
 
 describe("branch option loading and sync helpers", () => {
+  it("syncWorktreeBranchOptions prefills an empty base field with the computed default", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.openWorktreeBaseSuggestion = "";
+    ctx.state.openWorktreeIncludeRemoteBranches = true;
+    ctx.state.openWorktreeBranches = ["dev", "origin/main"];
+    ctx.syncWorktreeBranchOptions(["dev", "origin/main"]);
+    assert.equal(getElement("worktreeNewBase").value, "origin/main");
+    assert.equal(ctx.state.openWorktreeBaseSuggestion, "origin/main");
+  });
+
+  it("syncWorktreeBranchOptions never overwrites a typed base value", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.openWorktreeBaseSuggestion = "";
+    const input = getElement("worktreeNewBase");
+    input.value = "my-branch";
+    ctx.syncWorktreeBranchOptions(["main", "dev"]);
+    assert.equal(input.value, "my-branch");
+    assert.equal(ctx.state.openWorktreeBaseSuggestion, "");
+  });
+
   it("loadWorktreeBranchOptions skips fetches for a source without a git repo", async () => {
     const { ctx, calls } = boot();
     ctx.state.openWorktreeSource = { cwd: "/repo", repo_root: "" };
@@ -1251,7 +1367,9 @@ describe("branch option loading and sync helpers", () => {
     ctx.state.openWorktreeSource = { cwd: "/repo", repo_root: "/repo" };
     ctx.syncBranchNameFromBase();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(bar.value, "");
+    // The empty base now receives the fetched default (only-when-empty
+    // prefill); with just origin/dev loaded that is origin/dev itself.
+    assert.equal(bar.value, "origin/dev");
     assert.equal(ctx.state.openWorktreeIncludeRemoteBranches, true);
     assert.ok(calls.some((c) => c.path === "/api/git-branches"));
   });

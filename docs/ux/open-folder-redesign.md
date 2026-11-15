@@ -144,19 +144,37 @@ pick folder F
   state, same pattern as the chip popover's newBranch draft. Name and
   base have separate visible labels. Fetching remote refs is an explicit
   action, not a side effect of picking a folder or typing a filter.
-- **Worktree create, revised by user on 2026-11-04 (v3).** Clicking
+- **Worktree create, revised by user on 2026-11-04 (v3), footer
+  revised by user on 2026-11-15 (v4, v5), cancel revised by user on
+  2026-11-15 (v6), row icons revised by user on 2026-11-15 (v7).** Clicking
   Create worktree keeps the discovery dialog and its list open. The
-  create area shows two labeled inputs: Worktree branch name and Base
-  ref, plus Create worktree and Cancel worktree buttons. In the branch
-  chooser this reuses its existing name/base area, changing the submit
-  action rather than duplicating fields. In the worktree chooser the
-  area expands below its rows. Focus moves to the name input. Cancel
-  collapses worktree creation, keeps the list and drafts, and returns
-  focus to the Create worktree row. Esc still closes the whole dialog.
+  create area shows two labeled inputs, Worktree branch name and Base
+  ref; the create action lives in the
+  footer. Inside the create view the footer always reads Create
+  worktree (Creating worktree during creation, Retry worktree
+  creation on failure), disabled until the name field holds a
+  nonblank draft and the source probe settles. Open folder as
+  workspace belongs to the selector view only; the two views never
+  share a footer action. In the branch chooser this reuses its
+  existing name/base area, changing the submit action rather than
+  duplicating fields. In the worktree chooser the
+  area expands below its rows. Focus moves to the name input. There
+  is no Cancel worktree button: a kbd Esc back to list hint row in
+  the form states the way back, and Esc collapses worktree creation
+  (drafts and rows kept, focus to the Create worktree row) instead of
+  closing the dialog; a second Esc closes it.
   No existing action modal, directory picker, label input or path input
   is opened by this action. Existing chip creation flows are unchanged.
-- **Inline worktree submit.** A nonblank branch name enables Create
-  worktree. The base defaults to the picked checkout's current branch,
+  Branch rows whose branch is checked out in a worktree carry the
+  worktree icon (a fork-off-the-tree glyph) with a Checked out in a
+  worktree tooltip; plain branches keep the plain branch icon. The
+  same row builder feeds the chip popover, the discovery view and the
+  Base-ref picker, so the icon reads identically on every surface.
+  The worktree selector rows (worktree chip popover and discovery's
+  worktree mode) lead with the same glyph too: every checkout row
+  carries it left of the label, current-row check following it.
+- **Inline worktree submit.** A nonblank branch name enables the
+  footer's Create worktree. The base defaults to the picked checkout's current branch,
   else HEAD. It shares lazy local/cached refs, explicit Fetch remotes,
   free-text fallback, draft retention and focus behavior with branch
   creation. Local refs precede remote refs in either discovery shape.

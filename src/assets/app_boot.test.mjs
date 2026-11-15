@@ -25,7 +25,11 @@ const DESKTOP_STYLES = [
   "/assets/shared/file-tree.css",
   ...SHARED_STYLES,
 ];
-const MOBILE_STYLES = ["/assets/mobile/app.css", ...SHARED_STYLES];
+const MOBILE_STYLES = [
+  "/assets/mobile/app.css",
+  "/assets/mobile/tour.css",
+  ...SHARED_STYLES,
+];
 const SHARED_SCRIPTS = [
   "/assets/shared/core.js",
   "/assets/shared/http.js",
@@ -65,6 +69,8 @@ const MOBILE_SCRIPTS = [
   "/assets/mobile/directory-picker.js",
   "/assets/mobile/file-browser.js",
   "/assets/mobile/notes.js",
+  "/assets/mobile/tour-steps.js",
+  "/assets/mobile/tour.js",
   "/assets/mobile/settings.js",
   "/assets/mobile/search.js",
   "/assets/mobile/git.js",
@@ -81,7 +87,7 @@ const MOBILE_SCRIPTS = [
   "/assets/mobile/app.js",
 ];
 
-function context({ mobile = false, preference = null, storageThrows = false } = {}) {
+function context({ mobile = false, preference = null, storageThrows = false, legacyMedia = false } = {}) {
   const links = [];
   const scripts = [];
   let mediaListener = null;
@@ -109,14 +115,16 @@ function context({ mobile = false, preference = null, storageThrows = false } = 
         reloads += 1;
       },
     },
-    matchMedia: () => ({
-      get matches() {
-        return matches;
-      },
-      addEventListener(_event, listener) {
-        mediaListener = listener;
-      },
-    }),
+    matchMedia: () => {
+      const query = {
+        get matches() {
+          return matches;
+        },
+      };
+      if (legacyMedia) query.addListener = (listener) => { mediaListener = listener; };
+      else query.addEventListener = (_event, listener) => { mediaListener = listener; };
+      return query;
+    },
   };
   return {
     ctx: vm.createContext(ctx),
@@ -222,5 +230,15 @@ describe("app boot", () => {
 
     equal(ctx.document.documentElement.dataset.herdrLayout, "mobile");
     deepEqual(scriptSrcs(scripts), MOBILE_SCRIPTS);
+  });
+
+  it("uses the legacy addListener API when addEventListener is missing on media queries", async () => {
+    const env = context({ mobile: false, legacyMedia: true });
+    appBootScript.runInContext(env.ctx);
+    await env.flushScripts();
+    equal(env.ctx.document.documentElement.dataset.herdrLayout, "desktop");
+    env.setMobile(true);
+    env.triggerMediaChange();
+    equal(env.reloads(), 1, "legacy listener still triggers the layout reload");
   });
 });

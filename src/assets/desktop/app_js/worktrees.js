@@ -152,6 +152,7 @@ function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
+  state.openWorktreeBaseSuggestion = "";
   el("worktreeDiscoverPath").value = path || "";
   el("worktreeWorkspaceLabel").value = "";
   state.workspaceCreateSuggestedLabel = "";
@@ -217,6 +218,7 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
   el("worktreeNewPullBase").checked = false;
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
+  state.openWorktreeBaseSuggestion = "";
   state.openWorktreeIncludeRemoteBranches = false;
   state.openWorktreeBranchSourceKey = "";
   syncWorktreeBranchOptions([]);
@@ -338,6 +340,7 @@ function syncWorktreeBranchOptions(branches) {
     ? ""
     : `<option value="Fetch remote branches…"></option>`;
   optionsEl.innerHTML = items + fetchOption;
+  syncWorktreeBaseDefault();
 }
 function worktreeSourceKey(source) {
   return source
@@ -511,7 +514,27 @@ function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];
   if (branches.includes("main")) return "main";
   if (branches.includes("master")) return "master";
+  if (branches.includes("origin/main")) return "origin/main";
   return branches[0] || "";
+}
+// Same never-overwrite rule as the mobile screen (mobile/worktrees.js
+// syncWorktreeCheckoutPath): fill the open-modal base field only when it
+// is empty or still holds our previous suggestion.
+function syncWorktreeBaseDefault() {
+  const input = el("worktreeNewBase");
+  if (!input) return;
+  const next = defaultBaseBranch();
+  const current = input.value.trim();
+  const previous = String(state.openWorktreeBaseSuggestion || "").trim();
+  if (next && (!current || current === previous)) {
+    input.value = next;
+    state.openWorktreeBaseSuggestion = next;
+    return;
+  }
+  if (!next && current && current === previous) {
+    input.value = "";
+    state.openWorktreeBaseSuggestion = "";
+  }
 }
 function syncBranchNameFromBase() {
   const base = el("worktreeNewBase").value.trim(),
@@ -538,6 +561,31 @@ function syncBranchNameFromBase() {
   branchInput.value = branch;
   state.openWorktreeBaseBranchName = branch;
   syncWorktreeCheckoutPath();
+}
+// Create-modal twin of syncBranchNameFromBase: same never-overwrite rule,
+// its own suggestion state so the two forms never clear each other's
+// drafts. The create modal has no branch list, so the default-base check
+// is the main/master convention instead of defaultBaseBranch().
+function syncCreateWorktreeBranchFromBase() {
+  const base = el("worktreeBase").value.trim(),
+    branchInput = el("worktreeBranch");
+  if (!base) return;
+  const baseBranchName = localWorktreeBranchName(base);
+  if (baseBranchName === "main" || baseBranchName === "master") {
+    if (branchInput.value.trim() === state.createWorktreeBranchFromBase)
+      branchInput.value = "";
+    state.createWorktreeBranchFromBase = "";
+    syncCreateWorktreeCheckoutPath();
+    return;
+  }
+  if (
+    branchInput.value.trim() &&
+    branchInput.value.trim() !== state.createWorktreeBranchFromBase
+  )
+    return;
+  branchInput.value = baseBranchName;
+  state.createWorktreeBranchFromBase = baseBranchName;
+  syncCreateWorktreeCheckoutPath();
 }
 function scheduleWorktreeAutodiscover() {
   clearTimeout(state.openWorktreeAutodiscoverTimer);
@@ -1204,5 +1252,18 @@ async function closeTab(id) {
     }
   } finally {
     closeTabInFlight = false;
+  }
+}
+// Branch-from-base for the create modal: bindings.js owns the form's
+// other listeners, but the base input previously fed nothing, so a
+// non-default base never seeded the branch name. Wired here (same
+// concatenated scope, worktrees.js loads before bindings.js). The
+// typeof guard keeps partial harnesses that load this file without
+// core.js booting.
+if (typeof el === "function") {
+  const worktreeCreateBaseInput = el("worktreeBase");
+  if (worktreeCreateBaseInput) {
+    worktreeCreateBaseInput.addEventListener("input", syncCreateWorktreeBranchFromBase);
+    worktreeCreateBaseInput.addEventListener("change", syncCreateWorktreeBranchFromBase);
   }
 }

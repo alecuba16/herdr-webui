@@ -17,9 +17,10 @@ Implementation notes beyond the plan text:
   `.gitkeep` marker inside the new dir (documented deviation).
 - Phase 4 replace: `Ctrl+H` opens the shared prompt; trailing `!`
   replaces all matches (the webui bar has separate one/all buttons).
-- Phase 5 settings: prefix `s` (webui `settings: KeyS`) opens a read-only
-  overlay with a theme cycle; the old TUI-only prefix-`s` stash binding
-  moved aside, stash stays on `4` (webui `stash: Digit4`).
+- Phase 5 settings: prefix `s` (webui `settings: KeyS`) opens an
+  overlay with a theme cycle and the Ctrl+B passthrough toggle; the old
+  TUI-only prefix-`s` stash binding moved aside, and the digit chords
+  (including stash `4`) were later dropped from the prefix map.
 
 ## Current state audit
 
@@ -199,19 +200,21 @@ Git management gaps:
    repo scan with dry-run and confirm.
 10. No stash diff preview (`/api/git-ui/stash-show`): stash split view with
     file tree and full stash diff.
-11. No log actions: compare (single/two-commit), reset, rebase, tag, worktree
-    from branch, load-more pagination, scope filters (all/branch/master+branch).
+11. Log actions landed: `Enter` compares the two marked commits (single-commit
+    compare against the parent when fewer are marked), `B` creates a branch in the
+    Branches view, `c` opens the commit modal in every git view. Still missing:
+    reset, rebase, tag, worktree from branch, load-more pagination, scope filters (all/branch/master+branch).
 
     Closed in the follow-up pass: single-commit compare (`Enter`, commit vs
     parent), `t` tag, `R` reset, `b` rebase, `w` worktree from branch, `+`
     load more, `s` scope cycle shipped in the git-log-actions pass; the
     remaining webui shift-click two-commit compare is now covered too:
     `Space` in the Log view marks commits for comparison (kept list capped
-    at the last 2, webui `slice(-2)` semantics) and `c` with exactly two
+    at the last 2, webui `slice(-2)` semantics) and `Enter` with exactly two
     marked commits runs the pair compare (`git_compare`, newest = target,
-    oldest = base, diff title `base..target`). With fewer than two marked,
-    `c` keeps the commit-modal meaning, so the webui compare-button
-    shortcut stays unclaimed.
+    oldest = base, diff title `base..target`); with fewer than two marked,
+    the selected commit against its parent. `c` opens the commit modal in
+    every git view.
 12. No diff search (webui `Ctrl+F` in diff) and no side-by-side toggle.
 13. No git directory picker / cwd change (webui `prefix I` opens the Git
     directory or branch dialog; yellow badge for foreign cwd).
@@ -349,7 +352,7 @@ New shortcuts in `keys.rs` + dispatch in `tui/mod.rs`, backed by
 | prefix `]` / `[` | next/prev panel | select next/prev tab in selected workspace |
 | prefix `N` | new workspace | browser overlay pick-folder mode: Enter stages path → name prompt → `client.create_workspace` → focus it |
 | prefix `W` | worktrees | browsable worktree/folder overlay for selected workspace/repo (this-folder row, worktrees, subdirectories) |
-| prefix `T` | create worktree | prompt base branch + path → `client.create_worktree*` |
+| prefix `T` | create worktree | prompt chain: base ref (prefilled with the default base: local `main` > `master` > `origin/main` > first branch) → branch (seeded from the base with the remote prefix stripped) → checkout path (prefilled `<root>/<repo>/<branch slug>`) → pull confirmation → `client.create_worktree*` |
 | prefix `X` | close panel | existing close-tab logic |
 | prefix `Shift+X` | close workspace | confirm prompt → `workspace.close` |
 | prefix `Delete`/`Backspace` | remove worktree | confirm → `worktree.remove` (built-in runs local `git worktree remove` with workspace teardown) |
@@ -508,16 +511,18 @@ noted in code):
   view (webui `KeyG` parity, audit fix), and the git screen keeps its
   own in-screen plain `G` toggle; the earlier temporary-Git-overlay
   move of stage-all to `Shift+G` went away with the overlay.
-- `focusFile: KeyI`: prefix `i` focuses the git file list (audit fix:
-  plain `i` previously did nothing, shadowed by the Shift+I cwd
-  picker chord); the Shift+I cwd picker keeps its chord.
+- `focusFile: KeyI`: dropped with the git verb reduction (the file list
+  is the in-screen default focus); the old prefix-`i` binding was
+  removed and the Shift+I cwd picker keeps its chord.
 - `sidebar: KeyB` — plain `b` stays git branches; sidebar collapse is
   `Shift+B`.
 - `rightSidebar: KeyQ`: webui-only column toggle (Files/Git/Search rail);
   the TUI prefix `q` is quit, so no parity key exists.
 - `settings: KeyS`, `stash: Digit4` — the old TUI-only prefix-`s` stash
-  moved aside; stash keeps `4`.
-- `help: Shift+Slash` (webui) maps to prefix `?`/`0` in the TUI.
+  moved aside; the digit chords were later dropped from the prefix map
+  and stash is the in-screen Stash view key.
+- `help: Shift+Slash` (webui) maps to prefix `?` in the TUI (the old
+  `0` alias was dropped with the digit chord reduction).
 - `nextWorkspace: KeyJ`/`prevWorkspace: KeyK` match the prefix table; the
   git screen reuses `J`/`K` for the hunk cursor (in-screen, no prefix).
 

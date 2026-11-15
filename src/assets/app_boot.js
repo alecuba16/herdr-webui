@@ -56,6 +56,7 @@
     document.documentElement.dataset.herdrLayout = layout;
     if (mobile) {
       loadCss("/assets/mobile/app.css");
+      loadCss("/assets/mobile/tour.css");
     } else {
       loadCss("/assets/desktop/app.css");
       loadCss("/assets/desktop/shortcuts.css");
@@ -101,6 +102,8 @@
         "/assets/mobile/directory-picker.js",
         "/assets/mobile/file-browser.js",
         "/assets/mobile/notes.js",
+        "/assets/mobile/tour-steps.js",
+        "/assets/mobile/tour.js",
         "/assets/mobile/settings.js",
         "/assets/mobile/search.js",
         "/assets/mobile/git.js",

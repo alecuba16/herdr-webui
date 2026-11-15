@@ -269,16 +269,16 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('x'), false) => Some(Shortcut::CloseTab),
         (KeyCode::Char('X'), true) => Some(Shortcut::CloseWorkspace),
         (KeyCode::Char('q'), false) => Some(Shortcut::Quit),
-        (KeyCode::Char('1'), false) => Some(Shortcut::GitChanges),
-        (KeyCode::Char('2'), false) => Some(Shortcut::GitCommit),
-        (KeyCode::Char('3'), false) => Some(Shortcut::GitLog),
-        (KeyCode::Char('4'), false) => Some(Shortcut::GitStash),
+        // Git chord reduction: the old digits 1-4, the b/h/o view jumps
+        // and the y/d file verbs duplicated the git screen's in-screen
+        // keys (Tab cycle, c/l, s/d); blame m, stash z and unstage u
+        // stay because they are the only keyboard path. The reduction
+        // keeps every unique modal and window trigger; view switching
+        // rides Ctrl+B g then Tab.
         // Stash used to live on plain `s` (a TUI addition); the webui
         // default binds plain `S` to settings, so `s` now matches the
-        // webui and stash stays on `4` (webui `stash: Digit4`).
+        // webui and stash lives in-screen in the Stash view.
         (KeyCode::Char('s'), false) => Some(Shortcut::Settings),
-        // Webui `help: Digit0` shows the git shortcut help.
-        (KeyCode::Char('0'), false) => Some(Shortcut::Help),
         // Sidebar visibility: webui `sidebar: KeyB` is plain B, but plain
         // b is the git branches shortcut (git `branch: KeyV` would be the
         // webui key, TUI keeps b from its own table), so the toggle
@@ -294,14 +294,12 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('C'), true) => Some(Shortcut::Composer),
         // Chat lens (ux overhaul): webui has no prefix binding (the
         // Chat/Terminal switch is a segmented control over the shell),
-        // so Shift+L takes it while plain l stays git log.
+        // so Shift+L takes it; plain l is unused after the git chord
+        // reduction.
         (KeyCode::Char('L'), true) => Some(Shortcut::Lens),
-        (KeyCode::Char('b'), false) => Some(Shortcut::GitBranch),
-        (KeyCode::Char('c'), false) => Some(Shortcut::GitCommit),
-        (KeyCode::Char('l') | KeyCode::Char('L'), false) => Some(Shortcut::GitLog),
-        (KeyCode::Char('y'), false) => Some(Shortcut::GitStageFile),
+        // Unstage (u) has no in-screen key, so the chord stays the only
+        // keyboard path; z/m below are the same.
         (KeyCode::Char('u'), false) => Some(Shortcut::GitUnstageFile),
-        (KeyCode::Char('d'), false) => Some(Shortcut::GitDiscardFile),
         (KeyCode::Char('z'), false) => Some(Shortcut::GitStashFile),
         // Split resize (Shift+Z pairs with z zoom on the same
         // mnemonic): h/l move the tile's horizontal divider, j/k the
@@ -316,13 +314,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // keyboard path that works from every screen.
         (KeyCode::Char('e'), false) => Some(Shortcut::EditFile),
         (KeyCode::Char('E'), true) => Some(Shortcut::SettingsOverlay),
-        // Webui `history: KeyH` shows commits for the selected file;
-        // `compare: KeyO` returns to the current changes view;
-        // `blame: KeyM` toggles blame annotations in the diff.
-        (KeyCode::Char('h') | KeyCode::Char('H'), false) => Some(Shortcut::GitFileHistory),
-        (KeyCode::Char('o') | KeyCode::Char('O'), false) => Some(Shortcut::GitChangesBack),
+        // Blame stays as the only keyboard path to the blame toggle;
+        // history (old h) and back-to-changes (old o) are in-screen
+        // (Tab cycle) after the chord reduction.
         (KeyCode::Char('m') | KeyCode::Char('M'), false) => Some(Shortcut::GitBlame),
-        (KeyCode::Enter, _) => Some(Shortcut::GitCommit),
         // Webui DEFAULT_WEBUI_SHORTCUTS parity: BracketRight/BracketLeft
         // walk panels, W opens the worktree list, Shift+T creates a
         // worktree (plain `t` stays the terminal screen), Shift+X closes
@@ -335,16 +330,18 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('T'), true) => Some(Shortcut::CreateWorktree),
         (KeyCode::Delete | KeyCode::Backspace, _) => Some(Shortcut::RemoveWorktree),
         (KeyCode::Char('S'), true) => Some(Shortcut::RenameWorkspace),
-        // Settings overlay: webui `settings: KeyS` is plain S. Stash
-        // stays on `4` (webui `stash: Digit4`); the old TUI-only
-        // prefix-`s` stash binding moved aside for parity.
+        // Settings overlay: webui `settings: KeyS` is plain S. Only the
+        // webui desktop map (core.js) still binds Digit4 to stash; the
+        // TUI chord map lost its digit chords in the reduction, so
+        // stash lives in-screen in the Stash view and on Ctrl+B z
+        // (per-file). The old TUI-only prefix-`s` stash binding moved
+        // aside for parity.
         // Webui git `stageAll: KeyG`: prefix G toggles stage all
         // from anywhere (the in-screen Changes `G` stays).
         (KeyCode::Char('G'), true) => Some(Shortcut::GitStageAll),
-        // Webui git `focusFile: KeyI`: plain i focuses the git file
-        // list; Shift+I stays the TUI-only cwd picker (the webui
-        // location bar it replaces is mouse-driven).
-        (KeyCode::Char('i'), false) => Some(Shortcut::GitFocusFile),
+        // Webui git `focusFile: KeyI` dropped with the git verb
+        // reduction: the file list is the in-screen default focus; the
+        // TUI-only cwd picker stays on Shift+I.
         (KeyCode::Char('I'), true) => Some(Shortcut::GitCwdPicker),
         // Session manager: webui opens it from the footer button (no
         // prefix default there); Shift+P fills the chord here because
@@ -354,25 +351,98 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
     }
 }
 
+/// Display name of the chord that fires a shortcut, used by the
+/// status-line chord echo (desktop showShortcutHintToast parity):
+/// the user reads `Ctrl+B w -> worktree list` and learns the chord by
+/// use, the same loop the browser toast closes. Every prefix chord in
+/// `shortcut_for_key` must have a row here; `run_shortcut` echoes it
+/// right before dispatch.
+pub fn chord_label(shortcut: Shortcut) -> &'static str {
+    match shortcut {
+        Shortcut::Help => "Ctrl+B ?",
+        Shortcut::Search => "Ctrl+B /",
+        Shortcut::Files => "Ctrl+B f",
+        Shortcut::Git => "Ctrl+B g",
+        Shortcut::Terminal => "Ctrl+B t",
+        Shortcut::Refresh => "Ctrl+B r",
+        Shortcut::RenamePanel => "Ctrl+B Shift+R",
+        Shortcut::NextWorkspace => "Ctrl+B j",
+        Shortcut::PrevWorkspace => "Ctrl+B k",
+        Shortcut::NextAgent => "Ctrl+B a",
+        Shortcut::PrevAgent => "Ctrl+B A",
+        Shortcut::NewTab => "Ctrl+B p",
+        Shortcut::CloseTab => "Ctrl+B x",
+        Shortcut::Quit => "Ctrl+B q",
+        Shortcut::Settings => "Ctrl+B s",
+        Shortcut::Sidebar => "Ctrl+B Shift+B",
+        Shortcut::FocusNext => "Ctrl+B .",
+        Shortcut::FocusPrev => "Ctrl+B ,",
+        Shortcut::Composer => "Ctrl+B Shift+C",
+        Shortcut::Lens => "Ctrl+B Shift+L",
+        Shortcut::GitSwitchBranch => "Ctrl+B v",
+        Shortcut::EditFile => "Ctrl+B e",
+        Shortcut::SettingsOverlay => "Ctrl+B Shift+E",
+        Shortcut::GitBlame => "Ctrl+B m (git blame · terminal: move tile)",
+        Shortcut::GitUnstageFile => "Ctrl+B u",
+        Shortcut::GitStashFile => "Ctrl+B z (stash file · terminal: zoom tile)",
+        Shortcut::ResizePane => "Ctrl+B Shift+Z",
+        Shortcut::NextPanel => "Ctrl+B ]",
+        Shortcut::PrevPanel => "Ctrl+B [",
+        Shortcut::OpenWorktrees => "Ctrl+B w",
+        Shortcut::CreateWorktree => "Ctrl+B Shift+T",
+        Shortcut::RemoveWorktree => "Ctrl+B Del",
+        Shortcut::CloseWorkspace => "Ctrl+B Shift+X",
+        Shortcut::RenameWorkspace => "Ctrl+B Shift+S",
+        Shortcut::NewWorkspace => "Ctrl+B n",
+        Shortcut::GitStageAll => "Ctrl+B G",
+        Shortcut::GitCwdPicker => "Ctrl+B Shift+I",
+        Shortcut::SessionManager => "Ctrl+B Shift+P",
+        // No prefix chord fires these variants: they exist for exhaustive
+        // matches and future direct bindings; GitPush is in-screen `P`.
+        Shortcut::GitPush => "git P (in-screen)",
+        Shortcut::GitChanges
+        | Shortcut::GitCommit
+        | Shortcut::GitLog
+        | Shortcut::GitStash
+        | Shortcut::GitBranch
+        | Shortcut::GitStageFile
+        | Shortcut::GitDiscardFile
+        | Shortcut::GitFileHistory
+        | Shortcut::GitChangesBack
+        | Shortcut::GitFocusFile => "in-screen git key",
+        Shortcut::SplitPane => "Ctrl+B s (split · other screens: settings)",
+        Shortcut::MovePane => "Ctrl+B m (move tile · git: blame)",
+        Shortcut::ZoomPane => "Ctrl+B z (zoom tile · git: stash file)",
+    }
+}
+
 /// Legend for the footer while the Ctrl+B prefix is armed (zellij
 /// mode-bar style: the hint line swaps to the keys live in the current
-/// mode). Value gradient runs toward the tail: `fit_hint` drops
-/// segments from the front on narrow terminals, so the daily keys
-/// (files, git, worktrees) sit next to the discovery segment (`? help`)
-/// and are the last to go. The full key map stays in the help overlay;
-/// this names only the keys a user reaches for daily. The `s` segment
-/// follows its dual dispatch exactly (review F1): split mode only on
-/// the Terminal screen in Navigate mode, settings everywhere else,
-/// including attach mode where the attach hint arms the prefix most.
-/// `r refresh` rides the Terminal legend because the TerminalMain hint
-/// already names it as a direct key; `E settings` stays in the overlay
-/// (review F4 chord, not a daily key).
+/// mode). Priority order: screens and lifecycle first (g/f/t/w/n plus
+/// the dual-dispatch s, review F1: split mode on the Terminal screen in
+/// Navigate mode, settings everywhere else), then navigation, panel
+/// management, and the git chords last. `fit_hint` drops segments from
+/// the END on narrow terminals, so the keys the user reaches for first
+/// survive the longest and the `? help` discovery tail is always the
+/// last survivor. Every chord here is documented in the help overlay
+/// (Ctrl+B ?), the complete reference.
 pub fn prefix_legend(screen: TuiScreen, mode: TuiMode) -> &'static str {
     let split_s = screen == TuiScreen::Terminal && mode == TuiMode::Navigate;
-    if split_s {
-        "q quit · C compose · L lens · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s split · m move · Z resize · z zoom · w worktrees · g git · f files · ? help"
+    // Same context split chord_label applies to m/z: on the Git and
+    // Files screens Ctrl+B m toggles blame and Ctrl+B z stashes, so
+    // the armed legend (what the user reads while the prefix is live)
+    // must name those meanings there; only the Terminal screen keeps
+    // the split move/zoom wording.
+    let git_like = screen == TuiScreen::Git || screen == TuiScreen::Files;
+    // Every chord shortcut_for_key can dispatch is named here (the
+    // drift-guard test pins that), so no "+N more" tail is needed:
+    // the list is exhaustive, `? help` closes it.
+    if git_like {
+        "g git · f files · t terminal · w worktrees · n new · s settings · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m blame · Z resize · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · z stash · u unstage · ? help"
+    } else if split_s {
+        "g git · f files · t terminal · w worktrees · n new · s split · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m move · Z resize · z zoom · u unstage · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · ? help"
     } else {
-        "q quit · C compose · B sidebar · ] panel · n new · p tab · r refresh · j/k workspace · s settings · w worktrees · g git · f files · ? help"
+        "g git · f files · t terminal · w worktrees · n new · s settings · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m move · Z resize · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · z stash · u unstage · ? help"
     }
 }
 
@@ -400,7 +470,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B Shift+R", "rename panel"),
         ("Ctrl+B Shift+X", "close workspace (y confirms)"),
         ("Ctrl+B w", "browse worktrees/folders, Enter opens"),
-        ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
+        (
+            "Ctrl+B Shift+T",
+            "create worktree (base, branch, then path)",
+        ),
         ("Ctrl+B Del", "remove linked worktree"),
         (
             "Ctrl+B /",
@@ -418,23 +491,23 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "composer: send a message to the selected panel",
         ),
         ("", ""),
-        ("Ctrl+B 1", "git: changes"),
-        ("Ctrl+B 2/c", "git: commit modal"),
-        ("Ctrl+B 3/l", "git: log"),
-        ("Ctrl+B 4", "git: stash"),
-        ("Ctrl+B b/v", "git: branches / switch"),
         (
-            "Ctrl+B h/o",
-            "git: file history (Enter: commit diff) / back to changes",
+            "git screen keys",
+            "view switching and file verbs are in-screen keys",
         ),
-        ("Ctrl+B m", "git: toggle blame · terminal: move tile mode"),
-        ("Ctrl+B 0", "git: shortcut help"),
         (
-            "git: G",
-            "git: toggle stage all (in-screen, webui KeyG parity)",
+            "git: Tab",
+            "cycle views (changes, log, branches, stash, ...)",
         ),
-        ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
-        ("git: P", "git: push (in-screen on the Git screen)"),
+        ("git: c/l", "commit modal / log view (in-screen)"),
+        (
+            "git: s/d/G",
+            "stage / discard / toggle stage all (in-screen)",
+        ),
+        ("git: u", "unstage file (also Ctrl+B u from anywhere)"),
+        ("git: m", "toggle blame (also Ctrl+B m from anywhere)"),
+        ("git: z", "stash changes (also Ctrl+B z from anywhere)"),
+        ("git: P", "push (in-screen on the Git screen)"),
         ("", ""),
         (
             "Ctrl+B e",
@@ -457,7 +530,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("git: D", "delete branch (branches) / drop stash (stash)"),
         ("git: Enter", "log: compare commit with parent"),
         ("git: Space (log)", "mark commit for compare (keep last 2)"),
-        ("git: c (log, 2 marked)", "compare the two marked commits"),
+        (
+            "git: Enter (log, 2 marked)",
+            "compare the two marked commits",
+        ),
         (
             "git: t/R/b (log)",
             "tag / reset (soft, mixed, hard) / rebase selected commit",
@@ -466,7 +542,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "git: s/+ (log)",
             "cycle scope (all/base+current/base) / load more",
         ),
-        ("git: w (log)", "worktree from branch (branch, then path)"),
+        (
+            "git: w (log)",
+            "worktree from branch (base, branch, then path)",
+        ),
         ("files: L", "git log of the selected file"),
         ("files: M", "markdown preview: outline view of the headers"),
         (
@@ -490,6 +569,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         ("git: c (branches)", "create and switch to a new branch"),
         (
+            "git: B (branches)",
+            "create and switch to a new branch (c is commit)",
+        ),
+        (
             "Ctrl+B s",
             "settings overlay (t cycles) · terminal: split tile mode",
         ),
@@ -501,7 +584,8 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "open/create workspace",
             "the new workspace appears as a split tile beside the focus",
         ),
-        ("z (terminal)", "zoom focused tile (Ctrl+B z restores)"),
+        ("Ctrl+B m", "git blame toggle · terminal: move tile mode"),
+        ("Ctrl+B z", "git stash changes · terminal: zoom tile"),
         (
             "Shift+Z (terminal)",
             "resize mode: h/l narrower/wider, j/k shorter/taller, Enter/Esc done",
@@ -519,7 +603,6 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "session manager (Enter targets, l launch, x close, c cleanup, n new)",
         ),
         ("Ctrl+B G", "git: toggle stage all"),
-        ("Ctrl+B i", "git: focus the file list"),
         ("Ctrl+B Shift+I", "git cwd: type a repo path"),
     ]
 }
@@ -601,30 +684,26 @@ mod tests {
     #[test]
     fn prefix_git_shortcuts_match_webui_git_map() {
         let mut prefix = PrefixState::new();
+        // Chord reduction: the duplicated git chords (1-4, b, h/o, y/d)
+        // are gone; u/z/m stay as the only prefix path to their verbs.
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('1')), Some(Shortcut::GitChanges));
+        assert_eq!(prefix.feed(key('1')), None);
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('2')), Some(Shortcut::GitCommit));
+        assert_eq!(prefix.feed(key('b')), None);
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('3')), Some(Shortcut::GitLog));
-        prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('4')), Some(Shortcut::GitStash));
-        prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('y')), Some(Shortcut::GitStageFile));
+        assert_eq!(prefix.feed(key('y')), None);
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('u')), Some(Shortcut::GitUnstageFile));
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('d')), Some(Shortcut::GitDiscardFile));
-        prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('z')), Some(Shortcut::GitStashFile));
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('h')), Some(Shortcut::GitFileHistory));
+        assert_eq!(prefix.feed(key('h')), None);
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('o')), Some(Shortcut::GitChangesBack));
+        assert_eq!(prefix.feed(key('o')), None);
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('m')), Some(Shortcut::GitBlame));
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('0')), Some(Shortcut::Help));
+        assert_eq!(prefix.feed(key('0')), None);
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('e')), Some(Shortcut::EditFile));
         prefix.feed(ctrl('b'));
@@ -666,19 +745,152 @@ mod tests {
         // Plain G stages all (desktop stageAll: KeyG).
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(shift_key('g')), Some(Shortcut::GitStageAll));
-        // Plain i focuses the file list (desktop focusFile: KeyI);
+        // The old plain-i focusFile chord is gone with the git verb
+        // reduction (the file list is the in-screen default focus);
         // Shift+I stays the cwd picker.
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(key('i')), Some(Shortcut::GitFocusFile));
+        assert_eq!(prefix.feed(key('i')), None);
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(shift_key('i')), Some(Shortcut::GitCwdPicker));
+    }
+
+    #[test]
+    fn every_prefix_chord_has_a_chord_label() {
+        // Drift guard: every Shortcut that shortcut_for_key can return
+        // must have a chord_label row that is not the placeholder.
+        let dispatchable: Vec<Shortcut> = [
+            '?', '/', 'f', 'g', 't', 'r', 'R', 'j', 'k', 'a', 'A', 'p', 'n', 'x', 'X', 'q', 's',
+            'B', '.', ',', 'C', 'L', 'z', 'Z', 'v', 'e', 'E', 'm', ']', '[', 'w', 'T', 'S', 'G',
+            'I', 'P',
+        ]
+        .into_iter()
+        .filter_map(|ch| shortcut_for_key(key(ch)))
+        .collect();
+        assert!(
+            dispatchable.len() > 20,
+            "the chord table must stay populated"
+        );
+        for shortcut in dispatchable {
+            let label = chord_label(shortcut);
+            assert_ne!(
+                label, "in-screen git key",
+                "dispatchable {shortcut:?} must document a real chord"
+            );
+        }
+    }
+
+    #[test]
+    fn chord_labels_pin_terminal_and_in_screen_variants() {
+        // Terminal-pane chords and the in-screen git P have no
+        // prefix-chord echo test above, so their labels are pinned here
+        // verbatim (terminal chords are context-swapped variants of the
+        // same physical keys as settings/git chords).
+        assert_eq!(chord_label(Shortcut::RemoveWorktree), "Ctrl+B Del");
+        assert_eq!(chord_label(Shortcut::GitPush), "git P (in-screen)");
+        // The exhaustive in-screen group shares one label.
+        assert_eq!(
+            chord_label(Shortcut::GitChanges),
+            chord_label(Shortcut::GitFocusFile)
+        );
+        assert_eq!(chord_label(Shortcut::GitFocusFile), "in-screen git key");
+        assert_eq!(
+            chord_label(Shortcut::SplitPane),
+            "Ctrl+B s (split · other screens: settings)"
+        );
+        assert_eq!(
+            chord_label(Shortcut::MovePane),
+            "Ctrl+B m (move tile · git: blame)"
+        );
+        assert_eq!(
+            chord_label(Shortcut::ZoomPane),
+            "Ctrl+B z (zoom tile · git: stash file)"
+        );
+    }
+
+    #[test]
+    fn every_prefix_chord_appears_in_both_legend_variants() {
+        // Drift guard (b3): the chord_label test only pins the echo
+        // labels; this one pins the armed legend instead. Every chord
+        // shortcut_for_key can dispatch must be named by its key in
+        // BOTH the Terminal (non-split) legend and the git-like
+        // (Git/Files) legend, or the user reads a legend that hides a
+        // live key.
+        let dispatchable: Vec<(char, Shortcut)> = [
+            '?', '/', 'f', 'g', 't', 'r', 'R', 'j', 'k', 'a', 'A', 'p', 'n', 'x', 'X', 'q', 's',
+            'B', '.', ',', 'C', 'L', 'z', 'Z', 'v', 'e', 'E', 'm', ']', '[', 'w', 'T', 'S', 'G',
+            'I', 'P',
+        ]
+        .into_iter()
+        .filter_map(|ch| shortcut_for_key(key(ch)).map(|shortcut| (ch, shortcut)))
+        .collect();
+        assert!(
+            dispatchable.len() > 20,
+            "the chord table must stay populated"
+        );
+        let terminal_legend = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
+        let git_legend = prefix_legend(TuiScreen::Git, TuiMode::Navigate);
+        for (ch, shortcut) in dispatchable {
+            // Keys that share one legend segment (j/k, a/A, ]/[) are
+            // named by the pair token, not a lone-char token.
+            let key_token = match ch {
+                'j' | 'k' => "j/k",
+                'a' | 'A' => "a/A",
+                ']' | '[' => "]/[",
+                '/' => "/",
+                '?' => "?",
+                _ => {
+                    // Segment-leading token (single key or Shift key):
+                    // the char starts its own legend segment.
+                    let token = format!("{ch} ");
+                    assert!(
+                        terminal_legend.contains(&token),
+                        "terminal legend misses {ch} ({shortcut:?})"
+                    );
+                    assert!(
+                        git_legend.contains(&token),
+                        "git legend misses {ch} ({shortcut:?})"
+                    );
+                    continue;
+                }
+            };
+            assert!(
+                terminal_legend.contains(key_token),
+                "terminal legend misses {ch} ({shortcut:?})"
+            );
+            assert!(
+                git_legend.contains(key_token),
+                "git legend misses {ch} ({shortcut:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_legend_names_blame_and_stash_on_git_like_screens() {
+        // b2: on Git/Files screens Ctrl+B m toggles blame and Ctrl+B z
+        // stashes, so the armed legend must say blame/stash there; the
+        // Terminal legend keeps the split move/zoom wording.
+        let git = prefix_legend(TuiScreen::Git, TuiMode::Navigate);
+        let files = prefix_legend(TuiScreen::Files, TuiMode::Navigate);
+        let terminal = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
+        for legend in [git, files] {
+            assert!(legend.contains("m blame"), "git-like legend: {legend}");
+            assert!(legend.contains("z stash"), "git-like legend: {legend}");
+            assert!(!legend.contains("z zoom"), "git-like legend: {legend}");
+            assert!(!legend.contains("m move"), "git-like legend: {legend}");
+        }
+        assert!(terminal.contains("m move"), "terminal legend: {terminal}");
+        assert!(!terminal.contains("z stash"), "terminal legend: {terminal}");
+        // The non-split Terminal variant keeps z for tile zoom only on
+        // the split legend; the plain variant drops it (no split tree).
+        let split = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
+        assert!(split.contains("z zoom"), "split legend: {split}");
     }
 
     #[test]
     fn help_rows_cover_prefix_and_panels() {
         let rows = help_rows();
         assert!(rows.iter().any(|(keys, _)| keys.contains("Ctrl+B f")));
-        assert!(rows.iter().any(|(keys, _)| keys.contains("Ctrl+B 1")));
+        assert!(rows.iter().any(|(keys, _)| keys.contains("git: Tab")));
         assert!(rows
             .iter()
             .any(|(_, description)| description.contains("files")));

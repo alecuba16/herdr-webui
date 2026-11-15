@@ -107,9 +107,8 @@ pub(crate) fn shortcut_key_hint(shortcut: Shortcut) -> &'static str {
         Shortcut::Lens => "L",
         Shortcut::Composer => "C",
         Shortcut::SessionManager => "Shift+P",
-        Shortcut::GitChanges => "1",
-        Shortcut::GitLog => "3",
-        Shortcut::GitBranch => "b",
+        // Git chords removed in the chord reduction; the tour teaches the
+        // in-screen git keys instead (Tab cycle + c/l).
         Shortcut::GitSwitchBranch => "v",
         Shortcut::NewWorkspace => "n",
         Shortcut::OpenWorktrees => "w",

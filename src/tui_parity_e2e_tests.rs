@@ -1282,7 +1282,7 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
     app.file_explorer.preview.path = None;
     app.error = None;
 
-    // --- Commit the pending edit through the prefix-2 commit modal so a
+    // --- Commit the pending edit through the in-screen c commit modal so a
     // tracked file (edit_me.rs) exists for the blame test.
     std::fs::write(
         std::path::Path::new(cwd).join("edit_me.rs"),
@@ -1304,11 +1304,10 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
     app.git_panel
         .stage_selected(&app.web_api)
         .map_err(|e| e.to_string())?;
-    app.handle_key(ctrl_b);
-    press(&mut app, '2');
+    press(&mut app, 'c');
     assert!(
         app.commit_input.is_some(),
-        "prefix 2 opens the commit modal"
+        "in-screen c opens the commit modal"
     );
     press(&mut app, 't');
     press(&mut app, 'e');
@@ -1373,7 +1372,7 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         "stage-all toggles everything back"
     );
 
-    // Prefix y stages the selected file; prefix u unstages it.
+    // In-screen s stages the selected file; prefix u unstages it.
     let y_idx = app
         .git_panel
         .files
@@ -1381,12 +1380,11 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         .position(|f| f.path == "edit_me.rs")
         .ok_or("edit_me.rs missing before stage")?;
     app.git_panel.file_selected = y_idx;
-    app.handle_key(ctrl_b);
-    press(&mut app, 'y');
+    press(&mut app, 's');
     assert!(
         app.git_panel.files.iter().any(|f| f.path == "edit_me.rs"
             && f.status == herdr_webui::tui::panels::GitFileStatus::Staged),
-        "prefix y stages the selected file"
+        "in-screen s stages the selected file"
     );
     app.git_panel.file_selected = y_idx;
     app.handle_key(ctrl_b);
@@ -1516,14 +1514,6 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(&bin_path);
     }
 
-    // --- Prefix o returns to the changes view.
-    app.handle_key(ctrl_b);
-    press(&mut app, 'o');
-    assert_eq!(
-        app.git_panel.view,
-        herdr_webui::tui::panels::GitView::Changes
-    );
-
     // --- Prefix v with a non-current branch switches to it and back.
     app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
     app.git_panel
@@ -1580,7 +1570,7 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         app.status
     );
 
-    // --- Prefix d with a dirty preview on the same file is refused first,
+    // --- In-screen d with a dirty preview on the same file is refused first,
     // then the plain discard runs.
     app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
     app.git_panel
@@ -1596,7 +1586,6 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
     // Dirty preview of the selected file blocks the discard.
     app.file_explorer.preview.path = Some("edit_me.rs".to_string());
     app.file_explorer.preview.dirty = true;
-    app.handle_key(ctrl_b);
     press(&mut app, 'd');
     assert!(
         app.error
@@ -1610,7 +1599,6 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
     app.file_explorer.preview.path = None;
     app.error = None;
     app.git_panel.file_selected = edit_idx;
-    app.handle_key(ctrl_b);
     press(&mut app, 'd');
     assert!(app.error.is_none(), "discard failed: {:?}", app.error);
 
@@ -1638,14 +1626,15 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
     app.git_panel.file_selected = hist_idx;
     app.git_panel.history_file = Some("edit_me.rs".to_string());
 
-    // The Log view (prefix l) refreshes the commit list and clamps an
-    // out-of-range selection the same way.
+    // The Log view (Tab from Changes) refreshes the commit list and
+    // clamps an out-of-range selection the same way.
     app.git_panel.commit_selected = 99;
-    app.handle_key(ctrl_b);
-    press(&mut app, 'l');
+    app.handle_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Tab,
+    ));
     assert!(
         app.git_panel.view == herdr_webui::tui::panels::GitView::Log,
-        "prefix l opens the Log view"
+        "Tab from Changes opens the Log view"
     );
     assert_eq!(
         app.git_panel.commit_selected,
@@ -1821,12 +1810,12 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         app.status
     );
 
-    // --- Branch create: Branches view `c` prompts, typed name creates
+    // --- Branch create: Branches view `B` prompts, typed name creates
     // and switches (webui git_switch create: true).
-    press(&mut app, 'c');
+    press(&mut app, 'B');
     assert!(
         app.prompt_input.is_some(),
-        "branches c opens the create prompt"
+        "branches B opens the create prompt"
     );
     for ch in "tui-created-branch".chars() {
         press(&mut app, ch);

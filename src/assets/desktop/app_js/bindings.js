@@ -220,6 +220,11 @@ el("optShortcutHintToasts").onchange = () => {
   saveOptions();
   applyOptions();
 };
+el("optTerminalPrefixPassthrough").onchange = () => {
+  options.terminalPrefixPassthrough = el("optTerminalPrefixPassthrough").checked;
+  saveOptions();
+  applyOptions();
+};
 el("optGlobalShortcutPrefixCapture").onclick = () => {
   const button = el("optGlobalShortcutPrefixCapture"),
     input = el("optGlobalShortcutPrefix");

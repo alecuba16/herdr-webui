@@ -395,6 +395,80 @@ fn path_basename(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// The `source` envelope of a `worktree.list` reply, carried from the
+/// browse step to the create-worktree prompt chain. Mirrors the fields
+/// desktop stores in `state.createWorktreeSource` (worktrees.js):
+/// everything the checkout-path default needs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct WorktreeSourceInfo {
+    pub repo_name: String,
+    pub repo_root: String,
+    pub default_worktree_directory: String,
+}
+
+/// Extract the source envelope from a raw `worktree.list` reply.
+/// Returns `None` until both the repo name and the repo root are known,
+/// because a checkout-path default without them would silently point at
+/// the wrong place.
+pub(crate) fn worktree_source_from_response(response: &Value) -> Option<WorktreeSourceInfo> {
+    let field = |key: &str| {
+        response
+            .pointer(&format!("/source/{key}"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let info = WorktreeSourceInfo {
+        repo_name: field("repo_name")?.trim().to_string(),
+        repo_root: field("repo_root")?.trim().to_string(),
+        default_worktree_directory: field("default_worktree_directory")
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    };
+    if info.repo_name.is_empty() || info.repo_root.is_empty() {
+        return None;
+    }
+    Some(info)
+}
+
+/// Webui `worktreeRootForSource` (shared/core.js) minus the settings
+/// tier: the TUI has no `webui-settings.json` reader, so the source's
+/// own default directory wins, then the `../worktrees` convention.
+/// Relative roots resolve against the repo root; `~` and absolute roots
+/// stay verbatim for the backend to expand.
+pub(crate) fn worktree_root_for_source(source: &WorktreeSourceInfo) -> String {
+    let root = if source.default_worktree_directory.is_empty() {
+        "../worktrees"
+    } else {
+        source.default_worktree_directory.as_str()
+    };
+    if root.starts_with('~') || root.starts_with('/') {
+        return root.to_string();
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in source.repo_root.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    for part in root.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
 fn parse_tab(value: &Value) -> TuiTab {
     TuiTab {
         id: value_str(value, &["tab_id"])
@@ -538,7 +612,8 @@ fn is_braille(ch: char) -> bool {
 
 #[cfg(test)]
 mod coverage_tests {
-    use super::same_checkout_path;
+    use super::{same_checkout_path, worktree_root_for_source, worktree_source_from_response};
+    use serde_json::json;
 
     #[test]
     fn same_checkout_path_canonicalizes_two_spelling_variants() {
@@ -560,5 +635,40 @@ mod coverage_tests {
         assert!(!same_checkout_path(direct, "/definitely/not/here/probe"));
         // Equal strings shortcut before any filesystem touch.
         assert!(same_checkout_path("/same/string", "/same/string"));
+    }
+
+    #[test]
+    fn worktree_source_rejects_blank_identity_fields() {
+        // Blank-after-trim is as useless as missing: the prompt must
+        // stay empty rather than default to a wrong checkout location.
+        let blank_name = json!({"source": {"repo_name": "  ", "repo_root": "/repo"}});
+        assert!(worktree_source_from_response(&blank_name).is_none());
+    }
+
+    #[test]
+    fn worktree_root_normalizes_dot_and_parent_parts() {
+        let source = crate::tui::model::WorktreeSourceInfo {
+            repo_name: "r".to_string(),
+            repo_root: "/a/b/../c".to_string(),
+            default_worktree_directory: "../worktrees".to_string(),
+        };
+        // `..` pops the last pushed part, `.` and empty parts vanish,
+        // so /a/b/../c + ../worktrees collapses to /a/worktrees.
+        assert_eq!(worktree_root_for_source(&source), "/a/worktrees");
+        let dotted = crate::tui::model::WorktreeSourceInfo {
+            repo_name: "r".to_string(),
+            repo_root: "/a/./b//".to_string(),
+            default_worktree_directory: "".to_string(),
+        };
+        // Empty default falls back to ../worktrees.
+        assert_eq!(worktree_root_for_source(&dotted), "/a/worktrees");
+        let dotted_root = crate::tui::model::WorktreeSourceInfo {
+            repo_name: "r".to_string(),
+            repo_root: "/a/b".to_string(),
+            default_worktree_directory: "./c/../d/".to_string(),
+        };
+        // The root split also skips `.` and empty parts, so
+        // ./c/../d/ collapses to just d.
+        assert_eq!(worktree_root_for_source(&dotted_root), "/a/b/d");
     }
 }

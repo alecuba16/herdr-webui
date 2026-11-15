@@ -28,6 +28,116 @@
     const worktreeActivityLabel = worktreeHelpers.worktreeActivityLabel || (() => "Latest commit unknown");
     let recent = [];
 
+    // Shared helpers (shared/core.js HerdrAppHelpers): the mobile bundle
+    // loads it too, but the names stay local so a stubbed test harness
+    // without the shared script still gets the desktop rule.
+    function localWorktreeBranchName(branch) {
+      const text = String(branch || "").trim();
+      if (text.startsWith("origin/")) return text.slice("origin/".length);
+      if (text.startsWith("upstream/")) return text.slice("upstream/".length);
+      return text;
+    }
+
+    function worktreeDefaultDirectorySetting() {
+      try {
+        const parsed = globalThis.HerdrOptions
+          ? globalThis.HerdrOptions.read()
+          : {};
+        return String(parsed.worktreeDefaultDirectory || "").trim();
+      } catch (_) {
+        return "";
+      }
+    }
+
+    // Desktop rule (worktrees.js defaultWorktreeCheckoutPath):
+    // <root>/<repo_name>/<branch_slug>, root resolved as user setting >
+    // source default > ../worktrees against the source repo root.
+    function defaultWorktreeCheckoutPath() {
+      const source = state.worktreeSource || {},
+        branch = String(state.worktreeBranch || "").trim();
+      if (worktreeHelpers.worktreeRootForSource && worktreeHelpers.joinPath && worktreeHelpers.branchPathSlug) {
+        const root = worktreeHelpers.worktreeRootForSource(source, worktreeDefaultDirectorySetting());
+        const repo = String(source.repo_name || "").trim();
+        if (!root || !repo || !branch) return "";
+        return worktreeHelpers.joinPath(root, repo, worktreeHelpers.branchPathSlug(branch));
+      }
+      // Local fallback matching shared/core.js when it is unavailable.
+      let root = worktreeDefaultDirectorySetting();
+      if (!root) root = String(source.default_worktree_directory || "").trim() || "../worktrees";
+      const repo = String(source.repo_name || "").trim();
+      if (!repo || !branch) return "";
+      if (!root.startsWith("~") && !root.startsWith("/")) {
+        const base = String(source.repo_root || "").trim();
+        if (!base) return "";
+        const parts = [];
+        for (const part of (base + "/" + root).split("/")) {
+          if (!part || part === ".") continue;
+          if (part === "..") parts.pop();
+          else parts.push(part);
+        }
+        root = "/" + parts.join("/");
+      }
+      let slug = "";
+      let lastDash = false;
+      for (const ch of branch) {
+        if (/^[A-Za-z0-9]$/.test(ch)) {
+          slug += ch.toLowerCase();
+          lastDash = false;
+        } else if (!lastDash) {
+          slug += "-";
+          lastDash = true;
+        }
+      }
+      slug = slug.replace(/^-+|-+$/g, "") || "worktree";
+      // Same join contract as shared/core.js joinPath: the first part
+      // keeps its leading slash (only the trailing one goes), later
+      // parts lose both edge slashes.
+      const first = root.replace(/\/+$/g, ""),
+        rest = [repo, slug].map((part) => part.replace(/^\/+|\/+$/g, ""));
+      return [first, ...rest].join("/");
+    }
+
+    // Never overwrite a hand-typed path: only fill when the field is
+    // empty or still holds our previous suggestion (desktop
+    // syncWorktreeCheckoutPath rule).
+    function syncWorktreeCheckoutPath() {
+      const next = defaultWorktreeCheckoutPath(),
+        previous = String(state.worktreeDefaultPath || "").trim(),
+        current = String(state.worktreePath || "").trim();
+      if (!next) {
+        if (current && current === previous) state.worktreePath = "";
+        state.worktreeDefaultPath = "";
+        return;
+      }
+      if (!current || current === previous) state.worktreePath = next;
+      state.worktreeDefaultPath = next;
+    }
+
+    // Branch-from-base (desktop syncBranchNameFromBase rule): a
+    // non-default base seeds the branch name with the base's local name,
+    // origin/x -> x; main/master leave the name to the user. A name we
+    // planted clears when the base returns to the default; typed names
+    // are never touched.
+    function syncWorktreeBranchFromBase() {
+      const base = String(state.worktreeBase || "").trim(),
+        branch = String(state.worktreeBranch || "").trim();
+      if (!base) return false;
+      const baseName = localWorktreeBranchName(base);
+      if (baseName === "main" || baseName === "master") {
+        if (branch && branch === String(state.worktreeBranchFromBase || "")) {
+          state.worktreeBranch = "";
+          return true;
+        }
+        state.worktreeBranchFromBase = "";
+        return false;
+      }
+      if (branch && branch !== String(state.worktreeBranchFromBase || ""))
+        return false;
+      state.worktreeBranch = baseName;
+      state.worktreeBranchFromBase = baseName;
+      return true;
+    }
+
     function renderScreen() {
       const source = state.worktreeSource || {};
       const sourcePath =
@@ -262,6 +372,10 @@
         const response = await api("/api/worktrees?" + query);
         if (seq !== discoverySeq) return;
         applyResult(response);
+        // New source: re-derive the checkout path (repo name and default
+        // directory may both differ) while respecting the never-overwrite
+        // rule on a hand-typed path.
+        syncWorktreeCheckoutPath();
       } catch (error) {
         if (seq !== discoverySeq) return;
         state.worktreeError = error.message || String(error);
@@ -281,6 +395,15 @@
       )
         return;
       state[field] = value;
+      // Desktop parity: branch edits re-derive the checkout path; a
+      // base edit seeds the branch name (then the path follows). Only
+      // re-fill the path when the branch changed or the seed planted a
+      // new branch, so the sync never touches a path the user owns.
+      if (field === "worktreeBranch") {
+        syncWorktreeCheckoutPath();
+      } else if (field === "worktreeBase" && syncWorktreeBranchFromBase()) {
+        syncWorktreeCheckoutPath();
+      }
     }
 
     function setCreateExpanded(open) {
@@ -403,6 +526,8 @@
         state.worktreePullBase = false;
         state.worktreeLabel = "";
         state.worktreePath = "";
+        state.worktreeDefaultPath = "";
+        state.worktreeBranchFromBase = "";
         state.worktreeLoading = false;
         state.worktreeLoadingLabel = "";
         state.worktreeBusyIndex = null;
