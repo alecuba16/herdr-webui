@@ -5,15 +5,32 @@
 // is a distinct backend pty though, and the attach hub already fans one
 // backend attach out to every browser socket, so a non-owner leaf can
 // host its own small surface: own wterm instance, own /ws/terminal
-// socket, frames written straight through. The registry keys surfaces
-// by workspace+tab and disposes entries whose leaf stopped rendering,
-// whose tab moved to the owner (the primary shell takes over), or
-// whose workspace switched (terminals behind repeated tab ids differ).
+// socket, frames written straight through.
+//
+// The registry is a session-scoped cache (D8), keyed by tab id. A leaf
+// stopping rendering (maximize, editor stint, tab moved to the owner)
+// parks its surface hidden with the socket detached (no sockets for
+// non-visible surfaces) instead of destroying it, so scrollback and
+// the wterm instance survive the flip back and a re-attach replays the
+// view. Only a closed tab disposes for real, plus cap eviction
+// (least-recently-focused first).
 
 (function () {
-  // key -> { key, tabId, terminalId, container, term, ws }
+  // key -> { key, tabId, terminalId, container, term, ws, lastFocusedAt }
   const surfaces = new Map();
   const inputEncoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
+
+  // Rendered aux surfaces cost one live WS plus a hub replay ring plus a
+  // fan-out slot each, so tmux pane counts do not apply. Eight aux
+  // surfaces on top of the singleton owner is beyond any sane visible
+  // layout; parked entries count too because each keeps a wterm
+  // instance and its scrollback buffer in memory.
+  const AUX_SURFACE_CAP = 8;
+  // A surface whose socket died while visible (backend outage, stall
+  // close) waits out this window before the next render pass re-attaches;
+  // below the window the wait keeps a down backend from churning sockets
+  // at poll cadence.
+  const SOCKET_RETRY_BACKOFF_MS = 4000;
 
   function tabKey(tabId) {
     // Session-global tree: the key is the tab id alone. The old
@@ -100,16 +117,60 @@
       else if (entry.container && entry.container.parentNode)
         entry.container.parentNode.removeChild(entry.container);
     } catch (e) {}
-    if (surfaces.get(entry.key) === entry) surfaces.delete(entry.key);
+    surfaces.delete(entry.key);
   }
 
-  // Parked aux surfaces keep their socket and wterm alive (maximize rescue
-  // parks the container in #workspacePanes display:none, the registry only
-  // disposes when the tab stops rendering). Same pause mechanism as the
-  // primary shell: not intersecting means not visible, wterm buffers the
-  // frames, one repaint on un-park. The observer is disconnected in
-  // dispose(); the callback checks the disposed flag because the initial
-  // visibility report can land after the surface was torn down.
+  // D8: a leaf that stopped rendering this tab parks its surface instead
+  // of disposing it. Parked means hidden, out of the pane slots, and its
+  // socket detached (no sockets for non-visible surfaces: the hub replay
+  // ring rehydrates the view when the tab returns). The wterm instance
+  // stays, so scrollback survives a maximize, an editor stint, or an
+  // owner flip. Only a closed tab or cap eviction disposes.
+  function park(entry) {
+    if (!entry) return;
+    // Recording focus order on park: lastFocusedAt drives LRU eviction,
+    // so every exit from a pane slot must touch it or the order rots.
+    entry.lastFocusedAt = Date.now();
+    if (entry.observer && typeof entry.observer.disconnect === "function") {
+      try { entry.observer.disconnect(); } catch (e) {}
+      entry.observer = null;
+    }
+    detachSocket(entry);
+    if (entry.term && typeof entry.term.setRenderingPaused === "function") {
+      try { entry.term.setRenderingPaused(true); } catch (e) {}
+    }
+    const home = document.getElementById("workspacePanes");
+    if (home) {
+      if (entry.container.parentElement !== home) home.appendChild(entry.container);
+      if (entry.container.style) entry.container.style.display = "none";
+    } else if (entry.container.parentNode) {
+      entry.container.parentNode.removeChild(entry.container);
+    }
+    entry.container.dataset.paneId = "";
+  }
+
+  // D8 socket rule: no sockets for non-visible surfaces. Detaching
+  // drops the hub replay ring and the fan-out slot a parked surface
+  // would otherwise hold; re-attach replays the scrollback back into
+  // the same wterm instance, so nothing visible is lost.
+  function detachSocket(entry) {
+    if (!entry || !entry.ws) return;
+    const ws = entry.ws;
+    entry.ws = null;
+    try {
+      ws.onclose = null;
+      ws.onmessage = null;
+      ws.close();
+    } catch (e) {}
+  }
+
+  // Visibility pause for aux surfaces: not intersecting means not
+  // visible, wterm buffers the frames, one repaint when the leaf shows
+  // again. Parked surfaces pause explicitly in park(); this observer
+  // covers a surface still attached but covered by an overlay (a
+  // blocking dialog over the pane area). The callback checks the
+  // disposed flag because the initial visibility report can land after
+  // the surface was torn down.
   function watchVisibility(entry, container) {
     if (typeof IntersectionObserver !== "function") return null;
     const observer = new IntersectionObserver((entries) => {
@@ -151,7 +212,7 @@
     const size = gridSizeFor(container);
     // Placeholder entry first: onData resolves the socket through it, so
     // early keystrokes queue on the entry even before the socket exists.
-    const entry = { key, tabId: activeTab, terminalId, container, term: null, ws: null };
+    const entry = { key, tabId: activeTab, terminalId, container, term: null, ws: null, lastFocusedAt: Date.now() };
     surfaces.set(key, entry);
     const sendInput = (data) => {
       if (!data || !entry.ws || entry.ws.readyState !== 1) return;
@@ -207,34 +268,11 @@
     if (renderer.attachClickFocus && typeof term.focus === "function") {
       renderer.attachClickFocus(container, () => {
         if (entry.disposed || entry.term !== term) return;
+        entry.lastFocusedAt = Date.now();
         try { term.focus(); } catch (e) {}
       });
     }
-    const ws = new WebSocket(
-      wsUrlFor(
-        `/ws/terminal?terminal_id=${encodeURIComponent(terminalId)}&cols=${size.cols}&rows=${size.rows}`,
-      ),
-    );
-    entry.ws = ws;
-    ws.binaryType = "arraybuffer";
-    ws.onmessage = (e) => {
-      if (entry.ws !== ws) return;
-      if (typeof e.data === "string" && e.data.indexOf("herdr_error") !== -1) {
-        // Structured attach errors carry no render payload for an aux
-        // surface; drop the socket so the next render pass retries.
-        try { ws.close(); } catch (err) {}
-        return;
-      }
-      try {
-        term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
-      } catch (err) {}
-    };
-    ws.onclose = () => {
-      if (entry.ws === ws) {
-        entry.ws = null;
-        entry.closedAt = Date.now();
-      }
-    };
+    attachSocket(entry);
     return entry;
   }
 
@@ -250,35 +288,86 @@
       return null;
     const existing = surfaces.get(tabKey(activeTab));
     if (existing) {
-      // Reuse, with one bounded retry: a surface whose socket died
-      // (backend outage, stall close) must not freeze the pane silently,
-      // but recreating on every render pass would churn sockets at poll
-      // cadence. Wait out the backoff window, then rebuild once more.
-      if (
-        !existing.ws &&
-        existing.term &&
-        existing.closedAt &&
-        Date.now() - existing.closedAt > 4000
-      ) {
-        dispose(existing);
-        return createSurface(pane, leaf, activeTab);
-      }
-      // Re-parent into this leaf's slot if a reshape moved it (rescue
-      // parks surfaces in #workspacePanes hidden). Un-hide either way.
-      const content = pane.querySelector(".pane-content");
-      if (content) {
-        if (existing.container.parentElement !== content) content.appendChild(existing.container);
-        if (existing.container.style) existing.container.style.display = "";
-      }
-      existing.container.dataset.paneId = leaf.paneId || "";
+      // A cached entry (parked or live) coming back: re-parent into
+      // this leaf's slot, un-hide, un-pause, re-observe, re-attach.
+      // The dead-socket backoff lives inside entryBackToLeaf so every
+      // visible render pass converges on the same decision.
+      entryBackToLeaf(existing, pane, leaf);
       return existing;
     }
     return createSurface(pane, leaf, activeTab);
   }
 
+  // Attach (or re-attach) the entry's /ws/terminal socket. Frames
+  // write straight through into the wterm instance; the server's
+  // replay rehydrates the view after a park detached the socket.
+  function attachSocket(entry) {
+    // A create still awaiting its wterm instance attaches from its own
+    // tail; a socket before the term exists would drop early frames.
+    if (!entry.term) return null;
+    if (entry.ws) return entry.ws;
+    const ws = new WebSocket(
+      wsUrlFor(
+        `/ws/terminal?terminal_id=${encodeURIComponent(entry.terminalId)}&cols=${gridSizeFor(entry.container).cols}&rows=${gridSizeFor(entry.container).rows}`,
+      ),
+    );
+    entry.ws = ws;
+    // A fresh socket clears the death mark: a later park+return must
+    // re-attach immediately, not wait out this socket's old backoff.
+    entry.closedAt = null;
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (e) => {
+      if (entry.ws !== ws) return;
+      if (typeof e.data === "string" && e.data.indexOf("herdr_error") !== -1) {
+        // Structured attach errors carry no render payload for an aux
+        // surface; drop the socket so the next render pass retries.
+        try { ws.close(); } catch (err) {}
+        return;
+      }
+      try {
+        entry.term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
+      } catch (err) {}
+    };
+    ws.onclose = () => {
+      if (entry.ws === ws) {
+        entry.ws = null;
+        entry.closedAt = Date.now();
+      }
+    };
+    return ws;
+  }
+
+  function entryBackToLeaf(entry, pane, leaf) {
+    const content = pane.querySelector(".pane-content");
+    if (content) {
+      if (entry.container.parentElement !== content) content.appendChild(entry.container);
+      if (entry.container.style) entry.container.style.display = "";
+    }
+    entry.container.dataset.paneId = leaf.paneId || "";
+    entry.lastFocusedAt = Date.now();
+    // Parked surfaces lost their socket by design (no sockets for
+    // non-visible); a dead-while-visible socket carries closedAt. One
+    // re-attach attempt per backoff window keeps a down backend from
+    // churning sockets at render-pass cadence; the hub replay fills
+    // the same wterm instance either way, scrollback intact.
+    const deadWithinBackoff =
+      entry.closedAt && Date.now() - entry.closedAt < SOCKET_RETRY_BACKOFF_MS;
+    if (!deadWithinBackoff) attachSocket(entry);
+    if (!entry.observer && entry.term && typeof IntersectionObserver === "function") {
+      entry.observer = watchVisibility(entry, entry.container);
+    }
+    if (entry.term && typeof entry.term.setRenderingPaused === "function") {
+      try { entry.term.setRenderingPaused(false); } catch (e) {}
+    }
+  }
+
   function fitAll() {
     for (const [, entry] of surfaces) {
       if (!entry.term || !entry.container) continue;
+      // Parked containers sit display:none in #workspacePanes: their
+      // box is empty, the fit would floor the grid to the minimum, and
+      // entryBackToLeaf refits with real dimensions on the return.
+      if (entry.container.dataset.paneId === "") continue;
       const size = gridSizeFor(entry.container);
       try {
         entry.term.resize(size.cols, size.rows);
@@ -333,13 +422,39 @@
     dispose(surfaces.get(tabKey(tabId)));
   }
 
-  // Drop every surface whose tab is not in the rendered keep set (leaf
-  // closed or promoted, tab moved to the owner leaf). Called at the end
-  // of every pane render with the still-on-screen tab ids.
+  // D8: park one tab's surface on demand (an owner flip or an editor
+  // stint reclaims the slot but the tab stays open). No-op when the
+  // tab has no surface.
+  function parkForTab(tabId) {
+    const entry = surfaces.get(tabKey(tabId));
+    if (entry) park(entry);
+  }
+
+  // D8 cache lifecycle: a tab leaving the rendered set parks its surface
+  // (socket detached, wterm and scrollback kept) instead of disposing it.
+  // Real disposal stays on closeTab and cap eviction (LRF first).
   function releaseStale(renderedTabIds) {
     const keep = new Set(renderedTabIds.map((tabId) => tabKey(tabId)));
     for (const [key, entry] of [...surfaces]) {
-      if (!keep.has(key)) dispose(entry);
+      if (keep.has(key)) continue;
+      park(entry);
+    }
+    evictBeyondCap();
+  }
+
+  // Cap eviction: beyond AUX_SURFACE_CAP entries, dispose
+  // least-recently-focused first until back at cap. Parked entries
+  // count: each holds a wterm instance plus its scrollback buffer.
+  function evictBeyondCap() {
+    if (surfaces.size <= AUX_SURFACE_CAP) return;
+    const byFocus = [...surfaces.values()].sort(
+      (a, b) => (a.lastFocusedAt || 0) - (b.lastFocusedAt || 0),
+    );
+    let over = surfaces.size - AUX_SURFACE_CAP;
+    for (const entry of byFocus) {
+      if (over <= 0) break;
+      dispose(entry);
+      over -= 1;
     }
   }
 
@@ -350,11 +465,15 @@
   window.HerdrPaneTerminals = {
     ensureForLeaf,
     releaseForTab,
+    parkForTab,
     releaseStale,
     releaseAll,
     fitAll,
     applyThemeAll,
     count: () => surfaces.size,
+    parked: () => [...surfaces.values()].filter((entry) => entry.container.dataset.paneId === "").length,
+    cap: () => AUX_SURFACE_CAP,
+    evictBeyondCap,
     tabKey,
   };
 })();

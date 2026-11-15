@@ -4813,6 +4813,10 @@ function forgetClosedSelection(kind, data) {
       closedPane.tab_id &&
       !(state.panes || []).some((pane) => pane.tab_id === closedPane.tab_id);
     if (closedLastPaneInTab) removeClosedTabFromState(closedPane.tab_id);
+    // Last pane gone means the tab is gone for good: dispose its cached
+    // aux surface (D8 cache parks on hide, nothing else frees it).
+    if (closedLastPaneInTab && window.HerdrPaneTerminals)
+      window.HerdrPaneTerminals.releaseForTab(closedPane.tab_id);
     // Last pane of a tab emptied a split leaf: same collapse as tab.closed.
     if (closedLastPaneInTab && window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
       window.HerdrWorkspacePanes.collapseLeafForClosedTab(closedPane.tab_id);
@@ -4840,6 +4844,11 @@ function forgetClosedSelection(kind, data) {
     }
     if (data && data.tab_id) removeClosedTabFromState(data.tab_id);
     if (closedTab) maybeAutoCloseWorkspace(closedTab.workspace_id);
+    // The tab is gone for good: dispose its cached aux surface now. The
+    // D8 cache parks surfaces on hide, so nothing else frees the socket
+    // and wterm instance this tab owned.
+    if (window.HerdrPaneTerminals && data && data.tab_id)
+      window.HerdrPaneTerminals.releaseForTab(data.tab_id);
     // A closed terminal tab can leave its split leaf empty: collapse
     // the tree to the survivor now (render picks it up next pass).
     if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)

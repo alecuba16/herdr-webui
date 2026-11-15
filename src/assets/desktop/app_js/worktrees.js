@@ -1260,6 +1260,10 @@ async function closeTab(id) {
         if (!String(error.message || error).includes("not found")) throw error;
       }
       if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
+      // The tab is gone for good: dispose its cached aux surface now.
+      // The D8 cache parks surfaces on hide, so nothing else frees the
+      // socket and wterm instance this tab owned.
+      if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseForTab(id);
       // The closed terminal may have been a split leaf's last tab: drop
       // the empty pane so the survivor takes the layout back.
       if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)

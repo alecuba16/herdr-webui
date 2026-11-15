@@ -1008,8 +1008,9 @@ function renderWorkspacePanes() {
       mountPaneTabContent(pane, leaf, auxTabs);
     }
   });
-  // Non-owner terminal leaves own aux surfaces; anything not still on
-  // screen (closed or promoted leaf, tab moved to the owner) disposes.
+  // Non-owner terminal leaves own aux surfaces; a tab not still on
+  // screen (closed or promoted leaf, tab moved to the owner) parks its
+  // surface in the D8 cache (releaseStale also runs the cap eviction).
   if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseStale(auxTabs);
   // A reshape can drop the leaf hosting the empty-leaf card (split
   // collapse, close-promote, maximize): rescue parks it home hidden, and
@@ -1196,10 +1197,11 @@ function rescueLiveSurfaces(container, element) {
         continue;
       }
       if (hasClass(child, "pane-terminal-aux")) {
-        // Aux surfaces own a live socket and renderer; park them so the
-        // drop cannot orphan them. Parked means hidden like the other
-        // rescued surfaces: the mount pass re-parents and un-hides, or
-        // the registry disposes when no leaf renders the tab anymore.
+        // Aux surfaces own a wterm instance and scrollback; park them
+        // so the drop cannot orphan them. Parked means hidden like the
+        // other rescued surfaces: the mount pass re-parents and un-hides,
+        // and the registry keeps the entry cached for the tab's return
+        // (real disposal is closeTab and cap eviction).
         if (child.style) child.style.display = "none";
         container.appendChild(child);
         continue;
@@ -2672,8 +2674,13 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
   const activeTab = leaf.active;
   const activeIsTerminal = !!activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab);
   const aux = window.HerdrPaneTerminals;
-  const releaseAuxForThisLeaf = () => {
-    if (aux && activeTab) aux.releaseForTab(activeTab);
+  // D8 cache: a leaf whose active tab is not a terminal anymore parks
+  // its aux surface instead of disposing it (scrollback and the live
+  // view survive an editor stint or an owner flip). Real disposal stays
+  // on closeTab and the two parked-unrecoverable rules in releaseStale.
+  // parkForTab itself no-ops when the tab has no surface.
+  const parkAuxForThisLeaf = () => {
+    if (aux && activeTab && typeof aux.parkForTab === "function") aux.parkForTab(activeTab);
   };
   const terminalShell = el("terminalShell");
   // Reshape commands (split, flip, maximize, close-promote) move pane
@@ -2727,7 +2734,7 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
         if (auxTabs) auxTabs.push(activeTab);
       }
     } else {
-      releaseAuxForThisLeaf();
+      parkAuxForThisLeaf();
     }
     return;
   }
@@ -2741,7 +2748,7 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
     // parked in the content slot breaks the one-surface-per-slot
     // invariant splits rely on. The container claim above already
     // re-parented and showed the active tab's container.
-    releaseAuxForThisLeaf();
+    parkAuxForThisLeaf();
     if (terminalShell) {
       const panesContainer = el("workspacePanes");
       if (panesContainer && terminalShell.parentElement !== panesContainer) {
@@ -2783,7 +2790,7 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
   hideStalePaneContainers(content);
   // The primary shell took this tab over: its aux surface, if any from an
   // earlier non-owner render, disposes.
-  releaseAuxForThisLeaf();
+  parkAuxForThisLeaf();
 }
 
 // ---- no-workspace dashboard mount ---------------------------------
