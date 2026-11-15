@@ -8582,6 +8582,7 @@ describe("workspace sidebar order", () => {
         { workspace_id: "ws_c" },
       ];
       state.workspaceOrder = ["ws_b", "ws_a", "ws_c"];
+      options.workspaceSort = "drag";
       state.dragWorkspace = "ws_c";`,
       ctx,
     );

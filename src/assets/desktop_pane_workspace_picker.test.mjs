@@ -169,22 +169,24 @@ test("pick with scope switch falls back to the workspace root when it has no pan
   assert.deepEqual(routed, [["ws-2", undefined]], "routed to the workspace root");
 });
 
-test("pick with scope new-tab POSTs the tab in the picked workspace and routes to it", async () => {
-  const posted = [];
-  const routed = [];
-  const placements = [];
+test("pick with scope new-tab delegates to the shared openPanelInWorkspace", async () => {
+  const delegated = [];
   const { ctx, picker } = loadPicker();
-  ctx.go = (ws, tab) => routed.push([ws, tab]);
-  ctx.api = async (url, opt) => {
-    posted.push([url, JSON.parse(opt.body)]);
-    return { result: { tab: { tab_id: "tab_new" } } };
+  ctx.window.HerdrWorkspacePanes = {
+    openPanelInWorkspace: async (workspaceId, paneId) => delegated.push([workspaceId, paneId]),
   };
-  ctx.window.HerdrWorkspacePanes = { requestTabPlacement: (paneId) => placements.push(paneId) };
   picker.openPicker(makeNode("anchor", "pane-new-picker"), "p3", "new-tab");
   await picker.pick("ws-2");
-  assert.deepEqual(posted, [["/api/tabs", { workspace_id: "ws-2" }]], "tab created in ws-2");
-  assert.deepEqual(placements, ["p3"], "placement registered for the opening pane");
-  assert.deepEqual(routed, [["ws-2", "tab_new"]], "route carries the new tab");
+  assert.deepEqual(delegated, [["ws-2", "p3"]], "new-tab creation routes through the shared helper with the opening pane");
+});
+
+test("pick with scope new-tab falls back to a plain route when the panes module is absent", async () => {
+  const routed = [];
+  const { ctx, picker } = loadPicker();
+  ctx.go = (ws) => routed.push(ws);
+  picker.openPicker(makeNode("anchor", "pane-new-picker"), "p3", "new-tab");
+  await picker.pick("ws-2");
+  assert.deepEqual(routed, ["ws-2"], "no private creation copy: the route alone");
 });
 
 test("source contract: capture wiring, idempotent wire, listbox semantics", () => {

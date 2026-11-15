@@ -543,9 +543,17 @@ test("editor-active non-owner leaf releases its aux surface", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ctx.HerdrPaneTerminals.count(), 0, "editor tab released the aux");
   assert.equal(ws.closed, true, "socket closed with it");
-  // Terminal tab back: the aux returns.
-  leaves[1].tabs = ["tab_2"];
-  leaves[1].active = "tab_2";
+  // Terminal tab back: the aux returns. The editor stint left tab_2
+  // re-homed into the owner leaf (the sync lands homeless ids in the
+  // sync target), so move it back the way a drag or click would: out
+  // of leaf 0, into leaf 1. Raw-duplicating it across both leaves is
+  // the state the D7.1 repair exists to collapse.
+  const leavesNow = panes.paneLeaves(panes.paneRoot());
+  const holder = leavesNow.find((leaf) => leaf.tabs.includes("tab_2"));
+  const strip = leavesNow.find((leaf) => leaf !== holder);
+  holder.tabs.splice(holder.tabs.indexOf("tab_2"), 1);
+  strip.tabs.push("tab_2");
+  strip.active = "tab_2";
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(auxOf(ctx).length, 1);
@@ -802,4 +810,29 @@ test("applyThemeAll re-themes open aux surfaces on theme switch", async () => {
   aux.applyThemeAll();
   assert.equal(term.themes.length, 1, "aux term re-themed");
   assert.deepEqual(term.themes[0], light, "theme payload is the current palette");
+});
+
+test("dragging an aux terminal tab to another leaf keeps the wterm instance and socket (D7.4)", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const termBefore = renderer.created[0];
+  const socketBefore = WsStub.instances[0];
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  assert.ok(leaves[0].tabs.includes("tab_2") || leaves[1].tabs.includes("tab_2"), "tab_2 lives in a leaf");
+  const source = leaves.find((leaf) => leaf.tabs.includes("tab_2"));
+  const target = leaves.find((leaf) => leaf !== source);
+
+  // The drag drop path: movePaneTabTo is exactly what paneStripDrop runs.
+  assert.equal(panes.movePaneTabTo("tab_2", target.paneId, 0), true, "drop accepted");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const moved = panes.paneLeaves(panes.paneRoot()).find((leaf) => leaf.tabs.includes("tab_2"));
+  assert.equal(moved, target, "tab_2 now lives in the target leaf");
+  assert.equal(renderer.created.length, 1, "no second wterm instance: identity survives the drag");
+  assert.equal(WsStub.instances.length, 1, "no second socket: the pty mirror and scrollback survive");
+  assert.strictEqual(renderer.created[0], termBefore, "same wterm instance object");
+  assert.strictEqual(WsStub.instances[0], socketBefore, "same socket object");
+  assert.equal(ctx.HerdrPaneTerminals.count(), 1, "registry count unchanged");
 });

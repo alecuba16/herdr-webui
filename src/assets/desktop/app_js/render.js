@@ -503,16 +503,9 @@ function renderWorkspaceCard(w, extraClass) {
   const label = editing
     ? `<input class="workspace-rename-input" value="${escapeAttr(state.editingWorkspaceValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitWorkspaceRename('${w.workspace_id}')" oninput="state.editingWorkspaceValue=this.value" onkeydown="workspaceRenameKey(event,'${w.workspace_id}')">`
     : `<span class="label">${escapeHtml(title)}</span>`;
-  const drag =
-    options.workspaceSort === "drag"
-      ? ' draggable="true" ondragstart="workspaceDragStart(event,\'' +
-        w.workspace_id +
-        "')\" ondragover=\"workspaceDragOver(event,'" +
-        w.workspace_id +
-        '\')" ondragleave="workspaceDragLeave(event)" ondrop="workspaceDrop(event,\'' +
-        w.workspace_id +
-        '\')" ondragend="workspaceDragEnd(event)"'
-      : "";
+  // Cards drag in every sort mode (D3); workspaceDragAttrs lives with the
+  // drag handlers in worktrees.js.
+  const drag = workspaceDragAttrs(w.workspace_id);
   const selected = w.workspace_id === state.ws;
   const meta = selected ? selectedSpaceMeta(w) : spaceMeta(w);
   const body = `<div class="space-title"><span>${statusDot(w.agent_status)}</span>${label}${selectedWorkspaceActionButtons(w)}</div><div class="muted space-meta-line">${meta}</div>`;

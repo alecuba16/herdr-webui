@@ -843,6 +843,45 @@ describe("workspace drag and drop ordering", () => {
     await ctx.workspaceDrop({ preventDefault() {}, currentTarget: element() }, "ws-1");
     assert.equal(calls.filter((c) => c.path === "/api/workspace-order").length, 0);
   });
+
+  it("workspaceDrop refuses the sidebar reorder outside drag sort mode", async () => {
+    // D3: cards drag in every mode for the pane strip speed path, but the
+    // sidebar-internal reorder stays drag-mode-only. The vm realm calls
+    // handlers directly (no dragover gate to lean on), so the mutator
+    // gates itself.
+    const { ctx, calls } = dragBoot();
+    ctx.options.workspaceSort = "name";
+    ctx.state.dragWorkspace = "ws-3";
+    await ctx.workspaceDrop({ preventDefault() {}, currentTarget: element() }, "ws-1");
+    assert.equal(calls.filter((c) => c.path === "/api/workspace-order").length, 0, "no reorder posted");
+    assert.deepEqual([...ctx.state.workspaceOrder], ["ws-1", "ws-2", "ws-3"], "order untouched");
+    // The drop consumes the drag either way: a stray dragover on a strip
+    // must not re-arm it.
+    assert.equal(ctx.state.dragWorkspace, null);
+  });
+
+  it("workspaceDragEnd clears a lingering pane strip drop hint", () => {
+    // A cancel (Esc) can end the drag while the card still hovers a pane
+    // strip: the hint must not outlive the drag. Standalone harnesses
+    // run worktrees.js without workspace_panes.js, so the call is
+    // guarded and must stay that way.
+    const { ctx } = dragBoot();
+    let cleared = 0;
+    ctx.clearPaneWorkspaceDropHint = () => { cleared += 1; };
+    ctx.workspaceDragEnd({ currentTarget: element() });
+    assert.equal(cleared, 1, "dragend clears the strip hint when the module is present");
+  });
+
+  it("sidebar cards carry drag attributes in every sort mode", () => {
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    const worktreesSource = readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8");
+    // render.js interpolates the shared builder; the sort-mode gate lives
+    // only in the reorder handlers, not in the card markup.
+    assert.ok(renderSource.includes("workspaceDragAttrs(w.workspace_id)"), "cards use the shared drag attr builder");
+    assert.ok(!renderSource.includes("options.workspaceSort === \"drag\"\n      ? ' draggable"), "no sort gate on the card drag attributes");
+    assert.ok(worktreesSource.includes("function workspaceDragAttrs"), "builder lives with the drag handlers");
+    assert.ok(worktreesSource.includes("escapeAttr(id)"), "workspace ids escape into the attr string");
+  });
 });
 
 describe("openWorktreesForRepo discovery entry", () => {

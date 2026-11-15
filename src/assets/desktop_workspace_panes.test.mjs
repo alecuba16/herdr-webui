@@ -179,6 +179,7 @@ function buildDom() {
   const document = {
     createElement: () => makeNode("", ""),
     getElementById: (id) => findById(id, body),
+    querySelectorAll: (selector) => body.querySelectorAll(selector),
     body,
   };
   return { nodes, document };
@@ -1213,9 +1214,13 @@ test("closePaneMenu restores focus through the live button, not a stale ref", ()
 
 // ---- Phase 5: tab drag between panes -----------------------------------
 // The drag pipeline ends in movePaneTabTo: same semantics the drop
-// handler runs. Terminal tabs never move (singleton surface), editor
-// tabs move across leaves at the caret index, and a same-leaf drop at a
-// different index reorders.
+// handler runs. D7 lifted the terminal refusal: terminal tabs move
+// across leaves, the dragged route tab re-routes so the singleton
+// #terminalShell follows (D7.2), and a non-route terminal keeps its
+// aux identity (the registry keys per tab, so the re-render
+// re-parents the existing container). Editor tabs move across
+// leaves at the caret index, and a same-leaf drop at a different
+// index reorders.
 test("movePaneTabTo moves an editor tab across leaves at the caret index", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-15");
@@ -1239,23 +1244,73 @@ test("movePaneTabTo moves an editor tab across leaves at the caret index", () =>
   assert.equal(leaves[0].tabs.indexOf("editor:src/a.py"), 0, "a.py reordered to slot 0");
 });
 
-test("movePaneTabTo refuses terminal tabs and missing ids", () => {
+test("movePaneTabTo refuses unknown ids and unknown panes", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-16");
   const panes = ctx.HerdrWorkspacePanes;
   panes.splitPaneRight();
   const root = panes.paneRoot();
   const leaves = panes.paneLeaves(root);
+  leaves[0].tabs.push("editor:src/x.py");
 
-  assert.equal(panes.movePaneTabTo("tab_2", leaves[1].paneId, 0), false, "terminal id refuses");
   assert.equal(panes.movePaneTabTo("editor:src/ghost.py", leaves[1].paneId, 0), false, "unknown tab refuses");
-  assert.equal(panes.movePaneTabTo("editor:src/x.py", "p-nope", null), false, "unknown tab in known tree refuses");
+  assert.equal(panes.movePaneTabTo("terminal", leaves[1].paneId, 0), false, "placeholder never moves");
 });
 
-test("dragged editor and git tabs carry draggable attributes in strip html", () => {
+test("movePaneTabTo moves a terminal tab and re-routes when it is the route tab", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-17");
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-2" }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1" },
+    tab_3: { tab_id: "tab_3", workspace_id: "ws-2" },
+  };
+  ctx.state.tab = "tab_2";
+  const routed = [];
+  ctx.go = (ws, tab) => routed.push([ws, tab]);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.splitPaneRight();
+  const root = panes.paneRoot();
+  const leaves = panes.paneLeaves(root);
+  panes.syncTerminalTabsIntoTree(root);
+  // Leaf 0 keeps tab_2 (sync target), tab_3 lands wherever the sync
+  // placed it: force it into leaf 1 to model the mixed tree.
+  leaves[1].tabs.push("tab_3");
+
+  assert.equal(panes.movePaneTabTo("tab_2", leaves[1].paneId, 0), true, "terminal move accepted");
+  assert.ok(leaves[1].tabs.includes("tab_2"), "target holds the terminal tab");
+  assert.ok(!leaves[0].tabs.includes("tab_2"), "source dropped it");
+  assert.equal(leaves[1].active, "tab_2", "target activates the moved terminal");
+  assert.deepEqual(routed, [["ws-1", "tab_2"]], "route follows the moved route tab (D7.2), workspace from its own row");
+});
+
+test("movePaneTabTo moves a non-route terminal without touching the route", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-18");
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
+  ctx.state.tab = "tab_2";
+  const routed = [];
+  ctx.go = (ws, tab) => routed.push([ws, tab]);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.splitPaneRight();
+  const root = panes.paneRoot();
+  const leaves = panes.paneLeaves(root);
+  panes.syncTerminalTabsIntoTree(root);
+  leaves[0].active = "tab_2";
+  leaves[1].tabs.push("tab_3");
+  leaves[1].active = "tab_3";
+
+  assert.equal(panes.movePaneTabTo("tab_3", leaves[0].paneId, 1), true, "non-route terminal move accepted");
+  assert.ok(leaves[0].tabs.includes("tab_3"), "target holds the moved terminal");
+  assert.equal(ctx.state.tab, "tab_2", "route untouched");
+  assert.deepEqual(routed, [], "no re-route for a non-route terminal");
+});
+
+test("dragged terminal and editor tabs carry draggable attributes in strip html", () => {
   const source = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
-  assert.ok(source.includes('draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()"'), "editor/git tabs are draggable");
-  assert.ok(!source.includes('data-tab-kind="terminal" draggable'), "terminal tabs are not draggable");
+  assert.ok(source.includes('draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()"'), "all tab kinds are draggable");
+  assert.ok(source.includes('data-tab-kind="terminal"'), "terminal tabs render (D7 drag)");
+  assert.ok(/data-tab-kind="terminal"[^>]*draggable="true"/.test(source), "terminal tabs are draggable (D7)");
   assert.ok(source.includes("function paneDropCaretAt"), "caret writer exists");
   assert.ok(source.includes("function paneDropIndexAt"), "index calculator exists");
 });
@@ -1901,4 +1956,136 @@ test("markdown strip control follows the file view state", () => {
     ["edit", "src/readme.md"],
     ["preview", "src/readme.md"],
   ], "strip dispatchers land on the registry view setters");
+});
+
+// ---- slice 4: D7.1 duplicate repair ---------------------------------------
+// A mid-drag crash or a stale stored tree can leave one terminal id in
+// two leaves. The repair keeps the first owner in tree order, drops the
+// later copies, and collapses a leaf the repair emptied inside a split.
+test("sync repairs a duplicated terminal id: first leaf wins, emptied leaf collapses", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-40");
+  ctx.state.tabs = [{ tab_id: "t1" }, { tab_id: "t2" }];
+  ctx.state.tab = "t1";
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["t1", "t2"];
+  leaves[0].active = "t1";
+  leaves[1].tabs = ["t2", "editor:src/keep.py"];
+  leaves[1].active = "t2";
+
+  panes.syncTerminalTabsIntoTree(panes.paneRoot());
+
+  const after = panes.paneLeaves(panes.paneRoot());
+  assert.equal(after.length, 2, "leaf with an editor tab survives");
+  const first = after[0];
+  const second = after[1];
+  assert.deepEqual([...first.tabs], ["t1", "t2"], "first leaf in tree order keeps the id");
+  assert.deepEqual([...second.tabs], ["editor:src/keep.py"], "duplicate drops, editor tab stays");
+  assert.equal(second.active, "editor:src/keep.py", "pointer heals to a surviving tab");
+});
+
+test("sync repair collapses a leaf the repair emptied", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-41");
+  ctx.state.tabs = [{ tab_id: "t1" }, { tab_id: "t2" }];
+  ctx.state.tab = "t1";
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  // t2 duplicated into the second leaf, which holds nothing else: the
+  // repair drops its copy and the leaf collapses (no blank pane).
+  leaves[0].tabs = ["t1", "t2"];
+  leaves[0].active = "t1";
+  leaves[1].tabs = ["t2"];
+  leaves[1].active = "t2";
+
+  panes.syncTerminalTabsIntoTree(panes.paneRoot());
+
+  const after = panes.paneLeaves(panes.paneRoot());
+  assert.equal(after.length, 1, "emptied duplicate leaf collapsed");
+  assert.deepEqual([...after[0].tabs], ["t1", "t2"], "survivor holds both ids once");
+});
+
+// ---- slice 4: D3 card-to-strip speed path ---------------------------------
+test("workspace card dragover shows the open-here hint on the hovered strip", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-42");
+  ctx.state.workspaces = [{ workspace_id: "ws-42", label: "main" }];
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  ctx.state.dragWorkspace = "ws-42";
+  const pane = document.body.querySelector(".workspace-pane");
+  const strip = pane.querySelector(".pane-tab-strip");
+
+  panes.paneStripDragOver({ target: strip, clientX: 0, preventDefault() {}, dataTransfer: { dropEffect: null } });
+
+  const hint = strip.children.find((child) =>
+    child.className.split(/\s+/).includes("pane-ws-drop-hint"));
+  assert.ok(hint, "hint node renders on the strip");
+  assert.equal(hint.textContent, "Open terminal: main here", "hint names the workspace");
+});
+
+test("workspace card drop opens the terminal in that workspace and cleans drag state", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-43");
+  ctx.state.workspaces = [{ workspace_id: "ws-src", label: "side" }];
+  const posted = [];
+  const routed = [];
+  ctx.api = async (url, opt) => {
+    posted.push([url, JSON.parse(opt.body)]);
+    return { result: { tab: { tab_id: "tab_new" } } };
+  };
+  ctx.go = (ws, tab) => routed.push([ws, tab]);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  // The strip-level wiring calls the exported entry; mirror the card
+  // drag state the sidebar sets.
+  ctx.state.dragWorkspace = "ws-src";
+  const pane = document.body.querySelectorAll(".workspace-pane")[1];
+  const strip = pane.querySelector(".pane-tab-strip");
+  const dimmed = makeNode("", "workspace-card workspace-drag");
+  document.body.appendChild(dimmed);
+
+  panes.paneStripDrop({ target: strip, preventDefault() {}, dataTransfer: null });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(posted, [["/api/tabs", { workspace_id: "ws-src" }]], "panel created in the dragged workspace");
+  assert.deepEqual(routed, [["ws-src", "tab_new"]], "route lands on the new panel");
+  assert.equal(ctx.state.dragWorkspace, null, "drag state cleared");
+  assert.ok(!dimmed.className.includes("workspace-drag"), "card drag class cleared");
+  // The placement landed: the next sync homes the fresh id in the
+  // dropped pane's leaf (observable through the tree, not the map).
+  ctx.state.tabs.push({ tab_id: "tab_new" });
+  panes.syncTerminalTabsIntoTree(panes.paneRoot());
+  assert.ok(leaves[1].tabs.includes("tab_new"), "pending placement homed the new tab in the dropped pane");
+});
+
+test("openPanelInWorkspace registers the placement, posts, and routes", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-44");
+  const posted = [];
+  const routed = [];
+  ctx.api = async (url, opt) => {
+    posted.push([url, JSON.parse(opt.body)]);
+    return { result: { tab: { tab_id: "tab_7" } } };
+  };
+  ctx.go = (ws, tab) => routed.push([ws, tab]);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+
+  await panes.openPanelInWorkspace("ws-9", leaves[1].paneId);
+  ctx.state.tabs.push({ tab_id: "tab_7" });
+  panes.syncTerminalTabsIntoTree(panes.paneRoot());
+
+  assert.deepEqual(posted, [["/api/tabs", { workspace_id: "ws-9" }]], "panel created in the target workspace");
+  assert.deepEqual(routed, [["ws-9", "tab_7"]], "route carries the new tab");
+  assert.ok(leaves[1].tabs.includes("tab_7"), "placement homed the new tab in the requested pane");
 });

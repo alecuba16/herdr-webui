@@ -434,6 +434,24 @@
   z-index: 5;
 }
 
+/* Workspace card hover preview on a pane strip (D3): names the workspace
+ whose terminal would open there. Accent tinted like the badge, never
+ hue alone (the label carries the meaning), pointer-events off so the
+ hint never blocks the drop itself. */
+.pane-ws-drop-hint {
+  align-self: center;
+  margin-left: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--text);
+  pointer-events: none;
+}
+
 /* ---- right sidebar rail (stopgap until Phase 2 columns) ---- */
 .right-sidebar-rail {
   display: flex;

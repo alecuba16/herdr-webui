@@ -162,20 +162,15 @@
       return;
     }
     const panes = window.HerdrWorkspacePanes;
-    if (panes && paneId && typeof panes.requestTabPlacement === "function")
-      panes.requestTabPlacement(paneId);
-    if (typeof showBlocking === "function") showBlocking("Creating panel...");
-    try {
-      const r = await api("/api/tabs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace_id: workspaceId }),
-      });
-      const tabId = r && r.result && r.result.tab ? r.result.tab.tab_id : null;
-      if (tabId && typeof go === "function") go(workspaceId, tabId);
-    } finally {
-      if (typeof hideBlocking === "function") hideBlocking();
+    // new-tab scope routes through the shared openPanelInWorkspace
+    // (D3): same path the sidebar card drop uses, placement included.
+    // The pane placement + POST + route trio lives there once; this
+    // scope has no private copy of it.
+    if (scope === "new-tab" && panes && typeof panes.openPanelInWorkspace === "function") {
+      await panes.openPanelInWorkspace(workspaceId, paneId);
+      return;
     }
+    if (typeof go === "function") go(workspaceId);
   }
 
   function rowKeydown(event) {

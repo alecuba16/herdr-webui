@@ -685,6 +685,45 @@ function syncTerminalTabsIntoTree(root) {
     }
   }
   if (allBackendIds.length) {
+    // D7.1 repair rule: exactly one owner leaf per terminal id. A mid-drag
+    // crash, a stale stored tree, or a legacy blob can leave an id in two
+    // leaves. The FIRST leaf in tree order wins the id, every later copy
+    // drops, and a leaf emptied by this repair collapses inside a split
+    // (same as the prune below). Editor/git ids are client-owned with
+    // no uniqueness constraint and never enter this pass.
+    const ownerLeafById = new Map();
+    const duplicatesByLeaf = new Map();
+    for (const leaf of paneLeaves(root)) {
+      const kept = [];
+      for (const id of leaf.tabs) {
+        if (isEditorTab(id) || isGitTab(id)) {
+          kept.push(id);
+          continue;
+        }
+        // Dead ids stay in place: the prune pass below owns them (and
+        // its emptied-leaf collapse). Dropping them here would empty the
+        // leaf before the prune pass's change check, and the collapse
+        // would never fire.
+        if (!terminalTabKnown(id)) {
+          kept.push(id);
+          continue;
+        }
+        if (ownerLeafById.has(id)) {
+          if (!duplicatesByLeaf.has(leaf)) duplicatesByLeaf.set(leaf, []);
+          duplicatesByLeaf.get(leaf).push(id);
+          changed = true;
+          continue;
+        }
+        ownerLeafById.set(id, leaf);
+        kept.push(id);
+      }
+      leaf.tabs = kept;
+    }
+    if (isPaneSplit(root)) {
+      for (const leaf of duplicatesByLeaf.keys()) {
+        if (!leaf.tabs.length && collapseEmptyLeafInTree(root, leaf)) changed = true;
+      }
+    }
     // Prune closed backend ids from every leaf, not just the target: the
     // target selection picks the leaf holding the first live terminal id,
     // so a sibling whose terminal closed keeps a dead id in its tabs and a
@@ -1196,7 +1235,7 @@ function paneTabButtonHtml(tab, isActive, index, tabs) {
   if (state.editingTab === tab.tab_id)
     return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
   const label = panelVisibleLabel(tab, index, tabs);
-  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
+  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
 }
 
 function paneTerminalTabButtonHtml(tab, isActive) {
@@ -1556,12 +1595,12 @@ function paneTabDragStart(event) {
   if (!event || !event.target || !event.target.dataset) return;
   const tabId = event.target.dataset.tabId;
   if (!tabId) return;
-  // Terminal tabs refuse the drag: the surface is singular and the
-  // backend owns the tab list.
-  if (!isEditorTab(tabId) && !isGitTab(tabId)) {
-    if (event.preventDefault) event.preventDefault();
-    return;
-  }
+  // Terminal tabs drag under the D7 invariants: the move is atomic on
+  // drop (one splice out, one splice in, one sync pass), the surface
+  // keeps its identity (the singleton follows the route tab, an aux
+  // re-parents by tab key), and the workspace stays on the tab row
+  // (never re-assigned by the hosting leaf). Refusing the drag was the
+  // pre-mixed-tree behavior.
   paneDragTabId = tabId;
   if (event.dataTransfer) {
     event.dataTransfer.setData("text/herdr-pane-tab", tabId);
@@ -1573,6 +1612,7 @@ function paneTabDragStart(event) {
 function paneTabDragEnd() {
   paneDragTabId = null;
   clearPaneDropCaret();
+  clearPaneWorkspaceDropHint();
   document.querySelectorAll(".pane-tab-dragging").forEach((node) => {
     if (node.classList && node.classList.remove) node.classList.remove("pane-tab-dragging");
   });
@@ -1624,27 +1664,84 @@ function paneDropCaretAt(strip, index) {
   strip.appendChild(caret);
 }
 
+// Hover preview for a workspace card held over a pane strip (D3 speed
+// path): "Open terminal: <label> here". A real node (not a bare outline)
+// so the drop target reads as concrete; one node at a time.
+function paneWorkspaceDropHint(strip, workspaceId) {
+  clearPaneWorkspaceDropHint();
+  const workspace = (state.workspaces || []).find((w) => w.workspace_id === workspaceId);
+  if (!workspace) return;
+  const label =
+    (typeof workspaceDisplayTitle === "function" && workspaceDisplayTitle(workspace)) ||
+    workspace.label ||
+    workspaceId;
+  const hint = document.createElement("div");
+  hint.className = "pane-ws-drop-hint";
+  hint.textContent = `Open terminal: ${label} here`;
+  strip.appendChild(hint);
+}
+
+function clearPaneWorkspaceDropHint() {
+  document.querySelectorAll(".pane-ws-drop-hint").forEach(detachDomNode);
+}
+
+// Which drag payload is in flight: a pane tab (text/herdr-pane-tab) or a
+// sidebar workspace card (state.dragWorkspace, set by workspaceDragStart).
+// Tab drags win when both signals somehow exist.
+function activeDragKind() {
+  if (paneDragTabId) return { kind: "tab", tabId: paneDragTabId };
+  if (state.dragWorkspace) return { kind: "workspace", workspaceId: state.dragWorkspace };
+  return null;
+}
+
 function paneStripDragOver(event) {
-  if (!paneDragTabId) return;
-  // The strip under the pointer owns the caret; hovering pane content
-  // targets the same strip's append slot.
+  const drag = activeDragKind();
+  if (!drag) return;
+  // The strip under the pointer owns the caret or the workspace hint;
+  // hovering pane content targets the same strip's append slot.
   const target = event.target;
   const strip = (target && target.closest ? target.closest(".pane-tab-strip") : null)
     || (target && target.classList && target.classList.contains && target.classList.contains("pane-tab-strip") ? target : null);
   if (!strip) return;
   if (event.preventDefault) event.preventDefault();
   if (event.dataTransfer && "dropEffect" in event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  const index = paneDropIndexAt(strip, event, paneDragTabId);
+  if (drag.kind === "workspace") {
+    paneWorkspaceDropHint(strip, drag.workspaceId);
+    return;
+  }
+  const index = paneDropIndexAt(strip, event, drag.tabId);
   paneDropCaretAt(strip, index);
   strip.dataset.dropIndex = String(index);
 }
 
 function paneStripDrop(event) {
-  const tabId = paneDragTabId
-    || (event.dataTransfer && event.dataTransfer.getData ? event.dataTransfer.getData("text/herdr-pane-tab") : null);
+  const drag = activeDragKind()
+    || (event.dataTransfer && event.dataTransfer.getData
+      ? { kind: "tab", tabId: event.dataTransfer.getData("text/herdr-pane-tab") }
+      : null);
   const pane = event.target && event.target.closest ? event.target.closest(".workspace-pane") : null;
+  if (drag && drag.kind === "workspace") {
+    clearPaneWorkspaceDropHint();
+    if (event.preventDefault) event.preventDefault();
+    const paneId = pane && pane.dataset ? pane.dataset.paneId : null;
+    // D3 speed path: the card drop creates a terminal in the dragged
+    // workspace inside this pane. No blind drops: the hover hint named
+    // the workspace and pane all the way in.
+    if (window.HerdrWorkspacePanes && typeof window.HerdrWorkspacePanes.openPanelInWorkspace === "function")
+      void window.HerdrWorkspacePanes.openPanelInWorkspace(drag.workspaceId, paneId);
+    // Same cleanup the sidebar's own dragend runs, so a drop on a strip
+    // never leaves the card dimmed (.workspace-drag) or the drag state
+    // armed for the next dragover.
+    state.dragWorkspace = null;
+    document.querySelectorAll(".workspace-drag").forEach((node) => {
+      if (node.classList && node.classList.remove) node.classList.remove("workspace-drag");
+    });
+    return;
+  }
+  const tabId = drag && drag.kind === "tab" ? drag.tabId : null;
   const strip = pane && pane.querySelector ? pane.querySelector(".pane-tab-strip") : null;
   paneTabDragEnd();
+  clearPaneWorkspaceDropHint();
   if (!tabId || !pane) return;
   if (event.preventDefault) event.preventDefault();
   const paneId = pane.dataset ? pane.dataset.paneId : null;
@@ -1655,11 +1752,17 @@ function paneStripDrop(event) {
 // The actual move: splice from the source leaf, insert into the target
 // leaf at the caret index, activate, persist, re-render. Same-leaf moves
 // are reorders and stay client-side; a cross-leaf move re-mounts the
-// owning module's container into the new content slot.
+// owning module's container into the new content slot. Terminal tabs
+// follow the D7 invariants: atomic splice on drop, the surface keeps
+// its identity (the singleton follows the route tab, an aux re-parents
+// by its per-tab key on the next render), and the route moves with the
+// tab when the dragged id was the route tab (workspaceIdForTab keeps
+// the route's workspace row-true, D7.3).
 function movePaneTabTo(tabId, targetPaneId, index) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
-  if (!isEditorTab(tabId) && !isGitTab(tabId)) return false;
+  const isTerm = !isEditorTab(tabId) && !isGitTab(tabId) && tabId !== TERMINAL_TAB_PLACEHOLDER;
+  if (!isTerm && !isEditorTab(tabId) && !isGitTab(tabId)) return false;
   const source = paneForTab(root, tabId);
   if (!source) return false;
   const leaves = paneLeaves(root);
@@ -1691,6 +1794,21 @@ function movePaneTabTo(tabId, targetPaneId, index) {
   renderWorkspacePanes();
   if (isEditorTab(tabId)) void activateEditorTab(editorTabPath(tabId));
   else if (isGitTab(tabId)) void openGitTab(gitTabViewKey(tabId));
+  else if (isTerm) {
+    // D7.2: dragging the route tab moves the singleton surface with
+    // it. The route is the ownership signal for #terminalShell
+    // (terminalShellOwnerLeaf resolves through paneForTab(root, route));
+    // re-routing here re-claims the shell for the target leaf, and the
+    // render pass disposes the dragged tab's aux from its old
+    // non-owner stint (mountPaneTabContent releases the aux of a tab
+    // the primary shell now hosts). No re-create anywhere: identity
+    // survives (aux keyed per tab, shell per app).
+    if (String(state.tab) === tabId && typeof go === "function")
+      go(workspaceIdForTab(tabId), tabId);
+    // A non-route terminal drop just re-renders: the tab keeps its
+    // aux identity, and the target leaf's mount pass re-parents the
+    // existing per-tab container into its slot (D7.4).
+  }
   return true;
 }
 
@@ -1706,7 +1824,10 @@ function wirePaneStripDrag(strip) {
   strip.addEventListener("dragover", (event) => paneStripDragOver(event));
   strip.addEventListener("drop", (event) => paneStripDrop(event));
   strip.addEventListener("dragleave", (event) => {
-    if (event.target === strip) clearPaneDropCaret();
+    if (event.target === strip) {
+      clearPaneDropCaret();
+      clearPaneWorkspaceDropHint();
+    }
   });
   strip.addEventListener("dragend", () => paneTabDragEnd());
 }
@@ -1897,6 +2018,29 @@ function requestTabPlacement(paneId) {
   if (!paneId) return;
   pendingTabPlacements = pendingTabPlacements || new Map();
   pendingTabPlacements.set("__next__", paneId);
+}
+
+// Create a panel in ANY workspace and land it in a specific pane (D3):
+// the picker's new-tab scope and the sidebar card drag-drop share this
+// path. The pending placement tells the sync which leaf owns the fresh
+// id, the POST creates it in the picked workspace, and the route moves
+// to it (workspace first, tab second, so the snapshot filter keeps the
+// new row visible on arrival).
+async function openPanelInWorkspace(workspaceId, paneId) {
+  if (!workspaceId) return;
+  if (paneId) requestTabPlacement(paneId);
+  if (typeof showBlocking === "function") showBlocking("Creating panel...");
+  try {
+    const r = await api("/api/tabs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspace_id: workspaceId }),
+    });
+    const tabId = r && r.result && r.result.tab ? r.result.tab.tab_id : null;
+    if (tabId && typeof go === "function") go(workspaceId, tabId);
+  } finally {
+    if (typeof hideBlocking === "function") hideBlocking();
+  }
 }
 
 // Closes the active leaf. The closed leaf's tabs migrate to the
@@ -2608,6 +2752,31 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
     }
     return;
   }
+  // The active terminal is NOT the shell's host: the owner leaf can
+  // hold a non-route terminal as its active tab (a drop landed one
+  // here, or a strip reorder left it on top) while the route tab lives
+  // in another leaf. Showing the shell here would render the route
+  // tab's pty under this leaf's highlighted tab and dispose the moved
+  // tab's surface, the exact dispose-and-recreate the drag contract
+  // forbids (D7.4). Mount the aux surface instead, same as a non-owner
+  // leaf; the shell stays parked for its real owner.
+  const routeTabForShell = state.tab != null ? String(state.tab) : null;
+  if (activeIsTerminal && routeTabForShell && activeTab !== routeTabForShell && activeTab !== TERMINAL_TAB_PLACEHOLDER) {
+    if (terminalShell) {
+      const panesContainer = el("workspacePanes");
+      if (panesContainer && terminalShell.parentElement !== panesContainer) {
+        if (terminalShell.parentElement) terminalShell.parentElement.removeChild(terminalShell);
+        panesContainer.appendChild(terminalShell);
+      }
+      if (terminalShell.style) terminalShell.style.display = "none";
+    }
+    hideStalePaneContainers(content);
+    if (aux && activeTab && activeTab !== TERMINAL_TAB_PLACEHOLDER) {
+      aux.ensureForLeaf(pane, leaf);
+      if (auxTabs) auxTabs.push(activeTab);
+    }
+    return;
+  }
   if (terminalShell && terminalShell.style) terminalShell.style.display = "";
   if (content && terminalShell && terminalShell.parentElement !== content)
     content.appendChild(terminalShell);
@@ -2888,6 +3057,10 @@ window.HerdrWorkspacePanes = {
   // Phase 5: tab drag between panes.
   movePaneTabTo,
   paneDropIndexAt,
+  // Drag pipeline entry points (the strip listeners call these; tests
+  // drive them directly because the vm DOM stub does not store listeners).
+  paneStripDragOver,
+  paneStripDrop,
   // p6: per-strip controls targeting the pressed pane.
   splitPaneRightFor,
   splitPaneDownFor,
@@ -2895,6 +3068,7 @@ window.HerdrWorkspacePanes = {
   maximizePaneFor,
   newTabForPane,
   requestTabPlacement,
+  openPanelInWorkspace,
   paneMenuItemsFor,
   syncTerminalTabsIntoTree,
   terminalShellOwnerLeaf,

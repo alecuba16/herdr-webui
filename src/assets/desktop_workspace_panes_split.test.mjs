@@ -804,7 +804,7 @@ test("strip control gating matrix across tree shapes", () => {
 
 // ---- 7. drag -----------------------------------------------------------------
 
-test("paneTabDragStart refuses terminal tabs and tracks editor/git drags", () => {
+test("paneTabDragStart tracks terminal, editor, and git drags alike (D7)", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
@@ -814,12 +814,17 @@ test("paneTabDragStart refuses terminal tabs and tracks editor/git drags", () =>
     dataTransfer: { setData() {}, effectAllowed: "move" },
     preventDefault: () => prevented.push(tabId),
   });
+  // D7 lifted the terminal refusal: every tab kind drags. The drop path
+  // (movePaneTabTo) owns the invariants.
   const termEvent = makeEvent("tab_2");
   ctx.paneTabDragStart(termEvent);
-  assert.deepEqual(prevented, ["tab_2"], "terminal drag prevented");
+  assert.deepEqual(prevented, [], "terminal drag no longer prevented");
+  ctx.paneTabDragEnd();
   const editEvent = makeEvent("editor:src/x.py");
   ctx.paneTabDragStart(editEvent);
-  assert.equal(ctx.paneDragTabIdRef ? ctx.paneDragTabIdRef() : undefined, undefined, "drag id tracked internally");
+  ctx.paneTabDragEnd();
+  // The strip drop target must exist for the drag to land somewhere.
+  assert.equal(typeof ctx.HerdrWorkspacePanes.movePaneTabTo, "function", "drop path reachable");
 });
 
 test("movePaneTabTo matrix: cross-leaf, reorder, refuse, default target", () => {
@@ -838,8 +843,9 @@ test("movePaneTabTo matrix: cross-leaf, reorder, refuse, default target", () => 
   assert.equal(leaves[0].tabs.indexOf("editor:src/a.py"), 0, "reordered");
   // Same-leaf no-op at the same slot.
   assert.equal(panes.movePaneTabTo("editor:src/a.py", leaves[0].paneId, 0), true, "no-op reorder accepted");
-  // Terminal and unknown refuse.
-  assert.equal(panes.movePaneTabTo("tab_2", leaves[1].paneId, 0), false, "terminal refuses");
+  // Terminal accepts (D7), placeholder and unknown refuse.
+  assert.equal(panes.movePaneTabTo("tab_2", leaves[1].paneId, 0), true, "terminal moves (D7)");
+  assert.equal(panes.movePaneTabTo("terminal", leaves[1].paneId, 0), false, "placeholder refuses");
   assert.equal(panes.movePaneTabTo("editor:src/ghost.py", leaves[1].paneId, 0), false, "unknown refuses");
   // Default target: no pane id resolves to the other leaf.
   assert.equal(panes.movePaneTabTo("git:changes", null, null), true, "git moves to the other leaf");
