@@ -2738,20 +2738,7 @@ impl TerminalRuntime {
     }
 
     fn history_tail_text(&self, max_bytes: usize) -> String {
-        let bytes = self
-            .scrollback
-            .lock()
-            .map(|scrollback| {
-                let mut bytes = scrollback
-                    .iter()
-                    .rev()
-                    .take(max_bytes)
-                    .copied()
-                    .collect::<Vec<_>>();
-                bytes.reverse();
-                bytes
-            })
-            .unwrap_or_default();
+        let bytes = self.history_tail_bytes(max_bytes);
         terminal_screen_text_lossy(&String::from_utf8_lossy(&bytes))
     }
 
