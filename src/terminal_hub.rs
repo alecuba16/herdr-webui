@@ -172,6 +172,11 @@ pub(crate) struct SharedAttach {
     /// Registered browser clients. `None` slots are dropped/stalled
     /// clients pending cleanup.
     clients: Mutex<Vec<Option<Sender<HubClientEvent>>>>,
+    /// Set before `closed` flips: the attach ended with a structured error a
+    /// joiner must still receive when it registers after `fail()`. `None`
+    /// when the stream died without one (those joiners get the
+    /// channel-close signal immediately instead).
+    failure: Mutex<Option<HubClientEvent>>,
     /// True once the attach is finished (handshake error, stream death,
     /// or graceful detach). Guards hub reuse: joins after completion
     /// start a fresh attach attempt instead of a dead one.
@@ -180,6 +185,26 @@ pub(crate) struct SharedAttach {
 }
 
 impl SharedAttach {
+    /// Fan out one event to every registered client queue. A client whose
+    /// bounded queue is full (stalled browser TCP peer) is dropped: its
+    /// WS relay observes the channel close and reports the 4404 stall.
+    /// Never blocks. Caller holds the clients lock.
+    fn publish_locked(
+        &self,
+        clients: &mut [Option<Sender<HubClientEvent>>],
+        event: &HubClientEvent,
+    ) {
+        for slot in clients.iter_mut() {
+            let Some(client) = slot else { continue };
+            match client.try_send(clone_event(event)) {
+                Ok(()) => {}
+                // Full queue (stalled consumer) or already-disconnected
+                // receiver: drop it from the fan-out.
+                Err(_) => *slot = None,
+            }
+        }
+    }
+
     /// Push output bytes into the replay ring and fan out to every
     /// registered client. A client whose bounded queue is full (stalled
     /// browser TCP peer) is dropped: its WS relay observes the channel
@@ -191,23 +216,23 @@ impl SharedAttach {
             }
         }
         if let Ok(mut clients) = self.clients.lock() {
-            for slot in clients.iter_mut() {
-                let Some(client) = slot else { continue };
-                match client.try_send(clone_event(&event)) {
-                    Ok(()) => {}
-                    // Full queue (stalled consumer) or already-disconnected
-                    // receiver: drop it from the fan-out.
-                    Err(_) => *slot = None,
-                }
-            }
+            self.publish_locked(&mut clients, &event);
         }
     }
 
-    /// Broadcast an attach error to every client, mark closed.
+    /// Broadcast an attach error to every client, mark closed. Any joiner
+    /// registering after the flip gets the recorded failure from `join()`
+    /// instead of a queue nobody ever feeds. The failure store precedes the
+    /// flip (Release store, Acquire load in `join`) so a joiner that sees
+    /// `closed` also sees the event; the flip stays unconditional so even
+    /// a poisoned clients lock leaves the attach closed for reuse checks.
     fn fail(&self, event: HubClientEvent) {
+        if let Ok(mut failure) = self.failure.lock() {
+            *failure = Some(clone_event(&event));
+        }
         self.closed.store(true, Ordering::Release);
-        self.publish(event);
         if let Ok(mut clients) = self.clients.lock() {
+            self.publish_locked(&mut clients, &event);
             clients.clear();
         }
     }
@@ -225,6 +250,29 @@ impl SharedAttach {
         let snapshot = replay_guard.snapshot();
         let mut clients = self.clients.lock().expect("terminal hub clients lock");
         clients.retain(|slot| slot.is_some());
+        // The attach can end between the hub lookup and this registration:
+        // a failed attach publishes its error before any joiner exists, a
+        // dead stream clears every slot. Registering into that void leaves
+        // the client queue forever silent, so a closed attach delivers the
+        // recorded failure (or an immediate channel close for an errorless
+        // death) and never registers the queue at all.
+        if self.closed.load(Ordering::Acquire) {
+            let failure = self
+                .failure
+                .lock()
+                .expect("terminal hub failure lock")
+                .as_ref()
+                .map(clone_event);
+            drop(clients);
+            drop(replay_guard);
+            if let Some(event) = failure {
+                // Bounded, freshly created queue: the try_send can only
+                // fail on a closed receiver, which is the same silent
+                // outcome we already accept.
+                let _ = tx.try_send(event);
+            }
+            return (rx, snapshot);
+        }
         clients.push(Some(tx));
         drop(clients);
         drop(replay_guard);
@@ -453,6 +501,7 @@ impl TerminalHub {
         let attach = Arc::new(SharedAttach {
             in_tx,
             clients: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
             closed: AtomicBool::new(false),
             replay: Mutex::new(ReplayRing::new(replay_cap())),
         });
@@ -710,6 +759,7 @@ mod tests {
         let attach = SharedAttach {
             in_tx: std::sync::mpsc::channel().0,
             clients: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
             closed: AtomicBool::new(false),
             replay: Mutex::new(ReplayRing::new(64)),
         };
@@ -757,6 +807,7 @@ mod tests {
         let attach = SharedAttach {
             in_tx: std::sync::mpsc::channel().0,
             clients: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
             closed: AtomicBool::new(false),
             replay: Mutex::new(ReplayRing::new(64)),
         };
@@ -778,6 +829,7 @@ mod tests {
         let attach = SharedAttach {
             in_tx: std::sync::mpsc::channel().0,
             clients: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
             closed: AtomicBool::new(false),
             replay: Mutex::new(ReplayRing::new(64)),
         };
@@ -917,6 +969,7 @@ mod tests {
         let attach = SharedAttach {
             in_tx: std::sync::mpsc::channel().0,
             clients: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
             closed: AtomicBool::new(false),
             replay: Mutex::new(ReplayRing::new(64)),
         };
@@ -951,6 +1004,55 @@ mod tests {
         assert_eq!(replay_cap(), REPLAY_RING_BYTES);
         std::env::remove_var("HERDR_REPLAY_CAP_BYTES");
         assert_eq!(replay_cap(), REPLAY_RING_BYTES);
+    }
+
+    #[test]
+    fn shared_attach_join_after_fail_still_receives_the_error() {
+        // The CI race this pins: `start_attach` spawns the connect task
+        // before the joiner registers, so a failed attach can publish its
+        // herdr_error to zero clients. A joiner arriving after `fail()`
+        // must still get the recorded error, never a silent queue.
+        let attach = SharedAttach {
+            in_tx: std::sync::mpsc::channel().0,
+            clients: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            replay: Mutex::new(ReplayRing::new(64)),
+        };
+        attach.fail(HubClientEvent::Error {
+            kind: "connect_failed",
+            message: "boom".to_string(),
+            suggests_builtin: false,
+        });
+        let (mut rx, _replay) = attach.join();
+        match rx.blocking_recv() {
+            Some(HubClientEvent::Error { kind, .. }) => assert_eq!(kind, "connect_failed"),
+            other => panic!("expected error event after late join, got {other:?}"),
+        }
+        // The recorded failure serves every late joiner, not just the first.
+        let (mut rx2, _replay2) = attach.join();
+        match rx2.blocking_recv() {
+            Some(HubClientEvent::Error { kind, .. }) => assert_eq!(kind, "connect_failed"),
+            other => panic!("expected error event for second late joiner, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_attach_join_after_stream_death_closes_immediately() {
+        // Stream death without an error event: the reader thread flips
+        // `closed` and clears the slots. A joiner arriving in that window
+        // must get a closed channel (the relay's 4404 path), not a
+        // permanently silent queue.
+        let attach = SharedAttach {
+            in_tx: std::sync::mpsc::channel().0,
+            clients: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            replay: Mutex::new(ReplayRing::new(64)),
+        };
+        attach.closed.store(true, Ordering::Release);
+        let (mut rx, _replay) = attach.join();
+        assert!(rx.blocking_recv().is_none(), "queue must close, not hang");
     }
 
     #[test]
