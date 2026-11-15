@@ -218,35 +218,30 @@ fn wait_for(log: &std::sync::Arc<std::sync::Mutex<String>>, needle: &str) {
     }
 }
 
-/// Block until the theme value shows on the overlay row. Two wire
-/// forms are accepted: the differential renderer may re-emit just
-/// the changed cell with an explicit cursor jump (`ESC[11;28Hvalue`),
-/// or, when the backdrop dimming restyles the whole row (the depth
-/// effect repaints every cell while an overlay is open), as plain
-/// contiguous text (`themvalue`). Both prove the same thing: the
-/// theme row now shows `value`.
+/// Block until the theme value shows on the settings overlay row.
+/// The overlay grows with wrapped values now (web api base, git
+/// cwd, files cwd), so the theme row has no fixed wire position:
+/// assert on the reconstructed 80x24 screen — the row that starts
+/// with "  theme" also carries the value — instead of pinning
+/// cursor-jump coordinates or contiguous wire runs, both of which
+/// depend on how the diff renderer splits the update.
 fn wait_for_theme(log: &std::sync::Arc<std::sync::Mutex<String>>, value: &str) {
-    let jump = format!("\u{1b}[11;28H{value}");
-    // Settings rows pad the key to 16 columns ("  theme" + 11 spaces)
-    // before the value, so a full-row re-emission reads as contiguous
-    // "  theme          <value>" once SGR escapes are stripped.
-    let plain = format!("  theme{}{value}", " ".repeat(11));
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         {
-            let Ok(log) = log.lock() else { break };
-            if log.contains(&jump)
-                || log.contains(&plain)
-                || strip_sgr(&log).contains(&jump)
-                || strip_sgr(&log).contains(&plain)
+            let Ok(wire) = log.lock() else { break };
+            let screen = render_screen(&wire, 24, 80);
+            if screen
+                .iter()
+                .any(|line| line.contains("  theme") && line.contains(value))
             {
                 return;
             }
             if Instant::now() > deadline {
-                let tail = log.len().saturating_sub(2000);
+                let tail = wire.len().saturating_sub(2000);
                 panic!(
                     "TUI did not render theme {value:?} in time; tail of output: {:?}",
-                    &log[tail..]
+                    &wire[tail..]
                 );
             }
         }
@@ -524,8 +519,11 @@ fn tui_binary_interactive_loop_pty() {
     let _ = writer.write_all(b"E");
     let _ = writer.flush();
     wait_for(&log, "web api base");
+    // Review F4 reworded the settings hint line ("t theme · p
+    // passthrough · Esc closes"): `t` still cycles the theme, the
+    // assert pins the new wording that actually renders now.
     assert!(
-        log.lock().unwrap().contains("t cycles the theme"),
+        log.lock().unwrap().contains("t theme · p passthrough"),
         "settings overlay hint missing"
     );
     let _ = writer.write_all(b"t");
@@ -713,7 +711,13 @@ fn tui_binary_worktree_browser_and_picker_pty() {
     wait_for(&log, "o stages the folder");
     let _ = writer.write_all(b"o");
     let _ = writer.flush();
-    wait_for(&log, "Workspace name");
+    // The prompt title shares cells with the picker overlay it
+    // replaces ("Workspac…ename" both start with the same letters),
+    // so the diff renderer re-emits it as split runs with a cursor
+    // jump in the middle and "Workspace name" never arrives
+    // contiguously on the raw wire. Assert on the reconstructed
+    // screen instead — what the user actually sees.
+    wait_for_screen(&log, 30, 100, "Workspace name");
     assert!(
         log.lock().unwrap().contains(&root_path),
         "staged path must show as the prompt subject"
@@ -1359,8 +1363,11 @@ fn tui_binary_focus_and_highlight_acceptance_pty() {
 
     // Focus-aware footer: the terminal starts with the MAIN region
     // focused, so the full hint names the pane actions, not the dead
-    // list keys.
-    wait_for(&log, "chat lens");
+    // list keys. The chord rework moved focus walking under the
+    // prefix (Ctrl+B . / ,) and trimmed the lens segment to
+    // "Shift+L lens", so the needle pins the pane-action segment of
+    // the new hint instead of the old "chat lens" wording.
+    wait_for(&log, "Shift+L lens");
 
     // Focus walker: while the main region owns focus, j must not move
     // the workspace cursor. Press j and give the app several refresh

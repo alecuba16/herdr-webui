@@ -1333,7 +1333,10 @@ fn render_diff_pane_full(
             spans.push(span);
         }
         let visible_width = inner.width as usize;
-        let text_len = spans.iter().map(|s| s.content.len()).sum::<usize>();
+        // Display width, not bytes: the blame author span can carry
+        // multibyte text (CJK, accents) whose byte length runs up to
+        // 3x its column count, over-truncating the diff line.
+        let text_len = spans.iter().map(|s| s.content.width()).sum::<usize>();
         spans.push(Span::styled(
             truncate(line, visible_width.saturating_sub(text_len)),
             style,
@@ -1804,8 +1807,14 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     let inner_width = box_width.saturating_sub(2) as usize;
     let input_lines = wrap_input_with_cursor(&prompt.text, inner_width.max(1));
     let visible_input = (input_lines.len() as u16).min(8);
+    // Hint wraps to the rows it needs instead of silently clipping
+    // past the box edge (hint strings run past 64 columns on narrow
+    // terminals). Wrapping the same way as the input keeps the box
+    // one shape; the grown hint rows join the box height so nothing
+    // is cut.
+    let hint_rows = wrap_plain(prompt.kind.hint(), inner_width.max(1));
     // subject + hint + borders; the box centers per row count.
-    let height = (visible_input + 5).min(area.height);
+    let height = (visible_input + hint_rows.len() as u16 + 5).min(area.height);
     let rect = overlay_rect(area, box_width, height);
     render_shadow(frame, rect, p);
     let mut lines = vec![Line::from(Span::styled(
@@ -1822,10 +1831,12 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             Style::default().fg(p.text),
         )));
     }
-    lines.push(Line::from(Span::styled(
-        prompt.kind.hint(),
-        Style::default().fg(p.muted),
-    )));
+    for row in &hint_rows {
+        lines.push(Line::from(Span::styled(
+            row.clone(),
+            Style::default().fg(p.muted),
+        )));
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .block(overlay_panel(&title, p))
@@ -1913,6 +1924,62 @@ pub(crate) fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
+/// Word-wrap plain text (no cursor block) at `width` display
+/// columns. Same greedy word wrap as `wrap_input_with_cursor`,
+/// shared so hint rows and status rows break like the input.
+/// Hard-breaks a single word wider than the row so wrap always
+/// progresses.
+fn wrap_plain(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    for token in text.split_inclusive(' ') {
+        let tok_width = token.width();
+        if current_width + tok_width > width {
+            // Only flush a non-empty row: a first token wider than
+            // the row must not open with a blank line.
+            if current_width > 0 {
+                rows.push(std::mem::take(&mut current));
+            }
+            // A word wider than the row hard-breaks mid-word, and the
+            // leftover keeps breaking while it is STILL wider than the
+            // row. Stopping after one break left an over-wide rest
+            // that ratatui's Wrap re-wrapped into extra rows, so the
+            // footer's row budget clipped the tail of a long error.
+            let mut rest: &str = token;
+            while rest.width() > width {
+                let mut fit_width = 0usize;
+                let mut split_at = 0usize;
+                for (offset, ch) in rest.char_indices() {
+                    let ch_width = ch.width().unwrap_or(0);
+                    if fit_width + ch_width > width {
+                        break;
+                    }
+                    fit_width += ch_width;
+                    split_at = offset + ch.len_utf8();
+                }
+                rows.push(rest[..split_at].to_string());
+                rest = &rest[split_at..];
+            }
+            current = rest.to_string();
+            current_width = rest.width();
+        } else {
+            current.push_str(token);
+            current_width += tok_width;
+        }
+    }
+    // A trailing hard-break can leave `current` empty; only a real
+    // empty input keeps an empty row so callers can rely on a
+    // non-empty return.
+    if !current.is_empty() || rows.is_empty() {
+        rows.push(current);
+    }
+    rows
+}
+
 /// Render the commit modal. Only called while `app.commit_input` is
 /// `Some` (the `render` entry point gates on it).
 fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -1987,25 +2054,53 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     } else {
         context.hint()
     };
-    // On narrow terminals (the classic 80x24) the full hint would push the
-    // discovery tail off-screen: the mode label alone eats 14+ columns and
-    // the status message needs room. Drop the middle actions first and keep
-    // the `Ctrl+B ? help` tail, which is the one hint every screen needs.
-    let label_width = 3 + app.screen.title().len() + 3;
-    // 8 columns of status message minimum; below that the hint shrinks too.
+    // On narrow terminals (the classic 80x24) the full hint cannot fit:
+    // the mode label alone eats 14+ columns and the status message needs
+    // room. fit_hint drops the trailing low-priority actions first and
+    // keeps the leading ones plus the `Ctrl+B ? help` discovery segment,
+    // the one hint every screen needs, wherever it sits in the hint.
+    // The real badge width: ` {mode}·{title} ` where the longest mode
+    // label (WORKTREES) bounds the column every mode can occupy.
+    let mode_width = [
+        "NAV",
+        "ATTACH",
+        "HELP",
+        "TOUR",
+        "QUIT?",
+        "SET",
+        "WORKTREES",
+        "BRANCHES",
+        "SEARCH",
+        "SESSIONS",
+    ]
+    .iter()
+    .map(|m| m.len())
+    .max()
+    .unwrap_or(3);
+    let label_width = 1 + mode_width + 1 + app.screen.title().len() + 1;
+    // 24 columns of status message minimum: a one-row footer cannot
+    // wrap, so the status slot must keep room for a real message
+    // ("webui connection failed") next to the shrunken hint; the hint
+    // shrinks first because fit_hint protects its discovery segment.
     let hint_budget = area
         .width
         .saturating_sub(label_width as u16)
-        .saturating_sub(prefix.chars().count() as u16)
-        .saturating_sub(8) as usize;
-    let help = if help.chars().count() <= hint_budget {
+        .saturating_sub(prefix.width() as u16)
+        .saturating_sub(24) as usize;
+    let help = if help.width() <= hint_budget {
         help.to_string()
     } else if app.prefix.is_armed() {
         // Armed: `help` is already the legend, trim it in place instead
         // of recomputing it (it has no compact twin).
         fit_hint(help, hint_budget)
     } else {
-        fit_hint(context.compact_hint(), hint_budget)
+        // Shrink the FULL hint first (end-drop with the discovery
+        // segment protected): it names more actions than the compact
+        // twin, so prefer it whenever a couple of trailing actions fit.
+        // fit_hint always returns a string within the budget (it
+        // clip-cuts the tail as the last resort), so no second pass is
+        // needed.
+        fit_hint(help, hint_budget)
     };
     // Backend wait feedback: past the 500ms grace a healthy loopback
     // reply never needs, the message slot animates a spinner + hint so a
@@ -2037,9 +2132,17 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     } else {
         split_tiles::mode_hint(app).unwrap_or(help)
     };
-    let used = label_width + help.chars().count() + prefix.chars().count();
+    let used = label_width + help.width() + prefix.width();
     let status_budget = area.width.saturating_sub(used as u16) as usize;
-    let line = Line::from(vec![
+    // The status/error slot wraps onto the rows the layout can spare
+    // instead of one truncated line: a long backend error was the one
+    // message the user most needs to read, and ellipsis hid its tail
+    // with no way to see it. No marquee; the wrapped rows are static.
+    let available = area.height.max(1) as usize;
+    let status_style = Style::default().fg(if app.error.is_some() { p.red } else { p.muted });
+    let wrapped_status = wrap_plain(message, status_budget.max(8));
+    let mut status_rows = wrapped_status.into_iter().take(available);
+    let mut spans = vec![
         Span::styled(
             format!(" {mode}·{} ", app.screen.title()),
             Style::default()
@@ -2051,41 +2154,82 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
             format!("{prefix}{help}"),
             Style::default().fg(p.text).bg(p.panel_alt),
         ),
-        Span::styled(
-            truncate(message, status_budget),
-            Style::default()
-                .fg(if app.error.is_some() { p.red } else { p.muted })
-                .bg(p.panel_alt),
-        ),
-    ]);
+    ];
+    // First wrapped row rides the chrome line; extra rows follow as
+    // their own lines so they stay in the message slot, not under the
+    // mode label.
+    if let Some(first) = status_rows.next() {
+        spans.push(Span::styled(first, status_style));
+    }
+    let mut lines = vec![Line::from(spans)];
+    lines.extend(status_rows.map(|row| Line::from(Span::styled(row, status_style))));
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(p.panel_alt)),
+        Paragraph::new(lines)
+            .style(Style::default().bg(p.panel_alt))
+            .wrap(Wrap { trim: false }),
         area,
     );
 }
 
 /// Narrow-terminal footer hints: same information, fewer actions listed.
-/// Every compact hint keeps the `Ctrl+B ? help` discovery tail, which is
-/// what a cramped statusbar must never lose.
-/// Shrink a footer hint from the front, dropping whole `·`-separated
-/// segments until it fits `budget`. The `Ctrl+B ? help` tail is the
-/// discovery hint and is always the last segment kept.
-fn fit_hint(hint: &str, budget: usize) -> String {
-    let width = |segs: &[&str]| {
-        segs.iter().map(|s| s.chars().count()).sum::<usize>() + 3 * segs.len().saturating_sub(1) + 2
-    };
-    let mut segments: Vec<&str> = hint.trim().split(" · ").collect();
-    while width(&segments) > budget && segments.len() > 1 {
-        segments.remove(0);
-    }
+/// Hints and legends are written in priority order (screens and lifecycle
+/// first, git and niche chords last), so shrinking drops whole `·`-separated
+/// segments from the END and keeps the leading ones. The discovery
+/// segment (`Ctrl+B ? help`) is protected wherever it sits: it joins every
+/// shrinking round because it is the one hint every screen needs. The
+/// single-segment fallback keeps its end chars for the same reason.
+pub(crate) fn fit_hint(hint: &str, budget: usize) -> String {
+    let segments: Vec<&str> = hint.trim().split(" · ").collect();
     let joined = format!(" {} ", segments.join(" · "));
-    if joined.chars().count() > budget {
-        // A single segment still too wide (very narrow terminal): keep its
-        // tail, which is where the discovery hint lives.
-        let skip = joined.chars().count().saturating_sub(budget);
-        joined.chars().skip(skip).collect()
+    if joined.width() <= budget {
+        return joined;
+    }
+    // The discovery tail is protected: wherever the hint places it, it
+    // rides every shrink so navigation to help never disappears.
+    let discovery = segments
+        .iter()
+        .position(|seg| seg.contains("? help"))
+        .map(|idx| segments[idx])
+        .unwrap_or("");
+    for keep in (1..=segments.len()).rev() {
+        // Keep the first `keep` segments plus the protected discovery
+        // segment when it is not already among them.
+        let mut candidate: Vec<&str> = segments[..keep].to_vec();
+        if !discovery.is_empty() && !candidate.contains(&discovery) {
+            candidate.push(discovery);
+        }
+        let joined = format!(" {} ", candidate.join(" · "));
+        if joined.width() <= budget {
+            return joined;
+        }
+    }
+    // Only the discovery segment fits (very narrow terminal): keep its
+    // end, which carries the help hint itself. Hints with no discovery
+    // tail (the quit prompt and the tour capture all keys) fall back
+    // to their first segment so the shrink never collapses to a blank
+    // line.
+    let tail = if discovery.is_empty() {
+        segments[0]
     } else {
-        joined
+        discovery
+    };
+    let tail_line = format!(" {tail} ");
+    if tail_line.width() > budget {
+        // Column-based skip, not char-based: a wide char counts for
+        // two columns, so dropping its char would overshoot.
+        let mut kept_width = 0usize;
+        let mut kept = String::new();
+        for ch in tail_line.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if kept_width + ch_width > budget {
+                break;
+            }
+            kept_width += ch_width;
+            kept.push(ch);
+        }
+        kept
+    } else {
+        tail_line
     }
 }
 
@@ -2640,10 +2784,18 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         } else {
             Style::default().fg(p.text)
         };
+        // Row budget from the overlay itself: the backend/status chip
+        // is fixed-width chrome, the name gets the remainder so a long
+        // session name folds with an ellipsis instead of pushing the
+        // chip off the edge with no marker.
+        let chip_width = format!("  {} · running ", row.backend_label).width() + 4;
+        let name_budget = (rect.width.saturating_sub(chip_width as u16)).max(8) as usize;
+        // The active row paints a 2-column check prefix; budget for it
+        // or the prefix plus the truncated name pushes the chip out.
         let title = if active {
-            format!("✓ {}", row.name)
+            format!("✓ {}", truncate(&row.name, name_budget.saturating_sub(2)))
         } else {
-            row.name.clone()
+            truncate(&row.name, name_budget)
         };
         let status = if row.running { "running" } else { "offline" };
         lines.push(Line::from(vec![
@@ -2656,10 +2808,19 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         ]));
     }
     let title = " Sessions · Enter switch · l launch · x close · c cleanup · n new · r reload · Esc closes ";
+    // Selected-row anchored scroll (same as the branch picker and
+    // search palette): past the visible window the selection pins the
+    // bottom row, so j/k never walks the cursor off-screen.
+    let header_lines = 1 + error_height + 1; // title line (+ error) + bottom border
+    let visible_rows = height.saturating_sub(header_lines + 1).max(1) as usize;
+    let scroll = app
+        .session_selected
+        .saturating_sub(visible_rows.saturating_sub(1));
     frame.render_widget(
         Paragraph::new(lines)
             .block(overlay_panel(title, p))
-            .style(Style::default().fg(p.text).bg(p.panel_bg)),
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .scroll((scroll as u16, 0)),
         rect,
     );
 }
@@ -2670,10 +2831,32 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
 /// informational (webui stores the rest in browser storage, which has
 /// no TUI equivalent yet).
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let rect = overlay_rect(area, area.width.min(64), 12);
+    let rect = overlay_rect(area, area.width.min(64), 13);
     render_shadow(frame, rect, p);
     let git_cwd = app.git_panel.cwd.clone();
     let files_cwd = app.file_explorer.cwd.clone();
+    // Values wrap instead of clipping at the box edge (a long base
+    // URL or deep cwd is the one thing this overlay exists to show),
+    // so the box grows one row per value that wraps past the key
+    // column: the fixed 13-row budget had no slack and the wrap
+    // would push the hint lines off the bottom.
+    let value_budget = (rect.width.saturating_sub(2 + 16 + 2)).max(8) as usize;
+    let wrapped_extra = [app.web_api.base_url(), git_cwd.clone(), files_cwd.clone()]
+        .iter()
+        // Count the extra ROWS, not the wrapping values: a value that
+        // folds across 3 rows needs 2 extra rows of height, so the
+        // per-value +1 undercounted and the third row clipped.
+        .map(|value| wrap_plain(value, value_budget).len().saturating_sub(1))
+        .sum::<usize>() as u16;
+    let rect = {
+        let height = (13 + wrapped_extra).min(area.height);
+        Rect::new(
+            rect.x,
+            rect.y + rect.height.saturating_sub(height) / 2,
+            rect.width,
+            height,
+        )
+    };
     let row = |key: &str, value: &str| {
         Line::from(vec![
             Span::styled(format!("  {key:<16}"), Style::default().fg(p.muted)),
@@ -2693,9 +2876,17 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
         row("theme", app.theme.label()),
         row("git cwd", &git_cwd),
         row("files cwd", &files_cwd),
+        row(
+            "ctrl+b passthrough",
+            if app.terminal_prefix_passthrough {
+                "on (shell keeps Ctrl+B while attached)"
+            } else {
+                "off"
+            },
+        ),
         Line::from(""),
         Line::from(Span::styled(
-            " t cycles the theme · Esc closes ",
+            " t theme · p passthrough · Esc closes ",
             Style::default().fg(p.accent),
         )),
         Line::from(Span::styled(
@@ -2706,7 +2897,8 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
     frame.render_widget(
         Paragraph::new(lines)
             .block(overlay_panel(" Settings · Esc closes ", p))
-            .style(Style::default().fg(p.text).bg(p.panel_bg)),
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .wrap(Wrap { trim: false }),
         rect,
     );
 }
@@ -2848,4 +3040,50 @@ fn truncate(value: &str, max_width: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_hint, wrap_plain};
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn wrap_plain_zero_budget_word_wrap_and_no_blank_rows() {
+        // Zero budget means no wrapping contract: the text rides as one row.
+        assert_eq!(wrap_plain("hello", 0), vec!["hello".to_string()]);
+        assert_eq!(
+            wrap_plain("abc def", 4),
+            vec!["abc ".to_string(), "def".to_string()]
+        );
+        assert!(wrap_plain("a  b", 4)
+            .iter()
+            .all(|row| !row.trim().is_empty()));
+    }
+
+    #[test]
+    fn fit_hint_keeps_discovery_tail_within_budget() {
+        // Early return: the padded hint already fits, unchanged.
+        assert_eq!(fit_hint(" short ", 50), " short ");
+        // Segment shrink keeps the protected discovery tail.
+        let trimmed = fit_hint(" a · b · c · ? help ", 8);
+        assert!(trimmed.width() <= 8);
+        assert!(trimmed.contains("? help"));
+        // Char-clip path: only the discovery tail fits, clipped by columns.
+        assert_eq!(fit_hint(" x · ? help ", 3), " ? ");
+    }
+
+    #[test]
+    fn fit_hint_no_discovery_fallback_keeps_first_segment() {
+        // Hints without a `? help` tail (the quit prompt, the tour)
+        // previously shrank to a blank line: the old fallback always
+        // rendered the discovery segment, which was empty for them.
+        // They now fall back to their first segment, so the footer
+        // never goes dark at small budgets.
+        let trimmed = fit_hint(" y quit · n/Esc cancel ", 6);
+        assert_eq!(trimmed, " y qui");
+        // Clip sub-path of the same fallback: 1-2 col budgets still
+        // render the padded leading columns instead of a blank line.
+        assert!(!fit_hint(" y quit · n/Esc cancel ", 1).is_empty());
+        assert!(!fit_hint(" y quit · n/Esc cancel ", 2).is_empty());
+    }
 }

@@ -1425,6 +1425,9 @@
     const name = decodeURIComponent(String(encodedName || ""));
     if (!name) return;
     list.newBase = name;
+    // Desktop parity (worktrees modal syncBranchNameFromBase): picking
+    // a non-default base seeds the branch name; user-typed names win.
+    if (list.createMode === "worktree") discoverySeedBranchFromBase(list);
     // Picking from the Base dropdown fills the field and closes it, so
     // the next keystroke or Enter goes to the form, not the list.
     list.basePickerOpen = false;
@@ -1531,6 +1534,42 @@
     if (text.startsWith("origin/")) return text.slice("origin/".length);
     if (text.startsWith("upstream/")) return text.slice("upstream/".length);
     return text;
+  }
+
+  // Branch-from-base for the worktree create form, same rule as the
+  // worktrees modal (syncBranchNameFromBase): a non-default base seeds
+  // the branch name with the base's local name (origin/x -> x) so the
+  // draft is a creatable branch, not a second checkout of the base.
+  // main/master leave the name to the user; a name we planted clears
+  // when the base goes back to default. User-typed names always win.
+  function discoveryDefaultBaseName(list) {
+    const localNames = (list.local || []).map((b) => String((b && b.name) || "")).filter(Boolean);
+    for (const candidate of ["main", "master"]) if (localNames.includes(candidate)) return candidate;
+    const remoteNames = (list.remote || []).map((b) => String((b && b.name) || ""));
+    for (const candidate of ["origin/main", "origin/master"]) if (remoteNames.includes(candidate)) return candidate.slice("origin/".length);
+    // Before the branch probe lands there is no list to consult; the
+    // main/master convention is the default base unless the probe says
+    // otherwise (discoveryDefaultBranchName filled list.defaultBranch).
+    return String(list.defaultBranch || "main");
+  }
+
+  function discoverySeedBranchFromBase(list) {
+    const branch = String(list.newBranch || "").trim(),
+      base = String(list.newBase || "").trim();
+    if (!base) return false;
+    const baseName = localWorktreeBranchName(base);
+    if (baseName === discoveryDefaultBaseName(list)) {
+      if (branch && branch === list.branchFromBase) {
+        list.newBranch = "";
+        return true;
+      }
+      list.branchFromBase = "";
+      return false;
+    }
+    if (branch && branch !== list.branchFromBase) return false;
+    list.newBranch = baseName;
+    list.branchFromBase = baseName;
+    return true;
   }
 
   // Shared diverged-base contract (HerdrAppHelpers): the popover asks
@@ -1743,6 +1782,10 @@
     const list = bar.discoveryList;
     if (!discoveryOpeningActive(list) || list.creating || (field !== "newBranch" && field !== "newBase")) return;
     list[field] = String(value || "");
+    // Typing a base in worktree create mode seeds the branch name with
+    // the base's local name; once the user edits the name by hand the
+    // suggestion never comes back.
+    if (list.createMode === "worktree" && field === "newBase") discoverySeedBranchFromBase(list);
     // Typing with the panel open hides it: the draft would otherwise
     // cover the very text being typed.
     if (field === "newBase" && list.basePickerOpen) {
@@ -1833,6 +1876,7 @@
       remoteLoading: false,
       newBranch: prefillBranch,
       newBase: prefillBase,
+      branchFromBase: "",
       pullBase: false,
       creating: false,
       createMode,

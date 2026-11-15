@@ -25,7 +25,7 @@ use serde_json::Value;
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
 use crate::terminal_text::{self, StripCarriageReturn};
 use crate::tui::web_api::{default_web_api_port, WebApiClient};
-pub use keys::{PrefixState, Shortcut};
+pub use keys::{is_prefix_key, PrefixState, Shortcut};
 use lens::{refusal_reason_copy, LensGate, LensState};
 use model::{parse_worktree_list_response, same_checkout_path, value_str, value_u64};
 pub use model::{
@@ -89,6 +89,65 @@ const STATUS_HOLD: Duration = Duration::from_secs(2);
 fn help_max_scroll() -> usize {
     let rows = crate::tui::keys::help_rows().len();
     rows.saturating_sub(50usize.saturating_sub(4).saturating_sub(1))
+}
+
+/// TUI read of the webui's `terminalPrefixPassthrough` option. The
+/// webui stores its own options in browser localStorage, which a
+/// process cannot read, so this reads the shared webui-settings.json
+/// (same file server_settings.rs owns in the binary) under the same key
+/// name the webui uses. Absent key, missing file, or a parse failure =
+/// off (the default); the read never blocks startup. Asymmetry kept on
+/// purpose: the webui toggle edits localStorage, this flag edits the
+/// shared settings file, until the webui mirrors the key over.
+/// Resolve the shared settings-file path. Public so the bin target's
+/// drift-guard test can pin it against server_settings_path (C3):
+/// the TUI and the server must never disagree on the file.
+pub fn tui_settings_path() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        std::path::PathBuf::from(dir).join("herdr-webui/webui-settings.json")
+    } else {
+        std::env::var("HOME")
+            .map(|home| {
+                std::path::PathBuf::from(home).join(".config/herdr-webui/webui-settings.json")
+            })
+            .unwrap_or_else(|_| std::env::temp_dir().join("herdr-webui/webui-settings.json"))
+    }
+}
+
+/// Read side of the shared settings file (see `tui_settings_path`).
+pub(crate) fn tui_terminal_prefix_passthrough() -> bool {
+    let Ok(raw) = std::fs::read_to_string(tui_settings_path()) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    value
+        .get("terminalPrefixPassthrough")
+        .and_then(|flag| flag.as_bool())
+        .unwrap_or(false)
+}
+
+/// Write side: flip `terminalPrefixPassthrough` in the shared file.
+/// Unknown keys survive (the whole object is parsed, patched, written
+/// back); a missing file starts a fresh object. IO failures surface as
+/// the returned error, callers turn it into a status line.
+pub(crate) fn tui_set_terminal_prefix_passthrough(on: bool) -> Result<(), String> {
+    let path = tui_settings_path();
+    let mut root: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    if !root.is_object() {
+        root = serde_json::Value::default();
+    }
+    root["terminalPrefixPassthrough"] = serde_json::Value::Bool(on);
+    // parent() is None only for bare-root paths, which tui_settings_path
+    // never builds; create_dir_all treats an empty path as a no-op.
+    let parent = path.parent().unwrap_or(std::path::Path::new(""));
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let raw = serde_json::to_string_pretty(&root).map_err(|err| err.to_string())?;
+    std::fs::write(&path, raw).map_err(|err| err.to_string())
 }
 
 /// Which main screen the TUI shows. Mirrors the WebUI workspace shell modes
@@ -174,9 +233,9 @@ impl FooterContext {
     pub(crate) fn hint(self) -> &'static str {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
+            Self::HelpOverlay => " ? closes help · T replays tour · type filters · j/k scrolls ",
             Self::TourOverlay => " j/Enter next step · k back · Esc closes ",
-            Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::SettingsOverlay => " t theme · p passthrough · Esc closes ",
             Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
             Self::BranchPicker => {
                 " Enter switch/worktree · j/k moves · type filters or creates · Esc closes "
@@ -214,7 +273,7 @@ impl FooterContext {
                 " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
             }
             Self::TerminalMain => {
-                " Enter attach · Shift+L chat lens · Shift+C compose · . / , focus sidebar · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
+                " Enter attach · Ctrl+B . / , focus sidebar · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
             Self::TerminalMainSplit => {
                 " hjkl walk tiles · Ctrl+j/k scroll · Enter attach · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ? help "
@@ -226,16 +285,16 @@ impl FooterContext {
                 " ↑/↓ j/k select · Enter attach · Tab lists · q quit · Ctrl+B ? help "
             }
             Self::Files(_) => {
-                " j/k move · Enter open · e edit · a/A new file/dir · R rename · x delete · / search · L file log · Ctrl+B ? help "
+                " j/k move · Enter open · e edit · / search · L file log · a/A new file/dir · R rename · x delete · Tab previews · M outline · w reveal · Ctrl+B ? help "
             }
             Self::Git(_, GitView::Changes) => {
-                " Tab view · s stage · d discard · J/K hunk · H apply · / search · c commit · P push · Ctrl+B ? help "
+                " Tab view · s stage · d discard · J/K hunk · H apply · / search · c commit · P push · G stage all · f fetch · Ctrl+B ? help "
             }
             Self::Git(_, GitView::Log) => {
-                " Tab view · Space mark · c compare · t tag · R reset · b rebase · s scope · + more · Ctrl+B ? help "
+                " Tab view · Space mark · Enter compare · t tag · R reset · b rebase · s scope · + more · Ctrl+B ? help "
             }
             Self::Git(_, GitView::Branches) => {
-                " Tab view · j/k branches · c create · D delete · Enter refresh · Ctrl+B ? help "
+                " Tab view · j/k branches · B create · D delete · Enter refresh · Ctrl+B ? help "
             }
             Self::Git(_, GitView::Stash) => {
                 " Tab view · j/k stashes · Enter diff · a apply · D drop · Ctrl+B ? help "
@@ -249,49 +308,6 @@ impl FooterContext {
             Self::Git(_, GitView::Cleanup) => {
                 " j/k rows · Space mark · x delete · B prune · Ctrl+B ? help "
             }
-        }
-    }
-
-    /// Compact hint for narrow terminals: same discovery tail, fewer
-    /// actions. `fit_hint` trims whole segments if even this is too wide.
-    pub(crate) fn compact_hint(self) -> &'static str {
-        match self {
-            Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
-            Self::TourOverlay => " j/Enter next step · k back · Esc closes ",
-            Self::SettingsOverlay => " t theme · Esc closes ",
-            Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
-            Self::BranchPicker => " Enter switch/worktree · j/k moves · type filters or creates · Esc closes ",
-            Self::SearchPalette => " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help ",
-            Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
-            Self::PromptInput(PromptKind::ReplaceInFile) => {
-                " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
-            }
-            Self::PromptInput(PromptKind::ComposerMessage) => {
-                " Enter send · Ctrl+U clear · Esc cancel · Ctrl+B ? help "
-            }
-            Self::PromptInput(_) => " Enter accept · Esc cancel · Ctrl+B ? help ",
-            Self::DiffSearch => " n/N cycle · Esc close · Ctrl+B ? help ",
-            Self::EditorFind => " Enter next · Esc close · Ctrl+B ? help ",
-            Self::FileEdit => " Ctrl-S save · Esc stop · Ctrl+B ? help ",
-            Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
-            Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
-            Self::TerminalMain => " Enter attach · . , focus · Ctrl+B ? help ",
-            Self::TerminalMainSplit => " hjkl walk · Ctrl+j/k scroll · Ctrl+B ? help ",
-            Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
-            Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
-            Self::SessionManager => {
-                " Enter switch · l launch · x close · c cleanup · n new · Esc closes · Ctrl+B ? help "
-            }
-            Self::Terminal(_) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
-            Self::Files(_) => " j/k · Enter · e edit · Ctrl+B ? help ",
-            Self::Git(_, GitView::Changes) => " s stage · d discard · c commit · Ctrl+B ? help ",
-            Self::Git(_, GitView::Log) => " Space mark · c compare · Ctrl+B ? help ",
-            Self::Git(_, GitView::Branches) => " c create · D delete · Ctrl+B ? help ",
-            Self::Git(_, GitView::Stash) => " Enter diff · a apply · Ctrl+B ? help ",
-            Self::Git(_, GitView::History) => " Enter commit diff · Ctrl+B ? help ",
-            Self::Git(_, GitView::Conflicts) => " o/e/t resolve · R continue · Ctrl+B ? help ",
-            Self::Git(_, GitView::Cleanup) => " Space mark · x delete · Ctrl+B ? help ",
         }
     }
 }
@@ -335,6 +351,14 @@ pub struct TuiApp {
     pub mode: TuiMode,
     pub screen: TuiScreen,
     pub prefix: PrefixState,
+    /// Terminal prefix passthrough (webui option `terminalPrefixPassthrough`):
+    /// in attach mode Ctrl+B goes to the PTY (readline backward-char, tmux
+    /// prefix) instead of arming the shortcut prefix. Asymmetry: the webui
+    /// stores its options in browser localStorage, which the TUI cannot
+    /// read, so the flag comes from webui-settings.json under the same key
+    /// name. The webui toggle and the TUI flag are separate stores until
+    /// the webui learns to mirror this key into the server settings file.
+    pub terminal_prefix_passthrough: bool,
     pub file_explorer: FileExplorer,
     pub git_panel: GitPanel,
     pub commit_input: Option<CommitInput>,
@@ -545,6 +569,16 @@ impl PromptInput {
             text: String::new(),
         }
     }
+
+    /// Prompt opened with a suggested value (worktree-create checkout
+    /// path parity with the desktop modal): the prefill shows as editable
+    /// text, so Enter accepts it and typing replaces it like any input.
+    pub fn with_text(kind: PromptKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,11 +698,13 @@ impl PromptKind {
             Self::NewWorkspace => "type a directory path (~ works), Enter continues to the name",
             Self::NewWorkspaceName => "type the workspace name, Enter creates it",
             Self::RenameWorkspace | Self::RenamePanel => "type the new name, Enter renames",
-            Self::CreateWorktreeBranch => "type the branch name, Enter continues",
+            Self::CreateWorktreeBranch => {
+                "type the branch name (Enter keeps suggestion), Enter continues"
+            }
             Self::CreateWorktreePath => "type the checkout path, Enter continues",
-            Self::CreateWorktreeBase => "type the base ref (empty = HEAD), Enter continues",
+            Self::CreateWorktreeBase => "type the base ref (Enter keeps default, empty = HEAD)",
             Self::ConfirmWorktreePullBase => {
-                "y = fast-forward the base ref first, Enter = create without pulling"
+                "y pulls the base ref first, Enter creates without pulling"
             }
             Self::CreateTag => "type the tag name, Enter tags the selected commit",
             Self::ResetMode => "type soft, mixed or hard, Enter resets",
@@ -677,9 +713,7 @@ impl PromptKind {
             Self::CreateBranch => "type the branch name, Enter creates and switches",
             Self::CreateFile => "type the file name, Enter creates an empty file",
             Self::CreateDirectory => "type the directory name, Enter creates it",
-            Self::ReplaceInFile => {
-                "type the replacement, Enter replaces the current match (! = all)"
-            }
+            Self::ReplaceInFile => "type the replacement, Enter replaces (! replaces all)",
             Self::ComposerMessage => "type the message, Enter sends it to the selected panel",
             Self::CreateSession => "type the session name, Enter launches it and switches",
             Self::ConfirmCleanupDelete => {
@@ -776,6 +810,7 @@ impl TuiApp {
             mode: TuiMode::Navigate,
             screen: TuiScreen::Terminal,
             prefix: PrefixState::new(),
+            terminal_prefix_passthrough: tui_terminal_prefix_passthrough(),
             file_explorer: FileExplorer::new(cwd),
             git_panel: GitPanel::new(cwd),
             commit_input: None,
@@ -1227,11 +1262,33 @@ impl TuiApp {
         }
         // The Ctrl+B prefix wins everywhere else, including attach mode,
         // exactly like the WebUI shortcut overlay wins over terminal input.
-        if let Some(shortcut) = self.prefix.feed(key) {
-            self.run_shortcut(shortcut);
-            self.hold_status_if_changed(&before);
-            self.mark_dirty();
-            return false;
+        // Attach passthrough (webui `terminalPrefixPassthrough` option):
+        // while attached with the flag on, Ctrl+B belongs to the shell
+        // (readline backward-char, tmux prefix) and reaches the PTY like
+        // any other typed key; every other screen and mode still arms the
+        // prefix.
+        let passthrough_prefix = self.mode == TuiMode::Attach
+            && self.screen == TuiScreen::Terminal
+            && self.terminal_prefix_passthrough
+            && is_prefix_key(key);
+        if !passthrough_prefix {
+            if let Some(shortcut) = self.prefix.feed(key) {
+                // Chord echo (desktop showShortcutHintToast parity): a fired
+                // prefix chord writes `<chord> -> <label>` into the status
+                // slot BEFORE dispatch, so any outcome the handler reports
+                // (refresh summaries, workspace_status, prompt titles, the
+                // quit confirm) replaces the echo and owns the line; the
+                // echo only survives when the action itself says nothing.
+                self.status = format!(
+                    "{} -> {}",
+                    crate::tui::keys::chord_label(shortcut),
+                    shortcut.label()
+                );
+                self.run_shortcut(shortcut);
+                self.hold_status_if_changed(&before);
+                self.mark_dirty();
+                return false;
+            }
         }
         if self.prefix.is_armed() {
             self.mark_dirty();
@@ -1354,6 +1411,27 @@ impl TuiApp {
                     // theme immediately on selection).
                     self.palette = Palette::for_theme(self.theme);
                     self.status = format!("theme: {}", self.theme.label());
+                }
+                // Ctrl+B passthrough toggle (webui Settings checkbox):
+                // flips the flag and persists it to the shared settings
+                // file so the choice survives restarts.
+                KeyCode::Char('p') => {
+                    self.terminal_prefix_passthrough = !self.terminal_prefix_passthrough;
+                    match tui_set_terminal_prefix_passthrough(self.terminal_prefix_passthrough) {
+                        Ok(()) => {
+                            self.status = if self.terminal_prefix_passthrough {
+                                "ctrl+b passthrough: on"
+                            } else {
+                                "ctrl+b passthrough: off"
+                            }
+                            .to_string();
+                        }
+                        Err(err) => {
+                            self.error = Some(format!("settings file: {err}"));
+                            // Keep the in-memory flip: the session behaves
+                            // as chosen even if persistence failed.
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -2282,8 +2360,13 @@ impl TuiApp {
             }
             Shortcut::CreateWorktree => {
                 self.worktree_create_stage = None;
-                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
-                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
+                // Base-first chain: mirror of the in-view c handler, so
+                // every worktree entry opens on the same step.
+                self.prompt_input = self
+                    .worktree_default_base()
+                    .map(|base| PromptInput::with_text(PromptKind::CreateWorktreeBase, base))
+                    .or_else(|| Some(PromptInput::new(PromptKind::CreateWorktreeBase)));
+                self.status = PromptKind::CreateWorktreeBase.title().to_string();
             }
             Shortcut::CloseWorkspace => {
                 self.prompt_input = Some(PromptInput::new(PromptKind::ConfirmCloseWorkspace));
@@ -3387,7 +3470,12 @@ impl TuiApp {
                     self.error = Some("no commit selected".to_string());
                 }
             }
-            KeyCode::Char('c')
+            // Log view compare: with two commits marked (Space) Enter
+            // compares the pair (newest = target); otherwise Enter falls
+            // through to the generic Enter arm below and compares the
+            // selection with its parent. `c` stays the commit modal in
+            // every git view.
+            KeyCode::Enter
                 if self.git_panel.view == GitView::Log
                     && self.git_panel.log_selected.len() == 2 =>
             {
@@ -3442,12 +3530,16 @@ impl TuiApp {
                     self.error = Some("no commit selected".to_string());
                 }
             }
-            // Webui "worktree from branch": reuse the two-step worktree
-            // creation prompt chain (branch, then checkout path).
+            // Webui "worktree from branch": reuse the worktree creation
+            // prompt chain, starting on the base ref (Enter keeps the
+            // default, matching the webui flow).
             KeyCode::Char('w') if self.git_panel.view == GitView::Log => {
                 self.worktree_create_stage = None;
-                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
-                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
+                self.prompt_input = self
+                    .worktree_default_base()
+                    .map(|base| PromptInput::with_text(PromptKind::CreateWorktreeBase, base))
+                    .or_else(|| Some(PromptInput::new(PromptKind::CreateWorktreeBase)));
+                self.status = PromptKind::CreateWorktreeBase.title().to_string();
             }
             KeyCode::Char('s') => {
                 if let Err(err) = self.git_panel.stage_selected(&self.web_api) {
@@ -3497,10 +3589,11 @@ impl TuiApp {
                     self.error = Some(err.to_string());
                 }
             }
-            // Webui branch creation: in the Branches view `c` prompts
-            // for a new branch name (git_switch create: true). Elsewhere
-            // `c` keeps opening the commit modal.
-            KeyCode::Char('c') if self.git_panel.view == GitView::Branches => {
+            // Webui branch creation: `B` prompts for a new branch name
+            // (git_switch create: true) in the Branches view. Plain `c`
+            // opens the commit modal in every git view, so the old
+            // triple-dispatch (commit / create / compare) is gone.
+            KeyCode::Char('B') if self.git_panel.view == GitView::Branches => {
                 self.prompt_input = Some(PromptInput::new(PromptKind::CreateBranch));
                 self.status = PromptKind::CreateBranch.title().to_string();
             }
@@ -4065,8 +4158,11 @@ impl TuiApp {
     }
 
     fn handle_attach_key(&mut self, key: KeyEvent) {
-        // Note: menu keys (Ctrl+B) never reach this handler; the prefix
-        // feed in `handle_key` consumes them first to arm the overlay.
+        // Menu keys (Ctrl+B) never reach this handler while the prefix
+        // owns them: the feed in `handle_key` consumes them first. With
+        // terminal_prefix_passthrough on, Ctrl+B skips that feed and the
+        // generic key_to_terminal_bytes path below forwards it to the
+        // PTY (0x02, readline backward-char / tmux prefix).
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
             self.mode = TuiMode::Navigate;
             self.status = "detached".to_string();
@@ -4104,7 +4200,18 @@ impl TuiApp {
     fn attach_selected(&mut self) {
         if self.view_terminal_id().is_some() {
             self.mode = TuiMode::Attach;
-            self.status = "attach mode: Ctrl-G detach".to_string();
+            // Entering the terminal is like the desktop focus change:
+            // a stale armed prefix would let the next plain key fire a
+            // chord, violating the passthrough expectation.
+            self.prefix.cancel();
+            // Truthful attach hint: with passthrough on, Ctrl+B is no
+            // longer a shortcut entry while attached, so the hint says
+            // so instead of teaching a dead key.
+            self.status = if self.terminal_prefix_passthrough {
+                "attach mode: Ctrl-G detach · Ctrl+B goes to the shell".to_string()
+            } else {
+                "attach mode: Ctrl-G detach".to_string()
+            };
             self.refresh_tail();
             let (cols, rows) = self.attach_viewport();
             self.load_selected_terminal_history(cols, rows);
@@ -5400,13 +5507,14 @@ mod git_key_tests {
         let (mut app, _stop) = git_app(&[]);
         app.git_panel.view = GitView::Log;
         app.git_panel.commits = vec![commit("aaa"), commit("bbb")];
-        // Space marks commits; `c` compares the selected pair.
+        // Space marks commits; Enter compares the selected pair (the
+        // old `c` compare moved aside so `c` is always the commit modal).
         app.handle_git_key(key(KeyCode::Char(' ')));
         assert_eq!(app.git_panel.log_selected, vec!["aaa"]);
         app.handle_git_key(key(KeyCode::Char('j')));
         app.handle_git_key(key(KeyCode::Char(' ')));
         assert_eq!(app.git_panel.log_selected.len(), 2);
-        app.handle_git_key(key(KeyCode::Char('c')));
+        app.handle_git_key(key(KeyCode::Enter));
         assert_eq!(app.status, "compare loaded");
         // t/R/b open the tag/reset/rebase prompts on the selection.
         app.handle_git_key(key(KeyCode::Char('t')));
@@ -5424,16 +5532,16 @@ mod git_key_tests {
             app.prompt_input.as_ref().map(|p| p.kind),
             Some(PromptKind::RebaseUpstream)
         ));
-        // w opens the worktree creation prompt chain.
+        // w opens the worktree creation prompt chain (base first).
         app.handle_git_key(key(KeyCode::Char('w')));
         assert!(matches!(
             app.prompt_input.as_ref().map(|p| p.kind),
-            Some(PromptKind::CreateWorktreeBranch)
+            Some(PromptKind::CreateWorktreeBase)
         ));
         // Enter compares the selected commit with its parent.
         app.prompt_input = None;
         app.handle_git_key(key(KeyCode::Enter));
-        assert_eq!(app.status, "compare bbb^..bbb");
+        assert_eq!(app.status, "compare loaded");
         // s cycles the log scope; `+` loads more until refused.
         app.handle_git_key(key(KeyCode::Char('s')));
         assert!(app.status.starts_with("log scope: "));
@@ -5453,7 +5561,7 @@ mod git_key_tests {
     #[test]
     fn git_actions_stage_discard_fetch_pull_push_commit() {
         let (mut app, _stop) = git_app(&[]);
-        // c opens the commit modal, a the amend modal outside stash.
+        // `c` opens the commit modal, a the amend modal outside stash.
         app.handle_git_key(key(KeyCode::Char('c')));
         let input = app.commit_input.expect("commit modal");
         assert!(!input.amend);
@@ -5548,8 +5656,9 @@ mod git_key_tests {
         app.git_panel.branches.clear();
         app.handle_git_key(key(KeyCode::Char('D')));
         assert_eq!(app.error.as_deref(), Some("no branch selected"));
-        // `c` in Branches prompts for a new branch.
-        app.handle_git_key(key(KeyCode::Char('c')));
+        // `B` in Branches prompts for a new branch (`c` is the commit
+        // modal everywhere now).
+        app.handle_git_key(key(KeyCode::Char('B')));
         assert!(matches!(
             app.prompt_input.as_ref().map(|p| p.kind),
             Some(PromptKind::CreateBranch)

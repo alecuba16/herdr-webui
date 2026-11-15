@@ -1864,6 +1864,112 @@ describe("app bundle load", () => {
     equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1");
   });
 
+  it("terminal prefix passthrough off keeps the prefix intercepted on the terminal surface", () => {
+    const ctx = context();
+    runSource(ctx);
+    equal(vm.runInContext("options.terminalPrefixPassthrough", ctx), false, "off by default");
+    const closestClassTarget = (className) => ({
+      classList: { contains: (value) => value === className },
+    });
+    const terminalTarget = {
+      closest: (selector) =>
+        selector === ".xterm" ? closestClassTarget("xterm") : null,
+    };
+    const event = {
+      code: "KeyB",
+      key: "b",
+      ctrlKey: true,
+      altKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      propagationStopped: false,
+      immediateStopped: false,
+      target: terminalTarget,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.propagationStopped = true; },
+      stopImmediatePropagation() { this.immediateStopped = true; },
+    };
+    ctx.handleGlobalShortcut(event);
+    equal(event.defaultPrevented, true, "prefix still intercepted without the setting");
+  });
+
+  it("terminal prefix passthrough sends the prefix to the shell only while the terminal is focused", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext("options.terminalPrefixPassthrough = true;", ctx);
+    const closestClassTarget = (className) => ({
+      classList: { contains: (value) => value === className },
+    });
+    const terminalTarget = {
+      closest: (selector) =>
+        selector === ".xterm" ? closestClassTarget("xterm") : null,
+    };
+    const mkEvent = (target) => ({
+      code: "KeyB",
+      key: "b",
+      ctrlKey: true,
+      altKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      target,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
+    // Terminal focused: the chord belongs to the shell, no interception.
+    const passthrough = mkEvent(terminalTarget);
+    ctx.handleGlobalShortcut(passthrough);
+    equal(passthrough.defaultPrevented, false, "Ctrl+B reaches the PTY with the setting on");
+    // Focus elsewhere: the prefix arms normally.
+    const elsewhere = mkEvent({ closest: () => null });
+    ctx.handleGlobalShortcut(elsewhere);
+    equal(elsewhere.defaultPrevented, true, "prefix still arms outside the terminal");
+  });
+
+  it("terminal prefix passthrough wins over an already-armed overlay", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext("options.terminalPrefixPassthrough = true;", ctx);
+    const closestClassTarget = (className) => ({
+      classList: { contains: (value) => value === className },
+    });
+    const terminalTarget = {
+      closest: (selector) =>
+        selector === ".xterm" ? closestClassTarget("xterm") : null,
+    };
+    const mkEvent = (target, key = "b", code = "KeyB") => ({
+      code,
+      key,
+      ctrlKey: true,
+      altKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      target,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
+    // Arm the prefix while focus sits outside the terminal.
+    const arm = mkEvent({ closest: () => null });
+    ctx.handleGlobalShortcut(arm);
+    equal(arm.defaultPrevented, true, "prefix arms outside the terminal");
+    // Focus the terminal, press Ctrl+B again: the stale armed overlay
+    // must drop and the key must reach the PTY unconsumed.
+    const passthrough = mkEvent(terminalTarget);
+    ctx.handleGlobalShortcut(passthrough);
+    equal(passthrough.defaultPrevented, false, "armed-state Ctrl+B reaches the PTY");
+    const overlay = ctx.document.getElementById("shortcutPrefixOverlay");
+    equal(overlay.hidden, true, "stale armed overlay hidden");
+    // A follow-up chord letter must not fire an app action: the prefix
+    // was dropped, so the key belongs to the (still focused) terminal.
+    const chordLetter = mkEvent(terminalTarget, "q", "KeyQ");
+    equal(ctx.handleGlobalShortcut(chordLetter), false, "no chord fires after the drop");
+    equal(chordLetter.defaultPrevented, false, "chord letter also reaches the PTY");
+  });
+
   it("defines Git cleanup tab and maintenance endpoints", () => {
     const ctx = context();
     runSource(ctx);

@@ -99,7 +99,7 @@ answered from the webui's chat lens card. The server-side parser
 | `g` | Git screen (Changes tab) |
 | `t` | back to the Terminal screen |
 | `/` | search palette (Enter commits/navigates, Ctrl+X removes a recent) |
-| `?`, `0` | help overlay |
+| `?` | help overlay |
 | `r` | refresh |
 | `j` / `k` | next / previous workspace |
 | `a` / `A` | next / previous agent |
@@ -110,14 +110,14 @@ answered from the webui's chat lens card. The server-side parser
 | `Shift+R` | rename panel (webui `renamePanel`) |
 | `Shift+X` | close workspace (y confirms) |
 | `w` | browse worktrees/folders (Enter opens, o opens folder, h parent, type filters) |
-| `Shift+T` | create worktree (branch, then path) |
+| `Shift+T` | create worktree: base ref prompt (prefilled with the default base: local `main` > `master` > `origin/main` > first branch), then branch (seeded from the base with the remote prefix stripped), then checkout path (prefilled `<root>/<repo>/<branch slug>`, the `Worktree default directory` setting as root), then a pull confirmation (y pulls the base first, Enter creates without pulling) |
 | `Del` / `Backspace` | remove linked worktree |
 | `q` | quit (y confirms, Esc stays) |
 | `Shift+B` | collapse/expand the sidebar |
 | `.` / `,` | focus next/prev region (sidebar -> main, wraps) |
 | `Shift+L` | chat lens |
 | `Shift+C` | chat composer |
-| `e`, `E` | edit the current file (Files preview or Git Changes selection) |
+| `e` | edit the current file (Files preview or Git Changes selection) |
 | `E` (Shift+E) | settings overlay from any screen (Terminal keeps `Ctrl+B s` for split mode) |
 | `s` | settings overlay (t cycles the theme) · terminal: split tile mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm) |
 | `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
@@ -126,17 +126,9 @@ answered from the webui's chat lens card. The server-side parser
 | `hjkl` / arrows | terminal (split active): walk tile focus, single tile keeps pane scroll · `Ctrl+hjkl` scrolls the focused pane |
 | `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |
-| `i` | git: focus the file list (webui `KeyI` parity) |
 | `I` | git cwd: type a repo path |
-| `1`-`4` | git: changes / commit modal / log / stash |
-| `b` | git: branches |
-| `l` | git: log |
-| `c` | git: commit modal |
 | `v` | git: switch branch |
-| `y` / `u` / `d` / `z` | git: stage / unstage / discard / stash the selected file |
-| `h` | git: file history of the Changes selection |
-| `o` | git: back to Changes |
-| `m` | git: toggle blame in the diff |
+| `u` | git: unstage the selected file (no in-screen key) |
 
 ## Per-screen keys
 
@@ -157,8 +149,10 @@ search results: `Enter` jumps to the match line in the preview, `+`
 loads more results, `A` toggles match case, `X` toggles regex (both
 rerun the search), `Esc` clears the results. Git: `Tab`
 cycles views, `s`/`d` stage/discard, `G` toggles stage all in the
-Changes view (webui `KeyG` parity), `Space`/`c` mark and compare
-commits, `J`/`K`/`H` hunk cursor and apply, `D` delete branch or drop
+Changes view (webui `KeyG` parity), `Space` marks commits and
+`Enter` compares the two marked ones, `J`/`K`/`H` hunk cursor and apply, `c`
+opens the commit modal in every git view, `B` creates a branch in the
+Branches view, `D` delete branch or drop
 stash, `t`/`R`/`b` tag/reset/rebase.
 
 ## Help overlay
