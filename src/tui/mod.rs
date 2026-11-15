@@ -6098,6 +6098,53 @@ mod scroll_tests {
         (BackendClient::new(&path_str, &path_str), tx)
     }
 
+    /// Stop a fake listener's thread and wake it: the loop checks the
+    /// stop channel between accepts, so one extra connection after the
+    /// signal lets the thread observe it and exit. Also exercises the
+    /// accept-failure break when the listener is dropped first.
+    pub(crate) fn stop_fake_listener(stop: &std::sync::mpsc::Sender<()>, path: &std::path::Path) {
+        let _ = stop.send(());
+        // Wake the accept() call so the loop re-checks the stop channel.
+        use interprocess::local_socket::{prelude::*, GenericFilePath};
+        let name = path.to_fs_name::<GenericFilePath>().unwrap();
+        let _ = interprocess::local_socket::Stream::connect(name);
+    }
+
+    /// Drive a fake listener through every arm a real client can hit:
+    /// empty-read continue, non-JSON continue, and the catch-all method
+    /// arm. Shared by the tile-tail suite so fixtures stay exercised.
+    pub(crate) fn probe_fake_listener_arms(path: &std::path::Path) {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, Stream as LocalStream};
+        use std::io::{BufRead, BufReader, Write};
+
+        let name = path.to_fs_name::<GenericFilePath>().unwrap();
+        // connect then drop: read_line sees 0 bytes (empty-read continue).
+        let mute = LocalStream::connect(name.clone()).unwrap();
+        drop(mute);
+        // non-JSON line (parse-failure continue).
+        let mut garbage = LocalStream::connect(name.clone()).unwrap();
+        garbage.write_all(b"not json\n").unwrap();
+        garbage.flush().unwrap();
+        drop(garbage);
+        // Unknown method: the catch-all result.
+        let mut unknown = LocalStream::connect(name.clone()).unwrap();
+        let request = serde_json::json!({"id": 50, "method": "agent.list"});
+        unknown
+            .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+            .unwrap();
+        unknown.write_all(b"\n").unwrap();
+        unknown.flush().unwrap();
+        let mut reply = String::new();
+        let mut reader = BufReader::new(&unknown);
+        reader.read_line(&mut reply).unwrap();
+        // The catch-all reply shape varies per fixture (some answer every
+        // well-formed request with their pane.read payload), so only pin
+        // the echoed id and the presence of a result object.
+        let parsed: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(parsed["id"], 50);
+        assert!(parsed["result"].is_object());
+    }
+
     #[test]
     fn scroll_up_deep_fetches_history_and_down_follows() {
         let (client, _stop) = fake_backend_with_history(400);
@@ -6428,6 +6475,8 @@ mod final_coverage_tests {
 #[cfg(test)]
 mod batch11_coverage_tests {
     use super::scroll_tests::fake_backend_with_history;
+    use super::scroll_tests::probe_fake_listener_arms;
+    use super::scroll_tests::stop_fake_listener;
     use super::*;
     use crate::model::TuiAgentSession;
     use panels::git::{CleanupRepo, CleanupWorktree, GitCommitEntry, GitView};
@@ -6568,7 +6617,11 @@ mod batch11_coverage_tests {
     /// cache holds every visible tile.
     #[test]
     fn tile_tails_fetch_real_backends() {
-        let (client, _stop) = fake_backend_with_history(5);
+        let (client, stop) = fake_backend_with_history(5);
+        // Exercise the history fake's remaining arms (empty read, bad
+        // JSON, unknown method) so no fixture branch stays dead.
+        probe_fake_listener_arms(client.api_socket());
+        let history_socket = client.api_socket().to_path_buf();
         let mut app = TuiApp::new(client, Duration::from_secs(1));
         app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
             "snapshot": {
@@ -6623,7 +6676,7 @@ mod batch11_coverage_tests {
             .try_overwrite(true)
             .create_sync()
             .unwrap();
-        let (_tx, rx) = std::sync::mpsc::channel::<()>();
+        let (bare_stop_tx, rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || loop {
             if rx.try_recv().is_ok() {
                 break;
@@ -6669,6 +6722,9 @@ mod batch11_coverage_tests {
             app.tile_tails.get("pane_1").map(String::as_str),
             Some("bare tail")
         );
+        // Same for the bare-text listener's own dead arms.
+        probe_fake_listener_arms(&path);
+        stop_fake_listener(&bare_stop_tx, &path);
         // A dead backend answers nothing: the fetch lands with an empty
         // tail (unwrap_or_default), the observable behavior of a vanished
         // pane rather than a stale copy.
@@ -6705,20 +6761,27 @@ mod batch11_coverage_tests {
             .create_sync()
             .unwrap();
         let (screen_tx, screen_rx) = std::sync::mpsc::channel::<String>();
-        std::thread::spawn(move || {
+        let (screen_stop_tx, screen_stop_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || loop {
+            if screen_stop_rx.try_recv().is_ok() {
+                break;
+            }
             let Ok(mut stream) = builtin_listener.accept() else {
-                return;
+                break;
             };
             let mut line = String::new();
             {
                 use std::io::{BufRead, BufReader, Write};
                 let mut reader = BufReader::new(&mut stream);
                 if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    return;
+                    continue;
                 }
                 let _ = screen_tx.send(line.clone());
+                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
                 let response = serde_json::json!({
-                    "id": serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"],
+                    "id": parsed["id"],
                     "result": {"read": {"text": "screen tail"}}
                 });
                 let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
@@ -6750,6 +6813,112 @@ mod batch11_coverage_tests {
             app.tile_tails.get("pane_1").map(String::as_str),
             Some("screen tail")
         );
+
+        // The same builtin listener also survives malformed clients, the
+        // dead arms a racing worker can hit (empty read, non-JSON), and
+        // still answers a well-formed pane.read afterwards.
+        probe_fake_listener_arms(&builtin_path);
+        {
+            use interprocess::local_socket::{prelude::*, Stream as LocalStream};
+            use std::io::{BufRead, BufReader, Write};
+            let name = builtin_path
+                .clone()
+                .to_fs_name::<GenericFilePath>()
+                .unwrap();
+            let mut probe = LocalStream::connect(name).unwrap();
+            let request = serde_json::json!({
+                "id": 99,
+                "method": "pane.read",
+                "params": {"pane_id": "pane_1", "format": "screen"}
+            });
+            probe
+                .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+                .unwrap();
+            probe.write_all(b"\n").unwrap();
+            probe.flush().unwrap();
+            let mut reply = String::new();
+            let mut reader = BufReader::new(&probe);
+            reader.read_line(&mut reply).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(parsed["result"]["read"]["text"], "screen tail");
+        }
+        stop_fake_listener(&screen_stop_tx, &builtin_path);
+        stop_fake_listener(&stop, &history_socket);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// The fake listeners behind the tile-tail suite also answer the
+    /// methods a real client can send beyond pane.read: ping (liveness)
+    /// and unknown methods (the catch-all result). This keeps their match
+    /// arms exercised instead of dead, and pins the bare-text listener's
+    /// non-pane.read reply shape.
+    #[test]
+    fn tile_tail_fake_listeners_answer_ping_and_unknown_methods() {
+        use interprocess::local_socket::{
+            prelude::*, GenericFilePath, ListenerOptions, Stream as LocalStream,
+        };
+        use std::io::{BufRead, BufReader, Write};
+
+        let base = std::path::PathBuf::from("/tmp")
+            .join(format!("herdr-tui-tail-arms-{}", std::process::id()));
+        let sock = base.join("builtin/default/herdr.sock");
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&sock);
+        let name = sock.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || loop {
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let response = match request["method"].as_str().unwrap_or("") {
+                "ping" => serde_json::json!({"id": request["id"], "result": {}}),
+                "pane.read" => {
+                    serde_json::json!({"id": request["id"], "result": {"text": "bare tail"}})
+                }
+                _ => serde_json::json!({"id": request["id"], "result": {}}),
+            };
+            let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+            let _ = stream.write_all(b"\n");
+            let _ = stream.flush();
+        });
+
+        let ask = |method: &str, id: u64| -> serde_json::Value {
+            let mut stream =
+                LocalStream::connect(sock.clone().to_fs_name::<GenericFilePath>().unwrap())
+                    .unwrap();
+            let request = serde_json::json!({"id": id, "method": method});
+            stream
+                .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+            let mut reply = String::new();
+            let mut reader = BufReader::new(&mut stream);
+            reader.read_line(&mut reply).unwrap();
+            serde_json::from_str(&reply).unwrap()
+        };
+        assert_eq!(ask("ping", 1)["id"], 1);
+        assert_eq!(ask("pane.read", 2)["result"]["text"], "bare tail");
+        assert_eq!(ask("agent.list", 3)["result"], serde_json::json!({}));
+        stop_fake_listener(&stop_tx, &sock);
         let _ = std::fs::remove_dir_all(base);
     }
 

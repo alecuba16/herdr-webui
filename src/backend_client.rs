@@ -933,6 +933,25 @@ mod tests {
         let grid = external.read_pane_screen("pane_1").unwrap();
         assert_eq!(grid["read"]["text"], "grid rows");
 
+        // Hashed fallback convention and the degenerate shapes: the
+        // over-limit fallback puts the socket directly inside
+        // `/tmp/herdr-webui-builtin-<hash>/` (socket_paths.rs), and that
+        // parent directory name still marks it built-in, while a bare
+        // filename (no parent) and a path whose grandparent is not
+        // `builtin` never do.
+        let hashed = BackendClient::new(
+            "/tmp/herdr-webui-builtin-abc123/herdr.sock",
+            "/tmp/herdr-webui-builtin-abc123/herdr-client.sock",
+        );
+        assert!(hashed.connects_to_builtin());
+        let bare = BackendClient::new("herdr.sock", "herdr.sock");
+        assert!(!bare.connects_to_builtin());
+        // Parentless path ("/" has no parent): the early false arm.
+        let root = BackendClient::new("/", "/");
+        assert!(!root.connects_to_builtin());
+        let flat = BackendClient::new("/tmp/default/herdr.sock", "/tmp/x.sock");
+        assert!(!flat.connects_to_builtin());
+
         builtin_probe.join().unwrap();
         external_probe.join().unwrap();
         let _ = fs::remove_dir_all(base);
