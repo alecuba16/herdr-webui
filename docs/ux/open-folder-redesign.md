@@ -144,19 +144,26 @@ pick folder F
   state, same pattern as the chip popover's newBranch draft. Name and
   base have separate visible labels. Fetching remote refs is an explicit
   action, not a side effect of picking a folder or typing a filter.
-- **Worktree create, revised by user on 2026-11-04 (v3).** Clicking
+- **Worktree create, revised by user on 2026-11-04 (v3), footer submit
+  revised by user on 2026-11-15 (v4).** Clicking
   Create worktree keeps the discovery dialog and its list open. The
-  create area shows two labeled inputs: Worktree branch name and Base
-  ref, plus Create worktree and Cancel worktree buttons. In the branch
-  chooser this reuses its existing name/base area, changing the submit
-  action rather than duplicating fields. In the worktree chooser the
+  create area shows two labeled inputs, Worktree branch name and Base
+  ref, plus a Cancel worktree button; the create action lives in the
+  footer. The footer starts as Open folder as workspace and swaps to
+  Create worktree the moment the name field holds a nonblank draft,
+  back to Open folder as workspace when the draft is cleared. During
+  creation it reads Creating worktree, on failure Retry worktree
+  creation, and it stays disabled while the worktree source probe is
+  loading or failed. In the branch chooser this reuses its existing
+  name/base area, changing the submit action rather than duplicating
+  fields. In the worktree chooser the
   area expands below its rows. Focus moves to the name input. Cancel
   collapses worktree creation, keeps the list and drafts, and returns
   focus to the Create worktree row. Esc still closes the whole dialog.
   No existing action modal, directory picker, label input or path input
   is opened by this action. Existing chip creation flows are unchanged.
-- **Inline worktree submit.** A nonblank branch name enables Create
-  worktree. The base defaults to the picked checkout's current branch,
+- **Inline worktree submit.** A nonblank branch name enables the
+  footer's Create worktree. The base defaults to the picked checkout's current branch,
   else HEAD. It shares lazy local/cached refs, explicit Fetch remotes,
   free-text fallback, draft retention and focus behavior with branch
   creation. Local refs precede remote refs in either discovery shape.

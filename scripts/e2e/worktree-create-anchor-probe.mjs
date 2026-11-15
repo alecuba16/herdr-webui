@@ -129,7 +129,7 @@ try {
     if (!pop || !panel) return null;
     const view = window.innerHeight;
     const pr = panel.getBoundingClientRect();
-    const createBtn = pop.querySelector('[data-discovery-focus="create"]');
+    const createBtn = pop.querySelector('.location-bar-discovery-footer [data-discovery-focus="footer"]');
     const pull = pop.querySelector("#locationBarDiscoveryPullBase");
     const footer = pop.querySelector(".location-bar-discovery-footer");
     const visible = (el) => {

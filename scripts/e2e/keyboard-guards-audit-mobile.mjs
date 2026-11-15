@@ -238,10 +238,12 @@ async function main() {
   if (!createOpen) { failures.push("worktrees create: disclosure with create fields not found"); console.log("FAIL worktrees create: disclosure with create fields not found"); }
   else {
     await sleep(200);
-    const createInputs = await evalJs(`(() => { const d = document.querySelector('.mobile-worktree-flow details.mobile-disclosure'); return d ? [...d.querySelectorAll('input')].length : 0; })()`);
+    // The pull-base toggle is a checkbox, not a text field: the guard
+    // set applies to the four text inputs (branch, base, label, path).
+    const createInputs = await evalJs(`(() => { const d = document.querySelector('.mobile-worktree-flow details.mobile-disclosure'); return d ? [...d.querySelectorAll('input:not([type="checkbox"])')].length : 0; })()`);
     if (createInputs !== 4) { failures.push(`worktrees create: expected 4 create inputs, found ${createInputs}`); console.log(`FAIL worktrees create: expected 4 create inputs, found ${createInputs}`); }
     for (let i = 0; i < createInputs; i++) {
-      await check(`worktrees create field #${i + 1}`, `create input ${i + 1}`, `document.querySelectorAll('.mobile-worktree-flow details.mobile-disclosure input')[${i}]`);
+      await check(`worktrees create field #${i + 1}`, `create input ${i + 1}`, `document.querySelectorAll('.mobile-worktree-flow details.mobile-disclosure input:not([type="checkbox"])')[${i}]`);
     }
   }
 

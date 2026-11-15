@@ -1800,6 +1800,29 @@ describe("location bar discovery popover", () => {
     equal(document.activeElement, name);
   });
 
+  it("swaps the footer to the create action on a drafted worktree name", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },
+      "/api/git-ui/branches": { local: LOCAL, remote: [] },
+    } });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes('data-discovery-focus="footer"'), "footer renders in the create view");
+    ok(!bar.innerHTML.includes('data-discovery-focus="create"'), "the worktree form carries no inline submit");
+    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoveryOpenPlain\(\)">Open folder as workspace/);
+    document.getElementById("locationBarDiscoveryName").focus();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "draft-name");
+    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoverySubmitWorktree\(\)">Create worktree/);
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false);
+    equal(document.activeElement.id, "locationBarDiscoveryName", "typing keeps focus in the name field");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "   ");
+    match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoveryOpenPlain\(\)">Open folder as workspace/);
+    equal(document.activeElement.id, "locationBarDiscoveryName", "clearing the draft keeps focus in the name field");
+  });
+
   it("preserves input focus and exact selection through picker repaints and shell sync", async () => {
     const harness = loadDiscovery({ routes: {
       "/api/worktrees": { result: { worktrees: [] } },
@@ -2620,13 +2643,13 @@ describe("location bar discovery popover", () => {
     match(bar.innerHTML, /role="alert">source offline/);
     ok(bar.innerHTML.includes('data-discovery-focus="retry-worktree-source"'));
     ctx.HerdrLocationBar.discoveryDraft("newBase", "kept/base");
-    equal(document.querySelector('[data-discovery-focus="create"]').disabled, true);
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, true, "failed source keeps the create footer disabled");
     await ctx.HerdrLocationBar.discoverySubmitWorktree();
     equal(calls.filter((call) => call.init && call.init.method === "POST").length, 0);
     await ctx.HerdrLocationBar.discoveryRetryWorktreeSource();
     equal(sourceCalls, 3);
     ok(!bar.innerHTML.includes("source offline"));
-    equal(document.querySelector('[data-discovery-focus="create"]').disabled, false);
+    equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false, "recovered source enables the create footer");
     equal(document.getElementById("locationBarDiscoveryName").value, "kept");
     equal(document.getElementById("locationBarDiscoveryBase").value, "kept/base");
   });
@@ -2684,10 +2707,10 @@ describe("location bar discovery popover", () => {
       finish({ error: "path already exists" });
       await pending;
       match(bar.innerHTML, /role="alert">path already exists/);
-      equal(document.querySelector('[data-discovery-focus="create"]').disabled, false);
+      equal(document.querySelector('[data-discovery-focus="footer"]').disabled, false);
       equal(document.getElementById("locationBarDiscoveryName").disabled, false);
       ok(bar.innerHTML.includes("Retry worktree creation"));
-      equal(document.activeElement.getAttribute("data-discovery-focus"), "create", "failed creation returns keyboard focus to retry");
+      equal(document.activeElement.getAttribute("data-discovery-focus"), "footer", "failed creation returns keyboard focus to the retry");
       const navigation = [];
       ctx.go = (...args) => navigation.push(args);
       const retry = ctx.HerdrLocationBar.discoverySubmitWorktree();

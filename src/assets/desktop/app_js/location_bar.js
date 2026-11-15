@@ -1112,7 +1112,21 @@
     const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px;--discovery-top:${anchor.top}px`;
     const label = escapeHtml(list.repoLabel || pathBasename(list.folder) || list.folder);
     const head = `<div class="git-ui-branch-list-section">${label}${list.folder ? `<div class="location-bar-discovery-path">${escapeHtml(list.folder)}</div>` : ""}</div>`;
-    const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button"${list.creating ? " disabled" : ""} onclick="HerdrLocationBar.discoveryOpenPlain()">Open folder as workspace</button></div>`;
+    // The footer owns the worktree create action: a drafted branch name
+    // swaps Open folder as workspace for Create worktree (and back when
+    // cleared), so the form itself carries no second submit button.
+    const creatingWorktree = list.createMode === "worktree";
+    const named = !!String(list.newBranch || "").trim();
+    const footerAction = creatingWorktree && named ? "discoverySubmitWorktree" : "discoveryOpenPlain";
+    const footerLabel = creatingWorktree && named
+      ? list.creating
+        ? "Creating worktree"
+        : list.createError
+          ? "Retry worktree creation"
+          : "Create worktree"
+      : "Open folder as workspace";
+    const footerDisabled = list.creating || (creatingWorktree && named && (!list.source || list.sourceLoading || !!list.sourceError));
+    const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button"${footerDisabled ? " disabled" : ""} onclick="HerdrLocationBar.${footerAction}()">${footerLabel}</button></div>`;
     if (list.loading)
       return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-loading" role="status"><span></span><strong>Discovering folder</strong></div>${footer}</div>`;
     if (list.error)
@@ -1201,10 +1215,12 @@
 
   function discoveryCreateForm(list) {
     const worktree = list.createMode === "worktree";
-    const unavailable = worktree && (!list.source || list.sourceLoading || !!list.sourceError);
     // The Base input is the only dropdown trigger: a caret drawn inside
     // the field shows it opens. In worktree mode the input itself opens
     // the panel; branch mode keeps free-text Base with no dropdown.
+    // The worktree form carries no inline submit: the footer swaps to
+    // Create worktree once a name is drafted, so Cancel worktree is the
+    // form's own way back to the chooser rows.
     const baseCaret = worktree
       ? `<span class="location-bar-base-picker-indicator" aria-hidden="true">${list.basePickerOpen ? "▾" : "▸"}</span>`
       : "";
@@ -1213,7 +1229,7 @@
       : "";
     const pullControl = worktree ? `<label class="git-ui-discovery-pull option" for="locationBarDiscoveryPullBase"><input id="locationBarDiscoveryPullBase" type="checkbox" data-discovery-focus="pull-base"${list.pullBase ? " checked" : ""}${list.creating ? " disabled" : ""} onchange="HerdrLocationBar.discoveryTogglePullBase(this.checked)"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first. If the branch diverged, you can continue without pulling.</small></span></label>` : "";
     const feedback = worktree ? (list.sourceLoading ? `<div role="status">Loading worktree source…</div>` : list.sourceError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.sourceError)}</div><button class="git-ui-btn" type="button" data-discovery-focus="retry-worktree-source" onclick="HerdrLocationBar.discoveryRetryWorktreeSource()">Retry worktree source</button>` : "") + (list.creating ? `<div role="status" data-discovery-focus="worktree-status">Creating worktree</div><div class="git-ui-muted">Closing this dialog does not cancel creation</div>` : list.createError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.createError)}</div>` : "") : "";
-    return `<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field location-bar-base-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")}${baseInputAttrs} oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)">${baseCaret}<button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || unavailable || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.${worktree ? "discoverySubmitWorktree" : "discoveryCreateBranch"}()">${worktree ? (list.creating ? "Creating worktree" : list.createError ? "Retry worktree creation" : "Create worktree") : "Create"}</button>${worktree ? `<button class="git-ui-btn" type="button" data-discovery-focus="cancel-worktree" onclick="HerdrLocationBar.discoveryCancelWorktree()">Cancel worktree</button>` : ""}</div>${pullControl}${feedback}</div>`;
+    return `<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field location-bar-base-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")}${baseInputAttrs} oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)">${baseCaret}${worktree ? "" : `<button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.discoveryCreateBranch()">Create</button>`}${worktree ? `<button class="git-ui-btn" type="button" data-discovery-focus="cancel-worktree" onclick="HerdrLocationBar.discoveryCancelWorktree()">Cancel worktree</button>` : ""}</div>${pullControl}${feedback}</div>`;
   }
 
   // A failed switch leaves the successfully opened folder on its original branch.
@@ -1617,7 +1633,9 @@
   }
 
   function revealDiscoveryWorktreeError() {
-    restoreDiscoveryFocus({ key: "create" });
+    // The worktree create action lives in the footer, so a failed
+    // create returns keyboard focus there for the retry.
+    restoreDiscoveryFocus({ key: "footer" });
     const alert = document.querySelector('.location-bar-discovery-worktree-form .git-ui-error[role="alert"]');
     if (alert && alert.scrollIntoView) alert.scrollIntoView({ block: "nearest" });
   }
@@ -1716,8 +1734,15 @@
       list.basePickerOpen = false;
       sync();
     }
+    // Worktree mode swaps the footer action on the first typed name,
+    // so it needs a repaint; branch mode keeps its inline Create button
+    // and only flips its disabled flag.
+    if (list.createMode === "worktree") {
+      sync();
+      return;
+    }
     const createButton = document.querySelector && document.querySelector('.location-bar-discovery-popover [data-discovery-focus="create"]');
-    if (createButton) createButton.disabled = list.creating || !String(list.newBranch || "").trim() || (list.createMode === "worktree" && (!list.source || list.sourceLoading || !!list.sourceError));
+    if (createButton) createButton.disabled = list.creating || !String(list.newBranch || "").trim();
   }
 
   function refocusPathChip() {
