@@ -49,6 +49,28 @@
   min-width: 0;
   flex: 1;
   overflow: hidden;
+  position: relative;
+}
+
+/* Focus ring: mirrors the tree's active pointer (click-to-focus via
+   HerdrPaneFocus). One accent channel only, never color alone: the
+   ring is paired with the raised strip, and the contrast between
+   ring and background meets the 3:1 non-text minimum (accent on
+   panel background). The ring stays on empty panes too: it is the
+   keyboard anchor for split commands, an empty pane is still the
+   active target. */
+.workspace-pane.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid var(--accent, var(--border));
+  border-radius: 4px;
+  z-index: 1;
+}
+
+.workspace-pane.is-active > .pane-tab-strip {
+  background: color-mix(in srgb, var(--accent, transparent) 12%, var(--panel2, var(--panel)));
 }
 
 .workspace-pane .pane-content {

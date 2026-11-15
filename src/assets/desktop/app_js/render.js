@@ -106,6 +106,10 @@ function render() {
     if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   }
   if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+  // Click-to-focus wiring is idempotent; the render pass is the reliable
+  // first moment #workspacePanes exists with panes inside.
+  if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.wire === "function")
+    window.HerdrPaneFocus.wire();
   syncRightSidebarRail();
 }
 // Tracks whether the dedicated shell ResizeObserver owns terminal fitting.

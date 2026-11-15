@@ -829,6 +829,9 @@ function renderWorkspacePanes() {
   // action rendered. Same bare-function guard style as the callers in
   // this file: standalone VM harnesses load this module without render.js.
   if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
+  // Mirror the tree's active pointer onto the pane elements (focus ring).
+  if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.applyFocusClasses === "function")
+    window.HerdrPaneFocus.applyFocusClasses();
 }
 
 function paneLeafElement(container, root, leaf) {
@@ -2646,6 +2649,7 @@ window.HerdrWorkspacePanes = {
   // Phase 4: split tree surface. paneLeaves/activePane expose the tree
   // walk; the commands are the strip buttons and shortcuts' entry points.
   paneLeaves,
+  paneRootFor,
   activePane: () => activeLeaf(paneRootFor()),
   activePaneElement,
   splitPaneRight,

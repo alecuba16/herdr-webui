@@ -8668,10 +8668,12 @@ describe("location bar integration", () => {
     const folderFlow = served.indexOf("assets/desktop/app_js/open_folder_flow.js");
     equal(folderFlow, core + 1, "open_folder_flow.js loads right after core.js");
     const panes = served.indexOf("assets/desktop/app_js/workspace_panes.js");
+    const focus = served.indexOf("assets/desktop/app_js/pane_focus.js");
     const bar = served.indexOf("assets/desktop/app_js/location_bar.js");
     const terminals = served.indexOf("assets/desktop/app_js/pane_terminals.js");
     const render = served.indexOf("assets/desktop/app_js/render.js");
-    equal(bar, panes + 1, "location_bar.js loads right after workspace_panes.js");
+    equal(focus, panes + 1, "pane_focus.js loads right after workspace_panes.js");
+    equal(bar, focus + 1, "location_bar.js loads right after pane_focus.js");
     equal(terminals, bar + 1, "pane_terminals.js follows location_bar.js");
     equal(render, terminals + 1, "render.js still follows pane_terminals.js");
     const cssStart = assetsRs.indexOf("const DESKTOP_CSS: &str = concat!(");

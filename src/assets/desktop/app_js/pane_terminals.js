@@ -180,6 +180,17 @@
     }
     entry.term = term;
     entry.observer = watchVisibility(entry, container);
+    // Input follows focus for aux surfaces too: a click inside this
+    // terminal must give its wterm the DOM focus (typing lands here, not
+    // in the primary shell behind it). attachClickFocus keeps native text
+    // selection working: the focus call only fires on a real click, not
+    // on a selection drag, same contract as the primary shell's focus.
+    if (renderer.attachClickFocus && typeof term.focus === "function") {
+      renderer.attachClickFocus(container, () => {
+        if (entry.disposed || entry.term !== term) return;
+        try { term.focus(); } catch (e) {}
+      });
+    }
     const ws = new WebSocket(
       wsUrlFor(
         `/ws/terminal?terminal_id=${encodeURIComponent(terminalId)}&cols=${size.cols}&rows=${size.rows}`,
