@@ -436,6 +436,15 @@ mod coverage_tests {
                 if content_length > 0 {
                     reader.read_exact(&mut payload).unwrap();
                 }
+                // The probe socket is closed by now: its 100ms hold
+                // ended and the header-loop EOF break fired, so writing
+                // a response races the close and can EPIPE on macOS
+                // loopback (first write after FIN usually squeaks
+                // through, sometimes not). The probe only drives the
+                // EOF break, it never reads a response — skip the write.
+                if request.starts_with("POST /probe") {
+                    continue;
+                }
                 let response = if request.starts_with("POST /api/git-ui/fetch") {
                     "{\"ok\":true}".to_string()
                 } else if request.starts_with("GET /api/git-ui/status") {
