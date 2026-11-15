@@ -65,6 +65,11 @@ let state = {
   // Same map family: full tab_id -> label map, read by renderAgentRow
   // when a filtered snapshot dropped the agent's tab row.
   tabLabelsById: null,
+  // Full id -> row maps from the unfiltered snapshot: the pane tree's
+  // strips and prune logic resolve bare tab ids through these so rows
+  // the workspace filter dropped (cross-workspace trees) survive.
+  tabsById: null,
+  panesById: null,
   worktrees: [],
   workspaceBranches: {},
   workspaceOrder: [],
@@ -4566,6 +4571,12 @@ function applySessionSnapshot(response) {
   // only the selected workspace's tabs ride the payload, so a panel name
   // for an agent in another workspace would otherwise vanish.
   state.tabLabelsById = result.tab_labels_by_id || null;
+  // Full id -> row maps from the unfiltered snapshot. The pane tree stores
+  // bare tab ids, and its strips/prune logic resolve ids through these maps
+  // so rows the workspace filter dropped (cross-workspace trees) survive.
+  // Null on an older server: consumers fall back to the local arrays.
+  state.tabsById = result.tabs_by_id || null;
+  state.panesById = result.panes_by_id || null;
   if (!state.ws) {
     state.allTabs = [];
     state.tabs = [];
@@ -4802,6 +4813,10 @@ function forgetClosedSelection(kind, data) {
       closedPane.tab_id &&
       !(state.panes || []).some((pane) => pane.tab_id === closedPane.tab_id);
     if (closedLastPaneInTab) removeClosedTabFromState(closedPane.tab_id);
+    // Last pane gone means the tab is gone for good: dispose its cached
+    // aux surface (D8 cache parks on hide, nothing else frees it).
+    if (closedLastPaneInTab && window.HerdrPaneTerminals)
+      window.HerdrPaneTerminals.releaseForTab(closedPane.tab_id);
     // Last pane of a tab emptied a split leaf: same collapse as tab.closed.
     if (closedLastPaneInTab && window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
       window.HerdrWorkspacePanes.collapseLeafForClosedTab(closedPane.tab_id);
@@ -4829,6 +4844,11 @@ function forgetClosedSelection(kind, data) {
     }
     if (data && data.tab_id) removeClosedTabFromState(data.tab_id);
     if (closedTab) maybeAutoCloseWorkspace(closedTab.workspace_id);
+    // The tab is gone for good: dispose its cached aux surface now. The
+    // D8 cache parks surfaces on hide, so nothing else frees the socket
+    // and wterm instance this tab owned.
+    if (window.HerdrPaneTerminals && data && data.tab_id)
+      window.HerdrPaneTerminals.releaseForTab(data.tab_id);
     // A closed terminal tab can leave its split leaf empty: collapse
     // the tree to the survivor now (render picks it up next pass).
     if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
@@ -4856,6 +4876,12 @@ function forgetClosedSelection(kind, data) {
     const removedIdsResolved = removedWorkspaces.filter(Boolean).map((workspace) => workspace.workspace_id);
     const wasSelected = removedIdsResolved.includes(state.ws);
     removedWorkspaces.filter(Boolean).forEach((workspace) => {
+      // Eager tree prune first (D10): the sweep reads tab.workspace_id from
+      // state.allTabs/state.tabs, and removeClosedWorkspaceFromState drops
+      // those rows below. After it, only the sync's terminalTabKnown rule
+      // would catch the ids, a poll tick later.
+      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.pruneWorkspaceTabsFromPanes)
+        window.HerdrWorkspacePanes.pruneWorkspaceTabsFromPanes(workspace.workspace_id);
       forgetWorkspaceClientState(workspace);
       if (workspace.workspace_id) removeClosedWorkspaceFromState(workspace.workspace_id);
     });
@@ -4974,7 +5000,12 @@ function removeClosedTabFromState(tabId) {
   state.agents = (state.agents || []).filter((agent) => agent.tab_id !== tabId);
   // The label map is snapshot-derived like the counts; keep the event-time
   // view consistent so a later rename cannot resurrect a closed panel name.
+  // Same for the full-row maps: the D10 prune rule reads them, so a stale
+  // entry would keep a dead id "known" until the next snapshot rebuilds
+  // the maps.
   if (state.tabLabelsById) delete state.tabLabelsById[tabId];
+  if (state.tabsById) delete state.tabsById[tabId];
+  if (state.panesById) delete state.panesById[tabId];
   const closedWorkspaceId = closedTab && closedTab.workspace_id;
   decrementWorkspaceCount(closedWorkspaceId, "tabs", 1);
   decrementWorkspaceCount(closedWorkspaceId, "panes", closedPaneCount);

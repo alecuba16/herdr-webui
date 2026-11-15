@@ -159,8 +159,8 @@ and draggable modals.
 - `Shift+P` opens the TUI session manager. The desktop's default chord is
   prefix then `Shift+U` (remappable), so the surfaces meet in the middle:
   both have a chord plus a click entry.
-- Pane-grid chords (`D`/`Shift+D` split, `E` close pane, `M` move tab
-  to next pane, `Shift+M` maximize, `F10` pane menu) are
+- Pane-grid chords (prefix `D`/`Shift+D` split, `E` close pane, `M`
+  move tab to next pane, `Shift+M` maximize, `F10` pane menu) are
   N/A-by-architecture in the TUI: it renders one pane at a time, so
   there is no grid to split, maximize, or menu. The webui keeps them
   for the desktop pane grid only.

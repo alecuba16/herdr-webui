@@ -67,6 +67,11 @@
     // Full tab_id -> label map from the unfiltered snapshot; the agents list
     // names panels of other workspaces whose tab rows the filter dropped.
     tabLabelsById: null,
+    // Full id -> row maps from the unfiltered snapshot (see
+    // applySessionSnapshot): bare-id resolution for tab/pane records whose
+    // rows the workspace filter dropped. Null until the first snapshot.
+    tabsById: null,
+    panesById: null,
     tabs: [],
     allTabs: [],
     panes: [],
@@ -1108,6 +1113,11 @@
     // applySessionSnapshot): the agents list falls back to it when the
     // filter dropped the agent's tab row.
     state.tabLabelsById = result.tab_labels_by_id || null;
+    // Full id -> row maps from the unfiltered snapshot, same contract as
+    // the desktop client: bare-id resolution for tab/pane records whose
+    // rows the workspace filter dropped. Null on an older server.
+    state.tabsById = result.tabs_by_id || null;
+    state.panesById = result.panes_by_id || null;
     // The request asked the server to filter tabs/panes to the workspace we
     // had THEN. If the selection just moved (vanished workspace, or the
     // auto-pick of the first workspace), the filtered arrays describe the

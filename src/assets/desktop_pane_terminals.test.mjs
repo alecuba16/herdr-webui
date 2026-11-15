@@ -1,10 +1,11 @@
 // Auxiliary split-pane terminals and the no-workspace dashboard mount.
 // Two contracts live here: (1) a split leaf that is not the shell owner
 // still renders its terminal panel through its own wterm instance and
-// /ws/terminal socket (HerdrPaneTerminals), including reuse, rescue,
-// disposal, input routing, error frames, and the divider refit; (2) the
-// project dashboard fills the pane slot when no workspace is open
-// (mountDashboardInPane from syncProjectDashboard).
+// /ws/terminal socket (HerdrPaneTerminals), including the D8 session
+// cache (park on hide, dispose only on close, socket detach while
+// parked, cap eviction), input routing, error frames, and the divider
+// refit; (2) the project dashboard fills the pane slot when no workspace
+// is open (mountDashboardInPane from syncProjectDashboard).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -237,11 +238,13 @@ function buildDom() {
 
 // Minimal wterm adapter stub: records writes, resize calls, dispose, and
 // the onData callback so input routing assertions run against the same
-// entry the socket writes to.
+// entry the socket writes to. attachClickFocus captures the click handler
+// so focus-order assertions (LRF eviction) can drive a real click.
 function makeRendererStub() {
   const created = [];
-  return {
+  const stub = {
     created,
+    clicks: [],
     create: async (container, opts) => {
       const term = {
         container,
@@ -266,11 +269,16 @@ function makeRendererStub() {
         dispose() {
           term.disposed = true;
         },
+        focus() {},
       };
       created.push(term);
       return term;
     },
+    attachClickFocus(container, handler) {
+      stub.clicks.push({ container, handler });
+    },
   };
+  return stub;
 }
 
 // WebSocket stub with the bits pane_terminals.js touches: readyState,
@@ -329,6 +337,11 @@ function loadPanes(document, stateWs) {
     currentSessionBackend: () => "",
     wsUrl: null,
     location: { protocol: "http:", host: "localhost:8787" },
+    // schedulePtyResize debounces on real timers; the vm realm has no
+    // setTimeout unless provided. Tests assert before the timer fires
+    // or await the flush, so real timers keep timing honest.
+    setTimeout,
+    clearTimeout,
     WebSocket: WsStub,
     HerdrTerminalRenderer: null,
     HerdrTerminalFit: { cellSize: () => ({ width: 9, height: 20 }) },
@@ -425,7 +438,7 @@ test("ws frames write into the term and onData routes back to the socket", async
   assert.deepEqual([...ws.sent[0]], [...new TextEncoder().encode("l\r")]);
 });
 
-test("herdr_error frame drops the socket and reuse rebuilds after backoff", async () => {
+test("herdr_error frame drops the socket and re-attach waits out the backoff", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   // Controllable clock: pane_terminals reads Date.now() for the retry
@@ -444,42 +457,52 @@ test("herdr_error frame drops the socket and reuse rebuilds after backoff", asyn
   const ws = WsStub.instances[0];
   ws.onmessage({ data: JSON.stringify({ type: "herdr_error", kind: "connect_failed", message: "down" }) });
   assert.equal(ws.closed, true, "error frame closes the aux socket");
-  // First re-render inside the backoff window keeps the stale surface.
+  assert.equal(renderer.created[0].disposed, false, "wterm instance stays cached (D8)");
+  // First re-render inside the backoff window keeps the dead surface
+  // cached and socket-less: churn guard holds.
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(renderer.created.length, 1, "backoff window holds recreation");
+  assert.equal(renderer.created.length, 1, "backoff window holds re-attach and recreation");
+  assert.equal(WsStub.instances.length, 1, "no churn sockets inside the window");
   assert.equal(ctx.HerdrPaneTerminals.count(), 1, "entry survives the window");
-  // Window elapses: the next render disposes the dead surface and
-  // rebuilds with a fresh socket.
+  // Window elapses: the next render re-attaches a fresh socket into the
+  // SAME wterm instance; the hub replay rehydrates the view.
   now += 10_000;
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(renderer.created.length, 2, "aged-out dead surface rebuilds once");
-  assert.equal(WsStub.instances.length, 2, "rebuild opens a fresh socket");
-  assert.equal(renderer.created[0].disposed, true, "old instance disposed");
+  assert.equal(renderer.created.length, 1, "re-attach reuses the cached wterm instance");
+  assert.equal(WsStub.instances.length, 2, "re-attach opens a fresh socket");
+  assert.ok(WsStub.instances[1].url.includes("terminal_id=term-bbb"), "fresh socket targets the same pty");
 });
 
 // ---- aux surface lifecycle --------------------------------------------
 
-test("closing the aux leaf disposes its surface and socket", async () => {
+test("closing the aux tab disposes its cached surface and socket", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
   const panes = bootSplitWithTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
-  // Close the pane hosting the aux surface (closePaneFor promotes the
-  // sibling, drops the leaf, and re-renders: releaseStale must dispose).
+  // First park the surface the way a leaf collapse does: closePaneFor
+  // migrates tab_2's tabs into the survivor and drops the leaf, so the
+  // surface parks (D8), not disposes. The pane close itself must NOT
+  // kill the cached surface.
   const leaves = panes.paneLeaves(panes.paneRoot());
   panes.closePaneFor(leaves[1].paneId);
   await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ctx.HerdrPaneTerminals.count(), 1, "pane close parks, registry keeps the cache");
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "surface parked, not disposed");
+  assert.equal(renderer.created[0].disposed, false, "wterm instance survives the pane close");
+  // Tab close is the real disposal (closeTab calls releaseForTab).
+  ctx.HerdrPaneTerminals.releaseForTab("tab_2");
   assert.equal(ctx.HerdrPaneTerminals.count(), 0, "registry drops the closed tab");
   assert.equal(ws.closed, true, "socket closed with the surface");
   assert.equal(renderer.created[0].disposed, true, "wterm instance disposed");
   assert.equal(auxOf(ctx).length, 0, "container removed from the DOM");
 });
 
-test("promoting the aux tab to the shell owner disposes its aux surface", async () => {
+test("promoting the aux tab to the shell owner parks its surface, flip back reuses it", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
@@ -491,59 +514,137 @@ test("promoting the aux tab to the shell owner disposes its aux surface", async 
   ctx.state.tab = "tab_2";
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  // tab_1's leaf is the non-owner now: exactly one aux exists, and it
-  // targets tab_1's pty. tab_2's old aux (if the flip ran mid-flight)
-  // disposes through releaseForTab on the owner branch.
-  assert.equal(ctx.HerdrPaneTerminals.count(), 1);
+  // tab_1's leaf is the non-owner now: exactly one live aux exists, and
+  // it targets tab_1's pty. tab_2's old aux parked when the shell took
+  // its slot (D8), so the flip back reuses the same wterm instance.
+  assert.equal(ctx.HerdrPaneTerminals.count(), 2, "both surfaces cached across the flip");
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "the taken-over surface parks, not disposes");
   const aux = auxOf(ctx)[0];
   assert.equal(aux.dataset.tabId, "tab_1", "the demoted leaf now hosts the aux surface");
-  // Flip back: the first aux goes away and tab_2's aux takes its place.
+  const tabTwoTerm = renderer.created[0];
+  assert.equal(tabTwoTerm.disposed, false, "tab_2's wterm survives parked");
+  // Flip back: the parked surface returns to the leaf with the SAME
+  // wterm instance (D8 identity contract).
   ctx.state.tab = "tab_1";
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(auxOf(ctx)[0].dataset.tabId, "tab_2", "flip re-creates the sibling aux");
-  assert.equal(ctx.HerdrPaneTerminals.count(), 1);
+  assert.equal(auxOf(ctx)[0].dataset.tabId, "tab_2", "flip restores the sibling aux");
+  assert.equal(ctx.HerdrPaneTerminals.count(), 2);
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "tab_1's surface parks on the flip back");
+  const tabTwoAuxNode = auxOf(ctx).find((node) => node.dataset.tabId === "tab_2");
+  assert.ok(tabTwoAuxNode, "tab_2's aux container is back in a leaf");
+  assert.ok(renderer.created.includes(tabTwoTerm) && !tabTwoTerm.disposed, "same wterm instance serves the return");
 });
 
-test("maximized pane disposes the hidden sibling's aux surface", async () => {
+test("maximized pane parks the hidden sibling's aux, restore reuses it", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
   const panes = bootSplitWithTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
+  const term = renderer.created[0];
   const leaves = panes.paneLeaves(panes.paneRoot());
   panes.maximizePaneFor(leaves[0].paneId);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(ctx.HerdrPaneTerminals.count(), 0, "hidden sibling keeps no live socket");
-  assert.equal(ws.closed, true, "socket closed on maximize");
-  // Restore: the aux rebuilds for the visible sibling.
+  assert.equal(ctx.HerdrPaneTerminals.count(), 1, "registry keeps the cache entry");
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "hidden sibling's surface parked");
+  assert.equal(ws.closed, true, "park detaches the socket (no sockets for non-visible)");
+  assert.equal(term.disposed, false, "wterm instance survives the maximize");
+  // Restore: the parked surface re-attaches and re-parents, SAME wterm
+  // instance, scrollback intact.
   panes.maximizePaneFor(leaves[0].paneId);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(auxOf(ctx).length, 1, "restore re-mounts the aux surface");
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 0, "surface is live again");
+  assert.equal(term.disposed, false, "same wterm instance serves the restore");
+  assert.ok(WsStub.instances.length >= 2, "restore re-attaches a fresh socket");
+  const liveWs = WsStub.instances[WsStub.instances.length - 1];
+  assert.equal(liveWs.closed, false, "re-attached socket is open");
 });
 
-test("editor-active non-owner leaf releases its aux surface", async () => {
+test("editor-active non-owner leaf parks its aux surface, terminal return reuses it", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
   const panes = bootSplitWithTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
-  // The sibling switches to an editor tab: its terminal aux must go.
+  const term = renderer.created[0];
+  // The sibling switches to an editor tab: its terminal aux parks.
   const leaves = panes.paneLeaves(panes.paneRoot());
   leaves[1].tabs = ["editor:src/main.py"];
   leaves[1].active = "editor:src/main.py";
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(ctx.HerdrPaneTerminals.count(), 0, "editor tab released the aux");
-  assert.equal(ws.closed, true, "socket closed with it");
-  // Terminal tab back: the aux returns.
-  leaves[1].tabs = ["tab_2"];
-  leaves[1].active = "tab_2";
+  assert.equal(ctx.HerdrPaneTerminals.count(), 1, "editor stint parks the aux, cache keeps it");
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "surface parked, not disposed");
+  assert.equal(ws.closed, true, "park detaches the socket");
+  assert.equal(term.disposed, false, "wterm instance survives the editor stint");
+  // Terminal tab back: the aux returns. The editor stint left tab_2
+  // re-homed into the owner leaf (the sync lands homeless ids in the
+  // sync target), so move it back the way a drag or click would: out
+  // of leaf 0, into leaf 1. Raw-duplicating it across both leaves is
+  // the state the D7.1 repair exists to collapse.
+  const leavesNow = panes.paneLeaves(panes.paneRoot());
+  const holder = leavesNow.find((leaf) => leaf.tabs.includes("tab_2"));
+  const strip = leavesNow.find((leaf) => leaf !== holder);
+  holder.tabs.splice(holder.tabs.indexOf("tab_2"), 1);
+  strip.tabs.push("tab_2");
+  strip.active = "tab_2";
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(auxOf(ctx).length, 1);
+  assert.equal(term.disposed, false, "same wterm instance serves the terminal return");
+  assert.ok(WsStub.instances.length >= 2, "return re-attaches a fresh socket");
+});
+
+// ---- D8 cache budget -----------------------------------------------------
+
+test("parking beyond the cap evicts least-recently-focused first", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ctx.HerdrPaneTerminals.cap(), 8, "cap is 8 aux surfaces");
+  // Grow the cache past the cap: pre-distribute one known terminal per
+  // leaf by hand (the sync only lands homeless ids in ONE target leaf,
+  // so raw splits would leave the extra leaves empty), then render.
+  // Ten terminals total: tab_1 renders via the singleton shell (the
+  // owner does not count toward the aux cap), so tabs 2..10 give nine
+  // aux surfaces, one over the cap of 8.
+  for (let i = 0; i < 8; i += 1) panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  assert.ok(leaves.length >= 10, "ten leaves stand");
+  for (let i = 3; i <= 10; i += 1) {
+    ctx.state.tabs.push({ tab_id: `tab_${i}`, title: `t${i}` });
+    ctx.state.panes.push({ tab_id: `tab_${i}`, terminal_id: `term-${i}`, focused: false, pane_id: `p${i}` });
+    const leaf = leaves[i - 1];
+    leaf.tabs = [`tab_${i}`];
+    leaf.active = `tab_${i}`;
+  }
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The cap holds at the end of every render pass (releaseStale runs
+  // evictBeyondCap): the ninth surface never stood. Creation order
+  // doubles as focus order here (no clicks ran), so the FIRST created
+  // surface is the least-recently-focused and is the one evicted.
+  const firstCreated = renderer.created[0];
+  const lastCreated = renderer.created[renderer.created.length - 1];
+  assert.equal(renderer.created.length, 9, "nine wterm instances were requested");
+  assert.equal(ctx.HerdrPaneTerminals.count(), 8, "cache caps at 8 mid-render, not later");
+  assert.equal(firstCreated.disposed, true, "least-recently-focused entry evicted");
+  assert.equal(lastCreated.disposed, false, "newest surface survives the eviction");
+  // Maximize one leaf: every aux parks, and parked means socket detached
+  // (no sockets for non-visible surfaces).
+  panes.maximizePaneFor(leaves[0].paneId);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ctx.HerdrPaneTerminals.count(), 8, "cache stays at the cap after parking");
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 8, "maximize parked the rest");
+  const liveSockets = WsStub.instances.filter((ws) => !ws.closed);
+  assert.equal(liveSockets.length, 0, "no live sockets while every surface is parked");
+  assert.equal(lastCreated.disposed, false, "surviving surfaces keep their wterm instances");
 });
 
 test("divider drag finish refits aux grids to the new slot size", async () => {
@@ -564,6 +665,55 @@ test("divider drag finish refits aux grids to the new slot size", async () => {
   move({ clientX: 220, clientY: 100 });
   up();
   assert.equal(term.resized.length, before + 1, "pointerup refit the aux grid");
+});
+
+// D9: the aux fit also tells the PTY its new grid. The resize message
+// debounces per entry (200ms, trailing edge carries the latest cols/rows),
+// lands on the entry's own socket, and never fires for a disposed entry.
+test("fitAll debounces a resize message to the aux pty socket", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  bootSplitWithTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  WsStub.instances.forEach((ws) => (ws.sent.length = 0));
+  const aux = ctx.HerdrPaneTerminals;
+  assert.ok(aux && typeof aux.fitAll === "function", "fitAll exported");
+  const before = renderer.created[0].resized.length;
+  // Two quick fits inside the debounce window collapse into one message.
+  aux.fitAll();
+  aux.fitAll();
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  const resizeMessages = WsStub.instances.flatMap((ws) =>
+    ws.sent.map((raw) => { try { return JSON.parse(raw); } catch (e) { return null; } }),
+  ).filter((msg) => msg && msg.type === "resize");
+  assert.ok(resizeMessages.length >= 1, "pty resize message sent after the debounce");
+  assert.ok(resizeMessages.every((msg) => Number.isInteger(msg.cols) && Number.isInteger(msg.rows)), "message carries the grid");
+  // The renderer still refit locally on every pass.
+  assert.ok(renderer.created[0].resized.length > before, "local grid refit ran");
+});
+
+test("disposal cancels the pending pty resize", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  bootSplitWithTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const panes = ctx.HerdrWorkspacePanes;
+  // Empty the second leaf's tabs and re-render: the aux disposes while a
+  // resize may still sit in the debounce window.
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[1].tabs = [];
+  leaves[1].active = null;
+  const wsBefore = WsStub.instances.length;
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  // No resize frame ever hits a disposed entry's socket after close: the
+  // stub marks closed sockets, and the scheduler checks the disposed flag
+  // before sending. The assertion is the absence of throws plus closed
+  // sockets staying silent.
+  const closedSent = WsStub.instances.slice(wsBefore).filter((ws) => ws.closed).flatMap((ws) => ws.sent);
+  assert.deepEqual(closedSent, [], "no message leaves after disposal");
 });
 
 // ---- no-workspace dashboard mount -------------------------------------
@@ -748,4 +898,29 @@ test("applyThemeAll re-themes open aux surfaces on theme switch", async () => {
   aux.applyThemeAll();
   assert.equal(term.themes.length, 1, "aux term re-themed");
   assert.deepEqual(term.themes[0], light, "theme payload is the current palette");
+});
+
+test("dragging an aux terminal tab to another leaf keeps the wterm instance and socket (D7.4)", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const termBefore = renderer.created[0];
+  const socketBefore = WsStub.instances[0];
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  assert.ok(leaves[0].tabs.includes("tab_2") || leaves[1].tabs.includes("tab_2"), "tab_2 lives in a leaf");
+  const source = leaves.find((leaf) => leaf.tabs.includes("tab_2"));
+  const target = leaves.find((leaf) => leaf !== source);
+
+  // The drag drop path: movePaneTabTo is exactly what paneStripDrop runs.
+  assert.equal(panes.movePaneTabTo("tab_2", target.paneId, 0), true, "drop accepted");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const moved = panes.paneLeaves(panes.paneRoot()).find((leaf) => leaf.tabs.includes("tab_2"));
+  assert.equal(moved, target, "tab_2 now lives in the target leaf");
+  assert.equal(renderer.created.length, 1, "no second wterm instance: identity survives the drag");
+  assert.equal(WsStub.instances.length, 1, "no second socket: the pty mirror and scrollback survive");
+  assert.strictEqual(renderer.created[0], termBefore, "same wterm instance object");
+  assert.strictEqual(WsStub.instances[0], socketBefore, "same socket object");
+  assert.equal(ctx.HerdrPaneTerminals.count(), 1, "registry count unchanged");
 });

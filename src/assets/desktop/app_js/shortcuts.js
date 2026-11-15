@@ -84,7 +84,10 @@ function selectRelativePanel(delta) {
   if (!tabs.length) return false;
   const current = Math.max(0, tabs.indexOf(state.tab));
   const next = tabs[(current + delta + tabs.length) % tabs.length];
-  go(state.ws, next);
+  // The mixed tree hosts cross-workspace ids: route with the row's own
+  // workspace so the snapshot filter keeps the panel visible.
+  const row = state.tabs.find((t) => t.tab_id === next);
+  go(row && row.workspace_id ? row.workspace_id : state.ws, next);
   return true;
 }
 function agentCycleRank(agent) {

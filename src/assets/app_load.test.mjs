@@ -1864,6 +1864,64 @@ describe("app bundle load", () => {
     equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1");
   });
 
+  it("prefixed pane chords drive the split tree end to end", () => {
+    const ctx = context();
+    runSource(ctx);
+    // The pane-grid chords are plain prefix actions like every other
+    // chord: arm Ctrl+B, press the action key, the tree changes. This
+    // pins the dispatch chain (prefix overlay, chord lookup, action
+    // toast) against the pane tree, not just the shortcut map: a
+    // rewiring that resolves the chord but never reaches the pane
+    // action fails here.
+    vm.runInContext(
+      "state.workspaces = [{ workspace_id: 'ws1' }]; state.ws = 'ws1';" +
+        "state.tabs = [{ tab_id: 't1', workspace_id: 'ws1' }]; state.tab = 't1';" +
+        "renderWorkspacePanes();",
+      ctx,
+    );
+    const key = (code, keyName, shiftKey = false) => ({
+      code,
+      key: keyName,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      shiftKey,
+      defaultPrevented: false,
+      target: ctx.document.body,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
+    const armAndPress = (code, keyName, shiftKey = false) => {
+      ctx.handleGlobalShortcut({
+        code: "KeyB",
+        key: "b",
+        ctrlKey: true,
+        altKey: false,
+        metaKey: false,
+        shiftKey: false,
+        defaultPrevented: false,
+        target: ctx.document.body,
+        preventDefault() {},
+        stopPropagation() {},
+      });
+      const press = key(code, keyName, shiftKey);
+      ctx.handleGlobalShortcut(press);
+      return press;
+    };
+    const leafCount = () => vm.runInContext("HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRoot()).length", ctx);
+
+    equal(leafCount(), 1, "single pane before any split");
+    const dPress = armAndPress("KeyD", "d");
+    equal(dPress.defaultPrevented, true, "prefix D is consumed");
+    equal(leafCount(), 2, "prefix D splits the active pane to the right");
+    const shiftDPress = armAndPress("KeyD", "D", true);
+    equal(shiftDPress.defaultPrevented, true, "prefix Shift+D is consumed");
+    equal(leafCount(), 3, "prefix Shift+D splits the focused pane downward");
+    const stored = JSON.parse(ctx.localStorage.getItem("herdr-web-workspace-panes"));
+    equal(Object.keys(stored).join(","), "__session__", "splits persist in the session tree entry");
+  });
+
   it("terminal prefix passthrough off keeps the prefix intercepted on the terminal surface", () => {
     const ctx = context();
     runSource(ctx);
@@ -6032,6 +6090,60 @@ describe("app bundle load", () => {
     equal(state.snapshotBootstrap, true);
   });
 
+  it("applySessionSnapshot adopts the unfiltered id maps from the snapshot", () => {
+    const ctx = context();
+    runSource(ctx);
+    // The server-side enrichment (src/main.rs enrich_session_snapshot)
+    // ships full id -> row maps built from the UNFILTERED arrays: the
+    // pane tree stores bare tab ids and resolves them through these maps
+    // when the workspace filter dropped the rows. This pins the adoption
+    // lines in applySessionSnapshot; the consumers (pane strips, picker,
+    // prune) have their own coverage with the maps injected by fixture.
+    const adopted = vm.runInContext(
+      `const __applied = applySessionSnapshot({ result: {
+        snapshot: {
+          workspaces: [{ workspace_id: "ws1", label: "repo", cwd: "/repo" }],
+          tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }],
+          panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }],
+          agents: [],
+        },
+        tab_labels_by_id: { t1: "Shell", t2: "deploy" },
+        tabs_by_id: { t2: { workspace_id: "ws2", tab_id: "t2", label: "deploy" } },
+        panes_by_id: { t2: [{ workspace_id: "ws2", tab_id: "t2", pane_id: "p2" }] },
+      } });
+      JSON.stringify({
+        applied: __applied,
+        ws: state.ws,
+        tabs: state.tabsById,
+        panes: state.panesById,
+        labels: state.tabLabelsById,
+      })`,
+      ctx,
+    );
+    const parsed = JSON.parse(adopted);
+    equal(parsed.tabs.t2.workspace_id, "ws2", "tabs_by_id lands in state");
+    equal(parsed.panes.t2[0].pane_id, "p2", "panes_by_id lands in state (id -> rows)");
+    equal(parsed.labels.t2, "deploy", "tab_labels_by_id still adopted");
+
+    // Older server: the maps are absent and the state falls back to null,
+    // the documented contract for consumers.
+    const legacy = vm.runInContext(
+      `applySessionSnapshot({ result: {
+        snapshot: {
+          workspaces: [{ workspace_id: "ws1", label: "repo", cwd: "/repo" }],
+          tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }],
+          panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }],
+          agents: [],
+        },
+      } });
+      JSON.stringify({ tabs: state.tabsById, panes: state.panesById })`,
+      ctx,
+    );
+    const legacyParsed = JSON.parse(legacy);
+    equal(legacyParsed.tabs, null, "tabs_by_id absent on an older server: null");
+    equal(legacyParsed.panes, null, "panes_by_id absent on an older server: null");
+  });
+
   it("falls back to legacy calls when the snapshot is unusable", async () => {
     const ctx = context();
     const calls = [];
@@ -8502,7 +8614,10 @@ describe("workspace sidebar order", () => {
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
     "./desktop/app_js/workspace_panes.js",
+    "./desktop/app_js/pane_focus.js",
+    "./desktop/app_js/pane_workspace_picker.js",
     "./desktop/app_js/location_bar.js",
+    "./desktop/app_js/pane_terminals.js",
     "./desktop/app_js/render.js",
     "./desktop/app_js/terminal.js",
     "./desktop/app_js/lens.js",
@@ -8579,6 +8694,7 @@ describe("workspace sidebar order", () => {
         { workspace_id: "ws_c" },
       ];
       state.workspaceOrder = ["ws_b", "ws_a", "ws_c"];
+      options.workspaceSort = "drag";
       state.dragWorkspace = "ws_c";`,
       ctx,
     );
@@ -8668,10 +8784,14 @@ describe("location bar integration", () => {
     const folderFlow = served.indexOf("assets/desktop/app_js/open_folder_flow.js");
     equal(folderFlow, core + 1, "open_folder_flow.js loads right after core.js");
     const panes = served.indexOf("assets/desktop/app_js/workspace_panes.js");
+    const focus = served.indexOf("assets/desktop/app_js/pane_focus.js");
     const bar = served.indexOf("assets/desktop/app_js/location_bar.js");
     const terminals = served.indexOf("assets/desktop/app_js/pane_terminals.js");
     const render = served.indexOf("assets/desktop/app_js/render.js");
-    equal(bar, panes + 1, "location_bar.js loads right after workspace_panes.js");
+    equal(focus, panes + 1, "pane_focus.js loads right after workspace_panes.js");
+    const picker = served.indexOf("assets/desktop/app_js/pane_workspace_picker.js");
+    equal(picker, focus + 1, "pane_workspace_picker.js loads right after pane_focus.js");
+    equal(bar, picker + 1, "location_bar.js loads right after pane_workspace_picker.js");
     equal(terminals, bar + 1, "pane_terminals.js follows location_bar.js");
     equal(render, terminals + 1, "render.js still follows pane_terminals.js");
     const cssStart = assetsRs.indexOf("const DESKTOP_CSS: &str = concat!(");

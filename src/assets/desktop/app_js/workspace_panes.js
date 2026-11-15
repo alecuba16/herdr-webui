@@ -186,15 +186,23 @@ function paneEditorTabButtonHtml(tabId, isActive) {
   return `<button class="pane-tab editor ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="editor" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(path)}" onclick="activatePaneTab('${escapeAttr(tabId)}')" onauxclick="paneTabAuxClick(event,'editor','${escapeAttr(encoded)}')">${dirty ? '<span class="pane-tab-dirty" title="Modified" aria-hidden="true">●</span>' : ""}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close file" aria-label="Close file" onclick="event.stopPropagation();closeEditorTab('${escapeAttr(encoded)}')">✕</span></button>`;
 }
 
-function panesStateFor(id = state.ws) {
-  const key = workspaceShellKey(id);
-  if (!state.workspacePanes[key]) {
-    state.workspacePanes[key] = {
+// Session-global tree store (D1): ONE tree per session whose leaves host
+// tabs from any workspace. The per-workspace keying died with the mixed
+// tree: a workspace switch no longer swaps the layout under the user,
+// and a foreign workspace's panel is just another tab in a leaf. The
+// store key is fixed; workspace membership lives in the tab rows, and
+// the workspace-close sweep (pruneWorkspaceTabsFromPanes) drops closed
+// ids from THIS tree.
+const SESSION_PANES_KEY = "__session__";
+
+function panesStateFor() {
+  if (!state.workspacePanes[SESSION_PANES_KEY]) {
+    state.workspacePanes[SESSION_PANES_KEY] = {
       root: newLeaf("p1"),
       at: Date.now(),
     };
   }
-  return state.workspacePanes[key];
+  return state.workspacePanes[SESSION_PANES_KEY];
 }
 
 // ---- maximize (Phase 5) ---------------------------------------------
@@ -367,33 +375,110 @@ function normalizePaneTree(root) {
 
 function loadWorkspacePanesStates() {
   try {
-    // A reload starts with a fresh single pane. The store is only a temporary
-    // write-through while this page keeps workspaces open.
+    // The store holds ONE session tree now (previously one entry per
+    // workspace). Old multi-entry blobs load the FIRST entry as the
+    // session tree (the boot workspace's layout, D1 migration: pane
+    // layouts are cheap to rebuild, other stored trees drop) and the
+    // sync's terminalTabKnown prune sweeps stale ids on the first
+    // snapshot.
+    const raw = localStorage.getItem(WORKSPACE_PANES_STORAGE_KEY);
+    if (!raw) {
+      localStorage.removeItem(WORKSPACE_PANES_STORAGE_KEY);
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    const entry = parsed && typeof parsed === "object" ? parsed[SESSION_PANES_KEY] || Object.values(parsed)[0] : null;
+    if (entry && entry.root) {
+      const root = normalizePaneTree(entry.root);
+      if (root) {
+        // D13: an all-empty tree (every id closed in a previous session)
+        // resets to the single default pane instead of restoring ghost
+        // splits with empty strips.
+        const leaves = paneLeaves(root);
+        const nonEmpty = leaves.some((leaf) => leaf.tabs && leaf.tabs.length);
+        state.workspacePanes[SESSION_PANES_KEY] = {
+          root: nonEmpty ? root : newLeaf("p1"),
+          at: entry.at || Date.now(),
+          maximizedPaneId: null,
+        };
+      }
+    }
     localStorage.removeItem(WORKSPACE_PANES_STORAGE_KEY);
   } catch (_) {}
 }
 
 function saveWorkspacePanesStates() {
   try {
-    const keep = new Set((state.workspaces || []).map((workspace) => workspaceShellKey(workspace)));
-    if (state.ws) keep.add(workspaceShellKey(state.ws));
-    const live = Object.fromEntries(
-      Object.entries(state.workspacePanes || {}).filter(([key]) => keep.has(key)),
-    );
+    // The session tree is the only entry now. It persists whenever it
+    // exists, no open-workspace gate: the tree survives the last
+    // workspace closing (an empty tree resets itself on load) and a
+    // dashboard boot (tree simply not created yet).
+    const live = {};
+    if (state.workspacePanes[SESSION_PANES_KEY])
+      live[SESSION_PANES_KEY] = state.workspacePanes[SESSION_PANES_KEY];
     if (Object.keys(live).length) localStorage.setItem(WORKSPACE_PANES_STORAGE_KEY, JSON.stringify(live));
     else localStorage.removeItem(WORKSPACE_PANES_STORAGE_KEY);
   } catch (_) {}
 }
 
+// A closed workspace no longer deletes a tree (there is only the one
+// session tree): its ids leave through pruneWorkspaceTabsFromPanes, and
+// the tree itself survives to host the remaining workspaces' panels.
+// Legacy per-workspace entries from older sessions are dropped here.
 function forgetWorkspacePanes(id) {
-  delete state.workspacePanes[workspaceShellKey(id)];
+  for (const key of Object.keys(state.workspacePanes || {})) {
+    if (key !== SESSION_PANES_KEY) delete state.workspacePanes[key];
+  }
   saveWorkspacePanesStates();
+}
+
+// Eager teardown prune (D10): a closed workspace's terminal ids leave the
+// trees NOW, not on the next refresh tick. The sync's terminalTabKnown
+// prune would drop them a poll later (rows left state.tabs/allTabs in
+// removeClosedWorkspaceFromState), but between close and tick the strips
+// would render dead ids with close buttons that POST against vanished
+// panels. Editor/git tabs carry no workspace binding and stay.
+function pruneWorkspaceTabsFromPanes(workspaceId) {
+  if (!workspaceId) return false;
+  const closedIds = new Set(
+    (state.allTabs || [])
+      .concat(state.tabs || [])
+      .filter((tab) => tab.workspace_id === workspaceId)
+      .map((tab) => String(tab.tab_id)),
+  );
+  if (!closedIds.size) return false;
+  let changed = false;
+  for (const key of Object.keys(state.workspacePanes || {})) {
+    const entry = state.workspacePanes[key];
+    const root = entry && entry.root;
+    if (!root) continue;
+    for (const leaf of paneLeaves(root)) {
+      const kept = leaf.tabs.filter((id) => !closedIds.has(String(id)));
+      if (kept.length !== leaf.tabs.length) {
+        leaf.tabs = kept;
+        changed = true;
+        if (leaf.active && closedIds.has(String(leaf.active)))
+          leaf.active = leaf.tabs[0] || null;
+      }
+    }
+    if (isPaneSplit(root)) {
+      // Same collapse rule as the sync prune: a leaf emptied by this
+      // sweep is dead, a leaf empty by design keeps its strip. The entry
+      // passes explicitly: the collapse rewrites the OWNING entry's root,
+      // and panesStateFor() would target the current workspace instead.
+      for (const leaf of paneLeaves(root)) {
+        if (!leaf.tabs.length && paneLeaves(root).length > 1) collapseEmptyLeafInTree(root, leaf, entry);
+      }
+    }
+  }
+  if (changed) saveWorkspacePanesStates();
+  return changed;
 }
 
 loadWorkspacePanesStates();
 
-function paneRoot(id = state.ws) {
-  return panesStateFor(id).root;
+function paneRoot() {
+  return panesStateFor().root;
 }
 
 // A tree renders when it resolves to at least one leaf. Single-leaf trees
@@ -431,12 +516,44 @@ function paneTabsForTree(leaf) {
   return tabs.filter((tabId) => {
     if (isEditorTab(tabId)) return true;
     if (isGitTab(tabId)) return true;
-    return (state.tabs || []).some((tab) => tab.tab_id === tabId);
+    return terminalTabKnown(tabId);
   });
 }
 
 function paneTerminalTabById(tabId) {
-  return (state.tabs || []).find((tab) => tab.tab_id === tabId) || null;
+  const local = (state.tabs || []).find((tab) => tab.tab_id === tabId);
+  if (local) return local;
+  // The unfiltered map covers rows the workspace filter dropped: the
+  // tree is workspace-scoped today, but a stored id of another workspace
+  // must still resolve (its strip renders, its prune rule holds). Older
+  // servers ship no map; the local miss then reads as unknown, same as
+  // before.
+  const unfiltered = state.tabsById && state.tabsById[tabId];
+  return unfiltered && typeof unfiltered === "object" ? unfiltered : null;
+}
+
+// The workspace a terminal tab belongs to. The mixed tree (D1) hosts
+// ids from any workspace, so routing/indicators must resolve the row's
+// own workspace_id, never assume state.ws. Missing row (snapshot race,
+// editor/git id): keep the selected workspace.
+function workspaceIdForTab(tabId) {
+  if (!tabId) return state.ws;
+  const row = paneTerminalTabById(tabId);
+  return (row && row.workspace_id) || state.ws;
+}
+
+// Prune rule (D10): a stored terminal id is dead only when it is absent
+// from BOTH the workspace-filtered list (state.tabs) and the unfiltered
+// maps (tabsById/panesById, plus allTabs as the pre-map fallback). A
+// snapshot race (filtered list refreshed, maps still stale) must not
+// drop a live id, and a genuinely closed id must drop from every leaf.
+function terminalTabKnown(tabId) {
+  if (!tabId) return false;
+  if ((state.tabs || []).some((tab) => tab.tab_id === tabId)) return true;
+  if (state.tabsById && Object.prototype.hasOwnProperty.call(state.tabsById, tabId)) return true;
+  if (state.panesById && Object.prototype.hasOwnProperty.call(state.panesById, tabId)) return true;
+  if ((state.allTabs || []).some((tab) => tab.tab_id === tabId)) return true;
+  return false;
 }
 
 // Terminal tabs mirror the backend 1:1 (tab_id identity): the tree stores
@@ -472,7 +589,6 @@ function terminalShellOwnerLeaf(root) {
   const routeTab = state.tab != null ? String(state.tab) : null;
   const routeLeaf = routeTab && !isEditorTab(routeTab) && !isGitTab(routeTab) ? paneForTab(root, routeTab) : null;
   if (routeLeaf && rendered.includes(routeLeaf)) return routeLeaf;
-  const backendIds = (state.tabs || []).map((tab) => String(tab.tab_id));
   const firstTerminalActive = rendered.find((leaf) => {
     const active = leaf.active;
     return !!active && !isEditorTab(active) && !isGitTab(active) && active !== TERMINAL_TAB_PLACEHOLDER;
@@ -484,8 +600,32 @@ function terminalShellOwnerLeaf(root) {
   // No leaf shows a terminal tab: the singleton owner keeps the shell so
   // future panels land somewhere known. Owner prefers the leaf holding
   // the terminal placeholder or a real terminal id, else the active leaf.
-  const seeded = rendered.find((leaf) => leaf.tabs.some((id) => id === TERMINAL_TAB_PLACEHOLDER || backendIds.includes(id)));
+  const seeded = rendered.find((leaf) => leaf.tabs.some((id) => id === TERMINAL_TAB_PLACEHOLDER || terminalTabKnown(id)));
   return seeded || rendered[0];
+}
+
+// Every live terminal id across every workspace (D1 sync universe):
+// filtered rows first (order = backend truth), then ids only the
+// unfiltered maps know (rows the workspace filter dropped). The
+// pre-map fallback keeps old servers working.
+function allKnownTerminalIds() {
+  const ids = (state.tabs || []).map((tab) => String(tab.tab_id));
+  const seen = new Set(ids);
+  const extra = (state.tabsById && Object.keys(state.tabsById)) || [];
+  for (const id of extra) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  for (const tab of state.allTabs || []) {
+    const id = String(tab.tab_id);
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
 }
 
 function terminalLeafForSync(root, backendIds) {
@@ -513,36 +653,86 @@ function terminalLeafForSync(root, backendIds) {
 }
 
 function syncTerminalTabsIntoTree(root) {
-  const backendIds = (state.tabs || []).map((tab) => String(tab.tab_id));
+  // Session-global tree (D1): the sync universe is EVERY workspace's
+  // panels, not just the selected one. state.tabs holds the filtered
+  // rows; the unfiltered maps (tabsById, with allTabs as the pre-map
+  // fallback) carry the rest. Placement keeps the one-home rule: an id
+  // that already lives in a leaf stays there; only homeless ids land in
+  // the sync target.
+  const allBackendIds = allKnownTerminalIds();
   const routeTab = state.tab != null ? String(state.tab) : null;
-  const target = terminalLeafForSync(root, backendIds);
+  const target = terminalLeafForSync(root, allBackendIds);
   if (!target) return false;
   const placeholderIndex = target.tabs.indexOf(TERMINAL_TAB_PLACEHOLDER);
-  const seedPlaceholder = placeholderIndex >= 0 && !backendIds.includes(TERMINAL_TAB_PLACEHOLDER);
+  const seedPlaceholder = placeholderIndex >= 0 && !allBackendIds.includes(TERMINAL_TAB_PLACEHOLDER);
   let changed = false;
-  if (seedPlaceholder && backendIds.length) {
-    target.tabs.splice(placeholderIndex, 1, ...backendIds);
+  if (seedPlaceholder && allBackendIds.length) {
+    target.tabs.splice(placeholderIndex, 1, ...allBackendIds);
     changed = true;
-    if (target.active === TERMINAL_TAB_PLACEHOLDER) target.active = backendIds[0];
+    if (target.active === TERMINAL_TAB_PLACEHOLDER) target.active = allBackendIds[0];
   } else {
-    for (const id of backendIds) {
+    for (const id of allBackendIds) {
       // A tab id that already lives in another leaf keeps its home: the
       // placement rule (one home per terminal tab) beats the singleton
       // append. Otherwise the post-migration sync would duplicate ids
       // across strips.
-      if (paneForTab(root, id) && paneForTab(root, id) !== target) continue;
+      const owner = paneForTab(root, id);
+      if (owner && owner !== target) continue;
       if (!target.tabs.includes(id)) {
         target.tabs.push(id);
         changed = true;
       }
     }
   }
-  if (backendIds.length) {
+  if (allBackendIds.length) {
+    // D7.1 repair rule: exactly one owner leaf per terminal id. A mid-drag
+    // crash, a stale stored tree, or a legacy blob can leave an id in two
+    // leaves. The FIRST leaf in tree order wins the id, every later copy
+    // drops, and a leaf emptied by this repair collapses inside a split
+    // (same as the prune below). Editor/git ids are client-owned with
+    // no uniqueness constraint and never enter this pass.
+    const ownerLeafById = new Map();
+    const duplicatesByLeaf = new Map();
+    for (const leaf of paneLeaves(root)) {
+      const kept = [];
+      for (const id of leaf.tabs) {
+        if (isEditorTab(id) || isGitTab(id)) {
+          kept.push(id);
+          continue;
+        }
+        // Dead ids stay in place: the prune pass below owns them (and
+        // its emptied-leaf collapse). Dropping them here would empty the
+        // leaf before the prune pass's change check, and the collapse
+        // would never fire.
+        if (!terminalTabKnown(id)) {
+          kept.push(id);
+          continue;
+        }
+        if (ownerLeafById.has(id)) {
+          if (!duplicatesByLeaf.has(leaf)) duplicatesByLeaf.set(leaf, []);
+          duplicatesByLeaf.get(leaf).push(id);
+          changed = true;
+          continue;
+        }
+        ownerLeafById.set(id, leaf);
+        kept.push(id);
+      }
+      leaf.tabs = kept;
+    }
+    if (isPaneSplit(root)) {
+      for (const leaf of duplicatesByLeaf.keys()) {
+        if (!leaf.tabs.length && collapseEmptyLeafInTree(root, leaf)) changed = true;
+      }
+    }
     // Prune closed backend ids from every leaf, not just the target: the
     // target selection picks the leaf holding the first live terminal id,
     // so a sibling whose terminal closed keeps a dead id in its tabs and a
     // dangling active pointer (the strip filter hides the id, leaving an
     // orphan blank pane until something re-targets the sync).
+    // The prune rule is terminalTabKnown (D10): an id missing from the
+    // filtered list but present in the unfiltered maps is live (snapshot
+    // race), and only an id missing from BOTH drops. backendIds alone
+    // (filtered state.tabs) would prune cross-workspace ids.
     // A leaf the prune emptied inside a split is a dead pane: collapse it
     // to the survivor right here. Only prune-emptied leaves qualify: a
     // split-created leaf is empty by design (its strip offers New
@@ -550,7 +740,7 @@ function syncTerminalTabsIntoTree(root) {
     // empty-leaf card.
     const emptiedByPrune = [];
     for (const leaf of paneLeaves(root)) {
-      const kept = leaf.tabs.filter((id) => isEditorTab(id) || isGitTab(id) || backendIds.includes(id));
+      const kept = leaf.tabs.filter((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id));
       if (kept.length !== leaf.tabs.length) {
         leaf.tabs = kept;
         changed = true;
@@ -571,7 +761,7 @@ function syncTerminalTabsIntoTree(root) {
   // clobbers it one tick later. focusLeaf moves the pane focus so the
   // next open lands beside the route tab.
   const routeChanged = lastSyncedRouteTab !== routeTab;
-  const routeIsLivePanel = !!(routeTab && backendIds.includes(routeTab));
+  const routeIsLivePanel = !!(routeTab && terminalTabKnown(routeTab));
   const bootSyncWithFreshActivation = lastSyncedRouteTab === undefined && sawExplicitActive;
   const routeOwner = routeTab ? paneForTab(root, routeTab) : null;
   if (routeChanged && routeIsLivePanel && !bootSyncWithFreshActivation && routeOwner && routeOwner.active !== routeTab) {
@@ -590,7 +780,7 @@ function syncTerminalTabsIntoTree(root) {
   for (const leaf of paneLeaves(root)) {
     if (leaf === target) continue;
     if (!leaf.tabs.includes(leaf.active)) {
-      const nextActive = leaf.tabs.find((id) => isEditorTab(id) || isGitTab(id) || backendIds.includes(id)) || leaf.tabs[0] || null;
+      const nextActive = leaf.tabs.find((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id)) || leaf.tabs[0] || null;
       if (leaf.active !== nextActive) {
         leaf.active = nextActive;
         changed = true;
@@ -598,7 +788,7 @@ function syncTerminalTabsIntoTree(root) {
     }
   }
   if (!target.tabs.includes(target.active)) {
-    const nextActive = target.tabs.find((id) => isEditorTab(id) || isGitTab(id) || backendIds.includes(id)) || target.tabs[0] || null;
+    const nextActive = target.tabs.find((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id)) || target.tabs[0] || null;
     if (target.active !== nextActive) {
       target.active = nextActive;
       changed = true;
@@ -818,8 +1008,9 @@ function renderWorkspacePanes() {
       mountPaneTabContent(pane, leaf, auxTabs);
     }
   });
-  // Non-owner terminal leaves own aux surfaces; anything not still on
-  // screen (closed or promoted leaf, tab moved to the owner) disposes.
+  // Non-owner terminal leaves own aux surfaces; a tab not still on
+  // screen (closed or promoted leaf, tab moved to the owner) parks its
+  // surface in the D8 cache (releaseStale also runs the cap eviction).
   if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseStale(auxTabs);
   // A reshape can drop the leaf hosting the empty-leaf card (split
   // collapse, close-promote, maximize): rescue parks it home hidden, and
@@ -829,6 +1020,9 @@ function renderWorkspacePanes() {
   // action rendered. Same bare-function guard style as the callers in
   // this file: standalone VM harnesses load this module without render.js.
   if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
+  // Mirror the tree's active pointer onto the pane elements (focus ring).
+  if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.applyFocusClasses === "function")
+    window.HerdrPaneFocus.applyFocusClasses();
 }
 
 function paneLeafElement(container, root, leaf) {
@@ -837,6 +1031,53 @@ function paneLeafElement(container, root, leaf) {
   }
   const first = [...container.children].find((child) => hasClass(child, "workspace-pane"));
   return first || null;
+}
+
+// Which workspaces a leaf's terminal tabs belong to (D4): resolved from
+// the tab rows (never the hosting leaf, D7.3). Used to decide whether the
+// mixed-tree badge shows at all and what it labels.
+function leafWorkspaceIds(leaf) {
+  const ids = [];
+  for (const tabId of paneTabsForTree(leaf) || []) {
+    if (isEditorTab(tabId) || isGitTab(tabId)) continue;
+    const row = paneTerminalTabById(tabId);
+    const workspaceId = row && row.workspace_id;
+    if (workspaceId && !ids.includes(workspaceId)) ids.push(workspaceId);
+  }
+  return ids;
+}
+
+// The tree hosts multiple workspaces when ANY leaf resolves a foreign
+// workspace id (D4: the badge hides entirely on single-workspace trees,
+// including empty ones).
+function treeIsMixed() {
+  const seen = new Set();
+  for (const leaf of paneLeaves(paneRootFor())) {
+    for (const id of leafWorkspaceIds(leaf)) {
+      seen.add(id);
+      if (seen.size > 1) return true;
+    }
+  }
+  return false;
+}
+
+// D4 badge: label plus a thin accent, never hue alone. The label carries
+// worktree name + branch when the workspace is a worktree, else the
+// workspace label. Clickable (D6): opens the workspace picker scoped to
+// this pane. Empty leaves and single-workspace trees show no badge.
+function paneWorkspaceBadgeHtml(leaf) {
+  if (!treeIsMixed()) return "";
+  const ids = leafWorkspaceIds(leaf);
+  if (ids.length !== 1) return "";
+  const workspace = (state.workspaces || []).find((w) => w.workspace_id === ids[0]);
+  if (!workspace) return "";
+  const label =
+    (typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) ||
+    workspace.label ||
+    ids[0];
+  const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
+  const title = `Workspace: ${label}`;
+  return `<button class="pane-ws-badge" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.stopPropagation();HerdrPaneWorkspacePicker.openPicker(this,'${escapeAttr(encodedPane)}','switch')">${escapeHtml(label)}</button>`;
 }
 
 function renderLeafInto(pane, leaf) {
@@ -850,7 +1091,7 @@ function renderLeafInto(pane, leaf) {
       if (isGitTab(tabId)) return paneGitTabButtonHtml(tabId, tabId === activeTab);
       return paneTerminalTabButtonHtml(paneTerminalTabById(tabId), tabId === activeTab);
     })
-    .join("") + paneStripControlsHtml(leaf);
+    .join("") + paneWorkspaceBadgeHtml(leaf) + paneStripControlsHtml(leaf);
   if (strip.__herdrPaneSignature !== stripHtml) {
     strip.__herdrPaneSignature = stripHtml;
     strip.innerHTML = stripHtml;
@@ -956,10 +1197,11 @@ function rescueLiveSurfaces(container, element) {
         continue;
       }
       if (hasClass(child, "pane-terminal-aux")) {
-        // Aux surfaces own a live socket and renderer; park them so the
-        // drop cannot orphan them. Parked means hidden like the other
-        // rescued surfaces: the mount pass re-parents and un-hides, or
-        // the registry disposes when no leaf renders the tab anymore.
+        // Aux surfaces own a wterm instance and scrollback; park them
+        // so the drop cannot orphan them. Parked means hidden like the
+        // other rescued surfaces: the mount pass re-parents and un-hides,
+        // and the registry keeps the entry cached for the tab's return
+        // (real disposal is closeTab and cap eviction).
         if (child.style) child.style.display = "none";
         container.appendChild(child);
         continue;
@@ -995,7 +1237,7 @@ function paneTabButtonHtml(tab, isActive, index, tabs) {
   if (state.editingTab === tab.tab_id)
     return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
   const label = panelVisibleLabel(tab, index, tabs);
-  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
+  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
 }
 
 function paneTerminalTabButtonHtml(tab, isActive) {
@@ -1110,7 +1352,15 @@ function paneNewTabControlHtml(leaf) {
   // strip was clicked, not the active one. With no workspace open it
   // falls through to the workspace/worktree flow (the same family as
   // the dashboard's primary action), so the button is never dead.
+  // With more than one workspace open the + opens the workspace picker
+  // (D3): the new terminal can start in ANY workspace and still land in
+  // this pane. One workspace keeps the direct create (no picker for a
+  // one-row list).
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
+  const multi = (state.workspaces || []).length > 1;
+  if (multi) {
+    return `<button class="pane-strip-button pane-new-picker" title="New panel in a workspace" aria-label="New panel in a workspace" aria-haspopup="dialog" onclick="event.preventDefault();HerdrPaneWorkspacePicker.openPicker(this,'${escapeAttr(encoded)}','new-tab')">+</button>`;
+  }
   return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newTabForPane('${escapeAttr(encoded)}')">+</button>`;
 }
 
@@ -1347,12 +1597,12 @@ function paneTabDragStart(event) {
   if (!event || !event.target || !event.target.dataset) return;
   const tabId = event.target.dataset.tabId;
   if (!tabId) return;
-  // Terminal tabs refuse the drag: the surface is singular and the
-  // backend owns the tab list.
-  if (!isEditorTab(tabId) && !isGitTab(tabId)) {
-    if (event.preventDefault) event.preventDefault();
-    return;
-  }
+  // Terminal tabs drag under the D7 invariants: the move is atomic on
+  // drop (one splice out, one splice in, one sync pass), the surface
+  // keeps its identity (the singleton follows the route tab, an aux
+  // re-parents by tab key), and the workspace stays on the tab row
+  // (never re-assigned by the hosting leaf). Refusing the drag was the
+  // pre-mixed-tree behavior.
   paneDragTabId = tabId;
   if (event.dataTransfer) {
     event.dataTransfer.setData("text/herdr-pane-tab", tabId);
@@ -1364,6 +1614,7 @@ function paneTabDragStart(event) {
 function paneTabDragEnd() {
   paneDragTabId = null;
   clearPaneDropCaret();
+  clearPaneWorkspaceDropHint();
   document.querySelectorAll(".pane-tab-dragging").forEach((node) => {
     if (node.classList && node.classList.remove) node.classList.remove("pane-tab-dragging");
   });
@@ -1415,27 +1666,84 @@ function paneDropCaretAt(strip, index) {
   strip.appendChild(caret);
 }
 
+// Hover preview for a workspace card held over a pane strip (D3 speed
+// path): "Open terminal: <label> here". A real node (not a bare outline)
+// so the drop target reads as concrete; one node at a time.
+function paneWorkspaceDropHint(strip, workspaceId) {
+  clearPaneWorkspaceDropHint();
+  const workspace = (state.workspaces || []).find((w) => w.workspace_id === workspaceId);
+  if (!workspace) return;
+  const label =
+    (typeof workspaceDisplayTitle === "function" && workspaceDisplayTitle(workspace)) ||
+    workspace.label ||
+    workspaceId;
+  const hint = document.createElement("div");
+  hint.className = "pane-ws-drop-hint";
+  hint.textContent = `Open terminal: ${label} here`;
+  strip.appendChild(hint);
+}
+
+function clearPaneWorkspaceDropHint() {
+  document.querySelectorAll(".pane-ws-drop-hint").forEach(detachDomNode);
+}
+
+// Which drag payload is in flight: a pane tab (text/herdr-pane-tab) or a
+// sidebar workspace card (state.dragWorkspace, set by workspaceDragStart).
+// Tab drags win when both signals somehow exist.
+function activeDragKind() {
+  if (paneDragTabId) return { kind: "tab", tabId: paneDragTabId };
+  if (state.dragWorkspace) return { kind: "workspace", workspaceId: state.dragWorkspace };
+  return null;
+}
+
 function paneStripDragOver(event) {
-  if (!paneDragTabId) return;
-  // The strip under the pointer owns the caret; hovering pane content
-  // targets the same strip's append slot.
+  const drag = activeDragKind();
+  if (!drag) return;
+  // The strip under the pointer owns the caret or the workspace hint;
+  // hovering pane content targets the same strip's append slot.
   const target = event.target;
   const strip = (target && target.closest ? target.closest(".pane-tab-strip") : null)
     || (target && target.classList && target.classList.contains && target.classList.contains("pane-tab-strip") ? target : null);
   if (!strip) return;
   if (event.preventDefault) event.preventDefault();
   if (event.dataTransfer && "dropEffect" in event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  const index = paneDropIndexAt(strip, event, paneDragTabId);
+  if (drag.kind === "workspace") {
+    paneWorkspaceDropHint(strip, drag.workspaceId);
+    return;
+  }
+  const index = paneDropIndexAt(strip, event, drag.tabId);
   paneDropCaretAt(strip, index);
   strip.dataset.dropIndex = String(index);
 }
 
 function paneStripDrop(event) {
-  const tabId = paneDragTabId
-    || (event.dataTransfer && event.dataTransfer.getData ? event.dataTransfer.getData("text/herdr-pane-tab") : null);
+  const drag = activeDragKind()
+    || (event.dataTransfer && event.dataTransfer.getData
+      ? { kind: "tab", tabId: event.dataTransfer.getData("text/herdr-pane-tab") }
+      : null);
   const pane = event.target && event.target.closest ? event.target.closest(".workspace-pane") : null;
+  if (drag && drag.kind === "workspace") {
+    clearPaneWorkspaceDropHint();
+    if (event.preventDefault) event.preventDefault();
+    const paneId = pane && pane.dataset ? pane.dataset.paneId : null;
+    // D3 speed path: the card drop creates a terminal in the dragged
+    // workspace inside this pane. No blind drops: the hover hint named
+    // the workspace and pane all the way in.
+    if (window.HerdrWorkspacePanes && typeof window.HerdrWorkspacePanes.openPanelInWorkspace === "function")
+      void window.HerdrWorkspacePanes.openPanelInWorkspace(drag.workspaceId, paneId);
+    // Same cleanup the sidebar's own dragend runs, so a drop on a strip
+    // never leaves the card dimmed (.workspace-drag) or the drag state
+    // armed for the next dragover.
+    state.dragWorkspace = null;
+    document.querySelectorAll(".workspace-drag").forEach((node) => {
+      if (node.classList && node.classList.remove) node.classList.remove("workspace-drag");
+    });
+    return;
+  }
+  const tabId = drag && drag.kind === "tab" ? drag.tabId : null;
   const strip = pane && pane.querySelector ? pane.querySelector(".pane-tab-strip") : null;
   paneTabDragEnd();
+  clearPaneWorkspaceDropHint();
   if (!tabId || !pane) return;
   if (event.preventDefault) event.preventDefault();
   const paneId = pane.dataset ? pane.dataset.paneId : null;
@@ -1446,11 +1754,17 @@ function paneStripDrop(event) {
 // The actual move: splice from the source leaf, insert into the target
 // leaf at the caret index, activate, persist, re-render. Same-leaf moves
 // are reorders and stay client-side; a cross-leaf move re-mounts the
-// owning module's container into the new content slot.
+// owning module's container into the new content slot. Terminal tabs
+// follow the D7 invariants: atomic splice on drop, the surface keeps
+// its identity (the singleton follows the route tab, an aux re-parents
+// by its per-tab key on the next render), and the route moves with the
+// tab when the dragged id was the route tab (workspaceIdForTab keeps
+// the route's workspace row-true, D7.3).
 function movePaneTabTo(tabId, targetPaneId, index) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
-  if (!isEditorTab(tabId) && !isGitTab(tabId)) return false;
+  const isTerm = !isEditorTab(tabId) && !isGitTab(tabId) && tabId !== TERMINAL_TAB_PLACEHOLDER;
+  if (!isTerm && !isEditorTab(tabId) && !isGitTab(tabId)) return false;
   const source = paneForTab(root, tabId);
   if (!source) return false;
   const leaves = paneLeaves(root);
@@ -1482,6 +1796,21 @@ function movePaneTabTo(tabId, targetPaneId, index) {
   renderWorkspacePanes();
   if (isEditorTab(tabId)) void activateEditorTab(editorTabPath(tabId));
   else if (isGitTab(tabId)) void openGitTab(gitTabViewKey(tabId));
+  else if (isTerm) {
+    // D7.2: dragging the route tab moves the singleton surface with
+    // it. The route is the ownership signal for #terminalShell
+    // (terminalShellOwnerLeaf resolves through paneForTab(root, route));
+    // re-routing here re-claims the shell for the target leaf, and the
+    // render pass disposes the dragged tab's aux from its old
+    // non-owner stint (mountPaneTabContent releases the aux of a tab
+    // the primary shell now hosts). No re-create anywhere: identity
+    // survives (aux keyed per tab, shell per app).
+    if (String(state.tab) === tabId && typeof go === "function")
+      go(workspaceIdForTab(tabId), tabId);
+    // A non-route terminal drop just re-renders: the tab keeps its
+    // aux identity, and the target leaf's mount pass re-parents the
+    // existing per-tab container into its slot (D7.4).
+  }
   return true;
 }
 
@@ -1497,7 +1826,10 @@ function wirePaneStripDrag(strip) {
   strip.addEventListener("dragover", (event) => paneStripDragOver(event));
   strip.addEventListener("drop", (event) => paneStripDrop(event));
   strip.addEventListener("dragleave", (event) => {
-    if (event.target === strip) clearPaneDropCaret();
+    if (event.target === strip) {
+      clearPaneDropCaret();
+      clearPaneWorkspaceDropHint();
+    }
   });
   strip.addEventListener("dragend", () => paneTabDragEnd());
 }
@@ -1673,16 +2005,45 @@ async function newTabForPane(encodedPaneId) {
     if (leaf) {
       // Terminal ids are the only backend kind; remember where this one
       // belongs before the backend list lands.
-      pendingTabPlacements = pendingTabPlacements || new Map();
-      pendingTabPlacements.set("__next__", leaf.paneId);
+      requestTabPlacement(leaf.paneId);
     }
     await newTab();
   }
 }
 
-// Where the + button wants the next created terminal tab to live. The
-// sync consumes it once so a later plain newTab() is unaffected.
+// Where the + button (and the workspace picker) wants the next created
+// terminal tab to live. The sync consumes it once so a later plain
+// newTab() is unaffected.
 let pendingTabPlacements = null;
+
+function requestTabPlacement(paneId) {
+  if (!paneId) return;
+  pendingTabPlacements = pendingTabPlacements || new Map();
+  pendingTabPlacements.set("__next__", paneId);
+}
+
+// Create a panel in ANY workspace and land it in a specific pane (D3):
+// the picker's new-tab scope and the sidebar card drag-drop share this
+// path. The pending placement tells the sync which leaf owns the fresh
+// id, the POST creates it in the picked workspace, and the route moves
+// to it (workspace first, tab second, so the snapshot filter keeps the
+// new row visible on arrival).
+async function openPanelInWorkspace(workspaceId, paneId) {
+  if (!workspaceId) return;
+  if (paneId) requestTabPlacement(paneId);
+  if (typeof showBlocking === "function") showBlocking("Creating panel...");
+  try {
+    const r = await api("/api/tabs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspace_id: workspaceId }),
+    });
+    const tabId = r && r.result && r.result.tab ? r.result.tab.tab_id : null;
+    if (tabId && typeof go === "function") go(workspaceId, tabId);
+  } finally {
+    if (typeof hideBlocking === "function") hideBlocking();
+  }
+}
 
 // Closes the active leaf. The closed leaf's tabs migrate to the
 // survivor instead of dying: the migration target resolves on the
@@ -1762,7 +2123,7 @@ async function closeActivePane() {
     if (isEditorTab(migration.active)) void activateEditorTab(editorTabPath(migration.active));
     else if (isGitTab(migration.active)) void openGitTab(gitTabViewKey(migration.active));
     else if (typeof go === "function" && state.tab !== migration.active)
-      go(state.ws, migration.active);
+      go(workspaceIdForTab(migration.active), migration.active);
   }
   return true;
 }
@@ -1827,7 +2188,13 @@ function findSplitSlot(root, childrenArray) {
 // tab migration here: the leaf emptied out, so the nearest survivor
 // (route- or tree-order) takes focus instead. Single-leaf trees keep
 // their empty leaf for the New terminal card.
-function collapseEmptyLeafInTree(root, leaf) {
+// Collapse works on any workspace's tree, not just the current one: the
+// entry that owns the root must be the one rewritten. Callers pass the
+// entry explicitly (panesStateFor() default keeps the historical
+// single-workspace call sites unchanged); the root-replacement writes
+// below target it, so a sweep over foreign trees can never swap another
+// workspace's root object.
+function collapseEmptyLeafInTree(root, leaf, entry = panesStateFor()) {
   if (!isPaneSplit(root)) return false;
   const leaves = paneLeaves(root);
   if (leaves.length <= 1 || !leaves.includes(leaf)) return false;
@@ -1835,7 +2202,6 @@ function collapseEmptyLeafInTree(root, leaf) {
   const survivor = migrationTargetForClosedLeaf(root, leaf);
   const slot = findLeafSlot(root, leaf);
   if (!slot || slot.holder === "root") return false;
-  const entry = panesStateFor();
   if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
   const holderArray = slot.holder;
   const sibling = holderArray.length === 2 ? holderArray[1 - slot.index] : null;
@@ -1848,7 +2214,7 @@ function collapseEmptyLeafInTree(root, leaf) {
     holderArray.splice(slot.index, 1);
     normalizeEntryRoot(entry);
   }
-  const liveRoot = paneRootFor();
+  const liveRoot = entry.root;
   const focusTarget = (survivor && paneLeaves(liveRoot).includes(survivor) && survivor !== leaf)
     ? survivor
     : activeLeaf(liveRoot) || paneLeaves(liveRoot)[0];
@@ -1956,8 +2322,8 @@ function tabHoverTitle(tab) {
 // The pane tree only stores identity; the file browser module (ensured
 // loaded before any real open) owns per-file state and mounts the editor
 // container into the pane content slot.
-function paneRootFor(id = state.ws) {
-  return panesStateFor(id).root;
+function paneRootFor() {
+  return panesStateFor().root;
 }
 
 function paneEnsureEditorTab(path) {
@@ -2023,7 +2389,7 @@ function closeEditorTabImmediate(encodedPath) {
     leaf.active = leaf.tabs[index] || leaf.tabs[index - 1] || leaf.tabs[0] || null;
     if (isEditorTab(leaf.active)) void activateEditorTab(editorTabPath(leaf.active));
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
-    else if (leaf.active && typeof go === "function") go(state.ws, leaf.active);
+    else if (leaf.active && typeof go === "function") go(workspaceIdForTab(leaf.active), leaf.active);
   }
   // Last tab in a split leaf: the pane would sit empty, collapse the
   // tree to the survivor instead (single-leaf trees keep their card).
@@ -2134,7 +2500,7 @@ function closeGitTabImmediate(viewKey) {
     leaf.active = leaf.tabs[index] || leaf.tabs[index - 1] || leaf.tabs[0] || null;
     if (isEditorTab(leaf.active)) void activateEditorTab(editorTabPath(leaf.active));
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
-    else if (leaf.active && typeof go === "function") go(state.ws, leaf.active);
+    else if (leaf.active && typeof go === "function") go(workspaceIdForTab(leaf.active), leaf.active);
   }
   // Last tab in a split leaf: collapse to the survivor, same as the
   // editor close above.
@@ -2211,7 +2577,10 @@ function activatePaneTab(tabId) {
     if (paneActiveTab() !== tabId) setActivePaneTab(tabId);
     return;
   }
-  go(state.ws, tabId);
+  // The route carries the tab's OWN workspace (D1 mixed tree): a
+  // cross-workspace tab navigating under state.ws would land on a
+  // mismatched route and the snapshot filter would hide its row.
+  go(workspaceIdForTab(tabId), tabId);
 }
 
 // Moves the existing #terminalShell node into the pane content slot by
@@ -2305,8 +2674,13 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
   const activeTab = leaf.active;
   const activeIsTerminal = !!activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab);
   const aux = window.HerdrPaneTerminals;
-  const releaseAuxForThisLeaf = () => {
-    if (aux && activeTab) aux.releaseForTab(activeTab);
+  // D8 cache: a leaf whose active tab is not a terminal anymore parks
+  // its aux surface instead of disposing it (scrollback and the live
+  // view survive an editor stint or an owner flip). Real disposal stays
+  // on closeTab and the two parked-unrecoverable rules in releaseStale.
+  // parkForTab itself no-ops when the tab has no surface.
+  const parkAuxForThisLeaf = () => {
+    if (aux && activeTab && typeof aux.parkForTab === "function") aux.parkForTab(activeTab);
   };
   const terminalShell = el("terminalShell");
   // Reshape commands (split, flip, maximize, close-promote) move pane
@@ -2360,7 +2734,7 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
         if (auxTabs) auxTabs.push(activeTab);
       }
     } else {
-      releaseAuxForThisLeaf();
+      parkAuxForThisLeaf();
     }
     return;
   }
@@ -2374,7 +2748,7 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
     // parked in the content slot breaks the one-surface-per-slot
     // invariant splits rely on. The container claim above already
     // re-parented and showed the active tab's container.
-    releaseAuxForThisLeaf();
+    parkAuxForThisLeaf();
     if (terminalShell) {
       const panesContainer = el("workspacePanes");
       if (panesContainer && terminalShell.parentElement !== panesContainer) {
@@ -2385,13 +2759,38 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
     }
     return;
   }
+  // The active terminal is NOT the shell's host: the owner leaf can
+  // hold a non-route terminal as its active tab (a drop landed one
+  // here, or a strip reorder left it on top) while the route tab lives
+  // in another leaf. Showing the shell here would render the route
+  // tab's pty under this leaf's highlighted tab and dispose the moved
+  // tab's surface, the exact dispose-and-recreate the drag contract
+  // forbids (D7.4). Mount the aux surface instead, same as a non-owner
+  // leaf; the shell stays parked for its real owner.
+  const routeTabForShell = state.tab != null ? String(state.tab) : null;
+  if (activeIsTerminal && routeTabForShell && activeTab !== routeTabForShell && activeTab !== TERMINAL_TAB_PLACEHOLDER) {
+    if (terminalShell) {
+      const panesContainer = el("workspacePanes");
+      if (panesContainer && terminalShell.parentElement !== panesContainer) {
+        if (terminalShell.parentElement) terminalShell.parentElement.removeChild(terminalShell);
+        panesContainer.appendChild(terminalShell);
+      }
+      if (terminalShell.style) terminalShell.style.display = "none";
+    }
+    hideStalePaneContainers(content);
+    if (aux && activeTab && activeTab !== TERMINAL_TAB_PLACEHOLDER) {
+      aux.ensureForLeaf(pane, leaf);
+      if (auxTabs) auxTabs.push(activeTab);
+    }
+    return;
+  }
   if (terminalShell && terminalShell.style) terminalShell.style.display = "";
   if (content && terminalShell && terminalShell.parentElement !== content)
     content.appendChild(terminalShell);
   hideStalePaneContainers(content);
   // The primary shell took this tab over: its aux surface, if any from an
   // earlier non-owner render, disposes.
-  releaseAuxForThisLeaf();
+  parkAuxForThisLeaf();
 }
 
 // ---- no-workspace dashboard mount ---------------------------------
@@ -2643,9 +3042,14 @@ window.HerdrWorkspacePanes = {
   openPaneEditorFind,
   saveWorkspacePanesStates,
   forgetWorkspacePanes,
+  pruneWorkspaceTabsFromPanes,
   // Phase 4: split tree surface. paneLeaves/activePane expose the tree
   // walk; the commands are the strip buttons and shortcuts' entry points.
   paneLeaves,
+  paneRootFor,
+  paneTabsForTree,
+  paneWorkspaceBadgeHtml,
+  workspaceIdForTab,
   activePane: () => activeLeaf(paneRootFor()),
   activePaneElement,
   splitPaneRight,
@@ -2660,12 +3064,18 @@ window.HerdrWorkspacePanes = {
   // Phase 5: tab drag between panes.
   movePaneTabTo,
   paneDropIndexAt,
+  // Drag pipeline entry points (the strip listeners call these; tests
+  // drive them directly because the vm DOM stub does not store listeners).
+  paneStripDragOver,
+  paneStripDrop,
   // p6: per-strip controls targeting the pressed pane.
   splitPaneRightFor,
   splitPaneDownFor,
   closePaneFor,
   maximizePaneFor,
   newTabForPane,
+  requestTabPlacement,
+  openPanelInWorkspace,
   paneMenuItemsFor,
   syncTerminalTabsIntoTree,
   terminalShellOwnerLeaf,

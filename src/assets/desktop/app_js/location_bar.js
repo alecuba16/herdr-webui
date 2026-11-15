@@ -62,10 +62,38 @@
   }
 
   function selectedWorkspace() {
+    // D2 one-indicator rule: the focused pane's active tab owns the bar.
+    // state.tab routes the terminal the user is actually looking at, so
+    // its row decides the workspace; a cross-workspace tab in a mixed
+    // tree shows ITS folder, not the sidebar selection. Tab-less states
+    // (dashboard) and editor/git route ids (no terminal row) keep the
+    // state.ws fallback.
+    const routeTabId = state.tab != null ? String(state.tab) : null;
+    if (routeTabId) {
+      const row = routeTabRow(routeTabId);
+      if (row && row.workspace_id && row.workspace_id !== state.ws) {
+        const w = (state.workspaces || []).find(
+          (candidate) => candidate.workspace_id === row.workspace_id,
+        );
+        if (w) return w;
+      }
+    }
     return (
       (state.workspaces || []).find((w) => w.workspace_id === state.ws) ||
       null
     );
+  }
+
+  // The route tab's row, workspace-filtered or not. state.tabs holds the
+  // filtered rows; the unfiltered snapshot map (tabsById, old servers:
+  // allTabs) covers cross-workspace ids.
+  function routeTabRow(tabId) {
+    const local = (state.tabs || []).find((tab) => tab.tab_id === tabId);
+    if (local) return local;
+    const unfiltered = state.tabsById && state.tabsById[tabId];
+    if (unfiltered && typeof unfiltered === "object") return unfiltered;
+    const fallback = (state.allTabs || []).find((tab) => tab.tab_id === tabId);
+    return fallback || null;
   }
 
   function workspaceCwd(workspace) {

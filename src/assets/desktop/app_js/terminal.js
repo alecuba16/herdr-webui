@@ -1381,6 +1381,12 @@ function terminalResizeNow() {
 function applyScheduledTerminalResize() {
   terminalResizeFrame = null;
   terminalResizeLastAppliedAt = terminalResizeNow();
+  // Aux surfaces refit even when the primary is unattached or hidden:
+  // the session tree can host aux terminals while state.terminalId is
+  // null (dashboard boot, owner showing an editor tab). Their fit is
+  // self-contained (grid from the slot box, pty notified per entry).
+  if (window.HerdrPaneTerminals && typeof window.HerdrPaneTerminals.fitAll === "function")
+    window.HerdrPaneTerminals.fitAll();
   if (!state.terminalId || document.hidden) return;
 
   // Display/raster changes (cross-monitor moves, fullscreen, zoom) can

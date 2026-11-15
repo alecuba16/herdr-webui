@@ -7544,7 +7544,8 @@ async fn session_snapshot_filters_rows_by_workspace_and_derives_maps() {
                 "panes": [
                     { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_1" },
                     { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_2" },
-                    { "workspace_id": "ws_2", "tab_id": "tab_2", "pane_id": "pane_3" }
+                    { "workspace_id": "ws_2", "tab_id": "tab_2", "pane_id": "pane_3" },
+                    { "workspace_id": "ws_2", "pane_id": "no id: skipped" }
                 ],
                 "agents": []
             }
@@ -7573,11 +7574,13 @@ async fn session_snapshot_filters_rows_by_workspace_and_derives_maps() {
     assert!(panes.iter().all(|pane| pane["workspace_id"] == "ws_1"));
     // The maps cover both workspaces regardless of the filter. The three
     // malformed ws_2 tabs (no tab_id, missing label, null label) still count
-    // toward ws_2's totals but must never reach the label map.
+    // toward ws_2's totals but must never reach the label map. The no-id
+    // ws_2 pane row counts toward ws_2's pane total the same way and must
+    // never reach the pane map.
     assert_eq!(body["result"]["workspaces_by_id"]["ws_2"]["label"], "two");
     assert_eq!(
         body["result"]["workspace_counts"],
-        json!({ "ws_1": { "tabs": 1, "panes": 2 }, "ws_2": { "tabs": 4, "panes": 1 } })
+        json!({ "ws_1": { "tabs": 1, "panes": 2 }, "ws_2": { "tabs": 4, "panes": 2 } })
     );
     // The label map covers the dropped ws_2 tab: the agents list falls back
     // to it when its tab row is filtered out, so the panel name survives a
@@ -7585,6 +7588,32 @@ async fn session_snapshot_filters_rows_by_workspace_and_derives_maps() {
     assert_eq!(
         body["result"]["tab_labels_by_id"],
         json!({ "tab_1": "Shell", "tab_2": "build" })
+    );
+    // The full-row maps keep every workspace's records regardless of the
+    // filter: the pane tree resolves bare tab ids through them, so rows
+    // the filter dropped must stay reachable. tabs_by_id keeps every
+    // id-carrying row (label or not: 4 of the 5 tabs; the no-id row never
+    // reaches the map). The pane map groups by tab_id (lists).
+    assert_eq!(body["result"]["tabs_by_id"].as_object().unwrap().len(), 4);
+    assert_eq!(
+        body["result"]["tabs_by_id"]["tab_2"]["workspace_id"],
+        "ws_2"
+    );
+    assert_eq!(
+        body["result"]["tabs_by_id"]["tab_5"],
+        json!({ "workspace_id": "ws_2", "tab_id": "tab_5", "number": 5, "label": null })
+    );
+    assert_eq!(
+        body["result"]["panes_by_id"],
+        json!({
+            "tab_1": [
+                { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_1" },
+                { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_2" }
+            ],
+            "tab_2": [
+                { "workspace_id": "ws_2", "tab_id": "tab_2", "pane_id": "pane_3" }
+            ]
+        })
     );
     handle.join().unwrap();
     let _ = fs::remove_file(socket);

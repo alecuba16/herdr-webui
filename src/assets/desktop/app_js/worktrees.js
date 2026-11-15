@@ -25,6 +25,24 @@ function workspaceDragStart(e, id) {
     e.dataTransfer.effectAllowed = "move";
   } catch (_) {}
 }
+
+// The drag-attribute chunk every sidebar card carries (render.js
+// interpolates it). Cards stay draggable in every sort mode: the D3
+// speed path (card onto a pane strip opens a terminal from that
+// workspace there) must not require enabling sidebar drag-sort. The
+// sidebar-internal reorder handlers gate themselves on the sort mode
+// (workspaceDragOver), so non-drag modes only gain the strip drop.
+function workspaceDragAttrs(id) {
+  const esc = escapeAttr(id);
+  return (
+    ' draggable="true"' +
+    ` ondragstart="workspaceDragStart(event,'${esc}')"` +
+    ` ondragover="workspaceDragOver(event,'${esc}')"` +
+    ' ondragleave="workspaceDragLeave(event)"' +
+    ` ondrop="workspaceDrop(event,'${esc}')"` +
+    ' ondragend="workspaceDragEnd(event)"'
+  );
+}
 function workspaceDragOver(e, id) {
   if (
     options.workspaceSort !== "drag" ||
@@ -44,17 +62,30 @@ function workspaceDragEnd(e) {
     .querySelectorAll(".workspace-drop")
     .forEach((x) => x.classList.remove("workspace-drop"));
   state.dragWorkspace = null;
+  // A cancel (Esc, drop outside any target) can end the drag while the
+  // card still hovers a pane strip: its hint would outlive the drag.
+  // Guarded: standalone worktrees harnesses load this file without
+  // workspace_panes.js.
+  if (typeof clearPaneWorkspaceDropHint === "function") clearPaneWorkspaceDropHint();
 }
 async function workspaceDrop(e, targetId) {
   e.preventDefault();
   e.currentTarget.classList.remove("workspace-drop");
+  // D3: only drag-sort mode accepts the sidebar-internal reorder. In the
+  // other sort modes a real browser never fires drop here (workspaceDragOver
+  // skips preventDefault), but the vm realm calls handlers directly, so the
+  // gate lives on the mutator too. Non-drag drags still land on pane strips.
+  // The drag consumes either way: leaving it armed would let a stray
+  // dragover re-trigger drop semantics after the drop already happened.
+  const dragWasLive = !!state.dragWorkspace;
   const source = state.dragWorkspace;
+  state.dragWorkspace = null;
+  if (options.workspaceSort !== "drag" || !dragWasLive) return;
   if (!source || source === targetId) return;
   const ids = orderedWorkspaceIds().filter((id) => id !== source);
   const index = Math.max(0, ids.indexOf(targetId));
   ids.splice(index, 0, source);
   state.workspaceOrder = ids;
-  state.dragWorkspace = null;
   render();
   await api("/api/workspace-order", {
     method: "POST",
@@ -1229,6 +1260,10 @@ async function closeTab(id) {
         if (!String(error.message || error).includes("not found")) throw error;
       }
       if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
+      // The tab is gone for good: dispose its cached aux surface now.
+      // The D8 cache parks surfaces on hide, so nothing else frees the
+      // socket and wterm instance this tab owned.
+      if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseForTab(id);
       // The closed terminal may have been a split leaf's last tab: drop
       // the empty pane so the survivor takes the layout back.
       if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
