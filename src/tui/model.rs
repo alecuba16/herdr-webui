@@ -623,12 +623,13 @@ mod coverage_tests {
         let joined = here.join("same-checkout-probe");
         std::fs::create_dir_all(&joined).unwrap();
         let direct = joined.to_str().unwrap();
-        let trailing = if direct.ends_with('/') {
-            format!("{direct}.")
-        } else {
-            format!("{direct}/./")
-        };
-        assert!(same_checkout_path(direct, &trailing));
+        // Both spelling arms run deterministically: the with-slash and
+        // without-slash spellings are built explicitly, not branched on the
+        // host's temp_dir spelling.
+        let slash = format!("{direct}/");
+        let dotted = format!("{slash}.");
+        assert!(same_checkout_path(direct, &dotted));
+        assert!(same_checkout_path(direct, &format!("{direct}/./")));
         assert!(!same_checkout_path(direct, here.to_str().unwrap()));
         // A missing path cannot canonicalize, so the pair is not equal.
         assert!(!same_checkout_path(direct, "/definitely/not/here/probe"));

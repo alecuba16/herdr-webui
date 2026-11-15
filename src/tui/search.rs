@@ -871,52 +871,79 @@ mod coverage_tests {
 
     #[test]
     fn commit_content_search_appends_hits_to_the_results() {
-        // One-shot server for the content search commit fetch.
+        // Reader's defensive arms: connection 0 carries a body (drives
+        // read_exact), connection 1 hangs up mid-headers (EOF break),
+        // connection 2 is the real content-search request.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{BufRead as _, Read as _, Write as _};
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut reader = std::io::BufReader::new(&stream);
-            let mut request = String::new();
-            reader.read_line(&mut request).unwrap();
-            let mut content_length = 0usize;
-            loop {
-                let mut header = String::new();
-                if reader.read_line(&mut header).unwrap_or(0) == 0 {
-                    break;
+            for kind in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
                 }
-                if header.trim().is_empty() {
-                    break;
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut payload).unwrap();
                 }
-                if let Some(value) = header
-                    .trim()
-                    .to_ascii_lowercase()
-                    .strip_prefix("content-length:")
-                {
-                    content_length = value.trim().parse().unwrap_or(0);
+                if kind < 2 {
+                    // Probes need no answer: 0 delivered a full bodied
+                    // request, 1 already hung up mid-headers.
+                    continue;
                 }
+                let body = json!({
+                    "files": [{
+                        "path": "/repo/a.rs",
+                        "name": "a.rs",
+                        "matches": [{"line": 12}]
+                    }]
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
             }
-            let mut payload = vec![0u8; content_length];
-            if content_length > 0 {
-                reader.read_exact(&mut payload).unwrap();
-            }
-            let body = json!({
-                "files": [{
-                    "path": "/repo/a.rs",
-                    "name": "a.rs",
-                    "matches": [{"line": 12}]
-                }]
-            })
-            .to_string();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
         });
+        use std::io::Write as _;
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up")
+                .unwrap();
+            // Hold so the reader parks in the header loop before the
+            // drop; the EOF break then fires instead of the backlog
+            // discarding a pre-accept close (macOS).
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
         let mut palette = SearchPalette {
             query: "needle".into(),
@@ -936,6 +963,7 @@ mod coverage_tests {
 #[cfg(test)]
 mod coverage_tests_round2 {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn load_recents_caches_and_errors_carry_through() {
@@ -961,5 +989,106 @@ mod coverage_tests_round2 {
             .expect("clock far enough into the epoch");
         state.recents_fetched_at = Some(stale);
         assert!(state.load_recents(&api).is_err(), "expired cache refetches");
+    }
+
+    #[test]
+    fn commit_content_search_tolerates_extra_headers_and_chunked_style_bodies() {
+        // content_search is a GET with no request body. The reader's
+        // defensive arms still need driving: connection 0 is a probe
+        // that carries a real Content-Length + body (drives read_exact)
+        // and then hangs up mid-headers (drives the EOF break);
+        // connection 1 is the real GET whose response streams an extra
+        // header before the terminating blank line.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, Read as _, Write as _};
+            // Connection 0: EOF break probe (hangs up mid-headers).
+            // Connection 1: bodied request (drives read_exact).
+            // Connection 2: the real content-search GET.
+            for kind in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut payload).unwrap();
+                }
+                if kind < 2 {
+                    // Probes get no answer: connection 0 hung up before
+                    // the blank line (the EOF break already fired),
+                    // connection 1 delivered a well-formed bodied
+                    // request and just gets dropped.
+                    continue;
+                }
+                let body = json!({
+                    "files": [{
+                        "path": "/repo/b.rs",
+                        "name": "b.rs",
+                        "matches": [{"line": 7}]
+                    }]
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nX-Extra-Header: ignored\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        // Probe 0: headers without the blank line; the park-then-drop
+        // makes the server's next read_line return 0 (EOF break). The
+        // hold is required: an immediate close can be discarded from
+        // the backlog pre-accept on macOS and never reach the reader.
+        use std::io::Write as _;
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Probe 1: a well-formed bodied request so read_exact consumes
+        // a real payload.
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut palette = SearchPalette {
+            query: "needle".into(),
+            ..Default::default()
+        };
+        let count = palette
+            .commit_content_search(&api, "/repo", "/repo")
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(matches!(
+            &palette.results[0],
+            SearchCandidate::Content { line, .. } if *line == 7
+        ));
     }
 }

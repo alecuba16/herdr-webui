@@ -214,6 +214,39 @@ impl BackendClient {
         self.request("pane.read", json!({ "pane_id": pane_id }))
     }
 
+    /// Screen-shaped pane.read for live previews. The built-in backend
+    /// ANSI-strips raw scrollback (external herdr serves grid-row text from
+    /// its own VT), so a fullscreen TUI pane (jcode, claude) reads as glued
+    /// draw fragments; built-in sessions ask for `format=screen` and get
+    /// VT-emulated tail text instead. External sessions keep the plain
+    /// read: their text is already the composed screen, and sending an
+    /// unknown param would either error or double the request on fallback.
+    pub fn read_pane_screen(&self, pane_id: &str) -> Result<Value, BackendClientError> {
+        if self.connects_to_builtin() {
+            self.request(
+                "pane.read",
+                json!({ "pane_id": pane_id, "format": "screen" }),
+            )
+        } else {
+            self.read_pane(pane_id)
+        }
+    }
+
+    /// True when the sockets follow the built-in path convention
+    /// (`<settings>/builtin/<session>/` or the hashed
+    /// `herdr-webui-builtin-<hash>` fallback), so `pane.read` params beyond
+    /// the external protocol are safe to send.
+    pub fn connects_to_builtin(&self) -> bool {
+        let Some(dir) = self.api_socket.parent() else {
+            return false;
+        };
+        dir.parent()
+            .is_some_and(|parent| parent.ends_with("builtin"))
+            || dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("herdr-webui-builtin-"))
+    }
+
     pub fn list_agents(&self) -> Result<Value, BackendClientError> {
         self.request("agent.list", json!({}))
     }
@@ -834,6 +867,94 @@ mod tests {
 
         handle.join().unwrap();
         let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn read_pane_screen_gates_on_builtin_socket_shape() {
+        // /tmp base keeps the nested path under the 104-byte sun_path limit
+        // (macOS); a temp_dir() base plus builtin/default/ can overflow.
+        let base = PathBuf::from("/tmp").join(unique_name("tui-read-pane-screen"));
+        let builtin_socket = base.join("builtin/default/herdr.sock");
+        let external_socket = base.join("sessions/work/herdr.sock");
+        fs::create_dir_all(builtin_socket.parent().unwrap()).unwrap();
+        fs::create_dir_all(external_socket.parent().unwrap()).unwrap();
+        let builtin_listener = bind_local_listener(&builtin_socket).unwrap();
+        let external_listener = bind_local_listener(&external_socket).unwrap();
+
+        let builtin_probe = thread::spawn(move || {
+            let mut stream = builtin_listener.accept().unwrap();
+            let mut line = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            // Built-in path shape: the screen read must carry format=screen.
+            assert_eq!(request["method"], "pane.read");
+            assert_eq!(
+                request["params"],
+                json!({ "pane_id": "pane_1", "format": "screen" })
+            );
+            stream
+                .write_all(
+                    json!({ "id": request["id"], "result": { "read": { "text": "screen rows", "format": "screen" } } })
+                        .to_string()
+                        .as_bytes(),
+                )
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        });
+        let external_probe = thread::spawn(move || {
+            let mut stream = external_listener.accept().unwrap();
+            let mut line = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            // External path shape: plain pane.read, no builtin-only params.
+            assert_eq!(request["method"], "pane.read");
+            assert_eq!(request["params"], json!({ "pane_id": "pane_1" }));
+            stream
+                .write_all(
+                    json!({ "id": request["id"], "result": { "read": { "text": "grid rows" } } })
+                        .to_string()
+                        .as_bytes(),
+                )
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let builtin = BackendClient::new(&builtin_socket, builtin_socket.clone());
+        assert!(builtin.connects_to_builtin());
+        let screen = builtin.read_pane_screen("pane_1").unwrap();
+        assert_eq!(screen["read"]["text"], "screen rows");
+
+        let external = BackendClient::new(&external_socket, external_socket.clone());
+        assert!(!external.connects_to_builtin());
+        let grid = external.read_pane_screen("pane_1").unwrap();
+        assert_eq!(grid["read"]["text"], "grid rows");
+
+        // Hashed fallback convention and the degenerate shapes: the
+        // over-limit fallback puts the socket directly inside
+        // `/tmp/herdr-webui-builtin-<hash>/` (socket_paths.rs), and that
+        // parent directory name still marks it built-in, while a bare
+        // filename (no parent) and a path whose grandparent is not
+        // `builtin` never do.
+        let hashed = BackendClient::new(
+            "/tmp/herdr-webui-builtin-abc123/herdr.sock",
+            "/tmp/herdr-webui-builtin-abc123/herdr-client.sock",
+        );
+        assert!(hashed.connects_to_builtin());
+        let bare = BackendClient::new("herdr.sock", "herdr.sock");
+        assert!(!bare.connects_to_builtin());
+        // Parentless path ("/" has no parent): the early false arm.
+        let root = BackendClient::new("/", "/");
+        assert!(!root.connects_to_builtin());
+        let flat = BackendClient::new("/tmp/default/herdr.sock", "/tmp/x.sock");
+        assert!(!flat.connects_to_builtin());
+
+        builtin_probe.join().unwrap();
+        external_probe.join().unwrap();
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

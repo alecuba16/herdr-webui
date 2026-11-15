@@ -315,6 +315,13 @@ pub mod input;
 mod coverage_tests {
     use super::*;
 
+    // Coverage note: truncate's bare `out` tail (line after the loop)
+    // is mathematically unreachable — reaching it requires the loop
+    // to consume every char while `value.width() > max_width`, and a
+    // sum of char widths that exceeds max_width must trip the in-loop
+    // check before the last char lands (proven with a standalone
+    // unicode-width probe over the full char/width space).
+
     #[test]
     fn empty_csi_sequence_is_ignored_by_the_styled_sink() {
         // An empty CSI string has no final byte: apply_csi returns early.
@@ -341,5 +348,28 @@ mod coverage_tests {
             "\u{2026}",
             "single column shows only the ellipsis"
         );
+        // A wide char straddling the boundary keeps the loop running to
+        // its end without another push, landing on the bare `out` return.
+        assert_eq!(truncate("aあb", 2), "a…");
+    }
+
+    #[test]
+    fn apply_sgr_ignores_unhandled_codes_and_keeps_prior_state() {
+        let mut style = TuiTextStyle::default();
+        apply_sgr(&mut style, "1");
+        assert!(style.bold);
+
+        // 73 is a real-world SGR (superscript) that the VT filter does not
+        // model; it must fall through the catch-all without clobbering bold.
+        apply_sgr(&mut style, "73");
+        assert!(style.bold);
+
+        // Empty params reset, negative-ish garbage parses to 0 via
+        // unwrap_or(0) and also lands in the catch-all.
+        apply_sgr(&mut style, "");
+        assert_eq!(style, TuiTextStyle::default());
+        let mut garbage = TuiTextStyle::default();
+        apply_sgr(&mut garbage, "99999999999999999999");
+        assert_eq!(garbage, TuiTextStyle::default());
     }
 }

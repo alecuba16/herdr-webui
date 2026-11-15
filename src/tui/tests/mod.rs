@@ -2528,6 +2528,61 @@ pub(crate) fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sen
     fake_backend_socket_with(fixture_snapshot_value())
 }
 
+/// `fake_backend_socket` whose `pane.read` answers a `history_lines`
+/// line history, for the lens deep-fetch growth paths.
+pub(crate) fn fake_backend_socket_with_pane_history(
+    history_lines: usize,
+) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use interprocess::TryClone as _;
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = crate::backend_client::unique_test_path("herdr-tui-fake-hist");
+    let _ = std::fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let response = match request["method"].as_str().unwrap_or("") {
+            "ping" => json!({"id": request["id"], "result": {"version": "test", "protocol": 1}}),
+            "session.snapshot" => json!({"id": request["id"], "result": fixture_snapshot_value()}),
+            "pane.read" => {
+                let text = (0..history_lines)
+                    .map(|i| format!("deep line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                json!({"id": request["id"], "result": {"read": {"text": text}}})
+            }
+            method => json!({"error": format!("unexpected method {method}")}),
+        };
+        stream
+            .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+    });
+    std::mem::forget(handle);
+    (path, tx)
+}
+
 /// `fake_backend_socket` with a custom `session.snapshot` reply, for
 /// flows that assert on the post-refresh workspace list (reroute).
 fn fake_backend_socket_with(
@@ -2606,12 +2661,16 @@ fn fake_backend_socket_with(
             "workspace.close" => {
                 // Built-in backend drops the emptied workspace itself; a
                 // second close reports not-found, which the TUI ignores.
-                if request["workspace_id"].as_str() == Some("ws_gone") {
+                if request["params"]["workspace_id"].as_str() == Some("ws_gone") {
                     json!({"id": request["id"], "error": "workspace not found"})
                 } else {
                     json!({"id": request["id"], "result": {"ok": true}})
                 }
             }
+            "pane.read" => json!({
+                "id": request["id"],
+                "result": {"read": {"text": "pane output"}}
+            }),
             method => json!({"error": format!("unexpected method {method}")}),
         };
         stream
@@ -2628,7 +2687,8 @@ fn fake_backend_socket_with(
 /// `budget` requests normally, then accepts connections but closes them
 /// without a response so later calls fail. Used to exercise the
 /// refresh-error arms after a successful tab create/close.
-fn fake_backend_socket_failing_snapshots() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+pub(crate) fn fake_backend_socket_failing_snapshots(
+) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use std::io::{BufRead, BufReader, Write};
 
@@ -2667,9 +2727,26 @@ fn fake_backend_socket_failing_snapshots() -> (std::path::PathBuf, std::sync::mp
                 "ping" => {
                     json!({"id": request["id"], "result": {"version": "test", "protocol": 1}})
                 }
-                "tab.create" | "tab.close" => {
-                    json!({"id": request["id"], "result": {"ok": true}})
+                "tab.close" => {
+                    // The raced-teardown shape: a close on a tab the
+                    // server already dropped answers not-found so the
+                    // client runs its recovery arm.
+                    if request["params"]["tab_id"].as_str() == Some("tab_gone") {
+                        json!({"id": request["id"], "error": "tab tab_gone not found"})
+                    } else {
+                        json!({"id": request["id"], "result": {"ok": true}})
+                    }
                 }
+                "workspace.close" => {
+                    // ws_real_err wants a real failure (not the ignored
+                    // not-found) so the error surfaces.
+                    if request["params"]["workspace_id"].as_str() == Some("ws_real_err") {
+                        json!({"id": request["id"], "error": "workspace backend exploded"})
+                    } else {
+                        json!({"id": request["id"], "result": {"ok": true}})
+                    }
+                }
+                "tab.create" => json!({"id": request["id"], "result": {"ok": true}}),
                 method => json!({"error": format!("unexpected method {method}")}),
             };
             stream
@@ -9083,6 +9160,10 @@ fn file_tree_search_rows_highlight_matched_name_in_yellow() {
     // Committed search results paint the matched substring with the
     // palette yellow (same token as the webui `herdr-tree-hit` mark);
     // the rest of the row keeps its normal color.
+    // Coverage note (match_span's regex build): the Ok-else on
+    // RegexBuilder is unreachable — the needle goes through
+    // regex::escape first, whose output is always a compilable
+    // pattern, so the build can never fail here.
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Files;
     app.file_explorer.entries = vec![FileEntry {
@@ -10201,6 +10282,11 @@ fn split_mode_git_screen_still_opens_settings() {
 
 #[test]
 fn move_mode_swaps_and_inserts_tiles() {
+    // Coverage note (move_commit's inner guards): the "picked the last
+    // tile" and the inner "target vanished" returns are structurally
+    // unreachable — reaching the insert branch already proved both
+    // panes present, remove_leaf removes exactly the picked pane (so
+    // the pulled tree is Some), and target != picked stays in it.
     let mut app = app_with_two_panes();
     // Seed a split: pane_2 right of pane_1.
     app.split_tree = crate::tui::split::SplitNode::Split {
@@ -13209,12 +13295,84 @@ fn ghost_half_covers_all_sides_and_both_axes() {
 }
 
 #[test]
-fn split_view_with_an_empty_pane_area_draws_nothing() {
-    // A zero-height window: render_split_view returns before layout,
-    // and nothing panics.
+fn split_view_with_a_zero_height_pane_area_draws_no_tiles() {
     let app = two_tile_split();
-    let drawn = draw(&app, 10, 0);
-    assert!(drawn.is_empty() || !drawn.contains("AGENTS"));
+    // Coverage note (render/mod.rs truncate copy): its bare tail after
+    // the char loop is the same mathematically unreachable shape as
+    // terminal's truncate — a char sum over max_width must trip the
+    // in-loop check first (see terminal/mod.rs coverage_tests).
+    // Height 2 with a positive width: render_main runs (its area guard
+    // passes), the vertical layout gives the two fixed rows to the tab
+    // bar and status bar, so pane_area is height 0 and empty while the
+    // frame is not — exactly what render_split_view's own guard needs.
+    // Width 0 cannot reach it: render_main's area guard fires first.
+    // Height alone can never trigger it with 3+ rows: the pane column
+    // holds Min(1), and the solver always grants a Minimum its floor
+    // even over-constrained.
+    let drawn = draw(&app, 80, 2);
+    assert!(!drawn.contains("pane_1"), "no tiles render");
+    assert!(!drawn.contains("pane_2"), "no tiles render");
+}
+
+#[test]
+fn split_overlays_survive_one_column_tiles_without_panicking() {
+    // A 1-column pane area halves to a zero-width ghost half: the
+    // render_ghost is_empty guard fires and the frame still draws
+    // everything else. Uses the raw buffer debug string so a panic,
+    // not a missing glyph, fails the test.
+    // Note: render_double_border's own guard is layout-invariant-
+    // unreachable — layout_tiles drops empty-area leaves (the !area.
+    // is_empty check), so a tile reaching the ring painters never
+    // carries an empty rect; only the ghost halves can be empty.
+    let mut app = two_tile_split();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".into(),
+        pane: "pane_3".into(),
+        side: crate::tui::split::Side::Right,
+    });
+    let drawn = draw(&app, 1, 40);
+    // The ghost half is zero-width so nothing of it renders, and the
+    // tile block still drew its border: the box-drawing vertical bar
+    // is the tile's left border in the single column, proving the
+    // render pipeline ran (a bare "no panic" assert could pass on an
+    // empty buffer).
+    assert!(
+        !drawn.contains("+ pane_3"),
+        "zero-width ghost draws nothing"
+    );
+    assert!(drawn.contains('│'), "tile borders still render");
+
+    // Move mode at 1 column: both rings hit the empty-rect guard.
+    let mut app = two_tile_split();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "pane_1".into(),
+        target: "pane_2".into(),
+        insert: false,
+        side: crate::tui::split::Side::Right,
+    });
+    draw(&app, 1, 40);
+
+    // Same guards via the insert verb (ghost target instead of ring).
+    app.move_mode = Some(crate::tui::split::MoveState {
+        insert: true,
+        ..app.move_mode.clone().unwrap()
+    });
+    draw(&app, 1, 40);
+    // Reaching here without a panic is the point: the zero-width
+    // halves never reach ratatui with a non-empty claim.
+}
+
+#[test]
+fn zoomed_split_with_no_focused_tile_draws_nothing() {
+    // split_zoomed filters tiles down to the focused one; with focus
+    // pointing at a pane the tree does not hold, the visible list is
+    // empty and render_split_view returns before the overlays run.
+    let mut app = two_tile_split();
+    app.split_zoomed = true;
+    app.split_focus = Some("pane_missing".into());
+    let drawn = draw(&app, 40, 20);
+    assert!(!drawn.contains("+ pane_3"));
+    assert!(!drawn.contains("⇄ moving"));
 }
 
 #[test]

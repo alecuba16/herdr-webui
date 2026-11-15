@@ -62,6 +62,21 @@ impl TourStep {
         self.shortcut
             .map(|s| format!("Ctrl+B {}", shortcut_key_hint(s)))
     }
+
+    /// Test-only: build a throwaway step to exercise `chord` for
+    /// shortcuts the tour steps never teach.
+    #[cfg(test)]
+    pub(crate) fn chord_hint_for_test(shortcut: Shortcut) -> Option<String> {
+        Self {
+            title: "",
+            body: "",
+            region: TourRegion::Main,
+            shortcut: Some(shortcut),
+            demo: false,
+            screen: None,
+        }
+        .chord()
+    }
 }
 
 /// Bare key letter(s) for a shortcut as used behind the prefix, matching
@@ -191,6 +206,14 @@ impl TuiApp {
         if self.mode == TuiMode::Tour {
             self.close_overlay();
         }
+    }
+
+    /// Test-only: drive `run_tour_demo` from the current `tour_index`
+    /// so the guard arms (out-of-range, non-demo, chordless steps) run
+    /// without walking the whole tour.
+    #[cfg(test)]
+    pub(crate) fn run_tour_demo_for_test(&mut self) {
+        self.run_tour_demo();
     }
 
     fn run_tour_demo(&mut self) {

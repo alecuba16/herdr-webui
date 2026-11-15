@@ -183,6 +183,12 @@ impl Palette {
 mod tests {
     use super::*;
 
+    // Coverage note: detect_terminal_theme's live-query body (the
+    // QueryOptions/timeout/background_color chain) is host-only — it
+    // requires a real terminal on stdin/stdout and the process-wide
+    // OnceLock pins the first result — so no test can drive it; the
+    // non-terminal early return is the only arm a test process takes.
+
     #[test]
     fn classifies_real_terminal_backgrounds_by_perceptual_lightness() {
         // #eff1f5: the WebUI light theme background, seen live in the
@@ -313,21 +319,29 @@ mod tests {
 mod coverage_tests {
     use super::*;
 
+    // Option view so the test avoids a let-else panic arm llvm-cov
+    // counts as uncovered; the None arm is asserted below.
+    fn as_rgb(c: &Color) -> Option<(u8, u8, u8)> {
+        match c {
+            Color::Rgb(r, g, b) => Some((*r, *g, *b)),
+            _ => None,
+        }
+    }
+
     #[test]
     fn accent_dim_darkens_the_accent_over_the_panel_bg() {
         let dark = Palette::for_theme(TuiTheme::Dark);
         let dim = dark.accent_dim();
-        let Color::Rgb(r, g, b) = dim else {
-            panic!("dim accent stays rgb");
-        };
-        let Color::Rgb(ar, ag, ab) = dark.accent else {
-            panic!("accent stays rgb");
-        };
+        let (r, g, b) = as_rgb(&dim).unwrap();
+        let (ar, ag, ab) = as_rgb(&dark.accent).unwrap();
         assert_eq!((r, g, b), (ar / 4 + 17, ag / 4 + 17, ab / 4 + 17));
         assert!(r < ar && g < ag && b < ab, "dim is darker than the accent");
         let light = Palette::for_theme(TuiTheme::Light);
         assert_eq!(light.accent_dim(), light.accent_dim());
         assert_ne!(light.accent_dim(), dark.accent_dim());
+
+        // Named colors are not Rgb: the helper's None arm.
+        assert!(as_rgb(&Color::Blue).is_none());
     }
 }
 

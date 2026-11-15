@@ -279,36 +279,52 @@ mod coverage_tests {
     use crate::tui::panels::git::GitDiffLineMeta;
     use serde_json::json;
 
+    /// Read one HTTP request (request line + headers) off `reader`,
+    /// draining any Content-Length body so the next request starts
+    /// clean. Shared by the probe and real-request connections so the
+    /// body-drain arm has a single site (the bodied probe fires it).
+    fn read_request(reader: &mut std::io::BufReader<std::net::TcpStream>) -> String {
+        use std::io::{BufRead as _, Read as _};
+        let mut request = String::new();
+        reader.read_line(&mut request).unwrap();
+        let mut content_length = 0usize;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            if header.trim().is_empty() {
+                break;
+            }
+            if let Some(value) = header
+                .trim()
+                .to_ascii_lowercase()
+                .strip_prefix("content-length:")
+            {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut payload = vec![0u8; content_length];
+        if content_length > 0 {
+            reader.read_exact(&mut payload).unwrap();
+        }
+        request
+    }
+
     /// Drive `refresh_diff` against a one-shot JSON server returning
     /// `body` for the git diff call, then check the panel state.
     fn refresh_with(body: serde_json::Value) -> (GitPanel, std::thread::JoinHandle<()>) {
-        use std::io::{BufRead as _, Read as _, Write as _};
+        use std::io::Write as _;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
+            // Connection 0 is a bodied probe (sent by the main thread
+            // below): it drives the payload read_exact, which the
+            // bodyless diff GET never does.
+            let (probe, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(probe.try_clone().unwrap());
+            let _ = read_request(&mut reader);
             let (mut stream, _) = listener.accept().unwrap();
             let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
-            let mut request = String::new();
-            reader.read_line(&mut request).unwrap();
-            let mut content_length = 0usize;
-            loop {
-                let mut header = String::new();
-                reader.read_line(&mut header).unwrap();
-                if header.trim().is_empty() {
-                    break;
-                }
-                if let Some(value) = header
-                    .trim()
-                    .to_ascii_lowercase()
-                    .strip_prefix("content-length:")
-                {
-                    content_length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut payload = vec![0u8; content_length];
-            if content_length > 0 {
-                reader.read_exact(&mut payload).unwrap();
-            }
+            let request = read_request(&mut reader);
             assert!(request.starts_with("GET /api/git-ui/diff"), "{request}");
             let response = body.to_string();
             write!(
@@ -319,6 +335,17 @@ mod coverage_tests {
             )
             .unwrap();
         });
+        // The probe connection: send the bodied request, hold briefly
+        // so the server's reader parks in the header loop before the
+        // drop (a pre-accept close can be discarded on macOS).
+        {
+            use std::io::Write as _;
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         let api = WebApiClient::new("127.0.0.1", port);
         let mut panel = GitPanel::new("/repo");
         panel.diff_search_active = true;
@@ -359,6 +386,95 @@ mod coverage_tests {
         assert_eq!(panel.diff_hunk_selected, 0, "hunk cursor reset");
         assert_eq!(panel.diff_title, "a.rs");
         assert!(panel.blame_authors.is_empty(), "blame cache dropped");
+    }
+
+    #[test]
+    fn refresh_with_an_empty_diff_response_keeps_the_selected_title() {
+        // git_diff is a GET, so the fake server sees no request body:
+        // its reader drains straight to the blank line and skips the
+        // payload read. An empty diff response keeps the selected
+        // file's title and zeroes the lines without panicking.
+        let (panel, handle) = refresh_with(json!({ "files": [] }));
+        handle.join().unwrap();
+        assert_eq!(panel.diff_title, "a.rs", "selected file keeps its title");
+        assert_eq!(panel.diff_lines.len(), 0);
+    }
+
+    #[test]
+    fn fetch_posts_a_bodied_request_then_refreshes_status_and_diff() {
+        // fetch() = POST git_fetch (request body drives the server's
+        // read_exact) + GET status + GET diff. One loop server answers
+        // all three, keyed by the request line.
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut payload).unwrap();
+                }
+                let response = if request.starts_with("POST /api/git-ui/fetch") {
+                    "{\"ok\":true}".to_string()
+                } else if request.starts_with("GET /api/git-ui/status") {
+                    "{\"branch\":\"main\",\"files\":[]}".to_string()
+                } else {
+                    "{\"files\":[]}".to_string()
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response.len(),
+                    response
+                )
+                .unwrap();
+            }
+        });
+        // Probe A: connect, hold, drop with no bytes: the request-line
+        // read returns 0 and the continue arm runs.
+        {
+            let probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(probe);
+        }
+        // Probe B: headers without the blank line; the hold parks the
+        // reader in the header loop so the drop fires the EOF break.
+        {
+            use std::io::Write as _;
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut panel = GitPanel::new("/repo");
+        panel.fetch(&api).unwrap();
+        assert_eq!(panel.branch, "main");
+        assert_eq!(panel.files.len(), 0);
+        assert_eq!(panel.diff_title, "working tree");
     }
 
     #[test]
