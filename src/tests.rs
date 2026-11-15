@@ -5725,6 +5725,7 @@ async fn close_session_builtin_reports_already_stopped_when_listener_died_with_s
             cwd: std::env::temp_dir(),
             shell: None,
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap(),
     );
@@ -5808,6 +5809,7 @@ async fn close_session_builtin_with_missing_socket_reports_already_stopped() {
             cwd: std::env::temp_dir(),
             shell: None,
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap(),
     );

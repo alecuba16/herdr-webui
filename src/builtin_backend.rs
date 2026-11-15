@@ -302,6 +302,9 @@ pub(crate) struct BuiltinBackendConfig {
     pub cwd: PathBuf,
     pub shell: Option<String>,
     pub jcode_detection_variant: JcodeDetectionVariant,
+    // Directory holding this session's journal file. None disables
+    // persistence entirely (unit tests run fully in-memory).
+    pub journal_dir: Option<PathBuf>,
 }
 
 pub(crate) struct BuiltinBackendHandle {
@@ -344,11 +347,19 @@ impl BuiltinBackendHandle {
         restrict_socket_permissions(&config.api_socket)?;
         restrict_socket_permissions(&config.client_socket)?;
 
-        let state = Arc::new(BuiltinState::new(
-            config.cwd,
-            config.shell,
-            config.jcode_detection_variant,
-        )?);
+        let journal_path = config
+            .journal_dir
+            .as_ref()
+            .map(|dir| dir.join(SESSION_JOURNAL_FILE));
+        let mut state =
+            BuiltinState::new(config.cwd, config.shell, config.jcode_detection_variant)?;
+        state.journal_path = journal_path.clone();
+        let state = Arc::new(state);
+        // Replay runs before the listeners bind: the first snapshot any
+        // client pulls already carries the recovered workspaces.
+        if let Some(journal_path) = &journal_path {
+            replay_session_journal(&state, journal_path);
+        }
         let inner = Arc::new(BuiltinBackendInner {
             running: AtomicBool::new(true),
             api_socket: config.api_socket,
@@ -752,6 +763,7 @@ struct BuiltinState {
     default_shell: String,
     events: BuiltinEventHub,
     jcode_detection_variant: JcodeDetectionVariant,
+    journal_path: Option<PathBuf>,
 }
 
 struct BuiltinData {
@@ -813,6 +825,7 @@ impl BuiltinState {
             default_shell,
             events: BuiltinEventHub::new(),
             jcode_detection_variant,
+            journal_path: None,
         };
         Ok(state)
     }
@@ -821,6 +834,12 @@ impl BuiltinState {
         match self.handle_request_inner(method, params.clone()) {
             Ok(result) => {
                 self.publish_success_event(method, &params, &result);
+                // Structure-changing requests re-journal the session.
+                // Best effort: the request already succeeded, so a failed
+                // disk write must not turn the answer into an error.
+                if journal_affects_method(method) {
+                    self.persist_session_journal();
+                }
                 success_response(id, result)
             }
             Err(err) => error_response(id, "builtin_error", err),
@@ -3750,6 +3769,187 @@ fn close_pane_locked(data: &mut BuiltinData, pane_id: &str) {
         if let Some(tab) = data.tabs.get_mut(&pane.tab_id) {
             tab.pane_ids.retain(|id| id != pane_id);
         }
+    }
+}
+
+/// Journal filename inside the canonical `builtin/<name>` session
+/// directory. Close and cleanup remove that directory (or the file), so
+/// the journal's lifecycle follows the session slot.
+pub(crate) const SESSION_JOURNAL_FILE: &str = "session-journal.json";
+
+/// Snapshot of the session's structural state, enough to rebuild the
+/// workspace set after a restart. Live process state (PTY contents,
+/// running agents, jcode detection) is deliberately not journaled: it
+/// cannot survive a restart, and replaying fresh shells is the honest
+/// recovery.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionJournal {
+    version: u32,
+    /// Workspaces in creation order; replay opens them in the same order
+    /// so id assignment (and therefore list ordering) matches the
+    /// pre-restart session as closely as possible.
+    workspaces: Vec<JournalWorkspace>,
+    /// Cwd of the focused workspace. Replay renumbers every id, so the cwd
+    /// is the one identity that survives a restart; a plain id would point
+    /// at whatever record happens to hold that number now.
+    focused_workspace_cwd: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct JournalWorkspace {
+    workspace_id: String,
+    label: String,
+    cwd: String,
+    /// Shell tab labels in order. Agent tabs are excluded at journal time:
+    /// their processes are gone and a fresh shell under the agent's name
+    /// would misrepresent what replay actually restored.
+    shell_tabs: Vec<String>,
+}
+
+/// Methods whose success changes the journaled structure. Everything else
+/// (reads, git/file helpers, prompts) leaves the workspace set untouched
+/// and must not pay the write cost.
+fn journal_affects_method(method: &str) -> bool {
+    matches!(
+        method,
+        "workspace.create"
+            | "workspace.rename"
+            | "workspace.close"
+            | "tab.create"
+            | "tab.rename"
+            | "tab.close"
+            | "tab.promote"
+            | "pane.close"
+            | "agent.start"
+            | "worktree.open"
+            | "worktree.create"
+            | "worktree.remove"
+    )
+}
+
+fn journal_from_data(data: &BuiltinData, shell: &str) -> SessionJournal {
+    let workspaces = ordered_workspaces(data)
+        .into_iter()
+        .map(|workspace| {
+            let shell_tabs = workspace
+                .tab_ids
+                .iter()
+                .filter_map(|tab_id| data.tabs.get(tab_id))
+                .filter(|tab| {
+                    // Shell tabs are identified by argv, not label: a
+                    // renamed tab still runs the default shell and is
+                    // replayable, an agent tab runs the agent's command
+                    // and is not.
+                    tab.pane_ids
+                        .iter()
+                        .filter_map(|pane_id| data.panes.get(pane_id))
+                        .any(|pane| pane.argv.len() == 1 && pane.argv[0] == shell)
+                })
+                .map(|tab| tab.label.clone())
+                .collect::<Vec<_>>();
+            JournalWorkspace {
+                workspace_id: workspace.workspace_id.clone(),
+                label: workspace.label.clone(),
+                cwd: workspace.cwd.to_string_lossy().into_owned(),
+                shell_tabs,
+            }
+        })
+        .collect::<Vec<_>>();
+    SessionJournal {
+        version: 1,
+        workspaces,
+        focused_workspace_cwd: data
+            .focused_workspace_id
+            .as_ref()
+            .and_then(|workspace_id| data.workspaces.get(workspace_id))
+            .map(|workspace| workspace.cwd.to_string_lossy().into_owned()),
+    }
+}
+
+impl BuiltinState {
+    /// Write the journal atomically. Best effort by contract: callers
+    /// treat a failed write as non-fatal because the in-memory session
+    /// keeps working either way.
+    fn persist_session_journal(&self) {
+        let Some(path) = self.journal_path.clone() else {
+            return;
+        };
+        let journal = match self.data.lock() {
+            Ok(data) => journal_from_data(&data, &self.default_shell),
+            Err(_) => return,
+        };
+        let Ok(payload) = serde_json::to_vec_pretty(&journal) else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = crate::server_settings::atomic_write(&path, &payload);
+    }
+}
+
+/// Rebuild the workspace set from the journal. Every step is best effort:
+/// a vanished checkout is skipped, a tab that cannot spawn stays missing,
+/// and replay never turns into a backend start failure. Called before the
+/// listeners bind, so no lock contention with live requests exists yet.
+fn replay_session_journal(state: &BuiltinState, journal_path: &Path) {
+    let Ok(payload) = fs::read(journal_path) else {
+        return;
+    };
+    let Ok(journal) = serde_json::from_slice::<SessionJournal>(&payload) else {
+        return;
+    };
+    if journal.version != 1 {
+        return;
+    }
+    let mut restored = Vec::<(String, String)>::new();
+    for journal_workspace in journal.workspaces {
+        let path = PathBuf::from(&journal_workspace.cwd);
+        // A vanished checkout is skipped, not restored as a dead entry: the
+        // user removed the worktree or folder, so the session must not
+        // resurface a workspace whose cwd no longer resolves.
+        if !path.is_dir() {
+            continue;
+        }
+        // Create empty and add tabs through the normal create path so each
+        // shell tab gets the journaled label and a fresh terminal, exactly
+        // like a tab.create request would.
+        let Ok(workspace) =
+            state.create_workspace(Some(path), Some(journal_workspace.label), false, false)
+        else {
+            continue;
+        };
+        let Some(workspace_id) = workspace["workspace_id"].as_str() else {
+            continue;
+        };
+        for label in &journal_workspace.shell_tabs {
+            let _ = state.create_tab(Some(workspace_id.to_string()), Some(label.clone()), false);
+        }
+        restored.push((journal_workspace.cwd, workspace_id.to_string()));
+    }
+    // Restore focus last: replay's fresh focus lands on the first opened
+    // workspace, so the journaled cwd wins whenever its checkout survived.
+    if let Some(focused_cwd) = journal.focused_workspace_cwd {
+        let Some(workspace_id) = restored
+            .iter()
+            .find(|(cwd, _)| *cwd == focused_cwd)
+            .map(|(_, id)| id.clone())
+        else {
+            return;
+        };
+        let Ok(mut data) = state.data.lock() else {
+            return;
+        };
+        data.focused_workspace_id = Some(workspace_id.clone());
+        data.focused_tab_id = data
+            .workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.tab_ids.first().cloned());
+        data.focused_pane_id = data
+            .focused_tab_id
+            .as_ref()
+            .and_then(|tab_id| data.tabs.get(tab_id))
+            .and_then(|tab| tab.pane_ids.first().cloned());
     }
 }
 
@@ -11173,6 +11373,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         // Seed a workspace + tab; the root pane owns the terminal id. The api
@@ -11259,6 +11460,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         let request = |line: &str| -> Value {
@@ -11469,6 +11671,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         let request = |line: &str| -> Value {
@@ -11627,6 +11830,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         let request = |line: &str| -> Value {
@@ -11912,6 +12116,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         let request = |line: &str| -> Value {
@@ -12044,6 +12249,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         let request = |line: &str| -> Value {
@@ -12207,6 +12413,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         {
@@ -12269,6 +12476,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         })
         .unwrap();
         assert!(api_socket.exists());
@@ -12655,5 +12863,168 @@ mod tests {
         let _ = first_id;
         let _ = std::fs::remove_dir_all(temp_a);
         let _ = std::fs::remove_dir_all(temp_b);
+    }
+
+    /// Journaling state with a persistent dir wired, mirroring the
+    /// production `BuiltinBackendHandle::start` wiring (journal_path set
+    /// before any request runs).
+    fn journaling_state(dir: &Path) -> BuiltinState {
+        let mut state = BuiltinState::new(
+            dir.to_path_buf(),
+            Some(hermetic_test_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.journal_path = Some(dir.join(SESSION_JOURNAL_FILE));
+        state
+    }
+
+    #[test]
+    fn journal_records_workspace_and_shell_tabs_and_replays_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-rt-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let checkout_a = dir.join("checkout-a");
+        let checkout_b = dir.join("checkout-b");
+        std::fs::create_dir_all(&checkout_a).unwrap();
+        std::fs::create_dir_all(&checkout_b).unwrap();
+        {
+            let state = journaling_state(&dir);
+            // Two workspaces: one with a shell tab, one without terminals.
+            state.handle_request(
+                "ws1",
+                "workspace.create",
+                json!({
+                    "label": "First",
+                    "cwd": checkout_a.to_string_lossy(),
+                    "open_terminal": true
+                }),
+            );
+            state.handle_request(
+                "ws2",
+                "workspace.create",
+                json!({
+                    "label": "Second",
+                    "cwd": checkout_b.to_string_lossy(),
+                    "open_terminal": false
+                }),
+            );
+            assert!(state
+                .journal_path
+                .as_ref()
+                .is_some_and(|path| path.exists()));
+        }
+        // Fresh backend over the same journal dir simulates the restart.
+        let state = journaling_state(&dir);
+        replay_session_journal(&state, &dir.join(SESSION_JOURNAL_FILE));
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"].clone();
+        let labels: Vec<&str> = workspaces
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|workspace| workspace["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, vec!["First", "Second"]);
+        let tabs = snapshot["result"]["snapshot"]["tabs"].clone();
+        let tab_workspace_ids: Vec<&str> = tabs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| tab["workspace_id"].as_str().unwrap())
+            .collect();
+        // Only the workspace opened with a terminal gets a replayed tab.
+        let first_id = workspaces[0]["workspace_id"].as_str().unwrap();
+        assert_eq!(tab_workspace_ids, vec![first_id]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replay_skips_vanished_checkouts_and_restores_focus() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-journal-vanished-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let checkout_a = dir.join("checkout-a");
+        let checkout_b = dir.join("checkout-b");
+        std::fs::create_dir_all(&checkout_a).unwrap();
+        std::fs::create_dir_all(&checkout_b).unwrap();
+        {
+            let state = journaling_state(&dir);
+            let first = state.handle_request(
+                "ws1",
+                "workspace.create",
+                json!({
+                    "label": "Gone",
+                    "cwd": checkout_a.to_string_lossy(),
+                    "open_terminal": false
+                }),
+            );
+            let _first_id = first["result"]["workspace"]["workspace_id"].clone();
+            state.handle_request(
+                "ws2",
+                "workspace.create",
+                json!({
+                    "label": "Alive",
+                    "cwd": checkout_b.to_string_lossy(),
+                    "open_terminal": false,
+                    "focus": true
+                }),
+            );
+        }
+        std::fs::remove_dir_all(&checkout_a).unwrap();
+        let state = journaling_state(&dir);
+        replay_session_journal(&state, &dir.join(SESSION_JOURNAL_FILE));
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"].clone();
+        let labels: Vec<&str> = workspaces
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|workspace| workspace["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, vec!["Alive"]);
+        let focused = workspaces[0]["workspace_id"].as_str().unwrap();
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_workspace_id"].as_str(),
+            Some(focused)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn journal_affects_method_covers_all_mutators() {
+        for method in [
+            "workspace.create",
+            "workspace.rename",
+            "workspace.close",
+            "tab.create",
+            "tab.rename",
+            "tab.close",
+            "tab.promote",
+            "pane.close",
+            "agent.start",
+            "worktree.open",
+            "worktree.create",
+            "worktree.remove",
+        ] {
+            assert!(journal_affects_method(method), "{method} must journal");
+        }
+        for method in [
+            "ping",
+            "session.snapshot",
+            "workspace.list",
+            "tab.list",
+            "pane.read",
+            "git.status",
+            "file.tree",
+        ] {
+            assert!(!journal_affects_method(method), "{method} must not journal");
+        }
     }
 }

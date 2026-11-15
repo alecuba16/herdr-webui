@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.7.51 Release Notes
+- Built-in sessions survive a server restart: the backend journals its
+  workspace set (labels, cwds, shell tab labels, focused workspace) to
+  `session-journal.json` in the canonical `<settings>/builtin/<session>/`
+  directory on every structural mutation, and replays it before the
+  listeners bind on the next cold start, so every client (browser, TUI)
+  sees the recovered workspaces with no extra round-trips. Vanished
+  checkouts are skipped, agent tabs stay closed, and a workspace closed
+  before the restart stays closed.
+- The journal directory is the canonical session directory even when
+  the socket pair exceeded the 100-byte sun_path budget and fell back
+  to the hashed `/tmp/herdr-webui-builtin-*` directory; session close
+  and cleanup remove the journal from both homes, keeping closed-means-
+  closed (an explicitly closed session relaunches empty).
+
 ## 0.7.50 Release Notes
 - The TUI settings overlay shows the running version in the bottom
   border (right-aligned `v<version>`, the same build.rs-stamped string
@@ -817,6 +832,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.51 | 2026-11-15 | [v0.7.51](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.51) |
 | 0.7.50 | 2026-11-15 | [v0.7.50](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.50) |
 | 0.7.49 | 2026-11-15 | [v0.7.49](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.49) |
 | 0.7.48 | 2026-11-15 | [v0.7.48](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.48) |

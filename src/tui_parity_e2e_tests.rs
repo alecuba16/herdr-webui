@@ -2137,6 +2137,7 @@ fn web_api_socket_transport_serves_git_and_file_panels() {
             cwd: std::env::temp_dir(),
             shell: None,
             jcode_detection_variant: crate::builtin_detection::JcodeDetectionVariant::Vanilla,
+            journal_dir: None,
         },
     )
     .unwrap();

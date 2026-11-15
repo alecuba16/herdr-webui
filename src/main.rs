@@ -1042,6 +1042,7 @@ async fn main() -> io::Result<()> {
     let builtin_start_lock: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
     let (api_socket, client_socket) = if backend_mode.is_builtin() {
         let (_api_socket, _client_socket) = builtin_socket_paths(config.session.as_deref());
+        let journal_dir = Some(builtin_session_dir(config.session.as_deref()));
         let handle = Arc::new(builtin_backend::BuiltinBackendHandle::start(
             builtin_backend::BuiltinBackendConfig {
                 api_socket: _api_socket,
@@ -1049,6 +1050,7 @@ async fn main() -> io::Result<()> {
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 shell: server_settings.builtin_shell.clone(),
                 jcode_detection_variant: server_settings.jcode_detection_variant,
+                journal_dir,
             },
         )?);
         let api_socket = handle.api_socket().to_path_buf();
@@ -1145,12 +1147,29 @@ fn resolve_backend_mode(
 // BackendClient so server and client compute byte-identical paths). Local
 // wrappers keep the settings-dir injection server-side and the names the
 // tests use.
-use herdr_webui::socket_paths::{builtin_socket_paths_in, socket_path_fits, SOCKET_PATH_LIMIT};
+use herdr_webui::socket_paths::{
+    builtin_session_dir as builtin_session_dir_in, builtin_socket_paths_in, socket_path_fits,
+    SOCKET_PATH_LIMIT,
+};
 
 fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
     // Server side resolves its settings dir; the client side resolves
     // the runtime settings path with its test isolation.
     builtin_socket_paths_in(
+        &server_settings_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui")),
+        session,
+    )
+}
+
+/// Canonical session directory for plain files (journal), independent of
+/// the socket fallback: long settings paths push the sockets to the short
+/// hashed /tmp dir, but the journal must stay beside webui-settings.json so
+/// close and cleanup find it.
+fn builtin_session_dir(session: Option<&str>) -> PathBuf {
+    builtin_session_dir_in(
         &server_settings_path()
             .parent()
             .map(Path::to_path_buf)
@@ -2889,6 +2908,9 @@ fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(),
         })
         .ok();
     let (api_socket, client_socket) = builtin_socket_paths(Some(&session_name));
+    // The journal lives in the canonical session directory (not the /tmp
+    // socket fallback), so cleanup and explicit close always find it.
+    let journal_dir = Some(builtin_session_dir(Some(&session_name)));
     if connect_local_stream(&api_socket).is_ok() {
         return Ok(());
     }
@@ -2909,6 +2931,7 @@ fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(),
                 .ok()
                 .map(|settings| settings.jcode_detection_variant)
                 .unwrap_or_default(),
+            journal_dir,
         })
         .map_err(|err| err.to_string())?;
     state
@@ -3118,15 +3141,34 @@ fn mark_closed_builtin_session(state: &WebState, session_name: &str) {
     for socket in [&api_socket, &client_socket] {
         let _ = fs::remove_file(socket);
     }
+    // The recovery journal dies with the session, including the default
+    // slot whose directory is never removed: a relaunch must start empty,
+    // not resurrect the workspaces the close just removed.
+    let _ = fs::remove_file(
+        builtin_session_dir(Some(session_name)).join(builtin_backend::SESSION_JOURNAL_FILE),
+    );
     if session_name == "default" {
         return;
     }
-    if let Some(dir) = api_socket.parent() {
-        let empty = fs::read_dir(dir)
+    // The session slot may exist in two places when the socket pair fell
+    // back to /tmp: the canonical dir (journal) and the fallback dir
+    // (sockets). Both must go when empty, or a hollow dir keeps the
+    // session listed and a stale journal resurrects it later.
+    let canonical_dir = builtin_session_dir(Some(session_name));
+    let socket_dir = api_socket
+        .parent()
+        .filter(|dir| *dir != canonical_dir)
+        .map(Path::to_path_buf);
+    let mut dirs = vec![canonical_dir];
+    if let Some(socket_dir) = socket_dir {
+        dirs.push(socket_dir);
+    }
+    for dir in dirs {
+        let empty = fs::read_dir(&dir)
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(false);
         if empty {
-            let _ = fs::remove_dir(dir);
+            let _ = fs::remove_dir(&dir);
         }
     }
 }
@@ -3155,10 +3197,15 @@ fn cleanup_builtin_session_dir(session_name: &str) -> bool {
             let _ = fs::remove_file(socket);
         }
     }
-    match api_socket.parent() {
-        Some(dir) => fs::remove_dir_all(dir).is_ok(),
-        None => false,
+    // Remove both homes (canonical journal dir plus /tmp socket fallback
+    // when they differ): a leftover dead socket or stale journal would
+    // keep the session listed or resurrect closed workspaces on relaunch.
+    let canonical_dir = builtin_session_dir(Some(session_name));
+    let mut removed = fs::remove_dir_all(&canonical_dir).is_ok();
+    if let Some(socket_dir) = api_socket.parent().filter(|dir| *dir != canonical_dir) {
+        removed |= fs::remove_dir_all(socket_dir).is_ok();
     }
+    removed
 }
 
 /// Deletes stale built-in sessions: directories under `builtin/` whose

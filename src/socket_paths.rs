@@ -87,7 +87,7 @@ pub fn builtin_socket_paths_in(settings_dir: &Path, session: Option<&str>) -> (P
         .filter(|value| !value.is_empty())
         .map(safe_socket_component)
         .unwrap_or_else(|| "default".to_string());
-    let dir = settings_dir.join("builtin").join(&session);
+    let dir = builtin_session_dir(settings_dir, Some(&session));
     let paths = (dir.join("herdr.sock"), dir.join("herdr-client.sock"));
     if socket_path_pair_fits(&paths) {
         return paths;
@@ -96,4 +96,47 @@ pub fn builtin_socket_paths_in(settings_dir: &Path, session: Option<&str>) -> (P
     let hash = short_socket_hash(&format!("{}:{session}", dir.display()));
     let dir = short_builtin_socket_dir(&hash);
     (dir.join("herdr.sock"), dir.join("herdr-client.sock"))
+}
+
+/// Canonical session directory under `settings_dir`, with no socket-path
+/// fallback. Plain files have no OS path-length limit, so the session
+/// journal always lives here even when the sockets had to move to the
+/// short hashed directory.
+pub fn builtin_session_dir(settings_dir: &Path, session: Option<&str>) -> PathBuf {
+    let session = session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(safe_socket_component)
+        .unwrap_or_else(|| "default".to_string());
+    settings_dir.join("builtin").join(&session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_dir_stays_canonical_when_sockets_fall_back() {
+        // Long settings path forces the socket pair into the hashed /tmp
+        // fallback; the journal directory must stay canonical so close
+        // and cleanup always find it.
+        let long_root = std::env::temp_dir().join("a-very-long-settings-root".repeat(3));
+        let settings_dir = long_root.join("herdr-webui");
+        let (api_socket, _) = builtin_socket_paths_in(&settings_dir, Some("fallback-check"));
+        let canonical = builtin_session_dir(&settings_dir, Some("fallback-check"));
+        assert_ne!(api_socket.parent(), Some(canonical.as_path()));
+        assert!(api_socket.as_os_str().len() < SOCKET_PATH_LIMIT);
+        assert_eq!(
+            canonical,
+            settings_dir.join("builtin").join("fallback-check")
+        );
+    }
+
+    #[test]
+    fn session_dir_matches_socket_dir_when_pair_fits() {
+        let settings_dir = std::env::temp_dir().join("herdr-short");
+        let (api_socket, _) = builtin_socket_paths_in(&settings_dir, Some("fits"));
+        let canonical = builtin_session_dir(&settings_dir, Some("fits"));
+        assert_eq!(api_socket.parent(), Some(canonical.as_path()));
+    }
 }
