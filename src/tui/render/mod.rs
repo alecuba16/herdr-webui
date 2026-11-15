@@ -3071,4 +3071,19 @@ mod tests {
         // Char-clip path: only the discovery tail fits, clipped by columns.
         assert_eq!(fit_hint(" x · ? help ", 3), " ? ");
     }
+
+    #[test]
+    fn fit_hint_no_discovery_fallback_keeps_first_segment() {
+        // Hints without a `? help` tail (the quit prompt, the tour)
+        // previously shrank to a blank line: the old fallback always
+        // rendered the discovery segment, which was empty for them.
+        // They now fall back to their first segment, so the footer
+        // never goes dark at small budgets.
+        let trimmed = fit_hint(" y quit · n/Esc cancel ", 6);
+        assert_eq!(trimmed, " y qui");
+        // Clip sub-path of the same fallback: 1-2 col budgets still
+        // render the padded leading columns instead of a blank line.
+        assert!(!fit_hint(" y quit · n/Esc cancel ", 1).is_empty());
+        assert!(!fit_hint(" y quit · n/Esc cancel ", 2).is_empty());
+    }
 }

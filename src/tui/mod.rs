@@ -142,9 +142,10 @@ pub(crate) fn tui_set_terminal_prefix_passthrough(on: bool) -> Result<(), String
         root = serde_json::Value::default();
     }
     root["terminalPrefixPassthrough"] = serde_json::Value::Bool(on);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
+    // parent() is None only for bare-root paths, which tui_settings_path
+    // never builds; create_dir_all treats an empty path as a no-op.
+    let parent = path.parent().unwrap_or(std::path::Path::new(""));
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     let raw = serde_json::to_string_pretty(&root).map_err(|err| err.to_string())?;
     std::fs::write(&path, raw).map_err(|err| err.to_string())
 }

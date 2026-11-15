@@ -787,6 +787,12 @@ mod tests {
         // same physical keys as settings/git chords).
         assert_eq!(chord_label(Shortcut::RemoveWorktree), "Ctrl+B Del");
         assert_eq!(chord_label(Shortcut::GitPush), "git P (in-screen)");
+        // The exhaustive in-screen group shares one label.
+        assert_eq!(
+            chord_label(Shortcut::GitChanges),
+            chord_label(Shortcut::GitFocusFile)
+        );
+        assert_eq!(chord_label(Shortcut::GitFocusFile), "in-screen git key");
         assert_eq!(
             chord_label(Shortcut::SplitPane),
             "Ctrl+B s (split · other screens: settings)"

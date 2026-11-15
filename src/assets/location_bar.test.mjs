@@ -1835,6 +1835,42 @@ describe("location bar discovery popover", () => {
     equal(document.activeElement.id, "locationBarDiscoveryName", "clearing the draft keeps focus in the name field");
   });
 
+  it("picking or typing a base seeds the branch name, and a typed name wins", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar } = harness;
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ctx.HerdrLocationBar.discoveryPickBaseFromRow(encodeURIComponent("origin/release"));
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryName" value="release"'), "a remote base pick seeds the stripped local name");
+    ctx.HerdrLocationBar.discoveryDraft("newBase", "origin/next-thing");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryName" value="next-thing"'), "typing a base reseeds while the field held the previous seed");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "my-own-name");
+    ctx.HerdrLocationBar.discoveryDraft("newBase", "origin/other");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryName" value="my-own-name"'), "a later base change never overwrites the typed name");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "");
+    ctx.HerdrLocationBar.discoveryDraft("newBase", "origin/release");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryName" value="release"'), "the seed returns once the field is empty again");
+  });
+
+  it("a seeded branch clears when the base returns to the default", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar } = harness;
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ctx.HerdrLocationBar.discoveryPickBaseFromRow(encodeURIComponent("origin/release"));
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryName" value="release"'));
+    ctx.HerdrLocationBar.discoveryPickBaseFromRow("main");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryName" value=""'), "the seeded name clears on the default base");
+  });
+
   it("Escape collapses the create view back to the selector rows, and a second Escape closes the dialog", async () => {
     const harness = loadDiscovery({ routes: {
       "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/repo", branch: "main" }] } },

@@ -1302,6 +1302,24 @@ fn worktree_list_c_opens_empty_base_prompt_when_default_base_fails() {
 }
 
 #[test]
+fn worktree_list_c_opens_base_prompt_prefilled_when_default_base_exists() {
+    // Same drive as the dead-backend variant, but the fake socket
+    // answers git.branches, so the base prompt opens prefilled with
+    // the tier default instead of empty.
+    let (mut app, _stop) = app_with_fake_backend();
+    let (api_socket, stop) = workspace_fake_socket_with_branches();
+    app.web_api = crate::tui::web_api::WebApiClient::from_backend_socket(api_socket);
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_filter.clear();
+    app.worktree_pick_workspace = false;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBase);
+    assert_eq!(prompt.text, "origin/main");
+    std::mem::forget(stop);
+}
+
+#[test]
 fn worktree_create_prompt_stays_empty_without_source_envelope() {
     // Dead backend: every suggestion call fails, so the base prompt
     // opens empty (no default base) and the path prompt opens empty

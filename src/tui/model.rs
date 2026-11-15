@@ -661,5 +661,13 @@ mod coverage_tests {
         };
         // Empty default falls back to ../worktrees.
         assert_eq!(worktree_root_for_source(&dotted), "/a/worktrees");
+        let dotted_root = crate::tui::model::WorktreeSourceInfo {
+            repo_name: "r".to_string(),
+            repo_root: "/a/b".to_string(),
+            default_worktree_directory: "./c/../d/".to_string(),
+        };
+        // The root split also skips `.` and empty parts, so
+        // ./c/../d/ collapses to just d.
+        assert_eq!(worktree_root_for_source(&dotted_root), "/a/b/d");
     }
 }

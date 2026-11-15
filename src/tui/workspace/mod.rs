@@ -54,9 +54,9 @@ pub(crate) fn suggested_checkout_path(source: &WorktreeSourceInfo, branch: &str)
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("/");
-    if tail.is_empty() {
-        return root;
-    }
+    // branch_path_slug never yields an empty part (blank falls back
+    // to "worktree"), so the tail is at least one real segment and
+    // the joined form never degrades to a bare root.
     format!("{root}/{tail}")
 }
 

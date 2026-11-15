@@ -99,7 +99,7 @@ answered from the webui's chat lens card. The server-side parser
 | `g` | Git screen (Changes tab) |
 | `t` | back to the Terminal screen |
 | `/` | search palette (Enter commits/navigates, Ctrl+X removes a recent) |
-| `?`, `0` | help overlay |
+| `?` | help overlay |
 | `r` | refresh |
 | `j` / `k` | next / previous workspace |
 | `a` / `A` | next / previous agent |
@@ -129,7 +129,6 @@ answered from the webui's chat lens card. The server-side parser
 | `I` | git cwd: type a repo path |
 | `v` | git: switch branch |
 | `u` | git: unstage the selected file (no in-screen key) |
-| `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
 
 ## Per-screen keys
 

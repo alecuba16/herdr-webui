@@ -5223,7 +5223,8 @@ fn settings_file_edge_paths_garbage_non_object_and_unwritable_dir() {
 }
 
 #[test]
-fn settings_file_write_fails_when_config_parent_is_a_file() {
+fn settings_file_write_fails_when_config_parent_is_read_only() {
+    use std::os::unix::fs::PermissionsExt;
     let _guard = crate::test_env_lock()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
@@ -5231,17 +5232,20 @@ fn settings_file_write_fails_when_config_parent_is_a_file() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("herdr-tui-settings-notdir-{stamp}"));
+    let dir = std::env::temp_dir().join(format!("herdr-tui-settings-ro-{stamp}"));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("f"), "regular file").unwrap();
     let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
-    // .config would live inside a regular file, so create_dir_all fails.
-    std::env::set_var("XDG_CONFIG_HOME", dir.join("f/sub"));
+    // A read-only parent makes the create_dir_all of .config fail with
+    // EACCES (the NotADirectory trick does not work on macOS, where
+    // create_dir_all under a file path still returns Ok).
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &dir);
     assert!(crate::tui::tui_set_terminal_prefix_passthrough(true).is_err());
     match prior_xdg {
         Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
         None => std::env::remove_var("XDG_CONFIG_HOME"),
     }
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -6692,9 +6696,10 @@ fn new_workspace_name_prompt_shows_the_staged_path() {
 
 #[test]
 fn footer_context_hints_exist_for_every_variant() {
-    // Every overlay and capture-layer context must advertise its keys in
-    // both full and compact hint forms (the footer is the discoverability
-    // surface; an empty hint is a regression).
+    // Every overlay and capture-layer context must advertise its keys
+    // in its hint (the footer is the discoverability surface; an empty
+    // hint is a regression). Narrow-terminal shrinking is pinned
+    // separately in the render fit_hint tests.
     let contexts = [
         FooterContext::ConfirmQuit,
         FooterContext::HelpOverlay,
@@ -10042,6 +10047,13 @@ fn session_target_refuses_offline_rows_and_noop_targets() {
 
 #[test]
 fn session_retarget_rebuilds_the_client_for_builtin_rows() {
+    // Not from this branch: main's 5da82810. The canonical socket path is
+    // TMPDIR-length-sensitive and this test had no env lock, so parallel
+    // env-locked tests could shift std::env::temp_dir() mid-run and flip it
+    // onto the /tmp fallback; locking keeps it on the canonical path.
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let mut app = app_with_snapshot();
     assert_eq!(app.current_session, "default");
     app.session_rows = vec![TuiSessionRow {
@@ -13230,6 +13242,11 @@ fn layout_weights_fall_back_to_equal_shares_for_missing_entries() {
 
 #[test]
 fn session_retarget_to_builtin_default_rebuilds_the_default_socket() {
+    // Same family as the retarget test above: canonical socket path is
+    // env-sensitive (settings dir, /tmp fallback) and this had no lock.
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let mut app = app_with_snapshot();
     // Start on a non-default session so the default retarget is not
     // short-circuited by the already-targeting guard.
