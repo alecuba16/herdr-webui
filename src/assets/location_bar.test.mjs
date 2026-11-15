@@ -1812,6 +1812,8 @@ describe("location bar discovery popover", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     ok(bar.innerHTML.includes('data-discovery-focus="footer"'), "footer renders in the create view");
     ok(!bar.innerHTML.includes('data-discovery-focus="create"'), "the worktree form carries no inline submit");
+    ok(!bar.innerHTML.includes("Cancel worktree"), "the worktree form carries no cancel button");
+    match(bar.innerHTML, /location-bar-discovery-esc[^>]*><kbd>Esc<\/kbd><span>back to list<\/span>/, "the Esc hint row replaces the cancel button");
     match(bar.innerHTML, /data-discovery-focus="footer"[^>]*onclick="HerdrLocationBar\.discoverySubmitWorktree\(\)">Create worktree/, "empty name keeps the create footer but disabled");
     equal(document.querySelector('[data-discovery-focus="footer"]').disabled, true, "empty name disables the create footer");
     document.getElementById("locationBarDiscoveryName").focus();
