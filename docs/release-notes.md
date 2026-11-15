@@ -1,5 +1,36 @@
 # Release notes
 
+## 0.7.48 Release Notes
+- Wrapping and scroll replace truncation across the TUI: budgets are
+  display-width aware (unicode_width, CJK included), wrap_plain
+  hard-breaks over-wide words and never emits blank rows, the session
+  manager got its scroll clamp back, the settings overlay wraps values
+  and grows one row per wrapped line, and tiny terminals (zero-height,
+  one row, narrow) never panic.
+- Hints and legend make the next actions visible: the footer keeps the
+  discovery tail (? help) when shrinking, fired chords echo into the
+  status line, the armed prefix lists every dispatchable chord per
+  screen context (git screens get blame/stash, others move/zoom), and
+  hints state the real key forms, prefix chords included. fit_hint
+  falls back to its first segment for hints without a discovery tail,
+  so the footer never blanks at small budgets.
+- Worktree create defaults align across surfaces: the chain runs
+  base -> branch -> path, base prefills from the tiers (local main >
+  master > origin/main > first), the branch seeds from the picked base
+  with origin/ and upstream/ prefixes stripped, and the path prefills
+  <root>/<repo>/<slug> under the configured worktree root. Desktop
+  open-modal base prefills only when empty, mobile keeps its prefill
+  rule, both share the same tier order as the TUI.
+- Shortcut collisions drop: digits, b/h/o view jumps, y/d file verbs
+  and the 0 help alias left the prefix map in favor of in-screen
+  c commit, Shift+B branches, Enter log compare; attach keeps a
+  passthrough toggle (in-TUI p, desktop armed-state guard) so Ctrl+B
+  never gets eaten by a PTY mid-chord. A stale prefix cancels on
+  attach.
+- Changed-line coverage is 100% on both sides (648/648 Rust, 810/810
+  JS, every file individually), and the pty acceptance tests follow
+  the reworked hints and the settings overlay growth.
+
 ## 0.7.47 Release Notes
 - Onboarding tour on both surfaces: an 8-step guided walkthrough that
   spotlights each region (search palette, workspaces, agents, panels,
@@ -740,6 +771,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.48 | 2026-11-15 | [v0.7.48](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.48) |
 | 0.7.47 | 2026-11-14 | [v0.7.47](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.47) |
 | 0.7.46 | 2026-11-14 | [v0.7.46](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.46) |
 | 0.7.45 | 2026-11-11 | [v0.7.45](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.45) |
