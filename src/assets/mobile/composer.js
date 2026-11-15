@@ -381,6 +381,19 @@
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             submit();
+            return;
+          }
+          // Ctrl+P enqueues on a hardware keyboard (iPad folio, Android
+          // keyboard): the long-press hold owns the touch path, this owns
+          // the chord. Same submit(enqueue) as desktop parity.
+          if (
+            (event.ctrlKey || event.metaKey) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            event.key.toLowerCase() === "p"
+          ) {
+            event.preventDefault();
+            submit(true);
           }
         });
         input.addEventListener("input", () => {
@@ -389,10 +402,10 @@
         });
       }
       if (send) {
-        send.title = "Send. Hold to queue while the agent is busy.";
+        send.title = "Send. Hold or Ctrl+P to queue while the agent is busy.";
         send.setAttribute(
           "aria-label",
-          "Send. Hold to queue while the agent is busy.",
+          "Send. Hold or Ctrl+P to queue while the agent is busy.",
         );
         if (typeof PointerEvent !== "undefined") {
           send.addEventListener("pointerdown", () => {

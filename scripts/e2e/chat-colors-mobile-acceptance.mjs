@@ -246,6 +246,60 @@ async function main() {
   record("c7 expanded tool output paints --panel (dark)",
     !!expandedDark.outputBg, expandedDark.outputBg || "no output element");
 
+  // c8 assistant markdown (shared preview bundle, mobile lens): the
+  // fixture's last assistant turn carries heading/emphasis/inline code
+  // plus a fenced rust block; the lazy bundle upgrades the escaped
+  // fallback rows on its next poll.
+  const mdState = await evalExpr(`new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      const content = document.querySelector(".mobile-lens-content");
+      const heading = content && content.querySelector(".lens-markdown h3");
+      if (heading) { resolve("rendered"); return; }
+      if (Date.now() - started > 15000) resolve("timeout"); else setTimeout(check, 400);
+    };
+    check();
+  })`);
+  const md = await evalExpr(`(() => {
+    const content = document.querySelector(".mobile-lens-content");
+    if (!content) return null;
+    return {
+      headingText: (content.querySelector(".lens-markdown h3") || {}).textContent || "",
+      emphasis: !!content.querySelector(".lens-markdown em"),
+      inlineCode: !!content.querySelector(".lens-markdown code"),
+      fence: !!content.querySelector(".lens-markdown pre"),
+      scriptLeak: !!content.querySelector(".lens-markdown script"),
+    };
+  })()`);
+  record("c8 assistant markdown upgrades to rendered html", mdState === "rendered", `got ${mdState}`);
+  record("c8 markdown heading/emphasis/code/fence render",
+    !!(md && md.headingText.trim() === "Fix plan" && md.emphasis && md.inlineCode && md.fence),
+    `h3 ${md && md.headingText} em ${md && md.emphasis} code ${md && md.inlineCode} fence ${md && md.fence}`);
+  record("c8 sanitizer strips script tags", !(md && md.scriptLeak), `leak ${md && md.scriptLeak}`);
+
+  // c9 Ctrl+P enqueue from a hardware keyboard on the mobile composer:
+  // the docked input's keydown fires submit with enqueue:true and the
+  // mobile composer announces the queue.
+  const enq = await evalExpr(`(async () => {
+    const input = document.getElementById("mobileComposerInput");
+    if (!input) return { error: "no composer input" };
+    input.value = "mobile keyboard queue";
+    input.dispatchEvent(new Event("input"));
+    const key = new KeyboardEvent("keydown", { key: "p", code: "KeyP", ctrlKey: true, bubbles: true, cancelable: true });
+    const accepted = input.dispatchEvent(key);
+    const started = Date.now();
+    while (Date.now() - started < 10000) {
+      const note = document.getElementById("mobileComposerNote");
+      if (note && !note.hidden && /queued/i.test(note.textContent))
+        return { note: note.textContent, accepted };
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const note = document.getElementById("mobileComposerNote");
+    return { note: note ? note.textContent : "", accepted };
+  })()`);
+  record("c9 ctrl+p chord consumed by the mobile composer", enq && enq.accepted === false, `dispatchEvent ${enq && enq.accepted}`);
+  record("c9 ctrl+p announces the queued outcome", !!(enq && /queued/i.test(enq.note || "")), `note ${enq && enq.note}`);
+
   // Dark screenshot for the record (visual evidence, not an assertion).
   const shotDark = await cdp.send("Page.captureScreenshot", { format: "png" });
   const { writeFileSync } = await import("node:fs");

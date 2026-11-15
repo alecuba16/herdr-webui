@@ -1,5 +1,22 @@
 # Release notes
 
+## Unreleased
+- `Ctrl+P` inside the chat composer (desktop and mobile with a hardware
+  keyboard) enqueues the message, the same submit as the 600ms Send
+  hold: `POST /submit {enqueue:true}` writes kitty CSI-u Ctrl+Enter
+  after the pasted text, so jcode queues it while working and submits
+  it while idle. `Meta+P` rides the same path on macs, modified chords
+  (`Ctrl+Shift+P`, `Ctrl+Alt+P`) stay with the browser, and the print
+  dialog never opens from the composer. Unit tests pin the chord
+  gating on both composers and the chat-colors e2e drives the real
+  keydown through the served bundle on both layouts.
+- The chat-colors e2e fixtures now carry a markdown assistant turn
+  (heading, emphasis, inline code, table, fenced rust block) and the
+  acceptance asserts the rendered DOM: the lazy marked+DOMPurify
+  bundle upgrades the escaped fallback rows on the next poll, the
+  sanitizer strips scripts, and headings/emphasis/code/fences exist
+  in the live transcript on desktop and mobile.
+
 ## 0.7.53 Release Notes
 - Default-named panels from another workspace carry their worktree
   branch as a prefix in the pane strip (a mixed tree with two "1" tabs
