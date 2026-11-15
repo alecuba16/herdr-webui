@@ -19,6 +19,15 @@
   silently falling back to inherited fonts. `font: 12px var(--font)`
   was an invalid shorthand while the variable stayed undefined; the
   find inputs rendered in the body font instead of the intended stack.
+- A custom-property sweep fixed the remaining fallback-less
+  references to never-defined tokens: pane tabs and notes now read the
+  `--text`/`--text-dim` aliases declared in the desktop shell, the git
+  toast uses the real `--panel` and `--shadow-card` tokens, the mobile
+  search card uses `--shadow-card`, and the diff editor band markers
+  carry inline fallbacks. A new guard in the CSS coverage suite fails
+  the build on any future `var(--x)` reference that has neither a
+  producer nor a fallback, plus a Rust backstop asserting both shipped
+  bundles keep the tokens.
 
 ## 0.7.49 Release Notes
 - Split-tile previews of fullscreen TUI agents are composed screens

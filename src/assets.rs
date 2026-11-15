@@ -1004,6 +1004,38 @@ mod tests {
             .unwrap_or("")
     }
 
+    #[test]
+    fn shipped_bundles_define_font_and_text_tokens() {
+        // The CSS custom-property guard in css_selector_coverage.test.mjs
+        // fails on fallback-less var() references with no producer. This
+        // is the bundle-level backstop: base.css must stay first in the
+        // desktop concat and mobile app.css must keep its body block, so
+        // --font/--font-mono/--text/--text-dim keep resolving after any
+        // future bundle reshuffle.
+        for (bundle, name) in [(DESKTOP_CSS, "desktop"), (MOBILE_CSS, "mobile")] {
+            assert!(
+                bundle.contains("--mono-font"),
+                "{name} bundle lost --mono-font"
+            );
+            assert!(
+                bundle.contains("--font: ui-sans-serif, system-ui;"),
+                "{name} bundle lost the --font token"
+            );
+            assert!(
+                bundle.contains("--font-mono: var(--mono-font);"),
+                "{name} bundle lost the --font-mono token"
+            );
+        }
+        assert!(
+            DESKTOP_CSS.contains("--text: var(--fg);"),
+            "desktop bundle lost the --text token"
+        );
+        assert!(
+            DESKTOP_CSS.contains("--text-dim: var(--fg-dim);"),
+            "desktop bundle lost the --text-dim token"
+        );
+    }
+
     #[tokio::test]
     async fn serves_remaining_static_text_assets_with_content_types() {
         let javascript = "application/javascript; charset=utf-8";

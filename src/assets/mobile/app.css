@@ -2128,7 +2128,7 @@ body.mobile-keyboard-open .mobile-location-strip {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-card);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   max-height: calc(var(--herdr-mobile-viewport-height, 100vh) - 28px);

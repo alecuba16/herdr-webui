@@ -105,7 +105,7 @@
 
 .pane-tab:hover {
   background: var(--control-hover);
-  color: var(--text);
+  color: var(--fg);
 }
 
 .pane-tab:focus-visible {
@@ -115,7 +115,7 @@
 
 .pane-tab.active {
   background: var(--accent-soft);
-  color: var(--text);
+  color: var(--fg);
   font-weight: 600;
   /* Accent underline instead of a full accent fill: the active tab is a
      selection marker in a row of siblings, not a primary action. */

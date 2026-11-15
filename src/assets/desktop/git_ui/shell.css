@@ -256,10 +256,10 @@ body.light .git-ui-panel-main {
 
 .git-ui-toast {
   align-items: center;
-  background: var(--panel-bg);
+  background: var(--panel);
   border: 1px solid var(--border2);
   border-radius: 10px;
-  box-shadow: var(--shadow2);
+  box-shadow: var(--shadow-card, 0 4px 16px #0006);
   bottom: 16px;
   display: flex;
   gap: 10px;
