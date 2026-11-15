@@ -249,7 +249,7 @@
         { screen: "notes", title: "Notes", meta: "Shared scratchpad, synced with every client", icon: "✎" },
         { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
       ];
-      return items.map((item) => `<button class="mobile-drawer-item" onclick="HerdrMobile.openDrawerTarget('${item.screen}')"><span class="mobile-drawer-icon" aria-hidden="true">${escapeHtml(item.icon)}</span><span class="mobile-drawer-text"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.meta)}</small></span></button>`).join("");
+      return items.map((item) => `<button class="mobile-drawer-item" data-screen="${item.screen}" onclick="HerdrMobile.openDrawerTarget('${item.screen}')"><span class="mobile-drawer-icon" aria-hidden="true">${escapeHtml(item.icon)}</span><span class="mobile-drawer-text"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.meta)}</small></span></button>`).join("");
     }
 
     function dismissWorkingAgent(workspaceId, tabId, paneId, terminalId) {

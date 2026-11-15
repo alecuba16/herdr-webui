@@ -1688,6 +1688,7 @@
     closeTabsSheet,
     openWorkspacesSheet,
     closeWorkspacesSheet,
+    closeSearch: () => mobileSearch.close(),
     selectWorkspaceFromSheet,
     toggleToolbar,
     keysFabDragStart,
@@ -1786,6 +1787,7 @@
     setWorktreeCreateExpanded: mobileWorktrees.setCreateExpanded,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
+    replayTour: mobileSettings.replayTour,
     logout: mobileSettings.logout,
     rollbackSetting: mobileSettings.rollbackSetting,
     resetSettingBaselines: mobileSettings.resetSettingBaselines,
@@ -1989,6 +1991,16 @@
   loadServerSettings().then(render);
   refresh();
   mobileEvents.connectEvents();
+  // First visit in this browser starts the onboarding tour shortly after
+  // boot (desktop bindings.js parity). The tour module persists its own
+  // done/skipped flag, so a reload or an explicit skip never replays it;
+  // the Settings replay button restarts it on demand.
+  if (globalThis.HerdrMobileTour && !globalThis.HerdrMobileTour.isDone()) {
+    setTimeout(() => {
+      if (globalThis.HerdrMobileTour && !globalThis.HerdrMobileTour.isDone())
+        globalThis.HerdrMobileTour.start();
+    }, 600);
+  }
   // Popstate (Back/Forward) handler (mobile parity with the desktop
   // handleSessionPopState). refresh() alone re-parses the URL and restores
   // the workspace selection from it, but it cannot fix the session-level
