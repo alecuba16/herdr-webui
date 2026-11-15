@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.7.49 Release Notes
+- Split-tile previews of fullscreen TUI agents are composed screens
+  again: the builtin pane.read accepts format=screen and VT-emulates a
+  bounded 256KB scrollback tail through the terminal_text_lossy
+  emulator, so unfocused tiles of a fullscreen program (like jcode)
+  show composed screen rows instead of glued draw fragments. The
+  default ANSI-strip path stays byte-identical and external herdr
+  sessions keep the plain read.
+- src/tui reaches literal 100% changed-line coverage: every reachable
+  line is tested (827 tests, up from 797), and the handful of lines
+  that cannot be hit deterministically carry why-comments instead —
+  mostly macOS EPIPE propagation races where no fixture drop point
+  lands inside the client's write window. The pane.read screen-tail
+  copy is deduped and the git fetch fixture is deterministic (it no
+  longer answers a probe socket that already closed, killing the CI
+  flake).
+
 ## 0.7.48 Release Notes
 - Wrapping and scroll replace truncation across the TUI: budgets are
   display-width aware (unicode_width, CJK included), wrap_plain
@@ -771,6 +788,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.49 | 2026-11-15 | [v0.7.49](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.49) |
 | 0.7.48 | 2026-11-15 | [v0.7.48](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.48) |
 | 0.7.47 | 2026-11-14 | [v0.7.47](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.47) |
 | 0.7.46 | 2026-11-14 | [v0.7.46](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.46) |
