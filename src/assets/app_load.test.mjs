@@ -3838,6 +3838,17 @@ describe("app bundle load", () => {
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab9", ctx), 0), "feat/panels 1");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tabc", ctx), 1), "build");
+
+    // The prefix renders as a muted ::before on the label span: the number
+    // stays the span text and the readable head. The label span is a flex
+    // row so the prefix clamps in its own box (a long branch ellipsizes
+    // without touching the number), and the number rides the ::after flex
+    // item so it shrinks last. Muted color, never hue alone, carries the
+    // foreignness next to the number.
+    const panesCss = readFileSync(new URL("./desktop/app_css/panes.css", import.meta.url), "utf8");
+    match(panesCss, /\.pane-tab-label\[data-ws-prefix\] \{[^}]*display: inline-flex;[^}]*min-width: 0;[^}]*\}/);
+    match(panesCss, /\.pane-tab-label\[data-ws-prefix\]::before \{[^}]*content: attr\(data-ws-prefix\);[^}]*color: var\(--muted\);[^}]*text-overflow: ellipsis;[^}]*\}/);
+    match(panesCss, /\.pane-tab-label\[data-ws-prefix\]::after \{[^}]*content: "";[^}]*flex: 0 0 auto;[^}]*\}/);
   });
 
   it("hover titles spell the workspace of foreign panels", () => {
@@ -3920,6 +3931,238 @@ describe("app bundle load", () => {
       );
     `, ctx);
     equal(ctx.document.title, "feat/panels • build");
+  });
+
+  it("hover titles carry pane, terminal, and size suffixes with the visible label", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(`
+      state.ws = "ws1";
+      state.tab = "tab2";
+      state.termCols = 120;
+      state.termRows = 40;
+      state.workspaces = [
+        { workspace_id: "ws1", label: "main" },
+        { workspace_id: "ws-2", label: "feat" },
+      ];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab2", label: "build", number: 2 }];
+    `, ctx);
+    const panesByTab = new Map([
+      ["tab2", [{ pane_id: "p1", terminal_id: "t-2" }, { pane_id: "p9", terminal_id: "t-9" }]],
+    ]);
+    // The active pane (state.pane) wins the pane segment; the focused tab
+    // adds the terminal size; the label stays the strip language.
+    vm.runInContext("state.pane = 'p1'", ctx);
+    const withPane = vm.runInContext(
+      'tabHoverInfo({ tab_id: "tab2", label: "build", workspace_id: "ws1" }, new Map([["tab2", [{ pane_id: "p1", terminal_id: "t-2" }]]]))',
+      ctx,
+    );
+    equal(withPane, "build · p1 · t-2 · 120x40");
+    // A pane-less tab (row not hosted in the tree yet) stops after the label.
+    const noPane = vm.runInContext(
+      "tabHoverInfo({ tab_id: 'tabX', label: 'build', workspace_id: 'ws1' }, new Map())",
+      ctx,
+    );
+    equal(noPane, "build");
+    // A foreign default panel with a pane: workspace line first, then the
+    // strip label (never raw "shell"), pane, terminal, size. The branch
+    // for ws-2 rides workspaceBranches so worktreeDisplayName spells it.
+    vm.runInContext("state.workspaceBranches = { 'ws-2': 'feat/panels' };", ctx);
+    const foreign = vm.runInContext(
+      'tabHoverInfo({ tab_id: "tab8", label: "shell", number: 1, workspace_id: "ws-2" }, new Map([["tab8", [{ pane_id: "p8", terminal_id: "t-8" }]]]))',
+      ctx,
+    );
+    // Hovering a non-focused tab: the size suffix belongs to state.tab only.
+    equal(foreign, "Workspace feat/panels (ws-2) · 1 · p8 · t-8");
+    // The focused foreign panel adds the size suffix.
+    const foreignFocused = vm.runInContext(
+      'state.tab = "tab8"; tabHoverInfo({ tab_id: "tab8", label: "shell", number: 1, workspace_id: "ws-2" }, new Map([["tab8", [{ pane_id: "p8", terminal_id: "t-8" }]]]))',
+      ctx,
+    );
+    equal(foreignFocused, "Workspace feat/panels (ws-2) · 1 · p8 · t-8 · 120x40");
+    // pane rows exist but the active pane is not among them: the first row
+    // in the list backs the suffix (the strip highlight fallback).
+    const firstPane = vm.runInContext(
+      'tabHoverInfo({ tab_id: "tab9", label: "build", workspace_id: "ws1" }, new Map([["tab9", [{ pane_id: "pA", terminal_id: "t-A" }, { pane_id: "pB", terminal_id: "t-B" }]]]))',
+      ctx,
+    );
+    // tab9 is not the focused tab: no size suffix, and the first pane row
+    // backs the suffix (state.pane p1 is not among tab9's rows).
+    equal(firstPane, "build · pA · t-A");
+    // Hovering a tab that is not the focused one drops the size segment.
+    const unfocused = vm.runInContext(
+      'state.tab = "tab2"; tabHoverInfo({ tab_id: "tab9", label: "build", workspace_id: "ws1" }, new Map([["tab9", [{ pane_id: "pA", terminal_id: "t-A" }]]]))',
+      ctx,
+    );
+    equal(unfocused, "build · pA · t-A");
+    // The renderer entry point: a row with no label resolves through the
+    // strip language (empty label counts as default, so the number
+    // fallback answers), and the catch branch (panesByTabIndex throwing)
+    // keeps the raw tabTitle. The strip path pins the catch in the pane
+    // suite through the throwing harness stub.
+    const fallback = vm.runInContext("tabHoverTitle({ tab_id: 'tabZ' })", ctx);
+    equal(fallback, "1", "label-less rows render the number fallback");
+  });
+
+  it("workspaceHoverName walks record, worktree name, label, then raw id", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext("state.ws = 'ws1'; state.workspaces = []; state.workspaceBranches = {};", ctx);
+    // No record: the raw id is the only stable name.
+    equal(vm.runInContext("workspaceHoverName('ws-gone')", ctx), "ws-gone");
+    // Record present: worktreeDisplayName (branch, worktree path basename,
+    // then label) carries the friendly name.
+    vm.runInContext(`
+      state.workspaces = [
+        { workspace_id: 'ws-2', label: 'feat', worktree: { repo_name: 'herdr', branch: 'feat/panels' } },
+        { workspace_id: 'ws-3', label: 'plain' },
+        { workspace_id: 'ws-4', label: 'wt', worktree: { repo_name: 'herdr', branch: 'main' } },
+      ];
+    `, ctx);
+    // worktreeDisplayName reads state.worktrees rows and workspaceBranches,
+    // not the workspace row's worktree.branch: with none of those the label
+    // answers.
+    equal(vm.runInContext("workspaceHoverName('ws-2')", ctx), "feat");
+    equal(vm.runInContext("workspaceHoverName('ws-3')", ctx), "plain");
+    equal(vm.runInContext("workspaceHoverName('ws-4')", ctx), "wt");
+    // A registered branch wins over the label.
+    vm.runInContext("state.workspaceBranches['ws-2'] = 'feat/panels';", ctx);
+    equal(vm.runInContext("workspaceHoverName('ws-2')", ctx), "feat/panels");
+    // A state.worktrees row (real worktree record) wins too.
+    vm.runInContext("state.worktrees = [{ open_workspace_id: 'ws-4', branch: 'release/1.0', path: '/repo/wt' }];", ctx);
+    equal(vm.runInContext("workspaceHoverName('ws-4')", ctx), "release/1.0");
+    // Record with no worktree name and no label: the raw id is the last
+    // resort so the hover never renders an empty workspace line.
+    vm.runInContext("state.workspaces.push({ workspace_id: 'ws-5' });", ctx);
+    equal(vm.runInContext("workspaceHoverName('ws-5')", ctx), "ws-5");
+  });
+
+  it("title segment falls through disambiguation, visible label, then raw title", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext("state.ws = 'ws1'; state.workspaces = []; state.workspaceBranches = {};", ctx);
+    // Multi-panel workspace: the #N disambiguation wins over everything.
+    equal(
+      vm.runInContext("titlePanelSegment('ws1', { tab_id: 't1', label: 'shell', number: 2 }, new Map([['ws1', 2]]))", ctx),
+      "#2",
+    );
+    equal(
+      vm.runInContext("titlePanelSegment('ws1', { tab_id: 't1', label: 'build', number: 2 }, new Map([['ws1', 2]]))", ctx),
+      "build",
+    );
+    // Single-panel: the strip language answers for defaults (never raw "shell").
+    equal(
+      vm.runInContext("titlePanelSegment('ws1', { tab_id: 't1', label: 'shell', number: 1 }, new Map())", ctx),
+      "1",
+    );
+    // Custom name answers as itself.
+    equal(
+      vm.runInContext("titlePanelSegment('ws1', { tab_id: 't1', label: 'build', number: 1 }, new Map())", ctx),
+      "build",
+    );
+    // The bundle always defines panelDisplayName, so the raw-title branch is
+    // the guard for partial loads: pin it by loading core.js + render.js
+    // (tabTitle lives in core.js) without workspace_panes.js.
+    const bareCtx = context();
+    HOIST_PRELOAD.runInContext(bareCtx);
+    productScript("./shared/core.js").runInContext(bareCtx);
+    productScript("./desktop/app_js/core.js").runInContext(bareCtx);
+    productScript("./desktop/app_js/render.js").runInContext(bareCtx);
+    vm.runInContext("state.ws = 'ws1';", bareCtx);
+    equal(
+      vm.runInContext("titlePanelSegment('ws1', { tab_id: 't1', label: 'shell', number: 1 }, new Map())", bareCtx),
+      "shell",
+      "partial load keeps the raw title fallback",
+    );
+    equal(
+      vm.runInContext("tabHoverInfo({ tab_id: 't1', label: 'shell', number: 1, workspace_id: 'ws1' }, new Map())", bareCtx),
+      "shell",
+      "hover falls back to the raw title without the pane helpers",
+    );
+  });
+
+  it("window title keeps the pane segment and the no-tab fallbacks", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(`
+      state.ws = 'ws1';
+      state.workspaces = [{ workspace_id: 'ws1', label: 'main' }];
+      state.tab = null;
+      state.tabs = [];
+      state.tabsById = {};
+      state.panes = [];
+    `, ctx);
+    // No route tab, a focused pane answers with the pane id.
+    vm.runInContext(
+      "updateTitle(Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w])), state.tabsById, new Map(), { pane_id: 'p7' })",
+      ctx,
+    );
+    equal(ctx.document.title, "main • p7");
+    // No route tab, no pane: the static segment answers.
+    vm.runInContext(
+      "updateTitle(Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w])), state.tabsById, new Map(), null)",
+      ctx,
+    );
+    equal(ctx.document.title, "main • panel");
+    // No workspace record either: the workspace segment falls back to the id.
+    vm.runInContext("state.tab = 'gone'; state.tabsById = { gone: { tab_id: 'gone', workspace_id: 'ws-x', label: 'shell', number: 1 } };", ctx);
+    vm.runInContext(
+      "updateTitle({}, state.tabsById, new Map(), null)",
+      ctx,
+    );
+    equal(ctx.document.title, "ws-x • 1");
+  });
+
+  it("strip rename input names itself and seeds the current name", () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(`
+      state.ws = 'ws1';
+      state.tab = 't1';
+      state.workspaces = [{ workspace_id: 'ws1', label: 'main' }];
+      state.tabs = [{ workspace_id: 'ws1', tab_id: 't1', label: 'build', number: 2 }];
+    `, ctx);
+    // The element() stub's querySelector answers a fresh generic node, so
+    // the strip html the renderer writes is not reachable through the
+    // normal tree. Record every innerHTML the render pass writes instead:
+    // the rename input is the only markup with the editing state's value.
+    const written = [];
+    vm.runInContext("globalThis.__recordInnerHTML = (v) => { globalThis.__written.push(String(v)); };", ctx);
+    vm.runInContext("globalThis.__written = [];", ctx);
+    // Instrument element creation: every created node's innerHTML setter
+    // records what renderLeafInto writes.
+    // The app_load element() stub leaves projectDashboard.hidden undefined,
+    // which dashboardOwnsPaneArea reads as "dashboard owns the area" (it
+    // checks !hidden), and the render bails. Mirror app.html: the dashboard
+    // carries the hidden attribute until syncProjectDashboard shows it.
+    ctx.document.getElementById("projectDashboard").hidden = true;
+    const realCreateElement = ctx.document.createElement;
+    ctx.document.createElement = (tag) => {
+      const node = realCreateElement(tag);
+      let html = node.innerHTML || "";
+      Object.defineProperty(node, "innerHTML", {
+        configurable: true,
+        get() { return html; },
+        set(value) { html = String(value); ctx.__written.push(html); },
+      });
+      // querySelector must return the SAME node so the recorded html is
+      // the strip's, not a generic sibling's.
+      node.querySelector = () => node;
+      return node;
+    };
+    vm.runInContext("renderWorkspacePanes();", ctx);
+    vm.runInContext("state.editingTab = 't1'; state.editingTabValue = 'build'; renderWorkspacePanes();", ctx);
+    const all = (ctx.__written || []).join("");
+    match(all, /class="tab-rename-input" aria-label="Rename panel"/);
+    match(all, /value="build"/);
+    match(all, /onblur="commitTabRename\('t1'\)"/);
+    match(all, /onkeydown="tabRenameKey\(event,'t1'\)"/);
+    // Leaving rename mode restores the plain button with the aria name.
+    ctx.__written.length = 0;
+    vm.runInContext("state.editingTab = null; renderWorkspacePanes();", ctx);
+    const restored = (ctx.__written || []).join("");
+    ok(!restored.includes("tab-rename-input"), "input leaves with the editing state");
+    match(restored, /aria-label="Panel build"/);
   });
 
   it("keeps session manager buttons on one rounded style", () => {

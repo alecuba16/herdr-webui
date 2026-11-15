@@ -2261,3 +2261,302 @@ test("a slash branch name rides the prefix attribute through escapeAttr", () => 
 function foreignLabelAttr(html, value) {
   return html.includes(`data-ws-prefix="${value}"`);
 }
+
+// A row the tree references but neither state.tabs nor tabsById resolves
+// (older server without the map, or a snapshot race): the strip must not
+// render a broken button. paneTerminalTabButtonHtml answers null with "",
+// so nothing shows and no prefix machinery runs for the ghost id.
+test("unresolvable tab rows render nothing instead of a broken button", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+  };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["tab_2"];
+  leaves[0].active = "tab_2";
+  leaves[1].tabs = ["tab_ghost"];
+  leaves[1].active = "tab_ghost";
+  panes.renderWorkspacePanes();
+
+  const strips = nodes.container.querySelectorAll(".pane-tab-strip");
+  const ghostStrip = strips[1].__innerHTML;
+  assert.ok(!ghostStrip.includes('data-tab-id="tab_ghost"'), "unresolvable row renders no terminal button");
+  assert.ok(!ghostStrip.includes("data-ws-prefix"), "no prefix for a row that resolves nothing");
+  // The null-row exit is the same guard the strip filter relies on. The
+  // prune already collapsed the ghost leaf (unknown ids drop from every
+  // leaf, an emptied leaf inside a split collapses), so only the
+  // resolvable leaf survives: its tree tabs keep the live id.
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  assert.equal(leavesAfter.length, 1, "ghost-emptied leaf collapsed");
+  // vm arrays are cross-realm: the loose deepEqual tolerates that, the
+  // strict one does not (same reason the older tests use the named import).
+  deepEqual(panes.paneTabsForTree(leavesAfter[0]), ["tab_2"], "resolvable id stays in the tree tabs");
+});
+
+// foreignWorkspacePrefix guards, one assertion per exit: a row with no
+// workspace_id inherits state.ws (own workspace, bare), a foreign id with
+// no workspace record keeps the bare number, and a workspace whose name
+// chain (worktreeDisplayName then label) is empty keeps the bare number
+// too. An empty prefix must never render as an empty attribute.
+test("prefix fallback matrix: no workspace id, missing record, empty name", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_noid: { tab_id: "tab_noid", label: "shell", number: 4 },
+    tab_gone: { tab_id: "tab_gone", workspace_id: "ws-gone", label: "shell", number: 5 },
+  };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["tab_2", "tab_noid", "tab_gone"];
+  leaves[0].active = "tab_2";
+  panes.renderWorkspacePanes();
+
+  // No workspace_id on the row: the state.ws fallback makes it own, bare.
+  assert.equal(panes.foreignWorkspacePrefix("tab_noid"), "", "row without workspace id stays bare");
+  // Unknown foreign workspace: no record, no display name, bare number.
+  assert.equal(panes.foreignWorkspacePrefix("tab_gone"), "", "missing workspace record stays bare");
+  assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_noid, 3), "4", "visible label falls back to the number");
+  assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_gone, 4), "5", "unknown workspace keeps the bare number");
+
+  // Workspace record with every name source empty: bare number, and the
+  // strip never renders an empty prefix attribute.
+  ctx.state.workspaces.push({ workspace_id: "ws-3" });
+  ctx.state.tabsById.tab_e = { tab_id: "tab_e", workspace_id: "ws-3", label: "shell", number: 6 };
+  leaves[0].tabs.push("tab_e");
+  panes.renderWorkspacePanes();
+  assert.equal(panes.foreignWorkspacePrefix("tab_e"), "", "empty name chain keeps the bare number");
+  const strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.ok(strip.__innerHTML.includes('<span class="pane-tab-label">6</span>'), "nameless workspace renders a bare number");
+  assert.ok(!strip.__innerHTML.includes('data-ws-prefix=""'), "no empty prefix attribute ever renders");
+});
+
+// The workspace label carries the prefix when the worktree display name
+// chain yields nothing (a workspace without a worktree or branch entry
+// keeps its configured label as the origin cue).
+test("a foreign workspace without a worktree prefixes with its label", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  // No worktreeDisplayName stub and no worktree fields: the label is the
+  // only name source left.
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 },
+  };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["tab_2"];
+  leaves[0].active = "tab_2";
+  leaves[1].tabs = ["tab_9"];
+  leaves[1].active = "tab_9";
+  panes.renderWorkspacePanes();
+
+  assert.equal(panes.foreignWorkspacePrefix("tab_9"), "feat ", "label is the prefix without a worktree");
+  assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_9, 0), "feat 1");
+  const strips = nodes.container.querySelectorAll(".pane-tab-strip");
+  assert.ok(strips[1].__innerHTML.includes('data-ws-prefix="feat"'), "strip carries the label prefix");
+});
+
+// panelNumberLabel fallbacks, pinned directly: the tree may hold rows the
+// backend never numbered (a stored tree restored before the tabs snapshot
+// lands). A finite positive number wins; without one the index (or the
+// tabs lookup when the index is unknown) numbers the tab; a miss on both
+// renders 1 rather than NaN or "undefined".
+test("panelNumberLabel falls back to index and then to the tabs position", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [
+    { tab_id: "t1", label: "shell", number: 1 },
+    { tab_id: "t2", label: "shell", number: 2 },
+    { tab_id: "t3", label: "shell" },
+  ];
+  assert.equal(panes.panelNumberLabel({ label: "shell", number: 3 }, 2), "3", "finite positive number wins");
+  assert.equal(panes.panelNumberLabel({ label: "shell", number: 0 }, 1), "2", "zero is not a panel number, index wins");
+  assert.equal(panes.panelNumberLabel({ label: "shell", number: -1 }, 1), "2", "negative falls back to index");
+  assert.equal(panes.panelNumberLabel({ label: "shell", number: "x" }, 1), "2", "non-numeric falls back to index");
+  assert.equal(panes.panelNumberLabel({ label: "shell" }, 1), "2", "missing number uses the index");
+  assert.equal(panes.panelNumberLabel(ctx.state.tabs[2], undefined, ctx.state.tabs), "3", "unknown index resolves through tabs");
+  assert.equal(panes.panelNumberLabel({ tab_id: "nope", label: "shell" }, undefined, ctx.state.tabs), "1", "full miss renders 1");
+  assert.equal(panes.panelVisibleLabel({ tab_id: "t2", label: "tab 9", number: 9 }, 1), "9", "backend default \"tab N\" renders as N");
+});
+
+// Editor and git tabs never carry the prefix machinery: they are not
+// panels, the file name or view name is the identity, and paneTabButtonHtml
+// (the prefix renderer) is only on the terminal kind. On a mixed tree the
+// strip renders all three kinds together, so this pins the kind routing.
+test("editor and git tabs stay unprefixed on a mixed tree", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  // ws-2's row only lives in the unfiltered map, so the strip filter
+  // (paneTabsForTree -> terminalTabKnown) must accept it before the
+  // prefix question even arises: this pins the kind routing on the same
+  // filtered-snapshot shape the sync sees. allTabs keeps the row alive
+  // across the per-leaf sync (ws-1's panel list would otherwise drop a
+  // foreign id from every leaf).
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 2 },
+  };
+  ctx.state.allTabs = [{ tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 2 }];
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  // Sync seeded leaf 1 with the placeholder, and the placeholder splice
+  // already pulled tab_9 (via allTabs) into leaf 0. The editor and git ids
+  // join leaf 1 (client-owned ids, exactly how paneEnsureEditorTab /
+  // paneEnsureGitTab enter the tree), leaving all three kinds split across
+  // the two strips: the D7.1 one-home rule keeps tab_9 in leaf 0.
+  leaves[1].tabs = ["editor:src/feature.py", "git:changes"];
+  leaves[1].active = "editor:src/feature.py";
+  panes.renderWorkspacePanes();
+
+  const strips = nodes.container.querySelectorAll(".pane-tab-strip");
+  const foreign = Array.from(strips).find((s) => s.__innerHTML.includes('data-tab-id="tab_9"'));
+  assert.ok(foreign, "foreign default panel renders");
+  const editorAndGit = Array.from(strips).find((s) => s.__innerHTML.includes('data-tab-kind="editor"'));
+  assert.ok(editorAndGit, "editor and git tabs render");
+  // Foreign default panel prefixes; the editor and git rows never do:
+  // paneTabButtonHtml renders the prefix, the other two kinds never touch
+  // it.
+  assert.ok(foreign.__innerHTML.includes('data-ws-prefix="feat"'), "foreign default panel carries the prefix");
+  assert.ok(!editorAndGit.__innerHTML.includes("data-ws-prefix"), "editor and git rows carry no prefix attribute");
+  assert.ok(editorAndGit.__innerHTML.includes('data-tab-kind="git"'), "git tab renders beside the editor tab");
+});
+
+// Rename input (the paneTabButtonHtml editing branch) lives in app_load's
+// suite (inputAttrs ships with shared/core.js, which only that bundle loads).
+// Here the same branch is pinned at the function level: a default panel
+// seeds "" and a custom panel seeds its own name, the exact strings the
+// strip's ondblclick hands to startTabRename.
+test("panelRenameInitialLabel seeds empty for defaults and the name for customs", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [
+    { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    { tab_id: "tab_c", workspace_id: "ws-1", label: "build", number: 2 },
+  ];
+  ctx.panelRenameInitialLabel = (tab) => panes.panelRenameInitialLabel(tab);
+  assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[0]), "", "default panel seeds a fresh name");
+  assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[1]), "build", "custom panel seeds its name");
+  // The strip wires the seed into the double-click handler.
+  ctx.state.tab = "tab_2";
+  panes.renderWorkspacePanes();
+  const strip = nodesStripHtml(ctx, panes);
+  assert.ok(strip.includes("startTabRename('tab_c','build')"), "custom tab's double-click seeds its name");
+  assert.ok(strip.includes("startTabRename('tab_2','')"), "default tab's double-click seeds empty");
+});
+
+function nodesStripHtml(ctx, panes) {
+  const root = panes.paneRoot();
+  const first = panes.paneLeaves(root)[0];
+  const paneEl = paneElementFor(ctx, first);
+  return paneEl.querySelector(".pane-tab-strip").__innerHTML;
+}
+
+function paneElementFor(ctx, leaf) {
+  const el = ctx.el("workspacePanes");
+  const panes = Array.from(el.querySelectorAll(".workspace-pane"));
+  return panes.find((p) => p.dataset.paneId === leaf.paneId) || panes[0];
+}
+
+// The prefix must reach the rail too: a maximized leaf hides its
+// siblings, and the rail re-renders their strips through renderLeafInto,
+// so the paneTabButtonHtml prefix path must run there as well. A user who
+// maximizes a foreign panel and reads the rail must see the same origin
+// cue as the normal layout, or the rail reads as a different app.
+test("the maximized-pane rail keeps the foreign prefix on sibling strips", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 },
+  };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["tab_2"];
+  leaves[0].active = "tab_2";
+  leaves[1].tabs = ["tab_9"];
+  leaves[1].active = "tab_9";
+  panes.renderWorkspacePanes();
+
+  assert.equal(panes.maximizePaneFor(leaves[0].paneId), true, "maximize accepted");
+  const rails = nodes.container.querySelectorAll(".pane-strip-rail");
+  assert.equal(rails.length, 1, "rail holds the hidden sibling");
+  const stub = rails[0].querySelector(".workspace-pane");
+  const strip = stub.querySelector(".pane-tab-strip");
+  assert.ok(strip, "rail renders the sibling strip");
+  assert.ok(strip.__innerHTML.includes('data-ws-prefix="feat"'), "rail strip carries the foreign prefix");
+  assert.ok(strip.__innerHTML.includes('<span class="pane-tab-label" data-ws-prefix="feat">1</span>'), "rail strip renders number plus prefix");
+  assert.ok(strip.__innerHTML.includes('aria-label="Panel feat 1"'), "rail accessible name spells the origin");
+
+  panes.maximizePaneFor(leaves[0].paneId);
+});
+
+// Mixed tree at the placement layer: the one-home rule routes a foreign
+// default tab into the single leaf via state.tabs, and the strip answers
+// with the worktree prefix (label semantics from workspace_panes, the
+// same language the tab bar speaks).
+test("mixed tree renders the one-home foreign tab with its prefix", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.ws = "ws-1";
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main", worktree: { repo_name: "herdr", branch: "main" } },
+    { workspace_id: "ws-2", label: "feat", worktree: { repo_name: "herdr", branch: "feat/panels" } },
+  ];
+  ctx.state.tabs = [
+    { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 },
+  ];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
+    tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 },
+  };
+  panes.renderWorkspacePanes();
+
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  assert.equal(leaves.length, 1, "one-home rule keeps a single leaf");
+  deepEqual(leaves[0].tabs, ["tab_2", "tab_9"], "foreign tab rides the same leaf via state.tabs");
+  const strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.ok(strip.__innerHTML.includes('<span class="pane-tab-label" data-ws-prefix="feat">1</span>'), "strip spells the prefix plus number");
+  assert.ok(strip.__innerHTML.includes('aria-label="Panel feat 1"'), "strip accessible name spells the origin");
+});
