@@ -13,6 +13,13 @@ import { dirname, join } from "node:path";
 //   - an engine-generated family (CodeMirror cm-*, wterm term-*)
 //   - a state suffix toggle (foo + "-open" -> .foo-open)
 // Selectors with no producer at all fail the suite with the file and line.
+//
+// Custom properties follow the same rule: every var(--x) reference with no
+// fallback is an invalid-at-use-site declaration when nothing ever defines
+// --x, and the browser silently drops the whole declaration (the font: 12px
+// var(--font) shorthand class of bug). The var guard collects the producers
+// (CSS declarations, JS setProperty, inline style templates) and fails on
+// any fallback-less reference with no producer anywhere in the corpus.
 
 const ASSETS = fileURLToPath(new URL("./", import.meta.url));
 
@@ -193,6 +200,111 @@ function matchesToken(token, literals, prefixes) {
   return false;
 }
 
+// ---- custom property guard ----
+
+// JS producers come from the same corpus plus vendor bundles: wterm writes
+// per-cell vars through setProperty, and the theme adapter feeds --term-*
+// color families. Both are runtime producers the CSS can rely on.
+function collectVarProducers() {
+  const producers = new Set();
+  for (const file of collectShippedCss()) {
+    const css = stripComments(readFileSync(file, "utf8"));
+    for (const match of css.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)) {
+      producers.add(match[1]);
+    }
+  }
+  const roots = [
+    join(ASSETS, ""),
+    join(ASSETS, "desktop"),
+    join(ASSETS, "shared"),
+    join(ASSETS, "mobile"),
+    join(ASSETS, "vendor"),
+  ];
+  const jsFiles = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (/\.(js|mjs|html)$/.test(name) && !name.endsWith(".test.mjs") && !name.endsWith(".test.js")) {
+        jsFiles.push(full);
+      }
+    }
+  };
+  for (const root of roots) {
+    try {
+      statSync(root);
+      walk(root);
+    } catch {
+      // Skip roots that do not exist in this checkout layout.
+    }
+  }
+  const rustRoot = dirname(ASSETS);
+  for (const rustFile of ["assets.rs", "file_browser.rs"]) {
+    for (const candidate of [join(rustRoot, rustFile), join(dirname(rustRoot), rustFile)]) {
+      try {
+        statSync(candidate);
+        jsFiles.push(candidate);
+      } catch {
+        // Skip when not present.
+      }
+    }
+  }
+  for (const file of jsFiles) {
+    const text = readFileSync(file, "utf8");
+    for (const match of text.matchAll(/setProperty\(\s*["'`]([^"'`]+)["'`]/g)) {
+      if (match[1].startsWith("--")) producers.add(match[1]);
+    }
+    // Inline style templates: style="--lane:${color}" and friends.
+    for (const match of text.matchAll(/["'`]--([a-zA-Z0-9-]+)\s*:/g)) {
+      producers.add("--" + match[1]);
+    }
+    // Terminal theme families: --term-color-<n>, --term-app-* and the
+    // --term-* adapter vars are set per element by the wterm bundle.
+    if (file.includes("terminal") || file.includes("wterm") || file.includes("adapter")) {
+      producers.add("--term-color-0"); // family prefix marker
+    }
+  }
+  // Family prefixes: --term-color-<index> is generated per palette entry.
+  producers.add("--term-color");
+  return producers;
+}
+
+function customPropertyReferencesWithoutProducer() {
+  const producers = collectVarProducers();
+  const orphans = [];
+  let refsChecked = 0;
+  for (const file of collectShippedCss()) {
+    const raw = readFileSync(file, "utf8");
+    const css = stripComments(raw);
+    let body = css.replace(/@font-face\s*\{[^{}]*\}/g, "");
+    // Keep var() with a fallback out of the audit: a fallback makes the
+    // reference valid even without a producer.
+    body = body.replace(/var\(\s*(--[a-zA-Z0-9-]+)\s*,/g, "VAR_WITH_FALLBACK(");
+    for (const match of body.matchAll(/var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g)) {
+      refsChecked++;
+      const name = match[1];
+      if (producers.has(name)) continue;
+      // Generated families: --term-color-12 matches the --term-color prefix.
+      const segments = name.split("-");
+      let covered = false;
+      for (let i = 2; i < segments.length; i++) {
+        if (producers.has(segments.slice(0, i).join("-"))) {
+          covered = true;
+          break;
+        }
+      }
+      if (covered) continue;
+      orphans.push(
+        `${file.replace(ASSETS, "")}:${selectorLine(raw, match.index)} ${name}`
+      );
+    }
+  }
+  return { orphans, refsChecked, producers };
+}
+
 describe("css selector coverage", () => {
   const cssFiles = collectShippedCss();
   const corpus = readRuntimeCorpus();
@@ -238,5 +350,40 @@ describe("css selector coverage", () => {
     }
     const produced = [...tokens].filter((token) => matchesToken(token, literals, prefixes));
     assert.deepEqual(produced, [...tokens]);
+  });
+
+  it("every fallback-less var() reference has a producer", () => {
+    const { orphans, refsChecked } = customPropertyReferencesWithoutProducer();
+    assert.ok(
+      orphans.length === 0,
+      `${orphans.length} var() references without a producer or fallback (checked ${refsChecked} refs):\n` +
+        orphans.slice(0, 40).join("\n")
+    );
+    assert.ok(refsChecked > 50, `expected a meaningful var() corpus, got ${refsChecked} refs`);
+  });
+
+  it("both shells define the shared font tokens next to --mono-font", () => {
+    // --font and --font-mono are referenced by editor find inputs, the git
+    // log workbench, and lens tool output; before 0.7.50 no rule defined
+    // them, so font: 12px var(--font) was an invalid shorthand the browser
+    // dropped. Both bodies must keep the tokens defined.
+    for (const sheet of ["desktop/app_css/base.css", "mobile/app.css"]) {
+      const css = readFileSync(join(ASSETS, sheet), "utf8");
+      assert.match(css, /--mono-font:/);
+      assert.match(css, /--font: ui-sans-serif, system-ui;/);
+      assert.match(css, /--font-mono: var\(--mono-font\);/);
+    }
+  });
+
+  it("desktop shell defines the --text tokens pane tabs and notes read", () => {
+    // panes.css and notes.css reference --text/--text-dim for readable and
+    // dimmed text; they alias the theme-aware fg pair so the light mode
+    // body.light override keeps working without per-rule redefinition.
+    const baseCss = readFileSync(join(ASSETS, "desktop/app_css/base.css"), "utf8");
+    assert.match(baseCss, /--text: var\(--fg\);/);
+    assert.match(baseCss, /--text-dim: var\(--fg-dim\);/);
+    // pane tabs read --text, which now resolves; hover keeps its lift.
+    const panesCss = readFileSync(join(ASSETS, "desktop/app_css/panes.css"), "utf8");
+    assert.match(panesCss, /\.pane-tab:hover \{[\s\S]*?color: var\(--text\);/);
   });
 });

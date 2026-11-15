@@ -13,6 +13,7 @@ use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
 use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
 use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen, TuiWorkspace};
+use crate::HERDR_WEBUI_VERSION;
 
 mod split_tiles;
 pub(crate) use split_tiles::split_active;
@@ -2896,7 +2897,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(overlay_panel(" Settings · Esc closes ", p))
+            .block(
+                overlay_panel(" Settings · Esc closes ", p)
+                    .title_bottom(Line::from(format!(" v{HERDR_WEBUI_VERSION} ")).right_aligned()),
+            )
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .wrap(Wrap { trim: false }),
         rect,

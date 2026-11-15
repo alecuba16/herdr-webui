@@ -119,11 +119,14 @@ enum CopyOutcome {
 
 /// Whether herdr-webui is installed via Homebrew on this machine.
 ///
-/// When the brew formula is present, install-mac/update-mac delegate to
-/// `brew services` instead of maintaining a private LaunchAgent: brew
-/// already restarts its own service on upgrade, so a second agent would
-/// fight over the port. Tarball-only machines (no brew formula) keep the
-/// private-layout path unchanged.
+/// When the brew formula is present, every service verb (install, update,
+/// start, stop, restart, uninstall) delegates to `brew services` instead
+/// of the private LaunchAgent: brew owns the plist under its own label, so
+/// launchctl would not find ours and a second agent would fight over the
+/// port. `brew upgrade` does NOT restart a running service on its own
+/// (Homebrew prints "brew services restart" as the follow-up step), so the
+/// update path must run that restart itself. Tarball-only machines (no
+/// brew formula) keep the private-layout path unchanged.
 fn brew_formula_present() -> bool {
     if let Ok(cellar) = std::env::var("HERDR_WEBUI_BREW_CELLAR") {
         return Path::new(&cellar).exists();
@@ -132,8 +135,14 @@ fn brew_formula_present() -> bool {
         || Path::new("/usr/local/Cellar/herdr-webui").exists()
 }
 
+/// Arguments `brew_services` passes for a verb, split out so tests can
+/// verify the delegation mapping without shelling out to brew.
+fn brew_services_args(verb: &'static str) -> [&'static str; 3] {
+    ["services", verb, "herdr-webui"]
+}
+
 /// Run `brew services <verb> herdr-webui` for the delegated brew path.
-fn brew_services(verb: &str) -> io::Result<()> {
+fn brew_services(verb: &'static str) -> io::Result<()> {
     let brew = [
         "/opt/homebrew/bin/brew",
         "/usr/local/bin/brew",
@@ -142,9 +151,7 @@ fn brew_services(verb: &str) -> io::Result<()> {
     .into_iter()
     .find(|p| Path::new(p).exists())
     .unwrap_or("brew");
-    let status = Command::new(brew)
-        .args(["services", verb, "herdr-webui"])
-        .status()?;
+    let status = Command::new(brew).args(brew_services_args(verb)).status()?;
     if !status.success() {
         return Err(io::Error::other(format!(
             "brew services {verb} herdr-webui failed with {status}"
@@ -154,22 +161,23 @@ fn brew_services(verb: &str) -> io::Result<()> {
 }
 
 /// install-mac with the brew formula present: no private files, the brew
-/// service owns the run. Starting an already-started brew service is an
-/// idempotent restart, which is exactly the refresh upgrade-mac needs.
+/// service owns the run. `brew services start` on a stopped service starts
+/// and registers it at login; on a running one it is an idempotent no-op.
 fn install_macos_brew() -> io::Result<()> {
     println!("brew install detected: managing {INSTALL_LABEL} via brew services");
     brew_services("start")?;
-    println!("Started {INSTALL_LABEL} via brew services; brew upgrade restarts it automatically");
+    println!("Started {INSTALL_LABEL} via brew services");
     Ok(())
 }
 
 /// update-mac with the brew formula present: brew upgraded the keg, the
 /// running service still executes the old binary, so one restart moves it
-/// to the new one. `brew services run` would not stop the old instance;
-/// `start` on a running service restarts it.
+/// to the new one. `start` is a no-op on a running service (brew prints
+/// "already started, use restart"), and `run` would not stop the old
+/// instance; only `restart` stops first and starts on the new keg.
 fn update_macos_brew() -> io::Result<()> {
     println!("brew install detected: restarting {INSTALL_LABEL} via brew services");
-    brew_services("start")?;
+    brew_services("restart")?;
     println!("Restarted {INSTALL_LABEL} on the upgraded keg");
     Ok(())
 }
@@ -251,6 +259,10 @@ pub fn update_macos() -> io::Result<()> {
 
 pub fn start_macos_service() -> io::Result<()> {
     ensure_macos_user_context()?;
+    if brew_formula_present() {
+        println!("brew install detected: starting {INSTALL_LABEL} via brew services");
+        return brew_services("start");
+    }
     let plist = mac_plist_path()?;
     log_macos_context("start", Some(&plist));
     if !plist.exists() {
@@ -271,6 +283,10 @@ pub fn start_macos_service() -> io::Result<()> {
 
 pub fn stop_macos_service() -> io::Result<()> {
     ensure_macos_user_context()?;
+    if brew_formula_present() {
+        println!("brew install detected: stopping {INSTALL_LABEL} via brew services");
+        return brew_services("stop");
+    }
     log_macos_context("stop", None);
     let service = mac_service_target();
     let _ = launchctl_quiet(&["bootout", &service]);
@@ -279,6 +295,11 @@ pub fn stop_macos_service() -> io::Result<()> {
 }
 
 pub fn restart_macos_service() -> io::Result<()> {
+    ensure_macos_user_context()?;
+    if brew_formula_present() {
+        println!("brew install detected: restarting {INSTALL_LABEL} via brew services");
+        return brew_services("restart");
+    }
     stop_macos_service()?;
     start_macos_service()?;
     println!("Restarted {INSTALL_LABEL}");
@@ -302,6 +323,10 @@ pub fn uninstall_macos() -> io::Result<()> {
 }
 
 pub fn install_linux(config: WebConfig) -> io::Result<()> {
+    if brew_formula_present() {
+        println!("brew install detected: managing {INSTALL_LABEL} via brew services");
+        return brew_services("start");
+    }
     println!("Installing {INSTALL_LABEL} {HERDR_WEBUI_VERSION}");
     // Stop the service before touching the binary: overwriting a running
     // executable in place fails with ETXTBSY on Linux.
@@ -325,6 +350,10 @@ pub fn install_linux(config: WebConfig) -> io::Result<()> {
 }
 
 pub fn update_linux() -> io::Result<()> {
+    if brew_formula_present() {
+        println!("brew install detected: restarting {INSTALL_LABEL} via brew services");
+        return brew_services("restart");
+    }
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
     // Stop the service before touching the binary: overwriting a running
     // executable in place fails with ETXTBSY on Linux.
@@ -343,6 +372,10 @@ pub fn update_linux() -> io::Result<()> {
 }
 
 pub fn start_linux_service() -> io::Result<()> {
+    if brew_formula_present() {
+        println!("brew install detected: starting {INSTALL_LABEL} via brew services");
+        return brew_services("start");
+    }
     ensure_linux_service_exists()?;
     systemctl_user(&["start", &format!("{INSTALL_LABEL}.service")])?;
     println!("Started {INSTALL_LABEL}");
@@ -350,12 +383,20 @@ pub fn start_linux_service() -> io::Result<()> {
 }
 
 pub fn stop_linux_service() -> io::Result<()> {
+    if brew_formula_present() {
+        println!("brew install detected: stopping {INSTALL_LABEL} via brew services");
+        return brew_services("stop");
+    }
     systemctl_user(&["stop", &format!("{INSTALL_LABEL}.service")])?;
     println!("Stopped {INSTALL_LABEL}");
     Ok(())
 }
 
 pub fn restart_linux_service() -> io::Result<()> {
+    if brew_formula_present() {
+        println!("brew install detected: restarting {INSTALL_LABEL} via brew services");
+        return brew_services("restart");
+    }
     ensure_linux_service_exists()?;
     systemctl_user(&["restart", &format!("{INSTALL_LABEL}.service")])?;
     println!("Restarted {INSTALL_LABEL}");
@@ -363,6 +404,10 @@ pub fn restart_linux_service() -> io::Result<()> {
 }
 
 pub fn uninstall_linux() -> io::Result<()> {
+    if brew_formula_present() {
+        println!("brew install detected: stopping {INSTALL_LABEL} via brew services");
+        return brew_services("stop");
+    }
     let _ = systemctl_user(&["disable", "--now", &format!("{INSTALL_LABEL}.service")]);
     let service = linux_service_path()?;
     if service.exists() {
@@ -988,6 +1033,25 @@ mod tests {
         assert!(!brew_formula_present());
         std::env::remove_var("HERDR_WEBUI_BREW_CELLAR");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn brew_delegation_verbs_map_to_services() {
+        // update-mac is the refresh path: it must use `restart`, not
+        // `start` (a no-op on a running service that would leave the old
+        // keg's process serving the port).
+        assert_eq!(
+            brew_services_args("restart"),
+            ["services", "restart", "herdr-webui"]
+        );
+        assert_eq!(
+            brew_services_args("start"),
+            ["services", "start", "herdr-webui"]
+        );
+        assert_eq!(
+            brew_services_args("stop"),
+            ["services", "stop", "herdr-webui"]
+        );
     }
 
     #[test]

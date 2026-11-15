@@ -216,11 +216,11 @@
 .git-ui-editor-bands span {
   background: color-mix(in srgb, var(--git-diff-add), transparent 82%);
   border-left: 4px solid var(--git-diff-add);
-  height: calc(var(--line-count) * 1.5em);
+  height: calc(var(--line-count, 1) * 1.5em);
   left: 0;
   position: absolute;
   right: 0;
-  top: calc((var(--line-start) - 1) * 1.5em + 12px);
+  top: calc((var(--line-start, 1) - 1) * 1.5em + 12px);
 }
 @media (max-width: 900px) {
   .git-ui-split-editor,

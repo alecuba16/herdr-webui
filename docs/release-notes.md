@@ -1,5 +1,34 @@
 # Release notes
 
+## 0.7.50 Release Notes
+- The TUI settings overlay shows the running version in the bottom
+  border (right-aligned `v<version>`, the same build.rs-stamped string
+  `herdr-webui --version` prints), so an installed TUI can be identified
+  without leaving the screen.
+- Every service subcommand now honors a Homebrew install:
+  `install-mac`/`install-linux` start the brew service, `update-mac`/
+  `update-linux` and `restart` run `brew services restart`, and `start`/
+  `stop`/`uninstall-*` map to their brew verbs. Previously `update-mac`
+  called `brew services start`, a no-op on a running service, so the
+  refresh after `brew upgrade` never happened, and `start`/`stop`/
+  `restart` went straight to launchctl/systemctl and failed on
+  brew-installed machines (Homebrew keeps its own service label).
+- The desktop and mobile shells now define `--font` and `--font-mono`
+  tokens next to `--mono-font`, so the rules that referenced them
+  (editor find inputs, git log workbench, lens tool output) stop
+  silently falling back to inherited fonts. `font: 12px var(--font)`
+  was an invalid shorthand while the variable stayed undefined; the
+  find inputs rendered in the body font instead of the intended stack.
+- A custom-property sweep fixed the remaining fallback-less
+  references to never-defined tokens: pane tabs and notes now read the
+  `--text`/`--text-dim` aliases declared in the desktop shell, the git
+  toast uses the real `--panel` and `--shadow-card` tokens, the mobile
+  search card uses `--shadow-card`, and the diff editor band markers
+  carry inline fallbacks. A new guard in the CSS coverage suite fails
+  the build on any future `var(--x)` reference that has neither a
+  producer nor a fallback, plus a Rust backstop asserting both shipped
+  bundles keep the tokens.
+
 ## 0.7.49 Release Notes
 - Split-tile previews of fullscreen TUI agents are composed screens
   again: the builtin pane.read accepts format=screen and VT-emulates a
@@ -788,6 +817,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.50 | 2026-11-15 | [v0.7.50](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.50) |
 | 0.7.49 | 2026-11-15 | [v0.7.49](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.49) |
 | 0.7.48 | 2026-11-15 | [v0.7.48](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.48) |
 | 0.7.47 | 2026-11-14 | [v0.7.47](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.47) |
