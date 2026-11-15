@@ -132,8 +132,36 @@ Browser terminal shortcuts:
 | Shortcut | Scope | Behavior |
 | --- | --- | --- |
 | `Ctrl+B` by default | Desktop WebUI | Opens the WebUI prefix overlay. The next shortcut key is handled by WebUI instead of the terminal. `Esc` cancels. The prefix is configurable in Settings. With the Terminal prefix passthrough setting on and the terminal focused, the prefix goes to the shell instead (readline `Ctrl+B`, tmux prefix). |
+| Prefix then `/` | Desktop WebUI | Opens the search palette. |
+| Prefix then `?` | Desktop WebUI | Opens the help and shortcuts reference (Help & Shortcuts section of the Settings modal). |
+| Prefix then `S` | Desktop WebUI | Opens Settings. |
+| Prefix then `B` | Desktop WebUI | Shows or hides the workspace/agents sidebar. |
 | Prefix then `Q` | Desktop WebUI | Shows or hides the workspace views sidebar (Files, Git, Search rail column). A fresh boot starts it collapsed until a rail view is opened. |
+| Prefix then `N` | Desktop WebUI | Opens the folder picker to open or create a workspace (same contract as the dashboard card and the location bar's Open workspace button: the pick decides what opens). |
+| Prefix then `P` | Desktop WebUI | Creates a panel in the current workspace; with no workspace open it routes the press to the open-workspace picker instead. |
+| Prefix then `W` | Desktop WebUI | Opens the workspace/worktrees browser. Without an open workspace, it starts from the configured default folder. |
+| Prefix then `T` | Desktop WebUI | Creates a worktree from the current workspace (branch prompt seeded from the selected workspace). |
+| Prefix then `X` | Desktop WebUI | Closes the current panel. |
+| Prefix then `Shift+X` | Desktop WebUI | Closes the current workspace or linked worktree. |
+| Prefix then `Delete` / `Backspace` | Desktop WebUI | Removes the current linked worktree from disk (same confirm flow as the sidebar remove action). |
+| Prefix then `A` / `Shift+A` | Desktop WebUI | Jumps to the next / previous agent by status priority: blocked, done, idle, working. |
+| Prefix then `J` / `K` | Desktop WebUI | Jumps to the next / previous workspace. |
+| Prefix then `]` / `[` | Desktop WebUI | Jumps to the next / previous panel. |
 | Prefix then `F` | Desktop WebUI | Focuses the main terminal. |
+| Prefix then `.` / `,` | Desktop WebUI | Focuses the next / previous visible UI control. |
+| Prefix then `D` | Desktop WebUI | Splits the active pane to the right. |
+| Prefix then `Shift+D` | Desktop WebUI | Splits the active pane downward. |
+| Prefix then `E` | Desktop WebUI | Closes the active pane and promotes its sibling. |
+| Prefix then `M` | Desktop WebUI | Moves the active editor or Git tab to the next pane. |
+| Prefix then `Shift+M` | Desktop WebUI | Maximizes the active pane, or restores the layout when already maximized. |
+| Prefix then `F10` | Desktop WebUI | Opens the pane actions menu for the active pane (split, maximize, rename, move tab, close). Inside the menu, arrows move between items, `Esc` closes and returns focus to the pane menu button. |
+| Prefix then `Shift+U` | Desktop WebUI | Opens the session manager. |
+| Prefix then `End` | Desktop WebUI | Jumps the terminal back to the latest output and resumes follow, same as the strip's Follow button. |
+| Prefix then `Shift+Y` | Desktop WebUI | Toggles the chat/terminal lens over the active pane. |
+| Prefix then `Shift+V` | Desktop WebUI | Cycles the right rail through Files, Git, Search, and Notes; a collapsed rail reopens on Files. |
+| Prefix then `Shift+I` | Desktop WebUI | Switches a markdown editor tab between rendered preview, source, and edit, same as the strip eye. |
+| Prefix then `Shift+C` | Desktop WebUI | Creates a new note; opens the Notes rail first when it is closed. |
+| Prefix then `Shift+Z` | Desktop WebUI | In Notes, goes back to the notes list. |
 | `Shift+Enter` | Main terminal | Sends the configured newline sequence when `Shift+Enter newline` is enabled. |
 | `PageUp` / `PageDown` | Main terminal | Scrolls terminal output by one visible terminal page in normal scrollback. |
 | Wheel / trackpad / touch drag | Main terminal | Scrolls terminal output. Trackpad deltas accumulate by row height; `Scroll speed` controls line-wheel steps. |
@@ -195,7 +223,7 @@ Language servers:
 
 Panels:
 
-- Desktop renders one split pane tree per session, shared across workspaces: any pane can host another workspace's terminal next to the current one, and the tree persists in browser storage (`herdr-web-workspace-panes`, session entry) across reloads and workspace switches. Each leaf hosts a terminal, an editor tab, or a Git view; one owner leaf renders the primary terminal shell while every other terminal leaf renders its own wterm instance and `/ws/terminal` socket. Hidden aux surfaces park (scrollback kept, socket detached) and re-attach on return, capped at 8 aux surfaces with least-recently-focused eviction; terminal close is the only real dispose. Split right (`prefix D`) and split down (`prefix Shift+D`) add leaves; `prefix E` closes the active pane and promotes its sibling; `prefix M` moves the active editor or Git tab to the next pane with a drop-slot caret; `prefix Shift+M` maximizes/restores a pane; `F10` opens the pane actions menu (split, maximize, rename, move tab, close). Tab drag between panes and middle-click close work, and closing a dirty editor tab asks first. Workspace sidebar cards drag onto a pane strip to open that workspace's terminal there; the `+` picker does the same by pick, and on a mixed tree each pane strip carries a workspace badge (worktree name plus branch) that opens the workspace picker scoped to that pane. Reset window layout clears the stored tree. The selected workspace or worktree is pinned at the top of the workspace list.
+- Desktop renders one split pane tree per session, shared across workspaces: any pane can host another workspace's terminal next to the current one, and the tree persists in browser storage (`herdr-web-workspace-panes`, session entry) across reloads and workspace switches. Each leaf hosts a terminal, an editor tab, or a Git view; one owner leaf renders the primary terminal shell while every other terminal leaf renders its own wterm instance and `/ws/terminal` socket. Hidden aux surfaces park (scrollback kept, socket detached) and re-attach on return, capped at 8 aux surfaces with least-recently-focused eviction; terminal close is the only real dispose. Split right (`prefix D`) and split down (`prefix Shift+D`) add leaves; `prefix E` closes the active pane and promotes its sibling; `prefix M` moves the active editor or Git tab to the next pane with a drop-slot caret; `prefix Shift+M` maximizes/restores a pane; `prefix F10` opens the pane actions menu (split, maximize, rename, move tab, close). Tab drag between panes and middle-click close work, and closing a dirty editor tab asks first. Workspace sidebar cards drag onto a pane strip to open that workspace's terminal there; the `+` picker does the same by pick, and on a mixed tree each pane strip carries a workspace badge (worktree name plus branch) that opens the workspace picker scoped to that pane. Reset window layout clears the stored tree. The selected workspace or worktree is pinned at the top of the workspace list.
 - The selected row includes compact actions for worktree creation, opening, workspace/worktree closing, and worktree removal.
 - The current panel selector supports switching, creating, renaming, and closing the current panel. Desktop has a visible current-panel `✕`; mobile exposes close from Panels and the terminal tab strip.
 - WebUI subscribes to `pane.closed`, `pane.exited`, and `tab.closed`, clears stale terminal selection immediately, and auto-closes exited panes before switching to the next available panel.

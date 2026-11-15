@@ -1864,6 +1864,64 @@ describe("app bundle load", () => {
     equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1");
   });
 
+  it("prefixed pane chords drive the split tree end to end", () => {
+    const ctx = context();
+    runSource(ctx);
+    // The pane-grid chords are plain prefix actions like every other
+    // chord: arm Ctrl+B, press the action key, the tree changes. This
+    // pins the dispatch chain (prefix overlay, chord lookup, action
+    // toast) against the pane tree, not just the shortcut map: a
+    // rewiring that resolves the chord but never reaches the pane
+    // action fails here.
+    vm.runInContext(
+      "state.workspaces = [{ workspace_id: 'ws1' }]; state.ws = 'ws1';" +
+        "state.tabs = [{ tab_id: 't1', workspace_id: 'ws1' }]; state.tab = 't1';" +
+        "renderWorkspacePanes();",
+      ctx,
+    );
+    const key = (code, keyName, shiftKey = false) => ({
+      code,
+      key: keyName,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      shiftKey,
+      defaultPrevented: false,
+      target: ctx.document.body,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
+    const armAndPress = (code, keyName, shiftKey = false) => {
+      ctx.handleGlobalShortcut({
+        code: "KeyB",
+        key: "b",
+        ctrlKey: true,
+        altKey: false,
+        metaKey: false,
+        shiftKey: false,
+        defaultPrevented: false,
+        target: ctx.document.body,
+        preventDefault() {},
+        stopPropagation() {},
+      });
+      const press = key(code, keyName, shiftKey);
+      ctx.handleGlobalShortcut(press);
+      return press;
+    };
+    const leafCount = () => vm.runInContext("HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRoot()).length", ctx);
+
+    equal(leafCount(), 1, "single pane before any split");
+    const dPress = armAndPress("KeyD", "d");
+    equal(dPress.defaultPrevented, true, "prefix D is consumed");
+    equal(leafCount(), 2, "prefix D splits the active pane to the right");
+    const shiftDPress = armAndPress("KeyD", "D", true);
+    equal(shiftDPress.defaultPrevented, true, "prefix Shift+D is consumed");
+    equal(leafCount(), 3, "prefix Shift+D splits the focused pane downward");
+    const stored = JSON.parse(ctx.localStorage.getItem("herdr-web-workspace-panes"));
+    equal(Object.keys(stored).join(","), "__session__", "splits persist in the session tree entry");
+  });
+
   it("terminal prefix passthrough off keeps the prefix intercepted on the terminal surface", () => {
     const ctx = context();
     runSource(ctx);
