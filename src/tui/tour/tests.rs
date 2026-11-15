@@ -205,3 +205,123 @@ fn tour_renders_on_a_tiny_terminal_without_panicking() {
     // A wide terminal still renders the full card.
     assert!(draw(&app, 100, 30).contains("Tour 1 / 8"));
 }
+
+#[test]
+fn shortcut_key_hint_covers_every_hint_arm() {
+    // The tour only renders chords for the shortcuts its steps teach,
+    // so the hint table's other arms stay unexercised by the walk
+    // tests. Drive the mapping directly: pinned hints plus the catch-all
+    // for chords without a stable single key.
+    use crate::tui::keys::Shortcut;
+    let hint = tour::shortcut_key_hint;
+    assert_eq!(hint(Shortcut::Help), "?");
+    assert_eq!(hint(Shortcut::Files), "f");
+    assert_eq!(hint(Shortcut::Git), "g");
+    assert_eq!(hint(Shortcut::Terminal), "t");
+    assert_eq!(hint(Shortcut::Search), "/");
+    assert_eq!(hint(Shortcut::Refresh), "r");
+    assert_eq!(hint(Shortcut::NextWorkspace), "j");
+    assert_eq!(hint(Shortcut::PrevWorkspace), "k");
+    assert_eq!(hint(Shortcut::NextAgent), "a");
+    assert_eq!(hint(Shortcut::PrevAgent), "Shift+A");
+    assert_eq!(hint(Shortcut::NewTab), "p");
+    assert_eq!(hint(Shortcut::CloseTab), "x");
+    assert_eq!(hint(Shortcut::Quit), "q");
+    assert_eq!(hint(Shortcut::Settings), "Shift+E");
+    assert_eq!(hint(Shortcut::SettingsOverlay), "Shift+E");
+    assert_eq!(hint(Shortcut::Sidebar), "Shift+B");
+    assert_eq!(hint(Shortcut::FocusNext), ".");
+    assert_eq!(hint(Shortcut::FocusPrev), ",");
+    assert_eq!(hint(Shortcut::Lens), "L");
+    assert_eq!(hint(Shortcut::Composer), "C");
+    assert_eq!(hint(Shortcut::SessionManager), "Shift+P");
+    assert_eq!(hint(Shortcut::GitChanges), "1");
+    assert_eq!(hint(Shortcut::GitLog), "3");
+    assert_eq!(hint(Shortcut::GitBranch), "b");
+    assert_eq!(hint(Shortcut::GitSwitchBranch), "v");
+    assert_eq!(hint(Shortcut::NewWorkspace), "n");
+    assert_eq!(hint(Shortcut::OpenWorktrees), "w");
+    assert_eq!(hint(Shortcut::GitCommit), "see help");
+    // chord() glues the prefix onto the hint.
+    assert_eq!(
+        tour::TourStep::chord_hint_for_test(Shortcut::GitPush).as_deref(),
+        Some("Ctrl+B see help")
+    );
+}
+
+#[test]
+fn run_tour_demo_guards_off_the_step_table() {
+    // Out-of-range index: the demo runner returns without touching the
+    // app; same for a step whose demo flag is off or that carries no
+    // shortcut. All three guards live behind the normal walk, so poke
+    // them by driving the index directly.
+    let mut app = open_tour_app();
+    // The runner clears the previous demo surface before the guards,
+    // so an out-of-range index still lands on a clean overlay.
+    assert!(
+        app.tour_demo_overlay.is_some(),
+        "step 0 demo opened a palette"
+    );
+    app.tour_index = tour::tour_steps().len() + 5;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.tour_demo_overlay, None, "no step: overlay cleared");
+
+    // Help step (demo: false): runner returns before dispatch.
+    let help_index = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Help overlay")
+        .unwrap();
+    app.tour_index = help_index;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.tour_demo_overlay, None, "non-demo step: no overlay");
+
+    // Prefix step (shortcut: None, demo: false): shortcut guard.
+    // Note: this step is the only shortcut:None step in the table and
+    // also carries demo: false, so the !demo guard fires first; the
+    // bare shortcut let-else needs a demo:true + shortcut:None step,
+    // which the table never builds (every demo drives a real chord).
+    let prefix_index = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "The prefix language")
+        .unwrap();
+    app.tour_index = prefix_index;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.tour_demo_overlay, None, "no-shortcut step: no overlay");
+}
+
+#[test]
+fn tour_render_covers_every_region_and_the_chordless_footer() {
+    // Walk every step and render each: the region match arms (Main,
+    // Sidebar, Agents, Footer) and the no-chord footer line all need a
+    // live render to execute.
+    let mut app = open_tour_app();
+    let total = tour::tour_steps().len();
+    for index in 0..total {
+        app.tour_index = index;
+        // Each step renders its region plus the card; the chordless
+        // prefix step renders the "Ctrl+B arms the prefix" footer line.
+        let screen = draw(&app, 120, 40);
+        assert!(screen.contains("Tour"), "step {index} renders the card");
+    }
+    // The last step has no chord: its footer line explains the prefix.
+    app.tour_index = total - 1;
+    let screen = draw(&app, 120, 40);
+    assert!(
+        screen.contains("Ctrl+B arms the prefix; Esc cancels it."),
+        "chordless footer line rendered"
+    );
+    // Narrow width shrinks the sidebar region to half the body.
+    app.tour_index = 1;
+    let narrow = draw(&app, 40, 24);
+    assert!(
+        narrow.contains("Tour"),
+        "narrow render still draws the card"
+    );
+
+    // Mode Tour with an out-of-range index (only reachable if the walk
+    // raced a step-table change, but the guard must hold): tour_step()
+    // yields None and render_tour returns before touching the layout.
+    app.tour_index = tour::tour_steps().len() + 5;
+    let guard = draw(&app, 80, 24);
+    assert!(!guard.contains("Tour"), "no step: no card drawn");
+}

@@ -588,4 +588,53 @@ mod coverage_tests {
         // A zero-size area drops every tile (empty-rect guard).
         assert!(layout_tiles(&sparse, rect(0, 0, 0, 0), None).is_empty());
     }
+
+    #[test]
+    fn render_tile_skips_an_empty_rect_without_touching_the_frame() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let client =
+            crate::backend_client::BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let app = TuiApp::new(client, std::time::Duration::from_secs(1));
+        let p = Palette::default();
+        let tile = Tile {
+            pane_id: "pane_1".into(),
+            rect: rect(0, 0, 0, 5),
+            focused: true,
+        };
+
+        let backend = TestBackend::new(10, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let before = format!("{:?}", terminal.backend().buffer());
+        terminal
+            .draw(|frame| render_tile(frame, &tile, &app, &p))
+            .unwrap();
+        let after = format!("{:?}", terminal.backend().buffer());
+        assert_eq!(before, after, "empty rect draws nothing");
+    }
+
+    #[test]
+    fn render_split_view_with_an_empty_pane_area_returns_early() {
+        // The pane_area.is_empty guard: render_main cannot produce an
+        // empty pane area through the layout solver (its own area
+        // guard fires first and the pane column holds Min(1)), so the
+        // direct call is the only deterministic route.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let client =
+            crate::backend_client::BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let app = TuiApp::new(client, std::time::Duration::from_secs(1));
+        let p = Palette::default();
+
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let before = format!("{:?}", terminal.backend().buffer());
+        terminal
+            .draw(|frame| render_split_view(frame, rect(0, 0, 0, 0), &app, &p))
+            .unwrap();
+        let after = format!("{:?}", terminal.backend().buffer());
+        assert_eq!(before, after, "empty pane area draws nothing");
+    }
 }

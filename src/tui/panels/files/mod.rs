@@ -914,6 +914,25 @@ mod coverage_tests_round3 {
                 );
             }
         });
+        // Probe A: connect, hold, drop without bytes. The hold ensures
+        // the server accepted and parked in the request-line read, so
+        // the EOF continue arm runs (a pre-accept close can be
+        // discarded from the backlog on macOS).
+        {
+            let probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(probe);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // Probe B: headers without the blank line, held then dropped:
+        // the header loop's read_line returns 0 and the EOF break
+        // fires mid-headers.
+        {
+            use std::io::Write as _;
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = probe.write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         crate::tui::web_api::WebApiClient::new("127.0.0.1", port)
     }
 
@@ -946,5 +965,90 @@ mod coverage_tests_round3 {
         explorer.selected = 99;
         explorer.refresh(&api).unwrap();
         assert_eq!(explorer.selected, 0, "selection clamped to the last entry");
+    }
+
+    #[test]
+    fn refresh_survives_a_probe_connection_that_sends_nothing() {
+        use std::io::{BufRead as _, Write as _};
+        // files_api_server loops over connections; a probe that opens
+        // and drops without a request hits the empty-read continue and
+        // the next (real) connection still gets served.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                use std::io::Read as _;
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    let _ = reader.read_exact(&mut payload);
+                }
+                let body = serde_json::json!({
+                    "entries": [
+                        {"name": "a.txt", "path": "/repo/a.txt", "is_dir": false}
+                    ]
+                })
+                .to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+            }
+        });
+        // Probe A: connect and hold until the server has accepted and
+        // parked in read_line (an immediate close can be discarded from
+        // the backlog pre-accept on macOS, never reaching the reader),
+        // then drop so the request-line read returns 0: the EOF
+        // continue arm.
+        let probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(probe);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Probe B: headers without the terminating blank line, held
+        // then dropped: the header loop's read_line returns 0 and the
+        // EOF break fires mid-headers.
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Probe C: a well-formed bodied request so read_exact consumes
+        // a real payload; no answer needed.
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.refresh(&api).unwrap();
+        assert_eq!(explorer.selected, 0);
     }
 }

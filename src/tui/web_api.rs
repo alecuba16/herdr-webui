@@ -1423,6 +1423,67 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Connect and hold briefly so the fixture accepts and parks in its
+    /// read, then hang up. macOS discards pre-accept closes from the
+    /// backlog, so without the hold the server never observes the EOF.
+    fn mute_probe(port: u16) {
+        let _stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// Partial headers with no terminating blank line: the fixture's
+    /// header loop hits EOF on the next read_line and breaks.
+    fn mid_header_hangup_probe(port: u16) {
+        use std::io::Write as _;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = stream.write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up");
+        let _ = stream.flush();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// A header line that is not valid UTF-8 drives read_line into its
+    /// error path instead of a clean EOF.
+    fn bad_utf8_header_probe(port: u16) {
+        use std::io::Write as _;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = stream.write_all(b"POST /probe HTTP/1.1\r\nX-Bad: \xff\xfe\n\r\n");
+        let _ = stream.flush();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// A GET with a body so fixtures drain a real payload via read_exact
+    /// instead of their usual Content-Length: 0 requests.
+    fn bodied_get_probe(port: u16) {
+        use std::io::Write as _;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = stream.write_all(b"GET /probe HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody");
+        let _ = stream.flush();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// A request whose first line is not valid UTF-8 drives the
+    /// fixture's request-line read into its error path (is_ok false),
+    /// the arm a well-formed header probe cannot reach.
+    fn bad_utf8_request_line_probe(port: u16) {
+        use std::io::Write as _;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = stream.write_all(b"\xff\xfe POST /probe HTTP/1.1\r\n\r\n");
+        let _ = stream.flush();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// A request that stops before the blank line: the fixture's read
+    /// loop sees bytes without a "\r\n\r\n" terminator (the loop's
+    /// continue arm), then EOF on the next read. A mute probe sends no
+    /// bytes at all, so it can only ever hit the EOF break.
+    fn partial_request_probe(port: u16) {
+        use std::io::Write as _;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = stream.write_all(b"POST /probe HTTP/1.1\r\nX-Partial: yes");
+        let _ = stream.flush();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     #[test]
     fn parses_webui_api_urls() {
         let client = WebApiClient::parse_url("127.0.0.1:8787").unwrap();
@@ -1470,20 +1531,23 @@ mod tests {
     #[test]
     fn discover_defaults_to_loopback_when_unset() {
         let _guard = lock_env();
-        // In CI/tests the env var and settings file may point elsewhere; only
-        // assert a valid client is produced.
-        if std::env::var("HERDR_WEBUI_TUI_API").is_ok() {
-            let client = WebApiClient::discover().unwrap();
-            assert!(client.base_url().starts_with("http://"));
-            return;
+        // Set: discovery takes the env early-return path.
+        unsafe {
+            std::env::set_var("HERDR_WEBUI_TUI_API", "http://127.0.0.1:12345");
         }
-        let client = match WebApiClient::discover() {
-            Ok(client) => client,
-            Err(_) => return,
-        };
-        if std::env::var("HERDR_WEBUI_TUI_API").is_err() {
-            assert!(client.base_url().starts_with("http://"));
+        let client = WebApiClient::discover().unwrap();
+        assert!(client.base_url().starts_with("http://"));
+        // Malformed env value surfaces the parse error.
+        unsafe {
+            std::env::set_var("HERDR_WEBUI_TUI_API", "::::");
         }
+        assert!(WebApiClient::discover().is_err());
+        // Unset: the settings/default path runs.
+        unsafe {
+            std::env::remove_var("HERDR_WEBUI_TUI_API");
+        }
+        let client = WebApiClient::discover().unwrap();
+        assert!(client.base_url().starts_with("http://"));
     }
 
     #[test]
@@ -1506,7 +1570,19 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
-            if let Ok((stream, _)) = listener.accept() {
+            // bad-utf8 request line, bad-utf8 header, then the real POST;
+            // once the budget is spent the nonblocking flip makes the
+            // accept error arm the exit.
+            let mut remaining = 3usize;
+            loop {
+                if remaining == 0 {
+                    let _ = listener.set_nonblocking(true);
+                } else {
+                    remaining -= 1;
+                }
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut request = String::new();
                 if reader.read_line(&mut request).is_ok() {
@@ -1553,6 +1629,11 @@ mod tests {
             }
         });
         let client = WebApiClient::new("127.0.0.1", addr.port());
+        // A non-UTF-8 request line takes the fixture's request-read
+        // error arm; a non-UTF-8 header drives its header error break and
+        // its unmatched request line through the ok:false payload.
+        bad_utf8_request_line_probe(addr.port());
+        bad_utf8_header_probe(addr.port());
         let value = client
             .submit_pane_enqueued("pane-7", "hold to queue")
             .unwrap();
@@ -1567,10 +1648,21 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
-            if let Ok((stream, _)) = listener.accept() {
+            // mute probe + real GET; the flip turns accept's WouldBlock
+            // into the loop's exit so every closing brace runs.
+            let mut remaining = 2usize;
+            loop {
+                if remaining == 0 {
+                    let _ = listener.set_nonblocking(true);
+                } else {
+                    remaining -= 1;
+                }
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut request = String::new();
-                if reader.read_line(&mut request).is_ok() {
+                if reader.read_line(&mut request).unwrap_or(0) > 0 {
                     let mut stream = stream;
                     let body = r#"{"ok":true}"#;
                     let response = format!(
@@ -1585,6 +1677,7 @@ mod tests {
             }
         });
         let client = WebApiClient::new("127.0.0.1", addr.port());
+        mute_probe(addr.port());
         let value = client.get("/api/me").unwrap();
         assert_eq!(value, serde_json::json!({ "ok": true }));
         handle.join().unwrap();
@@ -1603,14 +1696,18 @@ mod tests {
         let authorized_calls = Arc::new(Mutex::new(0usize));
         let seen = authorized_calls.clone();
         let handle = std::thread::spawn(move || {
-            let mut remaining = 3usize; // 401 GET + probe GET + authorized GET
-            for stream in listener.incoming() {
+            // mute + mid-header hangup + wrong-cookie probe + replay probe
+            // + two data GETs; after the budget the self-flip makes the
+            // accept WouldBlock arm the loop's only exit.
+            let mut remaining = 6usize;
+            loop {
                 if remaining == 0 {
-                    break;
+                    let _ = listener.set_nonblocking(true);
                 }
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
                 remaining -= 1;
-                let exhausted = remaining == 0;
-                let Ok(stream) = stream else { break };
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut request_line = String::new();
                 if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
@@ -1651,9 +1748,6 @@ mod tests {
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
                 let _ = stream.shutdown(std::net::Shutdown::Both);
-                if exhausted {
-                    break;
-                }
             }
         });
         let client = WebApiClient::new("127.0.0.1", port);
@@ -1664,6 +1758,24 @@ mod tests {
             client.session_cookie.borrow().is_none(),
             "test starts without a cookie"
         );
+        // Peer that connects and hangs up without a request line: the
+        // read-empty continue arm must run and the loop keep serving.
+        // Budgeted first so the bounded count still covers the real
+        // request sequence below.
+        mute_probe(port);
+        // Partial headers then hang up: the fixture's header loop hits EOF.
+        mid_header_hangup_probe(port);
+        // A bodied GET carrying the wrong session cookie exercises the
+        // drain and the 401 response arm; the probe ignores the response.
+        {
+            use std::io::Write as _;
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = stream.write_all(
+                b"GET /probe HTTP/1.1\r\nContent-Length: 4\r\nCookie: herdr_web_session=wrong\r\n\r\nbody",
+            );
+            let _ = stream.flush();
+            std::thread::sleep(Duration::from_millis(100));
+        }
         // Replay the sidecar token explicitly (the TUI binary could do
         // this at startup too): the probe authorizes once, then both
         // calls must ride the cached cookie.
@@ -1720,9 +1832,21 @@ mod tests {
         let seen = authorized_count.clone();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let handle = std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { break };
+        // Detached: after the bounded budget the self-flip ends the
+        // accept loop, so the thread exits on its own.
+        let _handle = std::thread::spawn(move || {
+            // mid-header hangup + bodied probe + 3 (first call) + 1 + 4
+            // (rotation replay of both tokens) + 1 + mute; the self-flip
+            // ends the thread.
+            let mut remaining = 12usize;
+            loop {
+                if remaining == 0 {
+                    let _ = listener.set_nonblocking(true);
+                }
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
+                remaining -= 1;
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut request_line = String::new();
                 if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
@@ -1773,6 +1897,12 @@ mod tests {
         });
 
         let client = WebApiClient::new("127.0.0.1", port);
+        // Partial headers with no blank line fire the fixture's
+        // header-EOF break; a bodied GET without a session cookie drains
+        // a real payload and rides the 401 arm; the probe ignores the
+        // response.
+        mid_header_hangup_probe(port);
+        bodied_get_probe(port);
         // First call: 401, replay token1 (probe + data), authorized.
         let value = client
             .recent_workspaces()
@@ -1791,7 +1921,9 @@ mod tests {
         assert_eq!(value["recent"][0]["path"], "/a");
         // And the new cookie is cached again: no further replays.
         client.recent_workspaces().expect("new cookie cached");
-        drop(handle);
+        // Peer that hangs up without a request line: the read-empty
+        // continue arm runs before the flip ends the thread.
+        mute_probe(port);
 
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(&config_home);
@@ -1822,8 +1954,17 @@ mod tests {
         let authorized_count = Arc::new(Mutex::new(0usize));
         let seen = authorized_count.clone();
         let handle = std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { break };
+            // mid-header hangup + bodied probe + 401 GET + probe + data
+            // GET + cached data GET + mute; the self-flip drives the exit.
+            let mut remaining = 7usize;
+            loop {
+                if remaining == 0 {
+                    let _ = listener.set_nonblocking(true);
+                }
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
+                remaining -= 1;
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut request_line = String::new();
                 if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
@@ -1871,6 +2012,10 @@ mod tests {
         });
 
         let client = WebApiClient::new("127.0.0.1", port);
+        // Partial headers then EOF fire the fixture's header-loop break;
+        // a bodied GET drains a real payload through the 401 arm.
+        mid_header_hangup_probe(port);
+        bodied_get_probe(port);
         // No explicit replay: both calls go through the 401 retry path.
         let value = client
             .recent_workspaces()
@@ -1886,6 +2031,9 @@ mod tests {
             .expect("cached cookie authorizes the second call");
         assert_eq!(value["recent"][0]["path"], "/a");
         assert_eq!(*authorized_count.lock().unwrap(), 3, "no second replay");
+        // Peer that hangs up without a request line: the read-empty
+        // continue arm runs before the flip ends the thread.
+        mute_probe(port);
         drop(handle);
 
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -1912,14 +2060,18 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
-            let mut remaining = 4usize; // 401 GET + probe of the stale token + its retry GET + one spare
-            for stream in listener.incoming() {
+            // mute + mid-header + bodied probe + three 401 client GETs;
+            // after the budget the self-flip makes the accept WouldBlock
+            // arm the loop's only exit.
+            let mut remaining = 6usize;
+            loop {
                 if remaining == 0 {
-                    break;
+                    let _ = listener.set_nonblocking(true);
                 }
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
                 remaining -= 1;
-                let exhausted = remaining == 0;
-                let Ok(stream) = stream else { break };
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut request_line = String::new();
                 if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
@@ -1953,19 +2105,21 @@ mod tests {
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
                 let _ = stream.shutdown(std::net::Shutdown::Both);
-                if exhausted {
-                    break;
-                }
             }
         });
         let client = WebApiClient::new("127.0.0.1", port);
+        // Peer that connects and hangs up without a request line: the
+        // read-empty continue arm, budgeted inside the bounded count so
+        // the real 401 sequence still fits.
+        mute_probe(port);
+        // Partial headers then EOF fire the header-loop break; a bodied
+        // GET drains a real payload before its 401 response.
+        mid_header_hangup_probe(port);
+        bodied_get_probe(port);
         // The only sidecar token is rejected: the 401 surfaces after one
         // replay attempt, and no dead cookie stays cached.
         let err = client.recent_workspaces().unwrap_err();
-        match err {
-            WebApiError::Http { status: 401, .. } => {}
-            other => panic!("expected 401, got {other}"),
-        }
+        assert!(matches!(err, WebApiError::Http { status: 401, .. }));
         assert!(
             client.session_cookie.borrow().is_none(),
             "rejected token must not stay cached"
@@ -1977,10 +2131,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", &fresh_client_home);
         let fresh = WebApiClient::new("127.0.0.1", port);
         let err = fresh.recent_workspaces().unwrap_err();
-        match err {
-            WebApiError::Http { status: 401, .. } => {}
-            other => panic!("expected 401, got {other}"),
-        }
+        assert!(matches!(err, WebApiError::Http { status: 401, .. }));
         // Detached like the fake server above: it parks on accept()
         // once its bounded request count is served.
         drop(handle);
@@ -2010,7 +2161,10 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
             use std::io::Read;
-            if let Ok((stream, _)) = listener.accept() {
+            loop {
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
                 let mut stream = stream;
                 let mut buf = [0u8; 8192];
                 let mut got = String::new();
@@ -2025,6 +2179,10 @@ mod tests {
                     }
                 }
                 responder(stream);
+                // Self-flip after serving: the next accept returns
+                // WouldBlock so the error arm is the loop's exit and the
+                // thread ends instead of parking in accept forever.
+                let _ = listener.set_nonblocking(true);
             }
         });
         (port, handle)
@@ -2033,6 +2191,32 @@ mod tests {
     fn write_response(stream: &mut std::net::TcpStream, response: &str) {
         use std::io::Write;
         let _ = stream.write_all(response.as_bytes());
+    }
+
+    #[test]
+    fn set_timeout_caps_a_slow_server_read() {
+        // A server that accepts and never answers: with the default
+        // 20s budget the request would park in read; a 250ms set_timeout
+        // must surface the OS read-timeout error instead.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            // Accept and hold the connection open, never writing back.
+            let (_stream, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(2));
+        });
+        let mut client = WebApiClient::new("127.0.0.1", port);
+        client.set_timeout(Duration::from_millis(250));
+        let err = client.get("/api/ping").unwrap_err();
+        // macOS surfaces a read timeout as EAGAIN ("Resource temporarily
+        // unavailable"), Linux as ETIMEDOUT; both land in the Io arm.
+        assert!(matches!(err, WebApiError::Io(_)), "got {err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("timed out") || message.contains("temporarily unavailable"),
+            "not a timeout error: {message}"
+        );
+        drop(handle);
     }
 
     #[test]
@@ -2071,6 +2255,21 @@ mod tests {
             .request_json("GET", "/api/ping", None)
             .expect("chunked body with trailer parses");
         assert_eq!(value["ok"], true);
+    }
+
+    #[test]
+    fn raw_http_server_read_loop_survives_partial_and_hung_up_peers() {
+        // A lone client call always delivers its whole request in one
+        // read, so the raw server's read loop never sees the
+        // no-terminator continue arm nor the EOF break. A probe that
+        // writes half a request and hangs up exercises both; no client
+        // call follows because the self-flip after serving the probe
+        // ends the accept loop.
+        let (port, handle) = raw_http_server(|s| {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        });
+        partial_request_probe(port);
+        handle.join().unwrap();
     }
 
     #[test]
@@ -2124,9 +2323,19 @@ mod tests {
         // termination, served by a raw TCP listener on an ephemeral port.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             use std::io::{Read, Write};
-            if let Ok((mut stream, _)) = listener.accept() {
+            // partial probe + real GET; after the budget the self-flip makes
+            // the accept WouldBlock arm the loop's only exit.
+            let mut remaining = 2usize;
+            loop {
+                if remaining == 0 {
+                    let _ = listener.set_nonblocking(true);
+                }
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                remaining -= 1;
                 let mut buf = [0u8; 8192];
                 let mut got = String::new();
                 loop {
@@ -2153,12 +2362,15 @@ mod tests {
             }
         });
 
-        let mut client = WebApiClient::new("127.0.0.1", port);
-        client.set_timeout(std::time::Duration::from_secs(5));
+        let client = WebApiClient::new("127.0.0.1", port);
+        // Partial request then hang up: the fixture's read loop takes
+        // the no-terminator continue arm, then its n == 0 break.
+        partial_request_probe(port);
         let value = client
             .request_json("GET", "/api/ping", None)
             .expect("chunked response must parse");
         assert_eq!(value["ok"], true);
+        handle.join().unwrap();
     }
 
     #[test]
@@ -2167,7 +2379,17 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            if let Ok((mut stream, _)) = listener.accept() {
+            // partial probe + real GET; after the budget the self-flip makes
+            // the accept WouldBlock arm the loop's only exit.
+            let mut remaining = 2usize;
+            loop {
+                if remaining == 0 {
+                    let _ = listener.set_nonblocking(true);
+                }
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                remaining -= 1;
                 let mut buf = [0u8; 8192];
                 let mut got = String::new();
                 loop {
@@ -2187,6 +2409,9 @@ mod tests {
         });
 
         let client = WebApiClient::new("127.0.0.1", port);
+        // Partial request then hang up: the fixture's read loop takes
+        // the no-terminator continue arm, then its n == 0 break.
+        partial_request_probe(port);
         let err = client
             .request_json("GET", "/api/ping", None)
             .expect_err("invalid chunk size must fail");
@@ -2204,7 +2429,17 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            if let Ok((mut stream, _)) = listener.accept() {
+            // partial probe + real GET; after the budget the self-flip makes
+            // the accept WouldBlock arm the loop's only exit.
+            let mut remaining = 2usize;
+            loop {
+                if remaining == 0 {
+                    let _ = listener.set_nonblocking(true);
+                }
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                remaining -= 1;
                 let mut buf = [0u8; 8192];
                 let mut got = String::new();
                 loop {
@@ -2224,6 +2459,9 @@ mod tests {
         });
 
         let client = WebApiClient::new("127.0.0.1", port);
+        // Partial request then hang up: the fixture's read loop takes
+        // the no-terminator continue arm, then its n == 0 break.
+        partial_request_probe(port);
         let value = client
             .request_json("GET", "/api/ping", None)
             .expect("empty body must parse as null");
@@ -2499,10 +2737,7 @@ mod coverage_tests {
             token: "tok".to_string(),
         }];
         let result = client.replay_session(&tokens);
-        match result {
-            Err(WebApiError::Io(_)) => {}
-            other => panic!("expected Io error, got {other:?}"),
-        }
+        assert!(matches!(result, Err(WebApiError::Io(_))));
     }
 
     #[test]
@@ -2571,11 +2806,9 @@ mod coverage_tests_socket {
         let client = WebApiClient::from_backend_socket("/nonexistent-tui-cov.sock");
         assert!(client.is_socket_transport());
         let err = client.git_status("/repo").unwrap_err();
-        match err {
-            WebApiError::Api(message) => {
-                assert!(!message.is_empty(), "socket failure maps to Api error");
-            }
-            other => panic!("expected Api error from the socket path, got {other:?}"),
-        }
+        assert!(
+            matches!(err, WebApiError::Api(message) if !message.is_empty()),
+            "socket failure maps to Api error"
+        );
     }
 }

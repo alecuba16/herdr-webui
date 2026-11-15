@@ -4090,6 +4090,17 @@ impl TuiApp {
                 Ok(mut terminal) => {
                     let send = terminal.send_input(&bytes).and_then(|_| terminal.detach());
                     if let Err(err) = send {
+                        // Coverage note (this error arm): not
+                        // deterministically coverable — the send chain
+                        // is two back-to-back writes with no read in
+                        // between, so a fixture can only drop the peer
+                        // before the AttachTerminal write (EPIPE lands
+                        // inside attach_terminal instead, the outer Err
+                        // arm) or after it (both Input and Detach beat
+                        // the close propagation and succeed). No drop
+                        // point between the client's two write calls
+                        // exists; the window is inside one function
+                        // body, not observable from another thread.
                         self.error = Some(err.to_string());
                     } else {
                         self.status = "sent input".to_string();
@@ -4677,9 +4688,21 @@ pub(crate) mod prompt_action_tests {
     pub(crate) fn fake_api_server(
         failures: &[&str],
     ) -> (WebApiClient, std::sync::mpsc::Sender<()>) {
+        fake_api_server_with_tree("", failures)
+    }
+
+    /// `fake_api_server` whose tree route serves a two-file listing
+    /// when the request carries `tree_cwd` (query-encoded like the
+    /// client sends it), so post-create refreshes keep a selectable
+    /// entry. Empty `tree_cwd` keeps the flat-empty tree of old tests.
+    pub(crate) fn fake_api_server_with_tree(
+        tree_cwd: &str,
+        failures: &[&str],
+    ) -> (WebApiClient, std::sync::mpsc::Sender<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let failures: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
+        let tree_cwd = tree_cwd.to_string();
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -4720,13 +4743,27 @@ pub(crate) mod prompt_action_tests {
                 } else if target.contains("/api/file-browser/list")
                     || target.contains("/api/file-browser/tree")
                 {
-                    json!({"entries": [], "tree": {"name": "repo", "path": "/repo",
-                        "dirs": [], "files": []}})
+                    if !tree_cwd.is_empty()
+                        && target.contains(&format!("cwd={}", tree_cwd.replace('/', "%2F")))
+                    {
+                        json!({"entries": [
+                            {"name": "a.rs", "path": "a.rs", "kind": "file"},
+                            {"name": "b.rs", "path": "b.rs", "kind": "file"}
+                        ], "truncated": false})
+                    } else {
+                        json!({"entries": [], "tree": {"name": "repo", "path": "/repo",
+                            "dirs": [], "files": []}})
+                    }
                 } else if target.contains("/api/git-ui/branches") {
                     json!({"branches": [
                         {"name": "feat", "current": false, "remote": false,
                          "pushed": false, "worktree_path": null}
                     ]})
+                } else if target.contains("/api/file-browser/file") && target.contains("path=bin") {
+                    // Edit-refusal flows need a binary read answer; the
+                    // marker only lives in this one route so tree and
+                    // search fixtures stay unchanged.
+                    json!({"content": "\u{0}", "binary": true, "truncated": false})
                 } else {
                     json!({"ok": true})
                 };
@@ -6668,43 +6705,67 @@ mod batch11_coverage_tests {
         // Bare text fallback: a backend answering `{"text": ...}`.
         use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
         use std::io::{BufRead, BufReader, Write};
-        let path = crate::backend_client::unique_test_path("herdr-tui-tail");
-        let _ = std::fs::remove_file(&path);
-        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
-        let listener = ListenerOptions::new()
-            .name(name)
-            .try_overwrite(true)
-            .create_sync()
-            .unwrap();
-        let (bare_stop_tx, rx) = std::sync::mpsc::channel::<()>();
-        std::thread::spawn(move || loop {
-            if rx.try_recv().is_ok() {
-                break;
-            }
-            let Ok(mut stream) = listener.accept() else {
-                break;
-            };
-            let mut line = String::new();
-            {
-                let mut reader = BufReader::new(&mut stream);
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+        // One loop body, two lifetimes: the budget-flip instance serves
+        // the requests then self-flips so its accept-Err arm runs; the
+        // budget-1 instance only ever sees the stop wake connection, so
+        // its rx-check break (the stop arm) runs instead. A single
+        // listener can only ever exit one way, hence two spawns of the
+        // same nested fn.
+        fn serve_bare_tail(
+            listener: LocalSocketListener,
+            rx: std::sync::mpsc::Receiver<()>,
+            mut budget: usize,
+        ) {
+            loop {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
+                if budget == 0 {
+                    let _ = listener.set_nonblocking(
+                        interprocess::local_socket::ListenerNonblockingMode::Accept,
+                    );
+                } else {
+                    budget -= 1;
+                }
+                let Ok(mut stream) = listener.accept() else {
+                    break;
+                };
+                let mut line = String::new();
+                {
+                    let mut reader = BufReader::new(&mut stream);
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                }
+                let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
                     continue;
-                }
+                };
+                let response = match request["method"].as_str().unwrap_or("") {
+                    "ping" => serde_json::json!({"id": request["id"], "result": {}}),
+                    "pane.read" => {
+                        serde_json::json!({"id": request["id"], "result": {"text": "bare tail"}})
+                    }
+                    _ => serde_json::json!({"id": request["id"], "result": {}}),
+                };
+                let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
             }
-            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            let response = match request["method"].as_str().unwrap_or("") {
-                "ping" => serde_json::json!({"id": request["id"], "result": {}}),
-                "pane.read" => {
-                    serde_json::json!({"id": request["id"], "result": {"text": "bare tail"}})
-                }
-                _ => serde_json::json!({"id": request["id"], "result": {}}),
-            };
-            let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
-            let _ = stream.write_all(b"\n");
-            let _ = stream.flush();
-        });
+        }
+        let spawn_bare_tail = |budget: usize| {
+            let path = crate::backend_client::unique_test_path("herdr-tui-tail");
+            let _ = std::fs::remove_file(&path);
+            let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+            let listener = ListenerOptions::new()
+                .name(name)
+                .try_overwrite(true)
+                .create_sync()
+                .unwrap();
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            std::thread::spawn(move || serve_bare_tail(listener, rx, budget));
+            (path, tx)
+        };
+        let (path, _bare_flip_tx) = spawn_bare_tail(4);
         let path_str = path.to_str().unwrap().to_string();
         let client = BackendClient::new(&path_str, &path_str);
         app.client = client;
@@ -6724,7 +6785,11 @@ mod batch11_coverage_tests {
         );
         // Same for the bare-text listener's own dead arms.
         probe_fake_listener_arms(&path);
-        stop_fake_listener(&bare_stop_tx, &path);
+        // Second instance of the same loop: budget 1 and an immediate
+        // stop, so the rx-check break (the stop arm) runs this time
+        // instead of the flip the first instance already exercised.
+        let (bare_stop_path, bare_stop_tx2) = spawn_bare_tail(1);
+        stop_fake_listener(&bare_stop_tx2, &bare_stop_path);
         // A dead backend answers nothing: the fetch lands with an empty
         // tail (unwrap_or_default), the observable behavior of a vanished
         // pane rather than a stale copy.
@@ -6746,49 +6811,74 @@ mod batch11_coverage_tests {
         // Built-in-shaped socket: the worker must request the screen format
         // (fullscreen agents read as garbage under the strip format) and the
         // tail cache holds the screen reply verbatim.
-        let base = std::path::PathBuf::from("/tmp")
-            .join(format!("herdr-tui-tail-screen-{}", std::process::id()));
-        let builtin_path = base.join("builtin/default/herdr.sock");
-        std::fs::create_dir_all(builtin_path.parent().unwrap()).unwrap();
-        let _ = std::fs::remove_file(&builtin_path);
-        let builtin_name = builtin_path
-            .clone()
-            .to_fs_name::<GenericFilePath>()
-            .unwrap();
-        let builtin_listener = ListenerOptions::new()
-            .name(builtin_name)
-            .try_overwrite(true)
-            .create_sync()
-            .unwrap();
         let (screen_tx, screen_rx) = std::sync::mpsc::channel::<String>();
-        let (screen_stop_tx, screen_stop_rx) = std::sync::mpsc::channel::<()>();
-        std::thread::spawn(move || loop {
-            if screen_stop_rx.try_recv().is_ok() {
-                break;
-            }
-            let Ok(mut stream) = builtin_listener.accept() else {
-                break;
-            };
-            let mut line = String::new();
-            {
-                use std::io::{BufRead, BufReader, Write};
-                let mut reader = BufReader::new(&mut stream);
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    continue;
+        // Same two-instance shape as the bare fixture: the flip instance
+        // covers the accept-Err arm, the budget-1 instance below covers
+        // the stop arm.
+        fn serve_screen_tail(
+            listener: LocalSocketListener,
+            tx: std::sync::mpsc::Sender<String>,
+            rx: std::sync::mpsc::Receiver<()>,
+            mut budget: usize,
+        ) {
+            loop {
+                if rx.try_recv().is_ok() {
+                    break;
                 }
-                let _ = screen_tx.send(line.clone());
-                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
+                if budget == 0 {
+                    let _ = listener.set_nonblocking(
+                        interprocess::local_socket::ListenerNonblockingMode::Accept,
+                    );
+                } else {
+                    budget -= 1;
+                }
+                let Ok(mut stream) = listener.accept() else {
+                    break;
                 };
-                let response = serde_json::json!({
-                    "id": parsed["id"],
-                    "result": {"read": {"text": "screen tail"}}
-                });
-                let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
-                let _ = stream.write_all(b"\n");
-                let _ = stream.flush();
+                let mut line = String::new();
+                {
+                    use std::io::{BufRead, BufReader, Write};
+                    let mut reader = BufReader::new(&mut stream);
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    let _ = tx.send(line.clone());
+                    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    let response = serde_json::json!({
+                        "id": parsed["id"],
+                        "result": {"read": {"text": "screen tail"}}
+                    });
+                    let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                }
             }
-        });
+        }
+        let spawn_screen_tail = |tag: &str, budget: usize| {
+            let base = std::path::PathBuf::from("/tmp").join(format!(
+                "herdr-tui-tail-screen-{tag}-{}",
+                std::process::id()
+            ));
+            let builtin_path = base.join("builtin/default/herdr.sock");
+            std::fs::create_dir_all(builtin_path.parent().unwrap()).unwrap();
+            let _ = std::fs::remove_file(&builtin_path);
+            let builtin_name = builtin_path
+                .clone()
+                .to_fs_name::<GenericFilePath>()
+                .unwrap();
+            let listener = ListenerOptions::new()
+                .name(builtin_name)
+                .try_overwrite(true)
+                .create_sync()
+                .unwrap();
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let screen_tx = screen_tx.clone();
+            std::thread::spawn(move || serve_screen_tail(listener, screen_tx, rx, budget));
+            (builtin_path, base, tx)
+        };
+        let (builtin_path, screen_flip_base, _screen_flip_tx) = spawn_screen_tail("flip", 5);
         let builtin_path_str = builtin_path.to_str().unwrap().to_string();
         app.client = BackendClient::new(&builtin_path_str, &builtin_path_str);
         app.tile_tails.clear();
@@ -6842,9 +6932,14 @@ mod batch11_coverage_tests {
             let parsed: serde_json::Value = serde_json::from_str(&reply).unwrap();
             assert_eq!(parsed["result"]["read"]["text"], "screen tail");
         }
-        stop_fake_listener(&screen_stop_tx, &builtin_path);
+        // Screen listener's own stop arm: second instance, budget 1,
+        // immediate stop (the flip instance above already exited on its
+        // own via the accept-Err arm).
+        let (screen_stop_path, screen_stop_base, screen_stop_tx2) = spawn_screen_tail("stop", 1);
+        stop_fake_listener(&screen_stop_tx2, &screen_stop_path);
         stop_fake_listener(&stop, &history_socket);
-        let _ = std::fs::remove_dir_all(base);
+        let _ = std::fs::remove_dir_all(screen_flip_base);
+        let _ = std::fs::remove_dir_all(screen_stop_base);
     }
 
     /// The fake listeners behind the tile-tail suite also answer the
@@ -6859,46 +6954,67 @@ mod batch11_coverage_tests {
         };
         use std::io::{BufRead, BufReader, Write};
 
-        let base = std::path::PathBuf::from("/tmp")
-            .join(format!("herdr-tui-tail-arms-{}", std::process::id()));
-        let sock = base.join("builtin/default/herdr.sock");
-        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
-        let _ = std::fs::remove_file(&sock);
-        let name = sock.clone().to_fs_name::<GenericFilePath>().unwrap();
-        let listener = ListenerOptions::new()
-            .name(name)
-            .try_overwrite(true)
-            .create_sync()
-            .unwrap();
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-        std::thread::spawn(move || loop {
-            if stop_rx.try_recv().is_ok() {
-                break;
-            }
-            let Ok(mut stream) = listener.accept() else {
-                break;
-            };
-            let mut line = String::new();
-            {
-                let mut reader = BufReader::new(&mut stream);
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+        // Two instances of the same loop, same as the tile-tail suite:
+        // the budget-flip instance exits through accept-Err after its
+        // requests, the budget-1 instance exits through the stop arm.
+        fn serve_arms(
+            listener: LocalSocketListener,
+            rx: std::sync::mpsc::Receiver<()>,
+            mut budget: usize,
+        ) {
+            loop {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
+                if budget == 0 {
+                    let _ = listener.set_nonblocking(
+                        interprocess::local_socket::ListenerNonblockingMode::Accept,
+                    );
+                } else {
+                    budget -= 1;
+                }
+                let Ok(mut stream) = listener.accept() else {
+                    break;
+                };
+                let mut line = String::new();
+                {
+                    let mut reader = BufReader::new(&mut stream);
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                }
+                let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
                     continue;
-                }
+                };
+                let response = match request["method"].as_str().unwrap_or("") {
+                    "ping" => serde_json::json!({"id": request["id"], "result": {}}),
+                    "pane.read" => {
+                        serde_json::json!({"id": request["id"], "result": {"text": "bare tail"}})
+                    }
+                    _ => serde_json::json!({"id": request["id"], "result": {}}),
+                };
+                let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
             }
-            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            let response = match request["method"].as_str().unwrap_or("") {
-                "ping" => serde_json::json!({"id": request["id"], "result": {}}),
-                "pane.read" => {
-                    serde_json::json!({"id": request["id"], "result": {"text": "bare tail"}})
-                }
-                _ => serde_json::json!({"id": request["id"], "result": {}}),
-            };
-            let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
-            let _ = stream.write_all(b"\n");
-            let _ = stream.flush();
-        });
+        }
+        let spawn_arms_listener = |tag: &str, budget: usize| {
+            let base = std::path::PathBuf::from("/tmp")
+                .join(format!("herdr-tui-tail-arms-{tag}-{}", std::process::id()));
+            let sock = base.join("builtin/default/herdr.sock");
+            std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+            let _ = std::fs::remove_file(&sock);
+            let name = sock.clone().to_fs_name::<GenericFilePath>().unwrap();
+            let listener = ListenerOptions::new()
+                .name(name)
+                .try_overwrite(true)
+                .create_sync()
+                .unwrap();
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            std::thread::spawn(move || serve_arms(listener, rx, budget));
+            (sock, base, tx)
+        };
+        let (sock, arms_flip_base, _flip_tx) = spawn_arms_listener("flip", 7);
 
         let ask = |method: &str, id: u64| -> serde_json::Value {
             let mut stream =
@@ -6918,8 +7034,17 @@ mod batch11_coverage_tests {
         assert_eq!(ask("ping", 1)["id"], 1);
         assert_eq!(ask("pane.read", 2)["result"]["text"], "bare tail");
         assert_eq!(ask("agent.list", 3)["result"], serde_json::json!({}));
-        stop_fake_listener(&stop_tx, &sock);
-        let _ = std::fs::remove_dir_all(base);
+        // The same dead arms the tile-tail suite probes on its other
+        // listeners: empty read and non-JSON line, then still serving.
+        probe_fake_listener_arms(&sock);
+        assert_eq!(ask("ping", 4)["id"], 4);
+        // Second instance, budget 1, immediate stop: its only connection
+        // is the stop wake, so the loop exits through the stop arm the
+        // flip instance never reaches.
+        let (stop_sock, stop_base, stop_tx2) = spawn_arms_listener("stop", 1);
+        stop_fake_listener(&stop_tx2, &stop_sock);
+        let _ = std::fs::remove_dir_all(arms_flip_base);
+        let _ = std::fs::remove_dir_all(stop_base);
     }
 
     /// deepen_pane_history growth arm: a second deep fetch doubles the
@@ -7285,6 +7410,20 @@ mod batch11_coverage_tests {
         let (api, _stop) = super::prompt_action_tests::fake_api_server(&[]);
         // A well-formed call proves the loop serves requests.
         assert!(api.session_cleanup().is_ok());
+        // A peer that connects and hangs up without a request line hits
+        // the read-empty continue arm; the loop then still serves the
+        // next well-formed request.
+        let port = api
+            .base_url()
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+            .expect("fake api url carries its port");
+        let mute = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        drop(mute);
+        assert!(
+            api.session_cleanup().is_ok(),
+            "listener survives the empty-request peer"
+        );
     }
 
     #[test]
@@ -7353,5 +7492,1315 @@ mod batch11_coverage_tests {
             crossterm::event::KeyCode::Char('L'),
         ));
         assert!(!app.lens.active, "no session keeps the lens closed");
+    }
+}
+
+#[cfg(test)]
+mod batch12_coverage_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use serde_json::json;
+
+    fn pane_snapshot_one() -> serde_json::Value {
+        json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "tabs": [{"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        })
+    }
+
+    pub(crate) fn two_pane_split_app() -> TuiApp {
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&pane_snapshot_one());
+        app.screen = TuiScreen::Terminal;
+        app.split_tree = split::SplitNode::split(
+            split::SplitDir::Row,
+            vec![
+                split::SplitNode::leaf("pane_1"),
+                split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.split_focus = Some("pane_1".to_string());
+        app
+    }
+
+    #[test]
+    fn stamp_inflight_debug_and_empty_drain_arms() {
+        // Manual Debug mirrors the snapshot worker: the channel end stays
+        // opaque but the cwd field is visible.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Value, BackendClientError>>();
+        let worker = StampInflight {
+            cwd: "/repo".to_string(),
+            receiver: rx,
+        };
+        assert!(format!("{worker:?}").contains("/repo"));
+        drop(tx);
+
+        // Empty and disconnected drains against a live app: an Empty
+        // worker stays armed, a Disconnected one drops silently, and a
+        // failed fetch keeps the previous stamp quiet.
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&pane_snapshot_one());
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Value, BackendClientError>>();
+        app.stamp_inflight.push(StampInflight {
+            cwd: "/repo".to_string(),
+            receiver: rx,
+        });
+        app.poll_stamp_fetches();
+        assert_eq!(
+            app.stamp_inflight.len(),
+            1,
+            "empty reply keeps the worker armed"
+        );
+        drop(tx);
+        app.poll_stamp_fetches();
+        assert!(app.stamp_inflight.is_empty(), "dead worker drops silently");
+
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Value, BackendClientError>>();
+        let _ = tx.send(Err(BackendClientError::Backend("boom".into())));
+        app.stamp_inflight.push(StampInflight {
+            cwd: "/repo".to_string(),
+            receiver: rx,
+        });
+        app.poll_stamp_fetches();
+        assert!(
+            app.snapshot.workspaces[0].worktree.is_none(),
+            "failed fetch leaves the stamp quiet"
+        );
+    }
+
+    #[test]
+    fn apply_cached_stamps_walks_every_continue_arm() {
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [
+                    {"workspace_id":"ws_1","label":"Repo","cwd":"/already","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1",
+                     "worktree": {"repo_root": "/repo", "branch": "main"}},
+                    {"workspace_id":"ws_2","label":"NoCache","cwd":"/nocache","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"t2"},
+                    {"workspace_id":"ws_3","label":"Stale","cwd":"/stale","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"t3"},
+                    {"workspace_id":"ws_4","label":"Unparsable","cwd":"/unparsable","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"t4"}
+                ],
+                "tabs": [], "panes": [], "agents": []
+            }
+        }));
+        // Backend-stamped rows stay verbatim (continue arm).
+        // /nocache has no cache entry (missing-entry continue).
+        app.stamp_cache.insert(
+            "/stale".to_string(),
+            StampCacheEntry {
+                fetched_at: Instant::now() - Duration::from_secs(10),
+                response: json!({}),
+            },
+        );
+        // /unparsable holds a fresh but useless reply.
+        app.stamp_cache.insert(
+            "/unparsable".to_string(),
+            StampCacheEntry {
+                fetched_at: Instant::now(),
+                response: json!({"not": "a worktree list"}),
+            },
+        );
+        app.apply_cached_stamps();
+        assert!(
+            app.snapshot.workspaces[0].worktree.is_some(),
+            "backend stamp stays"
+        );
+        assert!(app.snapshot.workspaces[1].worktree.is_none(), "no cache");
+        assert!(app.snapshot.workspaces[2].worktree.is_none(), "stale cache");
+        assert!(app.snapshot.workspaces[3].worktree.is_none(), "unparsable");
+    }
+
+    #[test]
+    fn spawn_stamp_fetches_skips_known_cwds() {
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [
+                    {"workspace_id":"ws_1","label":"Empty","cwd":"","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"},
+                    {"workspace_id":"ws_2","label":"Stamped","cwd":"/stamped","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"t2",
+                     "worktree": {"repo_root": "/stamped", "branch": "main"}},
+                    {"workspace_id":"ws_3","label":"Fresh","cwd":"/fresh","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"t3"},
+                    {"workspace_id":"ws_4","label":"Armed","cwd":"/armed","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"t4"}
+                ],
+                "tabs": [], "panes": [], "agents": []
+            }
+        }));
+        app.stamp_cache.insert(
+            "/fresh".to_string(),
+            StampCacheEntry {
+                fetched_at: Instant::now(),
+                response: json!({}),
+            },
+        );
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Value, BackendClientError>>();
+        app.stamp_inflight.push(StampInflight {
+            cwd: "/armed".to_string(),
+            receiver: rx,
+        });
+        drop(tx);
+        app.spawn_stamp_fetches();
+        // The empty cwd, the stamped row and the fresh cache arm nothing;
+        // the pre-armed cwd stays single because a worker already runs.
+        let armed: Vec<String> = app.stamp_inflight.iter().map(|w| w.cwd.clone()).collect();
+        assert!(!armed.contains(&"/fresh".to_string()), "fresh cache skips");
+        assert_eq!(armed.iter().filter(|cwd| **cwd == "/armed").count(), 1);
+        // Poll: the dead /armed worker from the channel drops.
+        app.poll_stamp_fetches();
+        assert!(app.stamp_inflight.is_empty(), "dead worker drains");
+    }
+
+    #[test]
+    fn attach_viewport_uses_the_focused_tile_geometry() {
+        let mut app = two_pane_split_app();
+        // Split active but no geometry yet: the fallback keeps the
+        // terminal size path.
+        app.set_terminal_size(100, 30);
+        assert_eq!(
+            app.attach_viewport(),
+            render::pane_viewport_size(100, 30, false)
+        );
+        // Geometry without the focused pane: still the fallback.
+        app.tile_geometry
+            .borrow_mut()
+            .push(crate::tui::render::TileRectOwned {
+                pane_id: "pane_2".to_string(),
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 20,
+            });
+        assert_eq!(
+            app.attach_viewport(),
+            render::pane_viewport_size(100, 30, false)
+        );
+        // The focused tile's viewport minus borders and chrome rows.
+        app.tile_geometry
+            .borrow_mut()
+            .push(crate::tui::render::TileRectOwned {
+                pane_id: "pane_1".to_string(),
+                x: 0,
+                y: 0,
+                width: 50,
+                height: 30,
+            });
+        assert_eq!(app.attach_viewport(), (48, 25));
+    }
+
+    #[test]
+    fn branch_picker_footer_hints_render() {
+        let mut app = two_pane_split_app();
+        app.mode = TuiMode::BranchPicker;
+        let context = app.footer_context();
+        assert_eq!(context.hint(), FooterContext::BranchPicker.hint());
+        assert_eq!(
+            context.compact_hint(),
+            FooterContext::BranchPicker.compact_hint()
+        );
+    }
+
+    #[test]
+    fn tour_mode_key_is_inert_in_navigation_dispatch() {
+        // The guard above the mode dispatch owns Tour keys; the
+        // Tour arm in handle_navigation_key's match stays a no-op.
+        let mut app = two_pane_split_app();
+        app.mode = TuiMode::Tour;
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(app.mode, TuiMode::Tour, "tour keys do not leak");
+    }
+
+    #[test]
+    fn cleanup_confirm_accepts_yb_and_other_prompts_take_plain_y() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".to_string(),
+            status: panels::git::GitFileStatus::Staged,
+        }];
+        // `yb` confirms the cleanup-delete verb (branch_too flips with
+        // the branch option), and any other text cancels before the
+        // action runs. Both paths keep the prompt closed.
+        for (text, cancelled) in [("yb", false), ("nope", true)] {
+            app.error = None;
+            app.status = String::new();
+            app.prompt_input = Some(PromptInput {
+                kind: PromptKind::ConfirmCleanupDelete,
+                text: text.to_string(),
+            });
+            app.handle_prompt_key(KeyEvent::from(KeyCode::Enter));
+            assert!(app.prompt_input.is_none(), "prompt closes for {text}");
+            if cancelled {
+                assert_eq!(app.status, "cancelled", "text {text} cancels");
+            }
+        }
+    }
+
+    #[test]
+    fn sync_composer_draft_without_prompt_is_a_noop() {
+        let mut app = two_pane_split_app();
+        app.sync_composer_draft();
+        assert!(app.composer_drafts.is_empty(), "no prompt, no draft");
+    }
+
+    #[test]
+    fn open_composer_prefills_from_the_pane_draft() {
+        let mut app = two_pane_split_app();
+        app.composer_drafts
+            .insert("pane_1".to_string(), "half-written".to_string());
+        app.open_composer_from_footer();
+        let prompt = app.prompt_input.expect("composer prompt opens");
+        assert_eq!(prompt.text, "half-written");
+
+        // Reopening without a draft starts empty, and the terminal-screen
+        // gate keeps other screens out.
+        app.prompt_input = None;
+        app.screen = TuiScreen::Files;
+        app.open_composer_from_footer();
+        assert!(app.prompt_input.is_none(), "files screen has no composer");
+    }
+
+    #[test]
+    fn selected_terminal_id_follows_the_selected_pane() {
+        let app = two_pane_split_app();
+        assert_eq!(app.selected_terminal_id(), Some("term_1"));
+        assert_eq!(
+            app.selected_terminal_id(),
+            app.view_pane().map(|p| p.terminal_id.as_str())
+        );
+    }
+
+    #[test]
+    fn search_palette_ignores_unhandled_keys() {
+        let mut app = two_pane_split_app();
+        app.mode = TuiMode::SearchPalette;
+        // F5: no palette binding, the catch-all keeps state intact.
+        app.handle_key(KeyEvent::from(KeyCode::F(5)));
+        assert_eq!(app.mode, TuiMode::SearchPalette);
+    }
+}
+
+#[cfg(test)]
+mod batch13_coverage_tests {
+    use super::prompt_action_tests::{app_with_api, fake_api_server};
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use serde_json::json;
+
+    pub(crate) fn terminal_app() -> TuiApp {
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "tabs": [{"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}],
+                "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+                "agents": []
+            }
+        }));
+        app.screen = TuiScreen::Terminal;
+        app
+    }
+
+    #[test]
+    fn prompt_error_arms_surface_api_failures() {
+        // ResetMode: a refused /api/git-ui/reset surfaces the panel
+        // error while the selected commit stays selected.
+        let (api, _stop) = fake_api_server(&["/api/git-ui/reset"]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".to_string();
+        app.git_panel.commits = vec![panels::git::GitCommitEntry {
+            hash: "abc123".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.git_panel.commit_selected = 0;
+        app.run_prompt_action(PromptKind::ResetMode, "soft");
+        assert!(app.error.is_some(), "reset failure surfaces");
+
+        // CreateBranch: a refused switch surfaces the error; the
+        // success arm's refresh_view failure is the follow-up below.
+        let (api, _stop) = fake_api_server(&["/api/git-ui/switch"]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".to_string();
+        app.run_prompt_action(PromptKind::CreateBranch, "feat/x");
+        assert!(app.error.is_some(), "switch failure surfaces");
+
+        // CreateBranch success with a failing refresh: the branch
+        // switched (fake answers ok) but /api/git-ui/refresh 500s.
+        let (api, _stop) = fake_api_server(&["/api/git-ui/status"]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".to_string();
+        app.run_prompt_action(PromptKind::CreateBranch, "feat/y");
+        assert!(
+            app.error.is_some(),
+            "refresh failure after a successful switch surfaces"
+        );
+
+        // CreateFile: the create succeeds; the auto-open runs but the
+        // fake tree refresh leaves no selection, so it takes the
+        // early-Ok path and no error surfaces (the Err arm of that
+        // open is fixture-unreachable, documented in batch14).
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.run_prompt_action(PromptKind::CreateFile, "b.rs");
+        assert!(app.error.is_none(), "no selection means no open error");
+        assert_eq!(app.status, "created b.rs");
+    }
+
+    #[test]
+    fn search_palette_catch_all_and_navigation_return_arms() {
+        let mut app = terminal_app();
+        app.mode = TuiMode::SearchPalette;
+        // F5 has no palette binding: the catch-all keeps state intact.
+        app.handle_search_palette_key(KeyEvent::from(KeyCode::F(5)));
+        assert_eq!(app.mode, TuiMode::SearchPalette);
+
+        // Agent candidate with a pane: select_search_target's pane arm
+        // (the return at the end of the find).
+        app.search_palette.results = vec![search::SearchCandidate::Agent {
+            pane_id: "pane_1".into(),
+            label: "jcode".into(),
+        }];
+        app.search_palette.committed = true;
+        app.handle_search_palette_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.selected_agent, 0);
+
+        // Content and File candidates: the run_search_candidate Ok
+        // arms after a successful open/reveal (fake serves both).
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        // The tree must hold the revealed file or reveal_path errors.
+        // Inject the entries after opening the Files screen, which
+        // rebuilds the explorer from a fresh refresh.
+        app.open_files_screen();
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.mode = TuiMode::SearchPalette;
+        app.search_palette.committed = true;
+        app.search_palette.results = vec![search::SearchCandidate::File {
+            path: "a.rs".into(),
+            name: "a.rs".into(),
+            is_dir: false,
+        }];
+        app.handle_search_palette_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.error.is_none(), "file reveal succeeds");
+
+        app.search_palette.results = vec![search::SearchCandidate::Content {
+            file: "a.rs".into(),
+            name: "a.rs".into(),
+            line: 12,
+        }];
+        app.handle_search_palette_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.error.is_none(), "content open succeeds");
+    }
+
+    #[test]
+    fn content_search_plus_key_covers_load_more_and_catch_all() {
+        // The load-more request goes to /api/file-browser/content-search
+        // with the typed filter as the query.
+        let (api, _stop) = fake_api_server(&["/api/file-browser/content-search"]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = SearchKind::Content;
+        app.file_explorer.content_search.done = false;
+        app.file_explorer.filter = "needle".to_string();
+        // has_results() gates the results-view key handler; stage a
+        // query plus a file entry so '+' dispatches to the load-more
+        // arm.
+        app.file_explorer.content_search.query = "needle".to_string();
+        app.file_explorer.content_search.files = vec![content_search::ContentSearchFile {
+            path: "a.rs".into(),
+            name: "a.rs".into(),
+            match_count: 1,
+            chunks: vec![],
+            truncated: false,
+            first_match_line: 1,
+        }];
+        // '+' with more results available runs the load-more request;
+        // the refused route surfaces its error.
+        app.handle_files_key(KeyEvent::from(KeyCode::Char('+')));
+        assert!(app.error.is_some(), "load-more failure surfaces");
+        // F5: no content-search binding, catch-all keeps the mode.
+        app.handle_files_key(KeyEvent::from(KeyCode::F(5)));
+        assert!(app.file_explorer.search_mode);
+
+        // '+' with done=true only reports.
+        app.error = None;
+        app.file_explorer.content_search.done = true;
+        app.handle_files_key(KeyEvent::from(KeyCode::Char('+')));
+        assert_eq!(app.status, "no more results");
+    }
+
+    #[test]
+    fn editor_find_and_diff_search_catch_alls() {
+        let mut app = terminal_app();
+        app.file_explorer.edit_active = true;
+        app.file_explorer.editor_find.active = true;
+        // F5: no find-bar binding, catch-all keeps the bar open.
+        app.handle_editor_find_key(KeyEvent::from(KeyCode::F(5)));
+        assert!(app.file_explorer.editor_find.active);
+        // Enter with no ranges: "no matches" status arm.
+        app.file_explorer.editor_find.ranges.clear();
+        app.handle_editor_find_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.status, "no matches");
+
+        // Diff search: Esc cancels, F5 falls through the catch-all.
+        let mut app = terminal_app();
+        app.screen = TuiScreen::Git;
+        app.git_panel.diff_search_active = true;
+        app.git_panel.diff_search_query = "needle".into();
+        app.handle_git_key(KeyEvent::from(KeyCode::Esc));
+        assert!(!app.git_panel.diff_search_active);
+        app.git_panel.diff_search_active = true;
+        app.handle_git_key(KeyEvent::from(KeyCode::F(5)));
+        assert!(app.git_panel.diff_search_active);
+    }
+
+    #[test]
+    fn binary_preview_edit_refusal_surfaces_start_edit_error() {
+        // The webui reveal flow offers edit on a preview; a binary file
+        // must refuse with the visible error instead of opening the
+        // editor on garbage bytes.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer.preview = panels::files::FilePreview {
+            path: Some("bin.dat".into()),
+            content: "\u{0}\u{1}".into(),
+            truncated: false,
+            binary: true,
+            hash: String::new(),
+            dirty: false,
+        };
+        app.screen = TuiScreen::Files;
+        app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+        assert!(app.error.is_some(), "binary preview refuses edit");
+    }
+
+    #[test]
+    fn stage_all_and_log_plus_error_arms() {
+        // Staged files take the unstage path of stage-all; a refused
+        // unstage route surfaces the toggle error in the status bar.
+        let (api, _stop) = fake_api_server(&["/api/git-ui/unstage"]);
+        let mut app = app_with_api(api);
+        app.git_panel.cwd = "/repo".to_string();
+        // The screen must already be Git or open_git_screen rebuilds
+        // the panel through set_cwd, discarding the staged file.
+        app.screen = TuiScreen::Git;
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "a.rs".to_string(),
+            status: panels::git::GitFileStatus::Staged,
+        }];
+        app.run_shortcut(Shortcut::GitStageAll);
+        assert!(app.error.is_some(), "stage-all failure surfaces");
+
+        // Log '+': more commits load, but the log refresh fails.
+        let (api, _stop) = fake_api_server(&["/api/git-ui/log"]);
+        let mut app = app_with_api(api);
+        app.git_panel.view = GitView::Log;
+        app.git_panel.log_has_more = true;
+        app.git_panel.commits = vec![panels::git::GitCommitEntry {
+            hash: "abc".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        }];
+        app.git_panel.log_limit = panels::git::LOG_PAGE_SIZE;
+        app.handle_git_key(KeyEvent::from(KeyCode::Char('+')));
+        assert!(
+            app.error.is_some(),
+            "log load-more refresh failure surfaces"
+        );
+    }
+
+    #[test]
+    fn edit_mode_clean_exit_save_and_quit_confirm() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer.edit_active = true;
+        app.file_explorer.preview = panels::files::FilePreview {
+            path: Some("a.rs".into()),
+            content: "fn main() {}".into(),
+            truncated: false,
+            binary: false,
+            hash: String::new(),
+            dirty: false,
+        };
+        // Esc on a clean buffer closes edit mode without a prompt.
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(!app.file_explorer.edit_active);
+        assert_eq!(app.status, "edit mode closed");
+
+        // Ctrl+S after a clean save echoes the saved status (the
+        // save itself succeeded because the buffer is unchanged).
+        app.file_explorer.edit_active = true;
+        app.file_explorer.preview.dirty = true;
+        app.file_explorer.edit_cursor = app.file_explorer.preview.content.len();
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert_eq!(app.status, "saved");
+
+        // Terminal navigate: plain q opens the quit confirm.
+        let mut app = terminal_app();
+        app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+        assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    }
+
+    #[test]
+    fn tab_cycling_reports_switches_and_errors() {
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        // Two recents with a clean buffer: Tab rotates and reports.
+        app.file_explorer.recent_previews = vec!["a.rs".into(), "b.rs".into()];
+        app.handle_files_key(KeyEvent::from(KeyCode::Tab));
+        assert_eq!(app.status, "switched preview");
+        assert_eq!(app.file_explorer.recent_previews[0], "b.rs");
+
+        // A refused preview read on the rotation surfaces the error arm.
+        let (api, _stop) = fake_api_server(&["/api/file-browser/file"]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer.recent_previews = vec!["a.rs".into(), "b.rs".into()];
+        app.handle_files_key(KeyEvent::from(KeyCode::Tab));
+        assert!(app.error.is_some(), "cycle rotation failure surfaces");
+    }
+
+    #[test]
+    fn committing_a_content_search_filter_reports_done() {
+        // Enter on the active filter with content kind runs the search
+        // and reports it (webui commits the query on Enter).
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = SearchKind::Content;
+        app.file_explorer.filter_active = true;
+        app.file_explorer.filter = "needle".to_string();
+        app.handle_files_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.status, "content search done");
+    }
+
+    #[test]
+    fn attach_viewport_falls_back_when_focus_has_no_pane_or_tile() {
+        let mut app = terminal_app();
+        // Split with a dead focus: focused_pane_id falls back among
+        // leaves, none matches a snapshot pane, so the tile lookup
+        // never runs and the fallback viewport answers.
+        app.split_tree = split::SplitNode::split(
+            split::SplitDir::Row,
+            vec![
+                split::SplitNode::leaf("gone_1"),
+                split::SplitNode::leaf("gone_2"),
+            ],
+        );
+        app.split_focus = Some("gone_1".to_string());
+        app.set_terminal_size(100, 30);
+        assert_eq!(
+            app.attach_viewport(),
+            render::pane_viewport_size(100, 30, false)
+        );
+        // Same split, but now the geometry holds tiles for the dead
+        // panes: focus resolves to None (no snapshot pane), so the
+        // outer if-let exits through its closing arm.
+        app.tile_geometry
+            .borrow_mut()
+            .push(crate::tui::render::TileRectOwned {
+                pane_id: "gone_1".to_string(),
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 20,
+            });
+        assert_eq!(
+            app.attach_viewport(),
+            render::pane_viewport_size(100, 30, false)
+        );
+        // view_pane mirrors the same fallthrough: focus pane missing
+        // from the snapshot means the sidebar selection answers.
+        assert_eq!(app.view_pane().map(|p| p.id.as_str()), Some("pane_1"));
+    }
+
+    #[test]
+    fn navigation_dispatch_keeps_tour_inert_and_composer_draft_miss_noops() {
+        let mut app = terminal_app();
+        // Tour mode owns its keys in handle_key; the nav dispatch's
+        // Tour arm stays a no-op when called directly.
+        app.mode = TuiMode::Tour;
+        let status_before = app.status.clone();
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(app.status, status_before, "tour keys do nothing here");
+        assert_eq!(app.mode, TuiMode::Tour);
+
+        // Composer open with a pane that has no stored draft: the
+        // miss arm leaves the prompt empty.
+        let mut app = terminal_app();
+        app.open_composer_from_footer();
+        let prompt = app.prompt_input.expect("composer prompt opens");
+        assert_eq!(prompt.text, "");
+    }
+
+    #[test]
+    fn lens_scroll_up_stops_when_deepen_cannot_grow() {
+        let mut app = terminal_app();
+        app.lens.active = true;
+        app.pane_history = vec!["l1".into(), "l2".into(), "l3".into()];
+        // Exhausted history: deepen returns 0 and the scroll stops at
+        // the held top instead of looping.
+        app.pane_history_exhausted = true;
+        app.scroll_lens_up(100);
+        let len = app.pane_scrollback_lines().len();
+        assert_eq!(app.lens.scroll_up, len.saturating_sub(1));
+    }
+}
+
+#[cfg(test)]
+mod batch14_coverage_tests {
+    use super::batch12_coverage_tests::two_pane_split_app;
+    use super::batch13_coverage_tests::terminal_app;
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    #[test]
+    fn create_file_success_with_no_selectable_entry_skips_the_open() {
+        // Line 1648: the create succeeds and the webui-style auto-open
+        // runs; with the fake tree answering no entries the open takes
+        // its early-Ok path and the error stays clear. (The Err arm of
+        // this open is fixture-unreachable: the create's refresh always
+        // empties the tree, so open_preview never holds a selection.)
+        let (api, _stop) = super::prompt_action_tests::fake_api_server(&[]);
+        let mut app = super::prompt_action_tests::app_with_api(api);
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.run_prompt_action(PromptKind::CreateFile, "b.rs");
+        assert!(app.error.is_none(), "no selection means no open, no error");
+        assert_eq!(app.status, "created b.rs");
+    }
+
+    #[test]
+    fn commit_search_query_runs_to_the_final_ok() {
+        // Line 1885: both fetches succeed and the commit reaches the
+        // final Ok; the Enter handler then flips the committed flag.
+        let (api, _stop) = super::prompt_action_tests::fake_api_server(&[]);
+        let mut app = super::prompt_action_tests::app_with_api(api);
+        app.mode = TuiMode::SearchPalette;
+        app.search_palette.query = "needle".to_string();
+        app.handle_search_palette_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.search_palette.committed);
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn workspace_selection_targets_the_active_tab_pane() {
+        // Line 2071: the Workspace candidate resolves through the
+        // workspace's active tab to its pane and returns early.
+        let mut app = terminal_app();
+        app.mode = TuiMode::SearchPalette;
+        app.search_palette.committed = true;
+        app.search_palette.results = vec![search::SearchCandidate::Workspace {
+            id: "ws_1".into(),
+            label: "Repo".into(),
+        }];
+        app.handle_search_palette_key(KeyEvent::from(KeyCode::Enter));
+        // The pane arm recurses from the workspace arm: with an empty
+        // agents list it stays on the Workspaces focus (line 2071's
+        // early return still ran).
+        assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+    }
+
+    #[test]
+    fn composer_prompt_prefills_a_stored_draft() {
+        // Line 2682: an existing draft for the focused pane prefills
+        // the composer prompt.
+        let mut app = terminal_app();
+        app.composer_drafts
+            .insert("pane_1".to_string(), "half-typed".to_string());
+        app.open_composer_from_footer();
+        let prompt = app.prompt_input.expect("composer opens");
+        assert_eq!(prompt.text, "half-typed");
+    }
+
+    #[test]
+    fn tab_close_gone_tab_runs_the_not_found_recovery_flow() {
+        // Lines 2921-2927: tab.close answers not-found (the backend
+        // already tore the tab down), so the close still lands: the
+        // workspace close and the post-close refresh both run. With a
+        // ws_gone workspace the second close also reports not-found,
+        // which the filter ignores, and the final refresh on the live
+        // socket succeeds.
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.snapshot.tabs[0].id = "tab_gone".to_string();
+        app.snapshot.workspaces[0].id = "ws_gone".to_string();
+        app.snapshot.workspaces[0].active_tab_id = Some("tab_gone".to_string());
+        app.close_selected_tab();
+        // The not-found arm ran the same post-close flow: the refresh
+        // succeeded and rebuilt the status line, so only the absence of
+        // an error proves the filters passed.
+        assert!(app.error.is_none(), "not-found is the desired outcome");
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn files_enter_on_a_directory_toggles_expansion() {
+        // Line 3118: Enter on a directory entry returns Ok(true) and
+        // stays a no-op for the preview-open path.
+        let (api, _stop) = super::prompt_action_tests::fake_api_server(&[]);
+        let mut app = super::prompt_action_tests::app_with_api(api);
+        app.screen = TuiScreen::Files;
+        app.file_explorer
+            .entries
+            .push(crate::tui::panels::FileEntry {
+                name: "dir".into(),
+                path: "dir".into(),
+                is_dir: true,
+                size: None,
+                level: 0,
+                expanded: false,
+                git_status: None,
+            });
+        app.file_explorer.selected = 0;
+        app.handle_files_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.file_explorer.entries[0].expanded);
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn navigate_mode_quit_key_opens_the_confirm_overlay() {
+        // Line 3983: plain q in Navigate mode with the main region
+        // focused opens the quit confirmation.
+        let mut app = terminal_app();
+        app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+        assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    }
+
+    #[test]
+    fn lens_scroll_exhausted_history_stops_the_deepen_loop() {
+        // Line 4063: deepen returns zero on exhausted history, so the
+        // scroll loop stops instead of spinning.
+        let mut app = terminal_app();
+        app.lens.active = true;
+        app.pane_history = vec!["l1".into(), "l2".into()];
+        app.pane_history_exhausted = true;
+        app.scroll_lens_up(50);
+        assert!(
+            app.lens.scroll_up > 0,
+            "scroll still moves within the window"
+        );
+    }
+
+    #[test]
+    fn attach_key_send_failure_surfaces_the_error() {
+        // Line 4093: a typed key whose send fails (dead backend
+        // socket) surfaces the attach error and stays in attach mode.
+        let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Attach;
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+        assert!(app.error.is_some(), "dead socket send fails");
+    }
+
+    #[test]
+    fn view_pane_resolves_the_focused_split_pane() {
+        // Line 4276: a split with a live focused pane answers through
+        // the focus, not the sidebar fallback.
+        let mut app = two_pane_split_app();
+        // The base fixture carries one pane; a two-pane snapshot is
+        // what makes the focus resolve.
+        app.snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "snapshot": {
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":1,"active_tab_id":"tab_1"}],
+                "tabs": [{"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":2,"agent_status":"idle"}],
+                "panes": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                    {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}
+                ],
+                "agents": []
+            }
+        }));
+        app.split_focus = Some("pane_2".to_string());
+        assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_2"));
+        // And the fallthrough keeps the sidebar answer when the
+        // focused pane is not in the snapshot.
+        app.split_focus = Some("gone".to_string());
+        assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_1"));
+    }
+
+    #[test]
+    fn git_reveal_edit_on_a_binary_file_refuses() {
+        // Line 2437: the EditFile shortcut on the git screen reads a
+        // binary preview (the fixture serves binary for path=bin), so
+        // start_edit refuses inside the reveal flow.
+        let (api, _stop) = super::prompt_action_tests::fake_api_server(&[]);
+        let mut app = super::prompt_action_tests::app_with_api(api);
+        app.screen = TuiScreen::Git;
+        app.git_panel.cwd = "/repo".into();
+        app.git_panel.files = vec![panels::git::GitFileEntry {
+            path: "bin.dat".into(),
+            status: panels::git::GitFileStatus::Unstaged,
+        }];
+        app.run_shortcut(Shortcut::EditFile);
+        assert!(app.error.is_some(), "binary preview refuses edit");
+        assert_eq!(app.screen, TuiScreen::Files);
+    }
+}
+
+#[cfg(test)]
+mod batch15_coverage_tests {
+    use super::batch13_coverage_tests::terminal_app;
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    #[test]
+    fn sidebar_focused_quit_key_also_opens_the_confirm_overlay() {
+        // Line 3983: q in Navigate mode with the sidebar region focused
+        // runs the shared post-walker dispatch, not the main arm.
+        let mut app = terminal_app();
+        app.main_focused = false;
+        app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+        assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    }
+}
+
+#[cfg(test)]
+mod batch16_coverage_tests {
+    use super::batch12_coverage_tests::two_pane_split_app;
+    use super::batch13_coverage_tests::terminal_app;
+    use super::prompt_action_tests::fake_api_server_with_tree;
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    #[test]
+    fn tour_arm_in_mode_dispatch_is_inert() {
+        // Line 1264: the tour guard at the top of handle_key owns
+        // every Tour key and returns before the mode match, so the
+        // match's Tour arm is defensive only (the comment above it
+        // records the same). No test can fire it through handle_key;
+        // this test pins the guard behavior instead.
+        let mut app = terminal_app();
+        app.mode = TuiMode::Tour;
+        let status_before = app.status.clone();
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(app.status, status_before, "tour keys do nothing here");
+        assert_eq!(app.mode, TuiMode::Tour);
+    }
+
+    #[test]
+    fn create_file_open_preview_conflict_surfaces_the_error() {
+        // Line 1649: create succeeds and selects the new entry, then
+        // open_preview hits the dirty-buffer guard (webui keeps unsaved
+        // editor tabs; opening another file refuses). The route fixture
+        // serves the tree keyed to the explorer cwd so the refreshed
+        // tree still lists the created file.
+        let (api, _stop) = fake_api_server_with_tree("/cwd-create", &[]);
+        let mut app = super::prompt_action_tests::app_with_api(api);
+        app.file_explorer = super::prompt_action_tests::explorer_with_selection();
+        app.file_explorer.cwd = "/cwd-create".to_string();
+        app.file_explorer
+            .entries
+            .push(crate::tui::panels::FileEntry {
+                name: "b.rs".into(),
+                path: "b.rs".into(),
+                is_dir: false,
+                size: None,
+                level: 0,
+                expanded: false,
+                git_status: None,
+            });
+        // Unsaved edits on a different file: opening b.rs must refuse.
+        app.file_explorer.preview = panels::files::FilePreview {
+            path: Some("other.rs".into()),
+            content: String::new(),
+            truncated: false,
+            binary: false,
+            hash: String::new(),
+            dirty: true,
+        };
+        app.run_prompt_action(PromptKind::CreateFile, "b.rs");
+        assert!(
+            app.error
+                .as_deref()
+                .is_some_and(|e| e.contains("unsaved edits")),
+            "conflicting open surfaces the error"
+        );
+        assert_eq!(app.status, "created b.rs");
+    }
+
+    #[test]
+    fn workspace_search_target_without_active_tab_pane_refreshes_tail() {
+        // Line 2071: the workspace arm found the workspace but neither
+        // its active tab nor any pane matches, so the block falls to
+        // its refresh_tail close instead of an early return.
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.screen = TuiScreen::Terminal;
+        app.snapshot.workspaces[0].active_tab_id = Some("tab_dead".to_string());
+        app.snapshot.tabs.clear();
+        app.select_search_target(Some("ws_1"), None, None);
+        assert_eq!(app.selected_workspace, 0);
+        assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+        assert!(app.error.is_none());
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn composer_opener_is_inert_off_the_terminal_screen() {
+        // Line 2682: open_composer_from_footer only works on the
+        // Terminal screen; on Files it returns before the prompt.
+        let mut app = terminal_app();
+        app.screen = TuiScreen::Files;
+        app.open_composer_from_footer();
+        assert!(app.prompt_input.is_none(), "composer stays closed");
+        // On Terminal the same opener opens the prompt (line 2682) and
+        // seeds the draft from the focused pane when one exists.
+        app.screen = TuiScreen::Terminal;
+        app.open_composer_from_footer();
+        assert!(app.prompt_input.is_some(), "composer opens on terminal");
+        assert!(app.status.starts_with("composer: type the message"));
+        // Third pass: no pane in view (snapshot emptied), so view_pane
+        // answers None and the draft-seed branch (line 2682) is skipped
+        // while the composer still opens.
+        app.snapshot.panes.clear();
+        app.prompt_input = None;
+        app.open_composer_from_footer();
+        assert!(app.prompt_input.is_some(), "composer opens paneless");
+    }
+
+    #[test]
+    fn tab_close_failing_snapshots_run_the_ok_and_recovery_error_arms() {
+        // Lines 2897/2921-2927: tab.close still succeeds against the
+        // failing-snapshot backend, then the post-close refresh and the
+        // workspace close errors surface. First pass: two tabs, so the
+        // Ok arm skips the workspace close entirely and its implicit
+        // else runs (the refresh error also surfaces).
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket_failing_snapshots();
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.snapshot.tabs.push(crate::tui::TuiTab {
+            id: "tab_2".to_string(),
+            workspace_id: "ws_1".to_string(),
+            label: "Shell".to_string(),
+            focused: false,
+            pane_count: 0,
+            agent_status: String::new(),
+        });
+        app.close_selected_tab();
+        assert_eq!(app.status, "tab closed");
+        assert!(
+            app.error.as_deref().is_some_and(|e| !e.is_empty()),
+            "refresh failure after the ok close surfaces"
+        );
+
+        // Second pass: the tab id makes the backend answer not-found
+        // (raced teardown), so the recovery arm runs with a last-tab
+        // workspace whose close then really fails (ws_real_err). The
+        // follow-up refresh fails too, so every recovery-path line
+        // fires; the final error on the line is the refresh's, since
+        // a healthy refresh clears a stale action error but this one
+        // is already being replaced by a newer failure.
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket_failing_snapshots();
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        let mut snapshot = crate::tui::tests::fixture_snapshot();
+        snapshot.tabs[0].id = "tab_gone".to_string();
+        snapshot.workspaces[0].active_tab_id = Some("tab_gone".to_string());
+        snapshot.workspaces[0].id = "ws_real_err".to_string();
+        snapshot.tabs[0].workspace_id = "ws_real_err".to_string();
+        app.snapshot = snapshot;
+        app.close_selected_tab();
+        assert_eq!(app.status, "tab closed");
+        assert!(
+            app.error.as_deref().is_some_and(|e| !e.is_empty()),
+            "recovery arm surfaces the trailing refresh failure"
+        );
+        let _ = std::fs::remove_file(&socket);
+
+        // Third pass (line 2894): the Ok arm with a real workspace-close
+        // failure — tab.close succeeds on a plain tab id, the workspace
+        // close answers a hard error (ws_real_err), and the not-found
+        // filter passes it through to the error setter. The trailing
+        // refresh failure then replaces the message, so the assert
+        // only pins that an error survived, not which one.
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket_failing_snapshots();
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        let mut snapshot = crate::tui::tests::fixture_snapshot();
+        snapshot.workspaces[0].id = "ws_real_err".to_string();
+        snapshot.tabs[0].workspace_id = "ws_real_err".to_string();
+        app.snapshot = snapshot;
+        app.close_selected_tab();
+        assert_eq!(app.status, "tab closed");
+        assert!(
+            app.error.as_deref().is_some_and(|e| !e.is_empty()),
+            "ok arm surfaces the workspace-close failure"
+        );
+        let _ = std::fs::remove_file(&socket);
+
+        // Fourth pass (line 2925): the recovery arm with a surviving
+        // sibling tab — was_last_tab is false, so the workspace close
+        // is skipped entirely and the block's implicit else runs.
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket_failing_snapshots();
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        let mut snapshot = crate::tui::tests::fixture_snapshot();
+        snapshot.tabs[0].id = "tab_gone".to_string();
+        snapshot.workspaces[0].active_tab_id = Some("tab_gone".to_string());
+        snapshot.tabs.push(crate::tui::TuiTab {
+            id: "tab_2".to_string(),
+            workspace_id: "ws_1".to_string(),
+            label: "Shell".to_string(),
+            focused: false,
+            pane_count: 0,
+            agent_status: String::new(),
+        });
+        app.snapshot = snapshot;
+        app.close_selected_tab();
+        assert_eq!(app.status, "tab closed");
+        assert!(
+            app.error.as_deref().is_some_and(|e| !e.is_empty()),
+            "recovery arm skips the workspace close with a sibling tab"
+        );
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn close_tab_fixture_workspace_not_found_params_matches_the_tui_wire_format() {
+        // The ws_gone fixture branch must key off params, matching the
+        // TUI's request shape, so the not-found filter arm has a real
+        // fixture behind it (guards the fix that made it reachable).
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        let mut snapshot = crate::tui::tests::fixture_snapshot();
+        snapshot.workspaces[0].id = "ws_gone".to_string();
+        snapshot.tabs[0].workspace_id = "ws_gone".to_string();
+        snapshot.tabs[0].id = "tab_gone".to_string();
+        snapshot.workspaces[0].active_tab_id = Some("tab_gone".to_string());
+        app.snapshot = snapshot;
+        app.close_selected_tab();
+        assert!(
+            !app.error
+                .as_deref()
+                .is_some_and(|e| e.contains("not found")),
+            "not-found workspace close is swallowed"
+        );
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn scroll_lens_up_with_no_focused_pane_stops_the_deepen_loop() {
+        // Line 4063: the second iteration's deepen fails because the
+        // app has no view pane (focused_pane_id returns None), so the
+        // loop returns through the zero-growth arm instead of spinning.
+        let mut app = two_pane_split_app();
+        app.lens.active = true;
+        app.pane_history = vec!["l1".into(), "l2".into()];
+        app.pane_history_exhausted = false;
+        app.split_focus = None;
+        app.split_tree = split::SplitNode::leaf("gone_1");
+        app.snapshot.panes.clear();
+        app.scroll_lens_up(50);
+        assert!(
+            app.lens.scroll_up > 0,
+            "scroll still moves within the window"
+        );
+    }
+
+    #[test]
+    fn attach_key_send_detach_failure_surfaces_the_error() {
+        // The server completes the handshake (Hello read, Welcome
+        // written) then hangs up without reading the AttachTerminal
+        // follow-up. By the time the client writes AttachTerminal the
+        // close has propagated, so that write fails with EPIPE inside
+        // attach_terminal and surfaces through the outer Err arm
+        // (`Err(err) => self.error = ...`) — the outer-arm counterpart
+        // of the send-chain Ok test below. The inner send-chain Err
+        // arm is not deterministically coverable (see the coverage
+        // note in handle_attach_key): a mid-chain death either
+        // propagates before AttachTerminal (this test) or not until
+        // after Detach (both writes succeed).
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        let path = crate::backend_client::unique_test_path("herdr-tui-attach-die");
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        // Nonblocking from the start: the fixture spins on accept until
+        // the client lands, so the accept-Err arm runs on every empty poll
+        // before the handshake instead of parking forever in accept.
+        let _ =
+            listener.set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept);
+        std::thread::spawn(move || {
+            let mut stream = loop {
+                let Ok(stream) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                };
+                break stream;
+            };
+            let _ = crate::protocol::read_message::<_, crate::protocol::ClientMessage>(
+                &mut stream,
+                crate::backend_client::MAX_TUI_TERMINAL_FRAME_SIZE,
+            );
+            let welcome = crate::protocol::ServerMessage::Welcome {
+                version: 22,
+                encoding: crate::protocol::RenderEncoding::TerminalAnsi,
+                error: None,
+            };
+            let _ = crate::protocol::write_message(&mut stream, &welcome);
+            // Hang up right after the Welcome frame, without reading
+            // the AttachTerminal follow-up: the client's buffered read
+            // of Welcome still completes, and by its AttachTerminal
+            // write the close has propagated, so that write fails with
+            // EPIPE inside attach_terminal — the outer Err arm runs
+            // (a fully dead socket fails even earlier, at connect).
+            drop(stream);
+        });
+        let client = BackendClient::new("/nonexistent.sock", &path);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Attach;
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+        assert!(
+            app.error.as_deref().is_some_and(|e| e.contains("pipe")),
+            "mid-stream death surfaces the send error, got {:?}",
+            app.error
+        );
+    }
+
+    #[test]
+    fn attach_key_send_input_success_sets_the_status() {
+        // Line 4095: the Ok arm of the send chain. The fixture answers
+        // the whole chain (Hello, Welcome, AttachTerminal, Input,
+        // Detach) so every client write lands on a live socket.
+        // The Err arm of this chain is not coverable here — see the
+        // coverage note at the send-chain `if let Err` in
+        // handle_attach_key for why no deterministic drop point
+        // reaches it.
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        let path = crate::backend_client::unique_test_path("herdr-tui-attach-ok");
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        // Blocking accept: the client always connects inside handle_key,
+        // so accept just parks until it lands. The nonblocking-accept
+        // trick from the dying-peer fixture is wrong here — the accepted
+        // stream inherits the listener's nonblocking mode on macOS, every
+        // read would return WouldBlock instantly, and the thread would
+        // drop the stream mid-chain. unwrap is safe for the same reason
+        // the listener never closes before the connection arrives.
+        std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let max = crate::backend_client::MAX_TUI_TERMINAL_FRAME_SIZE;
+            let _ = crate::protocol::read_message::<_, crate::protocol::ClientMessage>(
+                &mut stream,
+                max,
+            );
+            let welcome = crate::protocol::ServerMessage::Welcome {
+                version: 22,
+                encoding: crate::protocol::RenderEncoding::TerminalAnsi,
+                error: None,
+            };
+            let _ = crate::protocol::write_message(&mut stream, &welcome);
+            let _ = crate::protocol::read_message::<_, crate::protocol::ClientMessage>(
+                &mut stream,
+                max,
+            );
+            let _ = crate::protocol::read_message::<_, crate::protocol::ClientMessage>(
+                &mut stream,
+                max,
+            );
+            let _ = crate::protocol::read_message::<_, crate::protocol::ClientMessage>(
+                &mut stream,
+                max,
+            );
+        });
+        // The api side wires to `fake_backend_socket` so the post-send
+        // refresh_tail lands its pane.read on a live server: the Ok arm
+        // asserts error stays empty, and a dead api socket would set an
+        // ENOENT error here even though the send chain itself succeeded.
+        let (api_socket, _stop) = crate::tui::tests::fake_backend_socket();
+        let client = BackendClient::new(api_socket, &path);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Attach;
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+        assert_eq!(app.status, "sent input", "send chain landed on the Ok arm");
+        assert!(
+            app.error.is_none(),
+            "no error on the happy path, got {:?}",
+            app.error
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn view_pane_split_focus_id_missing_from_snapshot_falls_back() {
+        // Coverage note (view_pane's inner find-else brace, line 4276):
+        // structurally unreachable — focused_pane_id only answers ids it
+        // has already verified against snapshot.panes (split_focus arm
+        // and leaf scan both filter on it, selected_pane comes from the
+        // snapshot), so the find here always succeeds when reached.
+        // This test pins the fallback contract the comment describes:
+        // a vanished pane id resolves through the tree to a live pane.
+        let mut app = two_pane_split_app();
+        assert_eq!(app.view_pane().map(|p| p.id.as_str()), Some("pane_1"));
+        // Focus pane_2 is missing from the snapshot (truncated below),
+        // so focused_pane_id's leaf scan picks pane_1 instead.
+        app.split_focus = Some("pane_2".to_string());
+        app.snapshot.panes.truncate(1);
+        assert_eq!(app.view_pane().map(|p| p.id.as_str()), Some("pane_1"));
+    }
+
+    #[test]
+    fn lens_deepen_growth_reenters_the_scroll_loop() {
+        // Line 4063 (the loop's re-iteration after a growing deepen):
+        // the socket backend answers pane.read with a full 2001-line
+        // history, so the first deepen grows the buffer, the loop runs
+        // a second pass, and the small delta then lands inside the
+        // grown window (target <= max) instead of spinning.
+        let (socket, _stop) = crate::tui::tests::fake_backend_socket_with_pane_history(2001);
+        let client = BackendClient::new(socket.clone(), socket.clone());
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot = crate::tui::tests::fixture_snapshot();
+        app.screen = TuiScreen::Terminal;
+        app.lens.active = true;
+        app.pane_history = vec!["l1".into(), "l2".into()];
+        app.pane_history_exhausted = false;
+        app.scroll_lens_up(50);
+        assert!(
+            app.lens.scroll_up > 0,
+            "scroll moved within the grown window"
+        );
+        assert!(
+            app.pane_scrollback_lines().len() > 2,
+            "deepen grew the history"
+        );
+        let _ = std::fs::remove_file(&socket);
     }
 }

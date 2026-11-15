@@ -513,12 +513,27 @@ mod coverage_tests {
 
     #[test]
     fn run_content_search_append_expands_the_file_list() {
-        // One-shot server answers both the fresh search and the append.
+        // The reader's defensive arms: connection 0 hangs up mid-
+        // headers (EOF break), connection 1 carries a body
+        // (read_exact), connections 2 and 3 are the fresh search and
+        // the append. After those four the thread self-flips its
+        // listener nonblocking so the next accept returns WouldBlock
+        // and the Err arm runs.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             use std::io::{BufRead as _, Read as _, Write as _};
-            for round in 0..2 {
+            // Open-ended: after the four expected connections the
+            // thread flips its own listener nonblocking between
+            // accept calls, so the next accept returns WouldBlock and
+            // the Err arm runs. The flip must happen inside the
+            // thread: a parked accept never re-checks the flag, and
+            // an external flip would deadlock the join below.
+            let mut round = 0usize;
+            loop {
+                if round == 4 {
+                    let _ = listener.set_nonblocking(true);
+                }
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
@@ -546,19 +561,29 @@ mod coverage_tests {
                 if content_length > 0 {
                     reader.read_exact(&mut payload).unwrap();
                 }
+                if round < 2 {
+                    // Probes get no answer: 0 already hung up, 1
+                    // delivered a bodied request and is dropped.
+                    round += 1;
+                    continue;
+                }
+                // Rounds 2 and 3 are the two real responses; index
+                // back so the fresh search is truncated and the
+                // append closes.
+                let served = round - 2;
                 let body = json!({
                     "files": [{
-                        "path": format!("f{round}.txt"),
-                        "name": format!("f{round}.txt"),
+                        "path": format!("f{served}.txt"),
+                        "name": format!("f{served}.txt"),
                         "chunks": [],
-                        "truncated": round == 0,
+                        "truncated": served == 0,
                         "total_files": 2,
                         "total_matches": 2
                     }],
                     "total_files": 2,
                     "total_matches": 2,
                     "visited": 10,
-                    "truncated": round == 0
+                    "truncated": served == 0
                 })
                 .to_string();
                 write!(
@@ -568,8 +593,28 @@ mod coverage_tests {
                     body
                 )
                 .unwrap();
+                round += 1;
             }
         });
+        // Probe 0: headers without the blank line; hold so the reader
+        // parks in the header loop before the drop (a pre-accept
+        // close can be discarded from the backlog on macOS).
+        use std::io::Write as _;
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Probe 1: a bodied request so read_exact drains a payload.
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         let api = WebApiClient::new("127.0.0.1", port);
         let mut explorer = FileExplorer::new("/repo");
         explorer.filter = "needle".to_string();
@@ -583,6 +628,112 @@ mod coverage_tests {
         assert_eq!(explorer.content_search.files.len(), 2);
         assert_eq!(explorer.content_search.expanded, vec![false, true]);
         assert!(explorer.content_search.done, "untruncated append closes");
+        // The thread self-flipped after connection 4: it exits through
+        // the accept-Err arm, so the join returns instead of leaking.
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn run_content_search_survives_a_probe_and_a_bodied_request() {
+        // The reader's defensive arms: connection 0 hangs up mid-headers
+        // (EOF break), connection 1 carries a real Content-Length + body
+        // (read_exact), connection 2 is the real content-search GET.
+        // After those three the thread self-flips its listener
+        // nonblocking so the next accept returns WouldBlock and the
+        // Err arm runs.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            use std::io::{BufRead as _, Read as _, Write as _};
+            let mut kind = 0usize;
+            loop {
+                if kind == 3 {
+                    let _ = listener.set_nonblocking(true);
+                }
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut payload).unwrap();
+                }
+                if kind < 2 {
+                    // Probes get no answer: connection 0 already hung
+                    // up (EOF break fired), connection 1 delivered a
+                    // well-formed bodied request and is dropped.
+                    kind += 1;
+                    continue;
+                }
+                let body = json!({
+                    "files": [],
+                    "total_files": 0,
+                    "total_matches": 0,
+                    "truncated": false
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+                kind += 1;
+            }
+        });
+        // Probe 0: headers without the blank line; the hold ensures
+        // the server parks in the header loop before the drop, so the
+        // next read_line returns 0 (EOF break). An immediate close can
+        // be discarded from the backlog pre-accept on macOS.
+        use std::io::Write as _;
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nX-Hang: up")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Probe 1: a well-formed bodied request so read_exact consumes
+        // a real payload.
+        {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe
+                .write_all(b"POST /probe HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.filter = "needle".to_string();
+        run_content_search(&mut explorer, &api, false).unwrap();
+        assert_eq!(explorer.content_search.files.len(), 0);
+        assert!(
+            explorer.content_search.done,
+            "empty untruncated result closes"
+        );
+        // The thread self-flipped after connection 3: it exits through
+        // the accept-Err arm, so the join returns instead of leaking.
+        handle.join().unwrap();
     }
 
     #[test]
