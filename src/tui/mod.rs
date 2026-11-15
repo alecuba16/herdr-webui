@@ -99,7 +99,10 @@ fn help_max_scroll() -> usize {
 /// off (the default); the read never blocks startup. Asymmetry kept on
 /// purpose: the webui toggle edits localStorage, this flag edits the
 /// shared settings file, until the webui mirrors the key over.
-pub(crate) fn tui_settings_path() -> std::path::PathBuf {
+/// Resolve the shared settings-file path. Public so the bin target's
+/// drift-guard test can pin it against server_settings_path (C3):
+/// the TUI and the server must never disagree on the file.
+pub fn tui_settings_path() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
         std::path::PathBuf::from(dir).join("herdr-webui/webui-settings.json")
     } else {
@@ -231,7 +234,7 @@ impl FooterContext {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · T replays tour · type filters · j/k scrolls ",
             Self::TourOverlay => " j/Enter next step · k back · Esc closes ",
-            Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::SettingsOverlay => " t theme · p passthrough · Esc closes ",
             Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
             Self::BranchPicker => {
                 " Enter switch/worktree · j/k moves · type filters or creates · Esc closes "
@@ -269,7 +272,7 @@ impl FooterContext {
                 " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
             }
             Self::TerminalMain => {
-                " Enter attach · . / , focus sidebar · Shift+L chat lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
+                " Enter attach · Ctrl+B . / , focus sidebar · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
             Self::TerminalMainSplit => {
                 " hjkl walk tiles · Ctrl+j/k scroll · Enter attach · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ? help "
@@ -314,7 +317,7 @@ impl FooterContext {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · T replays tour · type filters · j/k scrolls ",
             Self::TourOverlay => " j/Enter next step · k back · Esc closes ",
-            Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::SettingsOverlay => " t theme · p passthrough · Esc closes ",
             Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
             Self::BranchPicker => " Enter switch/worktree · j/k moves · type filters or creates · Esc closes ",
             Self::SearchPalette => " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help ",
@@ -331,7 +334,7 @@ impl FooterContext {
             Self::FileEdit => " Ctrl-S save · Esc stop · Ctrl+B ? help ",
             Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
             Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
-            Self::TerminalMain => " Enter attach · . , focus sidebar · Ctrl+B ? help ",
+            Self::TerminalMain => " Enter attach · Ctrl+B . , focus sidebar · Ctrl+B ? help ",
             Self::TerminalMainSplit => " hjkl walk · Ctrl+j/k scroll · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
             Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",

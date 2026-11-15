@@ -8942,11 +8942,11 @@ fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
     let main = draw(&app, 160, 24);
     assert!(main.contains("Enter attach"), "main hint keeps attach");
     assert!(
-        main.contains("focus sidebar"),
-        "main hint tells how to reach the lists"
+        main.contains("Ctrl+B . / , focus sidebar"),
+        "main hint tells the chord that walks focus, not dead plain keys"
     );
     assert!(
-        main.contains("chat lens"),
+        main.contains("Shift+L lens"),
         "main hint names the lens shortcut"
     );
     assert!(
@@ -13707,4 +13707,113 @@ fn git_cleanup_render_marks_the_marked_rows_and_tab_bar_skips_an_empty_cwd() {
     app.snapshot.workspaces[0].cwd = String::new();
     let drawn = draw(&app, 120, 30);
     assert!(drawn.contains("Shell"), "tab bar still renders");
+}
+
+#[test]
+fn settings_overlay_multi_row_value_fits_without_clipping_the_hints() {
+    // H1 regression: the overlay height used to grow +1 per wrapping
+    // VALUE, not per wrapped ROW, so a value folding across 3 rows
+    // clipped the third row and pushed the hint lines off. A socket
+    // transport base URL folds to 3 rows at a 64-col overlay.
+    let mut app = app_with_snapshot();
+    app.web_api =
+        crate::tui::web_api::WebApiClient::from_backend_socket("/tmp/definitely-not-here.sock");
+    app.git_panel.cwd = String::new();
+    app.file_explorer.cwd = String::new();
+    app.mode = TuiMode::Settings;
+
+    // Row 1 and row 2 of the folded base URL: the socket path is
+    // longer than one value row, both tail chunks must render.
+    let drawn = draw(&app, 80, 30);
+    assert!(
+        drawn.contains("socket://"),
+        "first row of the folded base URL renders"
+    );
+    assert!(
+        drawn.contains("definitely-not-here.sock"),
+        "last row of the folded base URL renders: no clip"
+    );
+    // The hint line must survive the wrapped rows.
+    assert!(
+        drawn.contains("t theme"),
+        "settings hint renders below the wrapped value"
+    );
+    assert!(
+        drawn.contains("Esc closes"),
+        "settings overlay border renders after the wrap"
+    );
+}
+
+#[test]
+fn footer_counts_wide_chars_by_display_width_when_shrinking() {
+    // H2 regression: the hint budget used chars().count(), so a wide
+    // (CJK) status line undercounted its columns and the footer could
+    // overflow or misbudget the status slot.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+    // 4 CJK chars = 8 display columns; chars().count() says 4.
+    app.status = "端末の状態".to_string();
+
+    let drawn = draw(&app, 60, 24);
+    // The footer paints the whole status without being cut short by a
+    // char-count budget, and the wrap splits it into display-width
+    // rows (no ragged half-width cell from a wrong budget).
+    assert!(
+        drawn.contains("端末"),
+        "wide status text renders on the chrome line"
+    );
+
+    // Narrower than label + status + minimum hint: the hint shrinks
+    // by display width and never overflows past the last column, so
+    // the drawn footer line cannot spill the wide chars off-screen.
+    let narrow = draw(&app, 60, 24);
+    assert!(
+        narrow.contains("端末"),
+        "wide status still renders at narrow width"
+    );
+    assert!(
+        narrow.contains("? help"),
+        "the discovery tail survives display-width shrinking"
+    );
+}
+
+#[test]
+fn chord_echo_writes_the_chord_and_label_then_a_report_replaces_it() {
+    // B5: a fired prefix chord writes "Ctrl+B <key> -> <label>" into
+    // the status slot; any later reporting action owns the line again.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+
+    // Ctrl+B w: opens the worktree overlay, which reports its status.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert!(
+        app.status.starts_with("Ctrl+B w -> "),
+        "chord echo lands in the status: {:?}",
+        app.status
+    );
+    assert!(app.status.contains("worktree list"));
+
+    // A second chord whose action stays quiet keeps the echo visible:
+    // the Terminal screen guard (Ctrl+B t on Terminal Navigate) is a
+    // no-op, so only the echo owns the line after it fires.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(
+        app.status, "Ctrl+B t -> terminal",
+        "the quiet action keeps the chord echo on the line"
+    );
+
+    // A subsequent reporting action replaces the echo.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('B')));
+    assert_eq!(app.status, "sidebar hidden");
+    assert!(
+        !app.status.contains("-> "),
+        "the reporting action owns the line after the echo"
+    );
 }

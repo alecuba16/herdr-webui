@@ -330,9 +330,12 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('T'), true) => Some(Shortcut::CreateWorktree),
         (KeyCode::Delete | KeyCode::Backspace, _) => Some(Shortcut::RemoveWorktree),
         (KeyCode::Char('S'), true) => Some(Shortcut::RenameWorkspace),
-        // Settings overlay: webui `settings: KeyS` is plain S. Stash
-        // stays on `4` (webui `stash: Digit4`); the old TUI-only
-        // prefix-`s` stash binding moved aside for parity.
+        // Settings overlay: webui `settings: KeyS` is plain S. Only the
+        // webui desktop map (core.js) still binds Digit4 to stash; the
+        // TUI chord map lost its digit chords in the reduction, so
+        // stash lives in-screen in the Stash view and on Ctrl+B z
+        // (per-file). The old TUI-only prefix-`s` stash binding moved
+        // aside for parity.
         // Webui git `stageAll: KeyG`: prefix G toggles stage all
         // from anywhere (the in-screen Changes `G` stays).
         (KeyCode::Char('G'), true) => Some(Shortcut::GitStageAll),
@@ -425,13 +428,21 @@ pub fn chord_label(shortcut: Shortcut) -> &'static str {
 /// (Ctrl+B ?), the complete reference.
 pub fn prefix_legend(screen: TuiScreen, mode: TuiMode) -> &'static str {
     let split_s = screen == TuiScreen::Terminal && mode == TuiMode::Navigate;
+    // Same context split chord_label applies to m/z: on the Git and
+    // Files screens Ctrl+B m toggles blame and Ctrl+B z stashes, so
+    // the armed legend (what the user reads while the prefix is live)
+    // must name those meanings there; only the Terminal screen keeps
+    // the split move/zoom wording.
+    let git_like = screen == TuiScreen::Git || screen == TuiScreen::Files;
     // Every chord shortcut_for_key can dispatch is named here (the
     // drift-guard test pins that), so no "+N more" tail is needed:
     // the list is exhaustive, `? help` closes it.
-    if split_s {
+    if git_like {
+        "g git · f files · t terminal · w worktrees · n new · s settings · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m blame · Z resize · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · z stash · u unstage · ? help"
+    } else if split_s {
         "g git · f files · t terminal · w worktrees · n new · s split · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m move · Z resize · z zoom · u unstage · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · ? help"
     } else {
-        "g git · f files · t terminal · w worktrees · n new · s settings · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m move · Z resize · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · u unstage · ? help"
+        "g git · f files · t terminal · w worktrees · n new · s settings · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m move · Z resize · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · z stash · u unstage · ? help"
     }
 }
 
@@ -766,6 +777,85 @@ mod tests {
                 "dispatchable {shortcut:?} must document a real chord"
             );
         }
+    }
+
+    #[test]
+    fn every_prefix_chord_appears_in_both_legend_variants() {
+        // Drift guard (b3): the chord_label test only pins the echo
+        // labels; this one pins the armed legend instead. Every chord
+        // shortcut_for_key can dispatch must be named by its key in
+        // BOTH the Terminal (non-split) legend and the git-like
+        // (Git/Files) legend, or the user reads a legend that hides a
+        // live key.
+        let dispatchable: Vec<(char, Shortcut)> = [
+            '?', '/', 'f', 'g', 't', 'r', 'R', 'j', 'k', 'a', 'A', 'p', 'n', 'x', 'X', 'q', 's',
+            'B', '.', ',', 'C', 'L', 'z', 'Z', 'v', 'e', 'E', 'm', ']', '[', 'w', 'T', 'S', 'G',
+            'I', 'P',
+        ]
+        .into_iter()
+        .filter_map(|ch| shortcut_for_key(key(ch)).map(|shortcut| (ch, shortcut)))
+        .collect();
+        assert!(
+            dispatchable.len() > 20,
+            "the chord table must stay populated"
+        );
+        let terminal_legend = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
+        let git_legend = prefix_legend(TuiScreen::Git, TuiMode::Navigate);
+        for (ch, shortcut) in dispatchable {
+            // Keys that share one legend segment (j/k, a/A, ]/[) are
+            // named by the pair token, not a lone-char token.
+            let key_token = match ch {
+                'j' | 'k' => "j/k",
+                'a' | 'A' => "a/A",
+                ']' | '[' => "]/[",
+                '/' => "/",
+                '?' => "?",
+                _ => {
+                    // Segment-leading token (single key or Shift key):
+                    // the char starts its own legend segment.
+                    let token = format!("{ch} ");
+                    assert!(
+                        terminal_legend.contains(&token),
+                        "terminal legend misses {ch} ({shortcut:?})"
+                    );
+                    assert!(
+                        git_legend.contains(&token),
+                        "git legend misses {ch} ({shortcut:?})"
+                    );
+                    continue;
+                }
+            };
+            assert!(
+                terminal_legend.contains(key_token),
+                "terminal legend misses {ch} ({shortcut:?})"
+            );
+            assert!(
+                git_legend.contains(key_token),
+                "git legend misses {ch} ({shortcut:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_legend_names_blame_and_stash_on_git_like_screens() {
+        // b2: on Git/Files screens Ctrl+B m toggles blame and Ctrl+B z
+        // stashes, so the armed legend must say blame/stash there; the
+        // Terminal legend keeps the split move/zoom wording.
+        let git = prefix_legend(TuiScreen::Git, TuiMode::Navigate);
+        let files = prefix_legend(TuiScreen::Files, TuiMode::Navigate);
+        let terminal = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
+        for legend in [git, files] {
+            assert!(legend.contains("m blame"), "git-like legend: {legend}");
+            assert!(legend.contains("z stash"), "git-like legend: {legend}");
+            assert!(!legend.contains("z zoom"), "git-like legend: {legend}");
+            assert!(!legend.contains("m move"), "git-like legend: {legend}");
+        }
+        assert!(terminal.contains("m move"), "terminal legend: {terminal}");
+        assert!(!terminal.contains("z stash"), "terminal legend: {terminal}");
+        // The non-split Terminal variant keeps z for tile zoom only on
+        // the split legend; the plain variant drops it (no split tree).
+        let split = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
+        assert!(split.contains("z zoom"), "split legend: {split}");
     }
 
     #[test]

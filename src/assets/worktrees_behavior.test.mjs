@@ -729,6 +729,16 @@ describe("pure worktree helpers", () => {
     ctx.state.openWorktreeBranches = [];
     assert.equal(ctx.defaultBaseBranch(), "");
   });
+
+  it("defaultBaseBranch falls back to origin/main when local main and master are absent", async () => {
+    const { ctx } = boot();
+    ctx.state.openWorktreeBranches = ["dev", "origin/main"];
+    assert.equal(ctx.defaultBaseBranch(), "origin/main");
+    ctx.state.openWorktreeBranches = ["dev", "origin/main", "main"];
+    assert.equal(ctx.defaultBaseBranch(), "main");
+    ctx.state.openWorktreeBranches = ["dev", "origin/main", "master"];
+    assert.equal(ctx.defaultBaseBranch(), "master");
+  });
 });
 describe("workspace drag and drop ordering", () => {
   function dragBoot() {
@@ -1291,6 +1301,26 @@ describe("closeTab and closeWorkspace variants", () => {
 });
 
 describe("branch option loading and sync helpers", () => {
+  it("syncWorktreeBranchOptions prefills an empty base field with the computed default", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.openWorktreeBaseSuggestion = "";
+    ctx.state.openWorktreeIncludeRemoteBranches = true;
+    ctx.state.openWorktreeBranches = ["dev", "origin/main"];
+    ctx.syncWorktreeBranchOptions(["dev", "origin/main"]);
+    assert.equal(getElement("worktreeNewBase").value, "origin/main");
+    assert.equal(ctx.state.openWorktreeBaseSuggestion, "origin/main");
+  });
+
+  it("syncWorktreeBranchOptions never overwrites a typed base value", async () => {
+    const { ctx, getElement } = boot();
+    ctx.state.openWorktreeBaseSuggestion = "";
+    const input = getElement("worktreeNewBase");
+    input.value = "my-branch";
+    ctx.syncWorktreeBranchOptions(["main", "dev"]);
+    assert.equal(input.value, "my-branch");
+    assert.equal(ctx.state.openWorktreeBaseSuggestion, "");
+  });
+
   it("loadWorktreeBranchOptions skips fetches for a source without a git repo", async () => {
     const { ctx, calls } = boot();
     ctx.state.openWorktreeSource = { cwd: "/repo", repo_root: "" };
@@ -1337,7 +1367,9 @@ describe("branch option loading and sync helpers", () => {
     ctx.state.openWorktreeSource = { cwd: "/repo", repo_root: "/repo" };
     ctx.syncBranchNameFromBase();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(bar.value, "");
+    // The empty base now receives the fetched default (only-when-empty
+    // prefill); with just origin/dev loaded that is origin/dev itself.
+    assert.equal(bar.value, "origin/dev");
     assert.equal(ctx.state.openWorktreeIncludeRemoteBranches, true);
     assert.ok(calls.some((c) => c.path === "/api/git-branches"));
   });

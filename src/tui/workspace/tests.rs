@@ -1275,3 +1275,164 @@ fn worktree_create_prompt_stays_empty_without_source_envelope() {
     assert_eq!(prompt.kind, PromptKind::CreateWorktreePath);
     assert_eq!(prompt.text, "");
 }
+
+#[test]
+fn worktree_default_base_falls_back_to_origin_main_when_local_tiers_miss() {
+    // C1: the desktop defaultBaseBranch tier order is
+    // main > master > origin/main > first returned. Wire the web API
+    // at the fake socket and answer git.branches with a list that
+    // lacks both local tiers so the origin/main tier fires.
+    let (mut app, _stop) = app_with_fake_backend();
+    let (api_socket, stop3) = workspace_fake_socket_with_branches();
+    app.web_api = crate::tui::web_api::WebApiClient::from_backend_socket(api_socket);
+    assert_eq!(
+        app.worktree_default_base().as_deref(),
+        Some("origin/main"),
+        "origin/main is the third tier before the first-branch fallback"
+    );
+    std::mem::forget(stop3);
+
+    // No tier matches: the first branch the API returns wins.
+    let (api_socket, stop4) = workspace_fake_socket_with_branches_first_only();
+    app.web_api = crate::tui::web_api::WebApiClient::from_backend_socket(api_socket);
+    assert_eq!(
+        app.worktree_default_base().as_deref(),
+        Some("topic/first"),
+        "empty tier list falls back to the first branch"
+    );
+    std::mem::forget(stop4);
+}
+
+/// Fake backend whose git.branches reply skips the local main/master
+/// tiers, so only origin/main (and later branches) are candidates.
+fn workspace_fake_socket_with_branches() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    workspace_fake_socket_responding(json!({
+        "branches": [
+            {"name": "topic/first", "current": false},
+            {"name": "origin/main", "current": false},
+            {"name": "vnext", "current": false}
+        ]
+    }))
+}
+
+/// Fake backend whose git.branches reply has no tier candidate at all.
+fn workspace_fake_socket_with_branches_first_only(
+) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    workspace_fake_socket_responding(json!({
+        "branches": [
+            {"name": "topic/first", "current": false}
+        ]
+    }))
+}
+
+/// Clone of workspace_fake_socket with an extra git.branches arm.
+fn workspace_fake_socket_responding(
+    branches: serde_json::Value,
+) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use interprocess::TryClone as _;
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = crate::backend_client::unique_test_path("herdr-workspace-branches");
+    let _ = std::fs::remove_file(&path);
+    let listener = ListenerOptions::new()
+        .name(path.clone().to_fs_name::<GenericFilePath>().unwrap())
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let id = request["id"].clone();
+        let response = match request["method"].as_str().unwrap_or("") {
+            "git.branches" => json!({"id": id, "result": branches}),
+            "session.snapshot" => json!({"id": id, "result": workspace_snapshot()}),
+            method => json!({"id": id, "error": format!("unexpected method {method}")}),
+        };
+        stream
+            .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+    });
+    std::mem::forget(handle);
+    (path, tx)
+}
+
+#[test]
+fn typed_branch_survives_a_base_change_and_reentry() {
+    // C2: the R4 only-when-empty prefill rule. A user-typed branch
+    // value must never be clobbered by a default or re-entry: the
+    // base-first chain seeds the branch prompt only when the branch
+    // is empty or equals the derived default; a typed value survives.
+    let (mut app, _stop) = app_with_fake_backend();
+    let (api_socket, _stop2) = workspace_fake_socket_with_branches();
+    app.web_api = crate::tui::web_api::WebApiClient::from_backend_socket(api_socket);
+
+    // User types a branch at the direct-entry prompt; the base prompt
+    // opens next, prefilled with the tier default (origin/main here).
+    use crate::tui::workspace::{run_prompt, WorkspacePrompt};
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::CreateWorktreeBranch,
+        "my-typed-branch",
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBase);
+    assert_eq!(
+        prompt.text, "origin/main",
+        "the base prompt prefills with the tier default"
+    );
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::DirectBranch(
+            "my-typed-branch".to_string()
+        ))
+    );
+
+    // Accepting the base keeps the typed branch in the chain and the
+    // path prompt opens; the typed value was never clobbered.
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::CreateWorktreeBase,
+        "origin/main",
+    );
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Branch(
+            "origin/main".to_string(),
+            "my-typed-branch".to_string()
+        ))
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreePath);
+
+    // The desktop sync rule seeds the branch name ONLY when empty:
+    // base-first entry with a non-default base seeds the local name,
+    // and re-entry with a typed branch keeps the typed text.
+    app.worktree_create_stage = None;
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::CreateWorktreeBase,
+        "origin/topic",
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBranch);
+    assert_eq!(
+        prompt.text, "topic",
+        "non-default base seeds the branch with its local name"
+    );
+}

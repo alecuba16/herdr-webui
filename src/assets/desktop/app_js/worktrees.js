@@ -152,6 +152,7 @@ function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   state.openWorktreeBranchSourceKey = "";
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
+  state.openWorktreeBaseSuggestion = "";
   el("worktreeDiscoverPath").value = path || "";
   el("worktreeWorkspaceLabel").value = "";
   state.workspaceCreateSuggestedLabel = "";
@@ -217,6 +218,7 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
   el("worktreeNewPullBase").checked = false;
   state.openWorktreeDefaultPath = "";
   state.openWorktreeBaseBranchName = "";
+  state.openWorktreeBaseSuggestion = "";
   state.openWorktreeIncludeRemoteBranches = false;
   state.openWorktreeBranchSourceKey = "";
   syncWorktreeBranchOptions([]);
@@ -338,6 +340,7 @@ function syncWorktreeBranchOptions(branches) {
     ? ""
     : `<option value="Fetch remote branches…"></option>`;
   optionsEl.innerHTML = items + fetchOption;
+  syncWorktreeBaseDefault();
 }
 function worktreeSourceKey(source) {
   return source
@@ -511,7 +514,27 @@ function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];
   if (branches.includes("main")) return "main";
   if (branches.includes("master")) return "master";
+  if (branches.includes("origin/main")) return "origin/main";
   return branches[0] || "";
+}
+// Same never-overwrite rule as the mobile screen (mobile/worktrees.js
+// syncWorktreeCheckoutPath): fill the open-modal base field only when it
+// is empty or still holds our previous suggestion.
+function syncWorktreeBaseDefault() {
+  const input = el("worktreeNewBase");
+  if (!input) return;
+  const next = defaultBaseBranch();
+  const current = input.value.trim();
+  const previous = String(state.openWorktreeBaseSuggestion || "").trim();
+  if (next && (!current || current === previous)) {
+    input.value = next;
+    state.openWorktreeBaseSuggestion = next;
+    return;
+  }
+  if (!next && current && current === previous) {
+    input.value = "";
+    state.openWorktreeBaseSuggestion = "";
+  }
 }
 function syncBranchNameFromBase() {
   const base = el("worktreeNewBase").value.trim(),

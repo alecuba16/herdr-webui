@@ -2085,9 +2085,9 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let hint_budget = area
         .width
         .saturating_sub(label_width as u16)
-        .saturating_sub(prefix.chars().count() as u16)
+        .saturating_sub(prefix.width() as u16)
         .saturating_sub(24) as usize;
-    let help = if help.chars().count() <= hint_budget {
+    let help = if help.width() <= hint_budget {
         help.to_string()
     } else if app.prefix.is_armed() {
         // Armed: `help` is already the legend, trim it in place instead
@@ -2098,7 +2098,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         // segment protected): it names more actions than the compact
         // twin, so prefer it whenever a couple of trailing actions fit.
         let trimmed = fit_hint(help, hint_budget);
-        if trimmed.chars().count() <= hint_budget {
+        if trimmed.width() <= hint_budget {
             trimmed
         } else {
             // Even the shrunk hint overflows: fall back to the compact
@@ -2136,7 +2136,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     } else {
         split_tiles::mode_hint(app).unwrap_or(help)
     };
-    let used = label_width + help.chars().count() + prefix.chars().count();
+    let used = label_width + help.width() + prefix.width();
     let status_budget = area.width.saturating_sub(used as u16) as usize;
     // The status/error slot wraps onto the rows the layout can spare
     // instead of one truncated line: a long backend error was the one
@@ -2185,7 +2185,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
 fn fit_hint(hint: &str, budget: usize) -> String {
     let segments: Vec<&str> = hint.trim().split(" · ").collect();
     let joined = format!(" {} ", segments.join(" · "));
-    if joined.chars().count() <= budget {
+    if joined.width() <= budget {
         return joined;
     }
     // The discovery tail is protected: wherever the hint places it, it
@@ -2203,16 +2203,27 @@ fn fit_hint(hint: &str, budget: usize) -> String {
             candidate.push(discovery);
         }
         let joined = format!(" {} ", candidate.join(" · "));
-        if joined.chars().count() <= budget {
+        if joined.width() <= budget {
             return joined;
         }
     }
     // Only the discovery segment fits (very narrow terminal): keep its
     // end, which carries the help hint itself.
     let tail_line = format!(" {discovery} ");
-    if tail_line.chars().count() > budget {
-        let skip = tail_line.chars().count().saturating_sub(budget);
-        tail_line.chars().skip(skip).collect()
+    if tail_line.width() > budget {
+        // Column-based skip, not char-based: a wide char counts for
+        // two columns, so dropping its char would overshoot.
+        let mut kept_width = 0usize;
+        let mut kept = String::new();
+        for ch in tail_line.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if kept_width + ch_width > budget {
+                break;
+            }
+            kept_width += ch_width;
+            kept.push(ch);
+        }
+        kept
     } else {
         tail_line
     }
@@ -2775,8 +2786,10 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         // chip off the edge with no marker.
         let chip_width = format!("  {} · running ", row.backend_label).width() + 4;
         let name_budget = (rect.width.saturating_sub(chip_width as u16)).max(8) as usize;
+        // The active row paints a 2-column check prefix; budget for it
+        // or the prefix plus the truncated name pushes the chip out.
         let title = if active {
-            format!("✓ {}", truncate(&row.name, name_budget))
+            format!("✓ {}", truncate(&row.name, name_budget.saturating_sub(2)))
         } else {
             truncate(&row.name, name_budget)
         };
@@ -2826,8 +2839,11 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
     let value_budget = (rect.width.saturating_sub(2 + 16 + 2)).max(8) as usize;
     let wrapped_extra = [app.web_api.base_url(), git_cwd.clone(), files_cwd.clone()]
         .iter()
-        .filter(|value| value.width() > value_budget)
-        .count() as u16;
+        // Count the extra ROWS, not the wrapping values: a value that
+        // folds across 3 rows needs 2 extra rows of height, so the
+        // per-value +1 undercounted and the third row clipped.
+        .map(|value| wrap_plain(value, value_budget).len().saturating_sub(1))
+        .sum::<usize>() as u16;
     let rect = {
         let height = (13 + wrapped_extra).min(area.height);
         Rect::new(
