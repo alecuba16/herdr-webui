@@ -6090,6 +6090,60 @@ describe("app bundle load", () => {
     equal(state.snapshotBootstrap, true);
   });
 
+  it("applySessionSnapshot adopts the unfiltered id maps from the snapshot", () => {
+    const ctx = context();
+    runSource(ctx);
+    // The server-side enrichment (src/main.rs enrich_session_snapshot)
+    // ships full id -> row maps built from the UNFILTERED arrays: the
+    // pane tree stores bare tab ids and resolves them through these maps
+    // when the workspace filter dropped the rows. This pins the adoption
+    // lines in applySessionSnapshot; the consumers (pane strips, picker,
+    // prune) have their own coverage with the maps injected by fixture.
+    const adopted = vm.runInContext(
+      `const __applied = applySessionSnapshot({ result: {
+        snapshot: {
+          workspaces: [{ workspace_id: "ws1", label: "repo", cwd: "/repo" }],
+          tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }],
+          panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }],
+          agents: [],
+        },
+        tab_labels_by_id: { t1: "Shell", t2: "deploy" },
+        tabs_by_id: { t2: { workspace_id: "ws2", tab_id: "t2", label: "deploy" } },
+        panes_by_id: { t2: [{ workspace_id: "ws2", tab_id: "t2", pane_id: "p2" }] },
+      } });
+      JSON.stringify({
+        applied: __applied,
+        ws: state.ws,
+        tabs: state.tabsById,
+        panes: state.panesById,
+        labels: state.tabLabelsById,
+      })`,
+      ctx,
+    );
+    const parsed = JSON.parse(adopted);
+    equal(parsed.tabs.t2.workspace_id, "ws2", "tabs_by_id lands in state");
+    equal(parsed.panes.t2[0].pane_id, "p2", "panes_by_id lands in state (id -> rows)");
+    equal(parsed.labels.t2, "deploy", "tab_labels_by_id still adopted");
+
+    // Older server: the maps are absent and the state falls back to null,
+    // the documented contract for consumers.
+    const legacy = vm.runInContext(
+      `applySessionSnapshot({ result: {
+        snapshot: {
+          workspaces: [{ workspace_id: "ws1", label: "repo", cwd: "/repo" }],
+          tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }],
+          panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }],
+          agents: [],
+        },
+      } });
+      JSON.stringify({ tabs: state.tabsById, panes: state.panesById })`,
+      ctx,
+    );
+    const legacyParsed = JSON.parse(legacy);
+    equal(legacyParsed.tabs, null, "tabs_by_id absent on an older server: null");
+    equal(legacyParsed.panes, null, "panes_by_id absent on an older server: null");
+  });
+
   it("falls back to legacy calls when the snapshot is unusable", async () => {
     const ctx = context();
     const calls = [];

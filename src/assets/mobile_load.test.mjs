@@ -499,6 +499,12 @@ function context(pathname = "/", options = {}) {
               // unfiltered tabs array. Tests opt in via the tabLabelsById
               // fixture; null keeps the legacy fallback path.
               tab_labels_by_id: optionValue("tabLabelsById", null),
+              // Full id -> row maps the wrapper builds from the unfiltered
+              // arrays (same contract as the desktop client). Tests opt in
+              // via the tabsById / panesById fixtures; null keeps the
+              // legacy fallback path.
+              tabs_by_id: optionValue("tabsById", null),
+              panes_by_id: optionValue("panesById", null),
             },
           }),
         };
@@ -1473,6 +1479,56 @@ describe("mobile bundle load", () => {
       vm.runInContext("HerdrMobileAppDeps.state.workspacesById", ctx),
       null,
       "legacy refresh must null the sibling workspaces map too",
+    );
+  });
+
+  it("adopts the unfiltered id maps from the snapshot and nulls them on legacy", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabsById: { "w2:t2": { workspace_id: "w2", tab_id: "w2:t2", label: "deploy" } },
+      panesById: { "w2:t2": [{ workspace_id: "w2", tab_id: "w2:t2", pane_id: "w2:p2" }] },
+    });
+    runSource(ctx);
+    await ctx.HerdrMobile.refresh();
+
+    // Same contract as the desktop client: the wrapper ships full id ->
+    // row maps built from the unfiltered arrays, the snapshot adopt them
+    // verbatim, and an older server (maps absent) nulls them so the
+    // consumers fall back to the local arrays.
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.tabsById['w2:t2'].label", ctx),
+      "deploy",
+      "tabs_by_id lands in state",
+    );
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.panesById['w2:t2'][0].pane_id", ctx),
+      "w2:p2",
+      "panes_by_id lands in state (id -> rows)",
+    );
+
+    // Older server: a snapshot without the maps nulls any stale copy,
+    // never leaves the previous refresh's rows behind.
+    ctx.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          workspaces: [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
+          tabs: [{ workspace_id: "w1", tab_id: "t1", number: 1 }],
+          panes: [{ workspace_id: "w1", tab_id: "t1", pane_id: "p1" }],
+          agents: [],
+        },
+      }),
+    });
+    await ctx.HerdrMobile.refresh();
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.tabsById", ctx),
+      null,
+      "snapshot without tabs_by_id nulls the stale map",
+    );
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.panesById", ctx),
+      null,
+      "snapshot without panes_by_id nulls the stale map",
     );
   });
 
