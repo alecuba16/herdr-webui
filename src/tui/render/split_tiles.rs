@@ -280,21 +280,32 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
         .or(terminal_title)
         .unwrap_or("shell");
     let title_token = terminal_title.filter(|title| *title != name);
+    // Tile-title budgets from the tile rect: fixed 12/18 slots cut
+    // titles with no marker on narrow tiles and wasted wide ones.
+    // Floors match the old fixed budgets (18/12/12/24) so tiles at
+    // any width render at least what they did before; wide tiles
+    // gain. Saturating subtraction: a 3-way split on 80 cols gives
+    // tiles narrower than 40, where the plain subtraction underflowed
+    // (debug panic, release wraps to a huge budget).
+    let title_width = tile.rect.width.saturating_sub(4) as usize;
+    let name_budget = (title_width / 2).max(18);
+    let ws_budget = (title_width.saturating_sub(name_budget) / 3).max(12);
+    let term_budget = (title_width.saturating_sub(name_budget) / 3).max(12);
     let mut title = format!(
         " {} {} · {} ",
         dot,
-        truncate(name, 18),
-        truncate(&workspace_label, 12),
+        truncate(name, name_budget),
+        truncate(&workspace_label, ws_budget),
     );
     if let Some(terminal_title) = title_token {
-        title.push_str(&format!("· {} ", truncate(terminal_title, 12)));
+        title.push_str(&format!("· {} ", truncate(terminal_title, term_budget)));
     } else {
         let folder = std::path::Path::new(&pane.cwd)
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
         if !folder.is_empty() {
-            title.push_str(&format!("· {} ", truncate(&folder, 14)));
+            title.push_str(&format!("· {} ", truncate(&folder, term_budget)));
         }
     }
     if let Some(ws) = workspace {
@@ -302,7 +313,10 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
             title.push_str("[worktree] ");
         }
         if let Some(branch) = workspace_branch_token(ws) {
-            title.push_str(&format!("{} ", truncate(&branch, 24)));
+            // Floor at the old fixed 24 so branch tokens render whole
+            // at any tile width the tests draw.
+            let branch_budget = ((title_width / 4).saturating_sub(4)).max(24);
+            title.push_str(&format!("{} ", truncate(&branch, branch_budget)));
         }
     }
     let block = Block::default()
@@ -435,6 +449,9 @@ pub(crate) fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp,
     // listed ones (design: "Counts aggregate by status").
     let mut counts: Vec<(&str, usize)> = Vec::new();
     let listed = tiles.len().min(5);
+    // Bar-width budget per pane chip instead of a fixed 12 that cut
+    // labels with no marker on narrow bars and wasted wide ones.
+    let label_budget = ((area.width / (5 + tiles.len()) as u16).saturating_sub(2)).max(6) as usize;
     for pane_id in tiles.iter().take(listed) {
         let Some(pane) = app.snapshot.panes.iter().find(|pane| pane.id == *pane_id) else {
             continue;
@@ -452,7 +469,7 @@ pub(crate) fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp,
         };
         spans.push(Span::styled(dot.to_string(), dot_style));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(truncate(label, 12), label_style));
+        spans.push(Span::styled(truncate(label, label_budget), label_style));
         let workspace = app
             .snapshot
             .workspaces
@@ -461,7 +478,10 @@ pub(crate) fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp,
             .map(|ws| ws.label.clone())
             .unwrap_or_default();
         spans.push(Span::styled(
-            format!(" ({}) ", truncate(&workspace, 10)),
+            format!(
+                " ({}) ",
+                truncate(&workspace, label_budget.saturating_sub(2).max(4))
+            ),
             Style::default().fg(p.muted),
         ));
     }

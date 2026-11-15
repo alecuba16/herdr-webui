@@ -539,6 +539,31 @@ function syncBranchNameFromBase() {
   state.openWorktreeBaseBranchName = branch;
   syncWorktreeCheckoutPath();
 }
+// Create-modal twin of syncBranchNameFromBase: same never-overwrite rule,
+// its own suggestion state so the two forms never clear each other's
+// drafts. The create modal has no branch list, so the default-base check
+// is the main/master convention instead of defaultBaseBranch().
+function syncCreateWorktreeBranchFromBase() {
+  const base = el("worktreeBase").value.trim(),
+    branchInput = el("worktreeBranch");
+  if (!base) return;
+  const baseBranchName = localWorktreeBranchName(base);
+  if (baseBranchName === "main" || baseBranchName === "master") {
+    if (branchInput.value.trim() === state.createWorktreeBranchFromBase)
+      branchInput.value = "";
+    state.createWorktreeBranchFromBase = "";
+    syncCreateWorktreeCheckoutPath();
+    return;
+  }
+  if (
+    branchInput.value.trim() &&
+    branchInput.value.trim() !== state.createWorktreeBranchFromBase
+  )
+    return;
+  branchInput.value = baseBranchName;
+  state.createWorktreeBranchFromBase = baseBranchName;
+  syncCreateWorktreeCheckoutPath();
+}
 function scheduleWorktreeAutodiscover() {
   clearTimeout(state.openWorktreeAutodiscoverTimer);
   const seconds = Number(options.worktreeAutoDiscoverSeconds) || 0;
@@ -1204,5 +1229,18 @@ async function closeTab(id) {
     }
   } finally {
     closeTabInFlight = false;
+  }
+}
+// Branch-from-base for the create modal: bindings.js owns the form's
+// other listeners, but the base input previously fed nothing, so a
+// non-default base never seeded the branch name. Wired here (same
+// concatenated scope, worktrees.js loads before bindings.js). The
+// typeof guard keeps partial harnesses that load this file without
+// core.js booting.
+if (typeof el === "function") {
+  const worktreeCreateBaseInput = el("worktreeBase");
+  if (worktreeCreateBaseInput) {
+    worktreeCreateBaseInput.addEventListener("input", syncCreateWorktreeBranchFromBase);
+    worktreeCreateBaseInput.addEventListener("change", syncCreateWorktreeBranchFromBase);
   }
 }

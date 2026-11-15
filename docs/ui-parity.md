@@ -33,10 +33,10 @@ known difference, not a bug filed against the desktop build.
 | Notes panel | Full (right sidebar view) | Full (Notes screen) | No |
 | Session manager (built-in/external session picker) | Full (overlay; prefix `Shift+U` or footer button) | Full (Sessions screen with create/cleanup) | Full (Shift+P overlay: switch, launch, close, cleanup, create, reload) |
 | Directory/cwd picker | Full (directory_picker.js modal) | Full (directory_picker.js sheet) | No (paths typed in prompts) |
-| Settings | Full (merged modal + sections rail + search) | Full (screen, rollback chips) | Partial (read-only overlay, theme cycle only) |
+| Settings | Full (merged modal + sections rail + search) | Full (screen, rollback chips) | Partial (overlay: theme cycle, `p` Ctrl+B passthrough toggle persisted to `webui-settings.json`) |
 | Worktree create/open flows | Full | Full | Full (prefix `N` folder-path prompts; prefix `W` browsable worktree overlay with type-to-filter) |
 | Prompt/question cards for blocked agents | Full (draggable card) | Full (bottom sheet) | No (answered in-pane) |
-| Keyboard: prefix chord system (Ctrl+B default) | Full | Partial (no prefix overlay; screen-based navigation) | Full |
+| Keyboard: prefix chord system (Ctrl+B default) | Full; the Terminal prefix passthrough setting can hand the prefix to the shell while the terminal is focused | Partial (no prefix overlay; screen-based navigation) | Full; attached sessions pass Ctrl+B to the shell with the setting on, and `p` in the settings overlay toggles it (shared `webui-settings.json`) |
 | Keyboard: arrow/Enter navigation in search | Full (palette + sidebar search panel) | Full (input keydown handler) | Full (j/k + Enter) |
 | Keyboard: Tab trap in modals | Full (static modals, git modals, directory picker, session manager) | n/a (no Tab trap; sheets close on backdrop) | n/a |
 | Keyboard: Escape closes topmost overlay | Full (cascade incl. session manager, directory picker) | Full (sheets/modals) | Full (Esc backs out) |
@@ -73,8 +73,10 @@ and draggable modals.
 - TUI has no notes panel or directory picker: the terminal surface
   answers prompts by typing paths. The session manager is the
   Shift+P overlay (HTTP surface, same endpoints as the webui).
-- TUI settings overlay is read-only by design; theme cycling is the one
-  live control. Browser-local settings belong to the browser frontends.
+- TUI settings overlay stays minimal by design; theme cycling and the
+  Ctrl+B passthrough toggle (`p`, persisted to the shared
+  `webui-settings.json`) are the live controls. Browser-local settings
+  belong to the browser frontends.
 - Draggable modals are a desktop pointer feature. Mobile equivalents are
   bottom sheets whose handle drag dismisses the sheet (modals.css turns
   backdrops into bottom sheets at <=640px), so the drag helper disables
@@ -145,10 +147,15 @@ and draggable modals.
 
 ## Shortcut parity notes (TUI chord table)
 
-- The TUI prefix table now mirrors the desktop `DEFAULT_WEBUI_SHORTCUTS`
-  and `DEFAULT_GIT_SHORTCUTS` chord for chord: `G` stage-all, `i`
-  focus-file (previously unbound; the cwd picker keeps `Shift+I`), and
-  the 5s prefix arm window matches the desktop prefix overlay timeout.
+- The TUI prefix table mirrors the desktop `DEFAULT_WEBUI_SHORTCUTS`
+  and `DEFAULT_GIT_SHORTCUTS` chord for chord where the webui has a
+  default: `G` stage-all kept, and the 5s prefix arm window matches
+  the desktop prefix overlay timeout. Chords the git screen owns as
+  in-screen keys were dropped from the prefix map (digits `1`-`4`,
+  `b`/`h`/`o` view jumps, `y`/`d` file verbs, `i` focus-file, `0` help);
+  view switching rides `Ctrl+B g` then `Tab`, and `u`/`m`/`z` stay as
+  chords because they have no in-screen key. The statusbar legend is
+  exhaustive: every dispatchable chord is listed, no `+N more` tail.
 - `Shift+P` opens the TUI session manager. The desktop's default chord is
   prefix then `Shift+U` (remappable), so the surfaces meet in the middle:
   both have a chord plus a click entry.

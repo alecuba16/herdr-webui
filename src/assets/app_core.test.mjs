@@ -22,6 +22,8 @@ function productScript(relPath) {
 const require = createRequire(import.meta.url);
 const {
   branchPathSlug,
+  joinPath,
+  worktreeRootForSource,
   normalizeAbsolutePath,
   normalizeOrder,
   normalizeThemeColors,
@@ -210,6 +212,47 @@ describe("branchPathSlug", () => {
   it("uses fallback for empty slugs", () => {
     assert.equal(branchPathSlug("---"), "worktree");
     assert.equal(branchPathSlug(""), "worktree");
+  });
+});
+
+// The shared prefill rule every worktree-create surface follows:
+// <root>/<repo_name>/<branch_slug> with root resolved as user setting
+// > source default > ../worktrees against the source repo root.
+describe("worktreeRootForSource (shared prefill rule)", () => {
+  const source = {
+    repo_root: "/code/app",
+    repo_name: "app",
+    default_worktree_directory: "../wt-src",
+  };
+
+  it("user setting wins over the source default and the convention", () => {
+    assert.equal(
+      worktreeRootForSource(source, "/wt-user"),
+      "/wt-user",
+    );
+  });
+
+  it("source default resolves against the repo root", () => {
+    assert.equal(worktreeRootForSource(source, ""), "/code/wt-src");
+  });
+
+  it("../worktrees is the convention fallback", () => {
+    assert.equal(
+      worktreeRootForSource({ repo_root: "/code/app", repo_name: "app" }, ""),
+      "/code/worktrees",
+    );
+  });
+
+  it("absolute and home roots stay verbatim", () => {
+    assert.equal(worktreeRootForSource(source, "~/wt"), "~/wt");
+    assert.equal(worktreeRootForSource(source, "/abs/wt"), "/abs/wt");
+  });
+
+  it("joinPath assembles the full checkout path", () => {
+    assert.equal(
+      joinPath("/wt-user", "app", branchPathSlug("Feature X/Y")),
+      "/wt-user/app/feature-x-y",
+    );
   });
 });
 

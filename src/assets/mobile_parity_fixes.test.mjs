@@ -1167,3 +1167,246 @@ describe("mobile version footer", () => {
     assert.match(settingsSource, /versionsText \|\| "webui - · backend -"/);
   });
 });
+
+// Worktree-create prefill parity: mobile follows the desktop rule
+// (worktrees.js defaultWorktreeCheckoutPath + syncBranchNameFromBase):
+// <root>/<repo_name>/<branch_slug>, root resolved as user setting >
+// source default > ../worktrees; a non-default base seeds the branch
+// name (origin/x -> x); suggestions never overwrite user edits.
+const mobileWorktreesScript = readScript("./mobile/worktrees.js");
+
+function mobileWorktreesContext({ options = {}, helpers = {}, source = null } = {}) {
+  const state = {
+    screen: "worktrees",
+    ws: null,
+    worktreeDiscoverPath: "",
+    worktreeBranch: "",
+    worktreeBase: "",
+    worktreePullBase: false,
+    worktreeLabel: "",
+    worktreePath: "",
+    worktreeCreateExpanded: false,
+    worktreeLoading: false,
+    worktreeLoadingLabel: "",
+    worktreeError: "",
+    worktreeSource: source,
+  };
+  const calls = { render: 0 };
+  const sandbox = {
+    console,
+    JSON,
+    Object,
+    Array,
+    Math,
+    Number,
+    String,
+    Boolean,
+    Error,
+    Set,
+    Map,
+    Promise,
+    RegExp,
+    encodeURIComponent,
+    document: { getElementById: () => null },
+    HerdrOptions: {
+      read: () => options,
+    },
+    HerdrAppHelpers: Object.assign(
+      {
+        worktreeActivityLabel: () => "Latest commit unknown",
+      },
+      helpers,
+    ),
+  };
+  sandbox.globalThis = sandbox;
+  const ctx = vm.createContext(sandbox);
+  mobileWorktreesScript.runInContext(ctx);
+  const module = ctx.HerdrMobileWorktrees.create({
+    api: async () => ({}),
+    currentSessionBackend: () => "default",
+    destroyTerminal: () => {},
+    escapeHtml: (s) => String(s == null ? "" : s),
+    inputAttrs: () => "",
+    jsArg: (v) => JSON.stringify(v),
+    refresh: () => {},
+    render: () => {
+      calls.render++;
+    },
+    saveSessionSelection: () => {},
+    selectionPath: () => "",
+    state,
+    defaultFolderFn: () => "",
+    confirmFn: async () => false,
+    currentCwdFn: () => "",
+    showScreenFn: () => {},
+    autoCloseWorkspaceFn: () => {},
+  });
+  return { module, state, calls };
+}
+
+const MOBILE_WT_SOURCE = {
+  source_workspace_id: null,
+  source_checkout_path: "/repo/main",
+  repo_name: "app",
+  repo_root: "/repo",
+  default_worktree_directory: "../worktrees",
+};
+
+describe("mobile worktree create prefill parity", () => {
+  it("typing a branch prefills the checkout path with the desktop rule", () => {
+    const { module, state } = mobileWorktreesContext({ source: MOBILE_WT_SOURCE });
+    module.updateField("worktreeBranch", "Feature X/Y");
+    assert.equal(state.worktreePath, "/worktrees/app/feature-x-y");
+    assert.equal(state.worktreeDefaultPath, "/worktrees/app/feature-x-y");
+  });
+
+  it("a blank path no longer means backend default: it is prefilled on discovery", async () => {
+    const { module, state } = mobileWorktreesContext({ source: MOBILE_WT_SOURCE });
+    state.worktreeBranch = "feat-a";
+    state.worktreeDiscoverPath = "/repo";
+    // load() re-syncs after applyResult stamps the source; the api stub
+    // returns an empty envelope, so seed the source directly and call
+    // the same re-sync load() performs.
+    module.applyResult({
+      result: {
+        source: MOBILE_WT_SOURCE,
+        worktrees: [],
+      },
+    });
+    module.updateField("worktreeBranch", "feat-a");
+    assert.equal(state.worktreePath, "/worktrees/app/feat-a");
+    assert.notEqual(state.worktreePath, "");
+  });
+
+  it("the user worktreeDefaultDirectory setting wins over the source default", () => {
+    const { module, state } = mobileWorktreesContext({
+      options: { worktreeDefaultDirectory: "/wt-user" },
+      source: MOBILE_WT_SOURCE,
+    });
+    module.updateField("worktreeBranch", "feat-a");
+    assert.equal(state.worktreePath, "/wt-user/app/feat-a");
+  });
+
+  it("a non-default base seeds the branch name and strips origin/", () => {
+    const { module, state } = mobileWorktreesContext({ source: MOBILE_WT_SOURCE });
+    module.updateField("worktreeBase", "origin/feature-x");
+    assert.equal(state.worktreeBranch, "feature-x");
+    assert.equal(state.worktreePath, "/worktrees/app/feature-x");
+  });
+
+  it("a default base leaves a user-typed branch name alone", () => {
+    const { module, state } = mobileWorktreesContext({ source: MOBILE_WT_SOURCE });
+    module.updateField("worktreeBranch", "my-own-name");
+    module.updateField("worktreeBase", "main");
+    assert.equal(state.worktreeBranch, "my-own-name");
+  });
+
+  it("the seeded branch name clears when the base returns to the default", () => {
+    const { module, state } = mobileWorktreesContext({ source: MOBILE_WT_SOURCE });
+    module.updateField("worktreeBase", "origin/feature-x");
+    assert.equal(state.worktreeBranch, "feature-x");
+    module.updateField("worktreeBase", "main");
+    assert.equal(state.worktreeBranch, "");
+  });
+
+  it("a hand-typed checkout path is never overwritten by the prefill", () => {
+    const { module, state } = mobileWorktreesContext({ source: MOBILE_WT_SOURCE });
+    state.worktreePath = "/custom/path";
+    module.updateField("worktreeBranch", "feat-a");
+    assert.equal(state.worktreePath, "/custom/path");
+  });
+
+  it("the path re-syncs while it still holds the previous generated default", () => {
+    const { module, state } = mobileWorktreesContext({ source: MOBILE_WT_SOURCE });
+    module.updateField("worktreeBranch", "feat-a");
+    assert.equal(state.worktreePath, "/worktrees/app/feat-a");
+    module.updateField("worktreeBranch", "feat-b");
+    assert.equal(state.worktreePath, "/worktrees/app/feat-b");
+  });
+
+  it("a successful create resets the suggestion state along with the fields", async () => {
+    let posted = null;
+    const state = {
+      screen: "worktrees",
+      ws: null,
+      worktreeDiscoverPath: "/repo",
+      worktreeBranch: "feat-a",
+      worktreeBase: "",
+      worktreePullBase: false,
+      worktreeLabel: "",
+      worktreePath: "/worktrees/app/feat-a",
+      worktreeCreateExpanded: false,
+      worktreeLoading: false,
+      worktreeLoadingLabel: "",
+      worktreeError: "",
+      worktreeSource: MOBILE_WT_SOURCE,
+    };
+    const sandbox = {
+      console,
+      JSON,
+      Object,
+      Array,
+      Math,
+      Number,
+      String,
+      Boolean,
+      Error,
+      Set,
+      Map,
+      Promise,
+      RegExp,
+      encodeURIComponent,
+      document: { getElementById: () => null },
+      HerdrOptions: { read: () => ({}) },
+      HerdrAppHelpers: {
+        worktreeActivityLabel: () => "unknown",
+        resolveWorktreeSource: () => ({ workspace_id: null, cwd: "/repo" }),
+        validateWorktreeCreate: () => "",
+        buildWorktreeCreateBody: (input) => ({
+          workspace_id: input.source.workspace_id,
+          cwd: input.source.cwd,
+          branch: input.branch,
+          base: input.base,
+          label: input.label,
+          path: input.path,
+          pull_base: !!input.pullBase,
+        }),
+      },
+    };
+    sandbox.globalThis = sandbox;
+    const ctx = vm.createContext(sandbox);
+    mobileWorktreesScript.runInContext(ctx);
+    const module = ctx.HerdrMobileWorktrees.create({
+      api: async (url, opts) => {
+        posted = JSON.parse(opts.body);
+        return {
+          result: {
+            workspace: { workspace_id: "ws-new" },
+            tab: { tab_id: "t" },
+            root_pane: { pane_id: "p" },
+          },
+        };
+      },
+      currentSessionBackend: () => "default",
+      destroyTerminal: () => {},
+      escapeHtml: (s) => String(s == null ? "" : s),
+      inputAttrs: () => "",
+      jsArg: (v) => JSON.stringify(v),
+      refresh: () => {},
+      render: () => {},
+      saveSessionSelection: () => {},
+      selectionPath: () => "",
+      state,
+      defaultFolderFn: () => "",
+      confirmFn: async () => false,
+      currentCwdFn: () => "",
+      showScreenFn: () => {},
+      autoCloseWorkspaceFn: () => {},
+    });
+    await module.create();
+    assert.equal(posted.path, "/worktrees/app/feat-a");
+    assert.equal(state.worktreePath, "");
+    assert.equal(state.worktreeDefaultPath, "");
+    assert.equal(state.worktreeBranchFromBase, "");
+  });
+});

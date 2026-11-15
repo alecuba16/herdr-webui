@@ -50,9 +50,11 @@ The app has far more focus state that changes which keys do what:
 4. **Sidebar focus is invisible.** The webui has explicit sidebar vs main
    focus (Ctrl+B . / ,). The TUI label shows the screen, not who has
    focus, and the hint stays identical.
-5. **Help tail invariant preserved.** The `Ctrl+B ? help` tail must stay
-   in every hint (v0.4.46 fit_hint machinery already handles narrow
-   widths; new hints just flow through it).
+5. **Help tail invariant preserved.** The `Ctrl+B ? help` tail stays in every
+   hint (the current fit_hint keeps leading segments, folds the rest behind a
+   `+N more` marker, always keeps the help tail, and counts an armed prefix
+   against the hint budget; a fired chord also echoes `<chord> -> <label>` in
+   the status line).
 
 ## Fix plan (this PR)
 

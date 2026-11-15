@@ -395,6 +395,80 @@ fn path_basename(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// The `source` envelope of a `worktree.list` reply, carried from the
+/// browse step to the create-worktree prompt chain. Mirrors the fields
+/// desktop stores in `state.createWorktreeSource` (worktrees.js):
+/// everything the checkout-path default needs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct WorktreeSourceInfo {
+    pub repo_name: String,
+    pub repo_root: String,
+    pub default_worktree_directory: String,
+}
+
+/// Extract the source envelope from a raw `worktree.list` reply.
+/// Returns `None` until both the repo name and the repo root are known,
+/// because a checkout-path default without them would silently point at
+/// the wrong place.
+pub(crate) fn worktree_source_from_response(response: &Value) -> Option<WorktreeSourceInfo> {
+    let field = |key: &str| {
+        response
+            .pointer(&format!("/source/{key}"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let info = WorktreeSourceInfo {
+        repo_name: field("repo_name")?.trim().to_string(),
+        repo_root: field("repo_root")?.trim().to_string(),
+        default_worktree_directory: field("default_worktree_directory")
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    };
+    if info.repo_name.is_empty() || info.repo_root.is_empty() {
+        return None;
+    }
+    Some(info)
+}
+
+/// Webui `worktreeRootForSource` (shared/core.js) minus the settings
+/// tier: the TUI has no `webui-settings.json` reader, so the source's
+/// own default directory wins, then the `../worktrees` convention.
+/// Relative roots resolve against the repo root; `~` and absolute roots
+/// stay verbatim for the backend to expand.
+pub(crate) fn worktree_root_for_source(source: &WorktreeSourceInfo) -> String {
+    let root = if source.default_worktree_directory.is_empty() {
+        "../worktrees"
+    } else {
+        source.default_worktree_directory.as_str()
+    };
+    if root.starts_with('~') || root.starts_with('/') {
+        return root.to_string();
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in source.repo_root.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    for part in root.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
 fn parse_tab(value: &Value) -> TuiTab {
     TuiTab {
         id: value_str(value, &["tab_id"])

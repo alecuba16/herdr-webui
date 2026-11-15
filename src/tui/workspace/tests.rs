@@ -212,43 +212,61 @@ fn pick_mode_enter_descends_folders_and_o_stages() {
 }
 
 #[test]
-fn prefix_shift_t_opens_worktree_branch_prompt_and_chains_to_path() {
+fn prefix_shift_t_opens_worktree_base_prompt_and_chains_branch_path() {
     let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
     let mut app = app_with_snapshot(workspace_snapshot());
 
+    // Base-first entry (Shift+T now mirrors the in-view c handler):
+    // the base prompt opens first; the dead snapshot API means no
+    // default base is prefillable, so it opens empty.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('T')));
     let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBase);
+
+    // Empty base means HEAD and chains into the branch prompt.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Base(String::new()))
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
     assert_eq!(prompt.kind, PromptKind::CreateWorktreeBranch);
 
-    // Empty branch text errors instead of chaining.
+    // Empty branch text re-prompts with an error instead of chaining.
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(app.error.is_some());
-    assert!(app.prompt_input.is_none());
+    assert_eq!(
+        app.prompt_input.as_ref().map(|prompt| prompt.kind),
+        Some(PromptKind::CreateWorktreeBranch)
+    );
+    app.error = None;
 
-    // Typed branch stores the stage and chains into the path prompt.
-    app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('T')));
     for ch in "feature".chars() {
         app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
     }
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Branch("feature".to_string()))
+        Some(WorktreeCreateStage::Branch(
+            String::new(),
+            "feature".to_string()
+        ))
     );
     let prompt = app.prompt_input.as_ref().unwrap();
     assert_eq!(prompt.kind, PromptKind::CreateWorktreePath);
+    assert_eq!(prompt.text, "");
 
-    // Path chains into the base-ref prompt (webui inline form parity:
-    // name, path, base, pull-base).
+    // Empty path re-prompts with an error and keeps the accepted base
+    // and branch staged.
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    // Empty path re-prompts with an error, same contract as the branch
-    // step.
     assert_eq!(app.error.as_deref(), Some("type the checkout path"));
     assert_eq!(
-        app.prompt_input.as_ref().map(|prompt| prompt.kind),
-        Some(PromptKind::CreateWorktreePath)
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Branch(
+            String::new(),
+            "feature".to_string()
+        ))
     );
     app.error = None;
     for ch in "/tmp/checkout".chars() {
@@ -259,25 +277,8 @@ fn prefix_shift_t_opens_worktree_branch_prompt_and_chains_to_path() {
         app.worktree_create_stage,
         Some(WorktreeCreateStage::Path(
             "feature".to_string(),
-            "/tmp/checkout".to_string()
-        ))
-    );
-    let prompt = app.prompt_input.as_ref().unwrap();
-    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBase);
-
-    // Base refs are preserved verbatim and chain into an explicit pull
-    // question (no substring stripping, so refs like
-    // feature/pull-requests survive untouched).
-    for ch in "feature/pull-requests".chars() {
-        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
-    }
-    app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(
-        app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(
-            "feature".to_string(),
             "/tmp/checkout".to_string(),
-            "feature/pull-requests".to_string()
+            String::new()
         ))
     );
     let prompt = app.prompt_input.as_ref().unwrap();
@@ -290,10 +291,10 @@ fn prefix_shift_t_opens_worktree_branch_prompt_and_chains_to_path() {
     assert!(app.error.is_some(), "dead socket fails the create");
     assert_eq!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(
+        Some(WorktreeCreateStage::Path(
             "feature".to_string(),
             "/tmp/checkout".to_string(),
-            "feature/pull-requests".to_string()
+            String::new()
         )),
         "the failed create keeps the staged draft"
     );
@@ -303,7 +304,7 @@ fn prefix_shift_t_opens_worktree_branch_prompt_and_chains_to_path() {
 fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     let mut app = app_with_snapshot(workspace_snapshot());
     // Late-stage draft: branch, path, base staged, pull question open.
-    app.worktree_create_stage = Some(WorktreeCreateStage::Base(
+    app.worktree_create_stage = Some(WorktreeCreateStage::Path(
         "feat".to_string(),
         "/tmp/wt".to_string(),
         "main".to_string(),
@@ -317,7 +318,7 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     assert!(app.error.is_some(), "dead backend socket fails the create");
     assert_eq!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(
+        Some(WorktreeCreateStage::Path(
             "feat".to_string(),
             "/tmp/wt".to_string(),
             "main".to_string()
@@ -332,7 +333,7 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     assert!(app.error.is_some());
     assert!(matches!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(..))
+        Some(WorktreeCreateStage::Path(..))
     ));
 
     // Other answers are not confused with y.
@@ -345,7 +346,7 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     assert!(app.error.is_some());
     assert!(matches!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(..))
+        Some(WorktreeCreateStage::Path(..))
     ));
 
     // A failed create reopens the pull prompt instead of dropping the
@@ -387,7 +388,7 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     );
     assert!(matches!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(..))
+        Some(WorktreeCreateStage::Path(..))
     ));
 
     // Esc from the reopened prompt abandons the create; the staged draft
@@ -396,7 +397,7 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     assert!(app.prompt_input.is_none());
     assert!(matches!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(..))
+        Some(WorktreeCreateStage::Path(..))
     ));
 }
 
@@ -551,7 +552,17 @@ fn workspace_fake_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) 
                 json!({"id": id, "result": {"ok": true}})
             }
             "worktree.list" => {
-                json!({"id": id, "result": {"worktrees": [{"path": "/repo", "branch": "main"}]}})
+                // Source envelope parity with normalize_worktree_response:
+                // the TUI create-prompt default reads repo_name, repo_root,
+                // and default_worktree_directory from here.
+                json!({"id": id, "result": {
+                    "source": {
+                        "repo_name": "herdr-webui",
+                        "repo_root": "/repo",
+                        "default_worktree_directory": "../worktrees"
+                    },
+                    "worktrees": [{"path": "/repo", "branch": "main"}]
+                }})
             }
             "pane.read" => json!({"id": id, "result": {"read": {"text": ""}}}),
             "tab.create" => json!({"id": id, "result": {"tab": {"tab_id": "tab_t"}}}),
@@ -724,36 +735,31 @@ fn round4_workspace_create_path_backend_error() {
             "tabs": [], "panes": [], "agents": []
         }
     }));
-    app.worktree_create_stage = Some(WorktreeCreateStage::Branch("feat".to_string()));
+    app.worktree_create_stage = Some(WorktreeCreateStage::Branch(
+        "main".to_string(),
+        "feat".to_string(),
+    ));
     run_prompt(
         &mut app,
         &WorkspacePrompt::CreateWorktreePath,
         " /checkout ",
     );
-    // The path stages and chains into the base prompt; the backend error
-    // surfaces when the pull step actually calls the create endpoint,
-    // and the staged draft survives the failure.
+    // The path stages and chains into the pull question; the backend
+    // error surfaces when the pull step actually calls the create
+    // endpoint, and the staged draft survives the failure.
     assert!(
         matches!(
             app.worktree_create_stage,
             Some(WorktreeCreateStage::Path(..))
         ),
-        "path stages before the base prompt"
-    );
-    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBase, "main");
-    assert!(
-        matches!(
-            app.worktree_create_stage,
-            Some(WorktreeCreateStage::Base(..))
-        ),
-        "base stages before the pull question"
+        "path stages before the pull question"
     );
     run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "");
     assert!(app.error.is_some());
     assert!(
         matches!(
             app.worktree_create_stage,
-            Some(WorktreeCreateStage::Base(..))
+            Some(WorktreeCreateStage::Path(..))
         ),
         "the failed create keeps the staged draft"
     );
@@ -1113,4 +1119,159 @@ fn worktree_rows_derive_linked_from_source_repo_root() {
     let rows = worktree_rows_from_response(&bare);
     assert_eq!(rows.len(), 1);
     assert!(rows[0].is_linked, "no envelope trusts the row flag");
+}
+
+#[test]
+fn branch_path_slug_matches_the_js_parity_cases() {
+    // Cases from the desktop shared/core.js behavior: lowercase
+    // alphanumerics, one dash per run of anything else, edge dashes
+    // trimmed, "worktree" when nothing survives.
+    assert_eq!(branch_path_slug("Feature/Fix_Login"), "feature-fix-login");
+    assert_eq!(branch_path_slug("feature//x"), "feature-x");
+    assert_eq!(branch_path_slug("Ünicode-Branch"), "nicode-branch");
+    assert_eq!(branch_path_slug(""), "worktree");
+    assert_eq!(branch_path_slug("A--B"), "a-b");
+    assert_eq!(branch_path_slug("a/b/c"), "a-b-c");
+}
+
+#[test]
+fn worktree_root_resolution_follows_the_desktop_tier_order() {
+    // Source default wins over the ../worktrees convention...
+    let source = WorktreeSourceInfo {
+        repo_name: "herdr-webui".to_string(),
+        repo_root: "/repos/herdr-webui".to_string(),
+        default_worktree_directory: "../checkouts".to_string(),
+    };
+    assert_eq!(worktree_root_for_source(&source), "/repos/checkouts");
+    // ...and a relative convention resolves against the repo root.
+    let fallback = WorktreeSourceInfo {
+        repo_name: "herdr-webui".to_string(),
+        repo_root: "/repos/herdr-webui".to_string(),
+        default_worktree_directory: String::new(),
+    };
+    assert_eq!(worktree_root_for_source(&fallback), "/repos/worktrees");
+    // Absolute and ~ roots stay verbatim for the backend to expand.
+    let absolute = WorktreeSourceInfo {
+        repo_name: "r".to_string(),
+        repo_root: "/repos/r".to_string(),
+        default_worktree_directory: "/wt".to_string(),
+    };
+    assert_eq!(worktree_root_for_source(&absolute), "/wt");
+    let home = WorktreeSourceInfo {
+        repo_name: "r".to_string(),
+        repo_root: "/repos/r".to_string(),
+        default_worktree_directory: "~/wt".to_string(),
+    };
+    assert_eq!(worktree_root_for_source(&home), "~/wt");
+}
+
+#[test]
+fn suggested_checkout_path_joins_root_repo_and_slug() {
+    let source = WorktreeSourceInfo {
+        repo_name: "herdr-webui".to_string(),
+        repo_root: "/repos/herdr-webui".to_string(),
+        default_worktree_directory: "../worktrees".to_string(),
+    };
+    assert_eq!(
+        suggested_checkout_path(&source, "feature/login-fix"),
+        "/repos/worktrees/herdr-webui/feature-login-fix"
+    );
+}
+
+#[test]
+fn worktree_source_extraction_requires_name_and_root() {
+    let full = json!({
+        "source": {
+            "repo_name": "herdr-webui",
+            "repo_root": "/repo",
+            "default_worktree_directory": "../worktrees"
+        }
+    });
+    let source = worktree_source_from_response(&full).unwrap();
+    assert_eq!(source.repo_name, "herdr-webui");
+    assert_eq!(source.repo_root, "/repo");
+    assert_eq!(source.default_worktree_directory, "../worktrees");
+
+    // Missing either identity field means no default: the prompt stays
+    // empty rather than guessing a checkout location.
+    let no_name = json!({"source": {"repo_root": "/repo"}});
+    assert!(worktree_source_from_response(&no_name).is_none());
+    let no_root = json!({"source": {"repo_name": "repo"}});
+    assert!(worktree_source_from_response(&no_root).is_none());
+    assert!(worktree_source_from_response(&json!({})).is_none());
+}
+
+#[test]
+fn worktree_create_prompt_prefills_checkout_path_from_source() {
+    // The fake backend's worktree.list reply carries the source
+    // envelope, so the base-first chain prefills every step: branch
+    // seeded from a non-default base, then the desktop checkout path
+    // default.
+    let (mut app, _stop) = app_with_fake_backend();
+    use crate::tui::workspace::{run_prompt, WorkspacePrompt};
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::CreateWorktreeBase,
+        "origin/login",
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBranch);
+    // The web API is dead here (no default base), so any non-empty base
+    // differs from it and seeds the branch with the local name.
+    assert_eq!(prompt.text, "login");
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::CreateWorktreeBranch,
+        "Feature/Login_Fix",
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreePath);
+    assert_eq!(prompt.text, "/worktrees/herdr-webui/feature-login-fix");
+
+    // Esc cancels the prompt. The staged base and branch survive until
+    // the next create opens (both `c` and Shift+T reset the stage
+    // first), the same lifecycle the pre-existing chain test relies on.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+}
+
+#[test]
+fn worktree_create_default_base_leaves_branch_prompt_empty() {
+    // An empty base (HEAD) leaves the branch prompt empty, the desktop
+    // syncBranchNameFromBase rule for the default base branch.
+    let (mut app, _stop) = app_with_fake_backend();
+    use crate::tui::workspace::{run_prompt, WorkspacePrompt};
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBase, "");
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBranch);
+    assert_eq!(prompt.text, "");
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Base(String::new()))
+    );
+}
+
+#[test]
+fn local_worktree_branch_name_strips_remote_prefixes() {
+    assert_eq!(local_worktree_branch_name("origin/feature/x"), "feature/x");
+    assert_eq!(local_worktree_branch_name("upstream/main"), "main");
+    assert_eq!(local_worktree_branch_name("feature/y"), "feature/y");
+    assert_eq!(local_worktree_branch_name("  main  "), "main");
+}
+
+#[test]
+fn worktree_create_prompt_stays_empty_without_source_envelope() {
+    // Dead backend: every suggestion call fails, so the base prompt
+    // opens empty (no default base) and the path prompt opens empty
+    // too, exactly like before the defaults existed.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    use crate::tui::workspace::{run_prompt, WorkspacePrompt};
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBranch, "feature");
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBase);
+    assert_eq!(prompt.text, "");
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBase, "main");
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreePath);
+    assert_eq!(prompt.text, "");
 }

@@ -247,9 +247,10 @@ fn log_two_commit_compare_keys_and_markdown_outline_key() {
         app.git_panel.log_selected,
         vec!["aaa".to_string(), "bbb".to_string()]
     );
-    // c with two selected compares (dead web API: the error surfaces,
-    // but only after the selection guard passed).
-    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    // Enter with two selected compares (dead web API: the error
+    // surfaces, but only after the selection guard passed). The old c
+    // compare moved aside so c is always the commit modal.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(
         app.error
             .as_deref()
@@ -257,7 +258,8 @@ fn log_two_commit_compare_keys_and_markdown_outline_key() {
         "compare hits the API: {:?}",
         app.error
     );
-    // One selected: c keeps the commit-modal meaning (no compare call).
+    // One selected: Enter compares with the parent; c keeps the
+    // commit-modal meaning (no compare call).
     app.error = None;
     app.git_panel.log_selected.truncate(1);
     app.handle_key(KeyEvent::from(KeyCode::Char('c')));
@@ -887,19 +889,24 @@ fn prefix_h_loads_file_history_and_o_returns_to_changes() {
     app.git_panel.file_selected = 0;
     let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
 
-    // Prefix h switches to the History view and fetches the file's
-    // commits; the file-history call fails against the dead loopback API,
-    // proving the history path is taken.
+    // Chord reduction: prefix h/o no longer jump git views (History is
+    // reachable in-screen via the Tab cycle; the file-history arm in
+    // run_shortcut stays for future direct bindings). The reduced keys
+    // must stay inert.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('h')));
-    assert_eq!(app.git_panel.view, GitView::History);
-    assert!(app.error.is_some(), "history fetch must hit the API");
-
-    // Prefix o returns to the Changes view (webui compare shortcut).
-    app.error = None;
+    assert_eq!(
+        app.git_panel.view,
+        GitView::Changes,
+        "h is inert after reduction"
+    );
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('o')));
-    assert_eq!(app.git_panel.view, GitView::Changes);
+    assert_eq!(
+        app.git_panel.view,
+        GitView::Changes,
+        "o is inert after reduction"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1746,42 +1753,34 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
     assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
 
-    // Git views via prefix keys.
+    // Git views: the chord reduction dropped the 1-4/b/l chords, so
+    // view switching rides Ctrl+B g then the in-screen Tab cycle.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('g')));
-    app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('1')));
+    assert_eq!(app.screen, TuiScreen::Git);
     assert_eq!(app.git_panel.view, GitView::Changes);
-    app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('3')));
+    // Tab cycles through the views in-screen.
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Log);
-    app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('4')));
-    assert_eq!(app.git_panel.view, GitView::Stash);
-    app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Branches);
-    app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
-    assert_eq!(app.git_panel.view, GitView::Log);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Stash);
 
-    // Commit modal opens, then amend variant, then the Enter alias.
-    app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('2')));
-    assert!(app.commit_input.is_some());
-    assert!(!app.commit_input.as_ref().unwrap().amend);
-    app.commit_input = None;
+    // Commit modal opens via prefix c; the old prefix 2 and prefix
+    // Enter aliases are gone with the chord reduction.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('c')));
     assert!(app.commit_input.is_some());
+    assert!(!app.commit_input.as_ref().unwrap().amend);
     app.commit_input = None;
+    // Prefix digits no longer dispatch: they cancel quietly.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('2')));
+    assert!(app.commit_input.is_none(), "digit chords are gone");
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(
-        app.commit_input.is_some(),
-        "prefix Enter opens the commit modal"
-    );
-    app.commit_input = None;
+    assert!(app.commit_input.is_none(), "prefix Enter no longer commits");
 
     // Prefix s opens the settings overlay (webui settings: KeyS).
     app.handle_key(ctrl_b);
@@ -1793,14 +1792,15 @@ fn shortcut_dispatch_covers_every_arm() {
     // Unknown prefix key cancels quietly (the `_ => None` arm).
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::F(7)));
-    assert_eq!(app.git_panel.view, GitView::Log);
+    assert_eq!(app.git_panel.view, GitView::Stash);
 
-    // History requires a selected file.
+    // History chord (old h) is gone with the reduction; blame (m) stays.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('h')));
-    assert!(
-        app.error.is_some() || app.git_panel.view == GitView::History,
-        "history either runs or errors"
+    assert_eq!(
+        app.git_panel.view,
+        GitView::Stash,
+        "h no longer jumps views"
     );
 
     // Blame with no selection errors but does not crash.
@@ -1815,6 +1815,9 @@ fn shortcut_dispatch_covers_every_arm() {
     // dead HTTP endpoint surfaces the error, but the overlay intent is
     // still visible before the request fails). The old git-screen
     // Branches view stays reachable through prefix `b`.
+    // Branches view via in-screen Tab from prefix b is gone; the
+    // git screen + Tab cycle covers it. The old prefix-b assertion
+    // became the Tab cycle above.
     app.error = None;
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('v')));
@@ -1825,8 +1828,11 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('b')));
-    assert_eq!(app.screen, TuiScreen::Git);
-    assert_eq!(app.git_panel.view, GitView::Branches);
+    assert_ne!(
+        app.git_panel.view,
+        GitView::Branches,
+        "b no longer jumps views"
+    );
 
     // All git action arms run against the dead API: they must set an
     // error (or status) and never panic. Stage all is a plain
@@ -1836,7 +1842,9 @@ fn shortcut_dispatch_covers_every_arm() {
     app.error = None;
     app.handle_key(KeyEvent::from(KeyCode::Char('G')));
     assert!(app.error.is_some() || !app.status.is_empty());
-    for key in ['y', 'u', 'z'] {
+    // u/z chords stay after the reduction (y is gone: staging rides
+    // the in-screen s key).
+    for key in ['u', 'z'] {
         app.error = None;
         app.handle_key(ctrl_b);
         app.handle_key(KeyEvent::from(KeyCode::Char(key)));
@@ -2415,9 +2423,72 @@ fn navigation_keys_cover_sidebar_move_focus_and_attach() {
     assert_eq!(app.mode, TuiMode::Attach);
     assert_eq!(app.status, "attach mode: Ctrl-G detach");
 
+    // With passthrough on, Ctrl+B skips the prefix feed and falls
+    // through to the attach input path: the prefix never arms, and the
+    // attach status names the shell-bound key.
+    app.terminal_prefix_passthrough = true;
+    app.handle_key(ctrl('g'));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.status,
+        "attach mode: Ctrl-G detach · Ctrl+B goes to the shell"
+    );
+    app.handle_key(ctrl('b'));
+    assert!(
+        !app.prefix.is_armed(),
+        "passthrough keeps Ctrl+B out of the prefix"
+    );
+    // Restore the default and re-check arming still works.
+    app.terminal_prefix_passthrough = false;
+    app.handle_key(ctrl('b'));
+    assert!(app.prefix.is_armed(), "flag off restores the prefix chord");
+    app.prefix.cancel();
+    app.terminal_prefix_passthrough = true;
+
+    // Stale-armed-prefix regression: arming Ctrl+B in Navigate, then
+    // attaching, must cancel the prefix so the next plain key cannot
+    // fire a chord, and Ctrl+B itself reaches the PTY ("sent input")
+    // instead of arming again.
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+    app.terminal_prefix_passthrough = true;
+    app.handle_key(ctrl('b'));
+    assert!(app.prefix.is_armed(), "prefix arms in Navigate");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Attach);
+    assert!(!app.prefix.is_armed(), "attach entry cancels the prefix");
+    let screen_before = app.screen;
+    app.handle_key(KeyEvent::from(KeyCode::Char('g')));
+    assert_eq!(
+        app.screen, screen_before,
+        "stale prefix cannot fire a chord"
+    );
+    app.handle_key(ctrl('b'));
+    assert!(!app.prefix.is_armed(), "Ctrl+B stays bound to the shell");
+    // Reaching the PTY feed means the attach input path ran: either
+    // the input went through ("sent input") or the dead loopback API
+    // surfaced a send/attach error. What must NOT happen is arming.
+    assert!(
+        app.status == "sent input" || app.error.is_some(),
+        "Ctrl+B bytes reach the PTY feed, status={:?} error={:?}",
+        app.status,
+        app.error
+    );
+    app.terminal_prefix_passthrough = false;
+
     // Ctrl-G detaches back to Navigate.
     app.handle_key(ctrl('g'));
     assert_eq!(app.mode, TuiMode::Navigate);
+    // Off attach: passthrough only applies while attached, so Ctrl+B
+    // arms the prefix again even with the flag on.
+    app.handle_key(ctrl('b'));
+    assert!(
+        app.prefix.is_armed(),
+        "outside attach the prefix still arms"
+    );
+    app.prefix.cancel();
+    app.terminal_prefix_passthrough = false;
 
     // In Navigate on the Terminal screen q opens the quit confirmation.
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
@@ -3368,8 +3439,11 @@ fn quit_confirmation_covers_all_quit_paths() {
     app.handle_key(KeyEvent::from(KeyCode::Char('n')));
     assert_eq!(app.mode, TuiMode::Navigate, "cancel restores Navigate");
 
-    // Opened from Attach, cancel restores Attach.
+    // Opened from Attach, cancel restores Attach. Pin the flag: with
+    // the real shared settings on, Ctrl+B would pass to the PTY instead
+    // of arming the quit chord.
     app.mode = TuiMode::Attach;
+    app.terminal_prefix_passthrough = false;
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
     assert_eq!(app.mode, TuiMode::ConfirmQuit);
@@ -3550,7 +3624,7 @@ fn footer_hint_follows_focused_context() {
     for (view, needle) in [
         (GitView::Changes, "J/K hunk"),
         (GitView::Log, "Space mark"),
-        (GitView::Branches, "c create"),
+        (GitView::Branches, "B create"),
         (GitView::Stash, "Enter diff"),
         (GitView::History, "o back to changes"),
         (GitView::Conflicts, "o ours"),
@@ -3662,6 +3736,10 @@ fn footer_hint_survives_narrow_terminals_per_context() {
 #[test]
 fn renders_prefix_armed_footer_and_tiny_screens() {
     let mut app = app_with_snapshot();
+    // Hermeticity: construction reads the real shared settings file,
+    // which an operator may have flipped on; pin the flag so the
+    // Ctrl+B arm below is deterministic on any machine.
+    app.terminal_prefix_passthrough = false;
 
     // Armed prefix shows the "Ctrl+B> " hint in the footer.
     app.mode = TuiMode::Attach;
@@ -5095,6 +5173,75 @@ fn renders_content_search_scroll_empty_cleanup_and_settings_modes() {
 }
 
 #[test]
+fn settings_p_toggle_flips_passthrough_and_round_trips_the_file() {
+    // Env-writing tests share one lock (PR #240 convention): without
+    // it a parallel test can swap XDG_CONFIG_HOME mid-toggle.
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    // The shared settings file lives under XDG_CONFIG_HOME; point it
+    // at a fresh temp dir so the test never touches real user config
+    // and parallel tests cannot collide.
+    let dir = std::env::temp_dir().join(format!(
+        "herdr-tui-settings-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Settings;
+    app.terminal_prefix_passthrough = false;
+
+    // A pre-existing unrelated key must survive the toggle's write.
+    let settings_path = dir.join("herdr-webui/webui-settings.json");
+    std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings_path,
+        serde_json::json!({ "theme": "dark" }).to_string(),
+    )
+    .unwrap();
+
+    // p flips the flag on, persists, and says so in the status.
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert!(app.terminal_prefix_passthrough);
+    assert_eq!(app.status, "ctrl+b passthrough: on");
+    let raw = std::fs::read_to_string(&settings_path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(value["terminalPrefixPassthrough"], serde_json::json!(true));
+    assert_eq!(
+        value["theme"],
+        serde_json::json!("dark"),
+        "unknown keys survive"
+    );
+
+    // Second p flips it off again, same guarantees.
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert!(!app.terminal_prefix_passthrough);
+    assert_eq!(app.status, "ctrl+b passthrough: off");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(value["terminalPrefixPassthrough"], serde_json::json!(false));
+
+    // The reader sees what the writer wrote (round trip): the last
+    // write left the flag off, then an explicit write flips it on.
+    assert!(!crate::tui::tui_terminal_prefix_passthrough());
+    crate::tui::tui_set_terminal_prefix_passthrough(true).unwrap();
+    assert!(crate::tui::tui_terminal_prefix_passthrough());
+
+    // Restore the environment and drop the scratch dir.
+    match prior_xdg {
+        Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn renders_content_search_results_conflicts_cleanup_and_prompt_subjects() {
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Files;
@@ -5226,7 +5373,7 @@ fn round2_constructors_prompt_titles_help_and_refresh_errors() {
     assert_eq!(PromptKind::CreateDirectory.title(), "New directory");
     assert_eq!(
         PromptKind::ReplaceInFile.hint(),
-        "type the replacement, Enter replaces the current match (! = all)"
+        "type the replacement, Enter replaces (! replaces all)"
     );
 
     let opts = TuiOptions::default();
@@ -5525,7 +5672,7 @@ fn round2_shortcuts_git_guards_and_refresh_tail_edges() {
     app.handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT));
     assert_eq!(
         app.prompt_input.as_ref().unwrap().kind,
-        PromptKind::CreateWorktreeBranch
+        PromptKind::CreateWorktreeBase
     );
     app.prompt_input = None;
     app.handle_key(ctrl('b'));
@@ -5551,6 +5698,9 @@ fn round2_shortcuts_git_guards_and_refresh_tail_edges() {
     app.handle_key(KeyEvent::from(KeyCode::Char('B')));
     assert!(app.sidebar_collapsed);
 
+    // The / chord above may leave a palette open; the git section
+    // below needs Navigate for the in-screen keys.
+    app.mode = TuiMode::Navigate;
     app.screen = TuiScreen::Git;
     app.git_panel.view = GitView::Changes;
     app.git_panel.files = vec![GitFileEntry {
@@ -5558,7 +5708,8 @@ fn round2_shortcuts_git_guards_and_refresh_tail_edges() {
         status: GitFileStatus::Unstaged,
     }];
     app.git_panel.file_selected = 0;
-    app.handle_key(ctrl('b'));
+    // In-screen d discards (the old Ctrl+B d chord is gone with the
+    // reduction).
     app.handle_key(KeyEvent::from(KeyCode::Char('d')));
     assert!(app
         .error
@@ -5566,17 +5717,24 @@ fn round2_shortcuts_git_guards_and_refresh_tail_edges() {
         .is_some_and(|err| err.contains("before discarding")));
 
     app.error = None;
-    app.handle_key(ctrl('b'));
-    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
-    assert_eq!(app.git_panel.view, GitView::History);
-    assert!(app.error.is_some());
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    // Tab switching views can trigger a refresh against the dead
+    // socket; what matters is it stays on the git screen without
+    // panicking. History (the old Ctrl+B h jump) is gone.
+    assert_ne!(app.git_panel.view, GitView::History);
+    app.error = None;
 
     app.error = None;
     app.git_panel.view = GitView::Log;
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    // Prefix m blame survives the reduction; the annotated diff lives
+    // in the Changes view, so the view switches there.
     assert_eq!(app.git_panel.view, GitView::Changes);
-    assert!(app.error.is_some());
+    assert!(
+        app.error.is_some(),
+        "prefix m blame stays after the reduction"
+    );
 
     app.snapshot.panes.clear();
     app.pane_tail = vec!["old".to_string()];
@@ -5716,7 +5874,7 @@ fn round3_log_toolbar_prompts_and_prompt_error_paths() {
 
     app.error = None;
     app.git_panel.view = GitView::Branches;
-    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
     assert_eq!(
         app.prompt_input.as_ref().unwrap().kind,
         PromptKind::CreateBranch
@@ -5733,7 +5891,7 @@ fn round3_log_toolbar_prompts_and_prompt_error_paths() {
     app.handle_key(KeyEvent::from(KeyCode::Char('w')));
     assert_eq!(
         app.prompt_input.as_ref().unwrap().kind,
-        PromptKind::CreateWorktreeBranch
+        PromptKind::CreateWorktreeBase
     );
 }
 
@@ -5880,7 +6038,7 @@ fn round3_specific_tui_edges_and_shortcuts() {
 
     app.error = None;
     app.git_panel.view = GitView::Branches;
-    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
     assert_eq!(
         app.prompt_input.as_ref().unwrap().kind,
         PromptKind::CreateBranch
@@ -6123,7 +6281,7 @@ fn final_round_prompt_titles_options_and_refresh_error_arms() {
     );
     assert_eq!(
         PromptKind::ReplaceInFile.hint(),
-        "type the replacement, Enter replaces the current match (! = all)"
+        "type the replacement, Enter replaces (! replaces all)"
     );
 
     let dead_options = TuiOptions {
@@ -9576,9 +9734,9 @@ fn worktree_browser_c_opens_the_create_worktree_prompt() {
     assert!(
         matches!(
             app.prompt_input.as_ref().map(|prompt| prompt.kind),
-            Some(PromptKind::CreateWorktreeBranch)
+            Some(PromptKind::CreateWorktreeBase)
         ),
-        "`c` opens the branch step of the create-worktree prompt"
+        "`c` opens the base step of the create-worktree prompt"
     );
     // In pick mode (prefix `N`) `c` stays a no-op: that overlay's
     // intent is folders for a new workspace.
@@ -12309,38 +12467,38 @@ fn worktree_create_prompt_chains_branch_path_base_and_pull_base() {
     assert_eq!(app.error, Some("type a branch name".to_string()));
     assert!(app.worktree_create_stage.is_none());
 
-    // Branch stages and chains into the path prompt.
+    // Direct entry stages the branch and chains into the base prompt.
     run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBranch, "feat");
-    assert_eq!(app.status, "type the checkout path");
-    assert!(matches!(
-        app.worktree_create_stage,
-        Some(WorktreeCreateStage::Branch(_))
-    ));
-
-    // Empty path keeps the path prompt open.
-    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "");
-    assert_eq!(app.error, Some("type the checkout path".to_string()));
-
-    // Path stages and chains into the base prompt.
-    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "/tmp/wt");
     assert_eq!(
         app.status,
         "type the base ref (empty = HEAD), Enter continues"
     );
     assert!(matches!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Path(_, _))
+        Some(WorktreeCreateStage::DirectBranch(_))
     ));
 
-    // Base stages and chains into the pull-base confirm.
+    // Base stages the pair and chains into the path prompt.
     run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBase, "main");
+    assert_eq!(app.status, "type the checkout path");
+    assert!(matches!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Branch(_, _))
+    ));
+
+    // Empty path keeps the path prompt open.
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "");
+    assert_eq!(app.error, Some("type the checkout path".to_string()));
+
+    // Path stages and chains into the pull-base confirm.
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "/tmp/wt");
     assert_eq!(
         app.status,
         "pull the base ref first? (y = fast-forward it, Enter = skip)"
     );
     assert!(matches!(
         app.worktree_create_stage,
-        Some(WorktreeCreateStage::Base(_, _, _))
+        Some(WorktreeCreateStage::Path(_, _, _))
     ));
 
     // The confirm drives create_worktree; the nonexistent backend fails,
@@ -12351,7 +12509,7 @@ fn worktree_create_prompt_chains_branch_path_base_and_pull_base() {
     assert!(
         matches!(
             app.worktree_create_stage,
-            Some(WorktreeCreateStage::Base(_, _, _))
+            Some(WorktreeCreateStage::Path(_, _, _))
         ),
         "failed create keeps the staged draft"
     );
@@ -13077,13 +13235,13 @@ fn worktree_overlay_key_handler_routes_o_c_and_h() {
     app.handle_worktree_list_key(KeyEvent::from(KeyCode::Char('o')));
     assert!(!app.status.is_empty());
 
-    // `c` opens the create-worktree branch prompt (not in pick mode).
+    // `c` opens the create-worktree base prompt (not in pick mode).
     app.handle_worktree_list_key(KeyEvent::from(KeyCode::Char('c')));
     assert!(matches!(
         app.prompt_input.as_ref().map(|p| p.kind),
-        Some(PromptKind::CreateWorktreeBranch)
+        Some(PromptKind::CreateWorktreeBase)
     ));
-    assert_eq!(app.status, PromptKind::CreateWorktreeBranch.title());
+    assert_eq!(app.status, PromptKind::CreateWorktreeBase.title());
 
     // `h` with no parent (root path) stays put; with a parent it
     // browses up (fails against the dead api, error to status).

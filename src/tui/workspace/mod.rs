@@ -10,7 +10,55 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+use super::model::{worktree_root_for_source, worktree_source_from_response, WorktreeSourceInfo};
 use super::{same_checkout_path, PromptInput, PromptKind, SidebarFocus, TuiApp, TuiMode};
+
+/// Webui `branchPathSlug` (shared/core.js): alphanumeric characters
+/// keep their lowercase form, everything else collapses into a single
+/// dash, edge dashes trim away, and a fully-empty result falls back to
+/// "worktree" so the checkout folder always has a name.
+pub(crate) fn branch_path_slug(branch: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in branch.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "worktree".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// Desktop `defaultWorktreeCheckoutPath` / `joinPath` parity: root,
+/// repo name, and branch slug joined with single slashes, no edge
+/// separators leaking into the middle (core.js joinPath cleans later
+/// parts of both edge slashes).
+pub(crate) fn suggested_checkout_path(source: &WorktreeSourceInfo, branch: &str) -> String {
+    // core.js joinPath: the first part keeps a leading slash (absolute
+    // roots stay absolute) and only loses its trailing slash; later
+    // parts lose both edge slashes so no double separators appear.
+    let root = worktree_root_for_source(source)
+        .trim_end_matches('/')
+        .to_string();
+    let tail = [source.repo_name.as_str(), branch_path_slug(branch).as_str()]
+        .iter()
+        .map(|part| part.trim_matches('/'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if tail.is_empty() {
+        return root;
+    }
+    format!("{root}/{tail}")
+}
 
 /// Result of a workspace action, reported through the status line or
 /// error slot by the caller.
@@ -815,16 +863,20 @@ impl TuiApp {
                     Err(err) => self.status = err,
                 }
             }
-            // `c` opens the create-worktree prompt (desktop popover
-            // "Create worktree" CTA analog): branch first, then
-            // checkout path, scoped to the browse root. Not in pick
+            // `c` opens the create-worktree chain (desktop popover
+            // "Create worktree" CTA analog): base first, then branch,
+            // then checkout path, scoped to the browse root. Not in pick
             // mode: prefix `N` is about folders for a new workspace,
             // and `c` is a query letter there only in theory (kept
             // out entirely for one intent per overlay).
             KeyCode::Char('c') if !filter_active && !self.worktree_pick_workspace => {
                 self.worktree_create_stage = None;
-                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
-                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
+                let default_base = self.worktree_default_base();
+                self.prompt_input = Some(match default_base {
+                    Some(base) => PromptInput::with_text(PromptKind::CreateWorktreeBase, base),
+                    None => PromptInput::new(PromptKind::CreateWorktreeBase),
+                });
+                self.status = PromptKind::CreateWorktreeBase.title().to_string();
             }
             // `h` goes to the parent folder (vim/left convention shared
             // with the Files screen). Backspace on an empty filter does
@@ -883,8 +935,54 @@ impl TuiApp {
         }
     }
 
+    /// Desktop `defaultBaseBranch` rule (create modal): local main, then
+    /// local master, then origin/main, then the first branch the API
+    /// returns. Reads the same branch list the branch picker uses
+    /// (web_api.git_branches); a dead API or empty list yields `None` so
+    /// the base prompt opens empty and the chain still works.
+    pub(crate) fn worktree_default_base(&mut self) -> Option<String> {
+        let cwd = self.selected_workspace()?.cwd.clone();
+        if cwd.is_empty() {
+            return None;
+        }
+        let response = self.web_api.git_branches(&cwd).ok()?;
+        let names: Vec<String> = response
+            .get("branches")
+            .or_else(|| response.get("local"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(crate::tui::panels::git::parse_branch_value)
+                    .map(|entry| entry.name)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for candidate in ["main", "master", "origin/main"] {
+            if let Some(name) = names.iter().find(|name| name.as_str() == candidate) {
+                return Some(name.clone());
+            }
+        }
+        names.into_iter().next()
+    }
+
     /// Webui `createWorktree` (prefix Shift+T): create a worktree from
     /// the selected workspace at `branch` checked out into `path`.
+    /// Desktop `defaultWorktreeCheckoutPath` parity for the create
+    /// prompt chain: <worktree root>/<repo name>/<branch slug>. The
+    /// source envelope is fetched live because the TUI keeps no browse
+    /// cache; `None` (missing envelope, dead backend) leaves the path
+    /// prompt empty exactly like before this default existed.
+    pub(crate) fn worktree_suggested_checkout_path(&mut self, branch: &str) -> Option<String> {
+        let cwd = self.selected_workspace()?.cwd.clone();
+        if cwd.is_empty() {
+            return None;
+        }
+        let response = self.client.list_worktrees(Some(&cwd)).ok()?;
+        let source = worktree_source_from_response(&response)?;
+        Some(suggested_checkout_path(&source, branch))
+    }
+
     pub fn create_worktree(
         &mut self,
         branch: &str,
@@ -992,53 +1090,113 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
         WorkspacePrompt::RenameWorkspace => app.rename_workspace(text),
         WorkspacePrompt::RenamePanel => app.rename_panel(text),
         WorkspacePrompt::ConfirmCloseWorkspace => app.close_workspace(),
+        WorkspacePrompt::CreateWorktreeBase => {
+            // Base-first chain (desktop create modal parity): the base ref
+            // is taken verbatim (no substring magic that would corrupt
+            // refs like feature/pull-requests) and empty means HEAD.
+            let base = text.trim().to_string();
+            match app.worktree_create_stage.take() {
+                // Direct entry (Shift+T still opens the branch prompt
+                // until its entry point moves to Base): the branch is
+                // already typed, so the path prompt comes next with the
+                // checkout-path default.
+                Some(WorktreeCreateStage::DirectBranch(branch)) => {
+                    app.worktree_create_stage =
+                        Some(WorktreeCreateStage::Branch(base.clone(), branch.clone()));
+                    let suggested = app.worktree_suggested_checkout_path(&branch);
+                    app.prompt_input = Some(match suggested {
+                        Some(path) => PromptInput::with_text(PromptKind::CreateWorktreePath, path),
+                        None => PromptInput::new(PromptKind::CreateWorktreePath),
+                    });
+                    Ok("type the checkout path".to_string())
+                }
+                // Base-first chain: stage the base and open the branch
+                // prompt. Desktop syncBranchNameFromBase: accepting a
+                // base that differs from the default base seeds the
+                // branch with the base's local name; the default base
+                // leaves the branch empty.
+                _ => {
+                    let default_base = app.worktree_default_base();
+                    let prefill = if base.is_empty() || Some(&base) == default_base.as_ref() {
+                        String::new()
+                    } else {
+                        local_worktree_branch_name(&base)
+                    };
+                    app.worktree_create_stage = Some(WorktreeCreateStage::Base(base));
+                    app.prompt_input = Some(if prefill.is_empty() {
+                        PromptInput::new(PromptKind::CreateWorktreeBranch)
+                    } else {
+                        PromptInput::with_text(PromptKind::CreateWorktreeBranch, prefill)
+                    });
+                    Ok("type the branch name".to_string())
+                }
+            }
+        }
         WorkspacePrompt::CreateWorktreeBranch => {
             let branch = text.trim();
             if branch.is_empty() {
+                app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
                 Err("type a branch name".to_string())
             } else {
-                app.worktree_create_stage = Some(WorktreeCreateStage::Branch(branch.to_string()));
-                // Chain straight into the checkout path prompt.
-                app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreePath));
-                Ok("type the checkout path".to_string())
+                match app.worktree_create_stage.take() {
+                    // Base-first chain: the base is staged, the branch
+                    // completes the pair and the path prompt opens with
+                    // the desktop checkout-path default.
+                    Some(WorktreeCreateStage::Base(base)) => {
+                        app.worktree_create_stage =
+                            Some(WorktreeCreateStage::Branch(base, branch.to_string()));
+                        let suggested = app.worktree_suggested_checkout_path(branch);
+                        app.prompt_input = Some(match suggested {
+                            Some(path) => {
+                                PromptInput::with_text(PromptKind::CreateWorktreePath, path)
+                            }
+                            None => PromptInput::new(PromptKind::CreateWorktreePath),
+                        });
+                        Ok("type the checkout path".to_string())
+                    }
+                    // Direct entry (no stage): treat the typed text as the
+                    // branch and ask the base next, prefilled with the
+                    // default base (desktop defaultBaseBranch rule).
+                    _ => {
+                        app.worktree_create_stage =
+                            Some(WorktreeCreateStage::DirectBranch(branch.to_string()));
+                        let default_base = app.worktree_default_base();
+                        app.prompt_input = Some(match default_base {
+                            Some(base) => {
+                                PromptInput::with_text(PromptKind::CreateWorktreeBase, base)
+                            }
+                            None => PromptInput::new(PromptKind::CreateWorktreeBase),
+                        });
+                        Ok("type the base ref (empty = HEAD), Enter continues".to_string())
+                    }
+                }
             }
         }
         WorkspacePrompt::CreateWorktreePath => {
             let path = text.trim();
-            if path.is_empty() {
-                app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreePath));
-                Err("type the checkout path".to_string())
-            } else {
-                // Stage the path and chain into the base-ref prompt
-                // (webui inline form: name, base, pull-base, create).
-                let Some(WorktreeCreateStage::Branch(branch)) = app.worktree_create_stage.take()
-                else {
-                    return;
-                };
-                app.worktree_create_stage =
-                    Some(WorktreeCreateStage::Path(branch, path.to_string()));
-                app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBase));
-                Ok("type the base ref (empty = HEAD), Enter continues".to_string())
-            }
-        }
-        WorkspacePrompt::CreateWorktreeBase => {
-            // The base ref is taken verbatim (no substring magic that
-            // would corrupt refs like feature/pull-requests). A separate
-            // y/n step decides the webui pull-base checkbox parity, and
-            // the staged draft survives a failed create so the user can
-            // retry instead of retyping the whole chain.
-            let base = text.trim().to_string();
-            let Some(WorktreeCreateStage::Path(branch, path)) = app.worktree_create_stage.take()
+            let Some(WorktreeCreateStage::Branch(base, branch)) = app.worktree_create_stage.take()
             else {
                 return;
             };
-            app.worktree_create_stage = Some(WorktreeCreateStage::Base(branch, path, base));
-            app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
-            Ok("pull the base ref first? (y = fast-forward it, Enter = skip)".to_string())
+            if path.is_empty() {
+                // Keep the pair staged so an accidental Enter does not
+                // lose the accepted base and branch.
+                app.worktree_create_stage = Some(WorktreeCreateStage::Branch(base, branch));
+                app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreePath));
+                Err("type the checkout path".to_string())
+            } else {
+                app.worktree_create_stage = Some(WorktreeCreateStage::Path(
+                    branch.to_string(),
+                    path.to_string(),
+                    base,
+                ));
+                app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
+                Ok("pull the base ref first? (y = fast-forward it, Enter = skip)".to_string())
+            }
         }
         WorkspacePrompt::ConfirmWorktreePullBase => {
             let pull_base = text.trim().eq_ignore_ascii_case("y");
-            let Some(WorktreeCreateStage::Base(branch, path, base)) =
+            let Some(WorktreeCreateStage::Path(branch, path, base)) =
                 app.worktree_create_stage.take()
             else {
                 return;
@@ -1050,7 +1208,7 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
                 // the error shows in the footer while the prompt stays
                 // up, so Enter retries and Esc abandons (webui keeps the
                 // inline error plus its retry button on the form).
-                app.worktree_create_stage = Some(WorktreeCreateStage::Base(branch, path, base));
+                app.worktree_create_stage = Some(WorktreeCreateStage::Path(branch, path, base));
                 app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
             }
             result
@@ -1062,12 +1220,33 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
     }
 }
 
-/// Two-step worktree creation prompt: branch first, then checkout path.
+/// Worktree creation chain, base -> branch -> path -> pull confirm
+/// (desktop create modal field order). The stage carries the accepted
+/// answers between steps; a failed create re-stages the final form so
+/// Enter retries and Esc abandons.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeCreateStage {
-    Branch(String),
-    Path(String, String),
-    Base(String, String, String),
+    /// Base accepted, branch prompt next (base-first chain).
+    Base(String),
+    /// Branch typed at a direct-entry prompt before base was asked;
+    /// transitional until every entry point opens the base prompt first.
+    DirectBranch(String),
+    /// Base and branch accepted, path prompt next: (base, branch).
+    Branch(String, String),
+    /// All three accepted, pull confirm next: (branch, path, base).
+    Path(String, String, String),
+}
+
+/// Desktop `localWorktreeBranchName`: strip the remote prefix so a base
+/// picked from a remote branch seeds a local branch name.
+pub(crate) fn local_worktree_branch_name(branch: &str) -> String {
+    let text = branch.trim();
+    for prefix in ["origin/", "upstream/"] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            return rest.to_string();
+        }
+    }
+    text.to_string()
 }
 /// Two-step workspace creation prompt: the webui modal collects folder
 /// and name at once; the TUI asks path first (validated, tilde-expanded),

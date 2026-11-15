@@ -561,6 +561,18 @@ function handleGlobalShortcut(e) {
     return consumeShortcutEvent(e);
   }
   if (prefixActive) {
+    // Passthrough wins over a stale armed overlay: focus moved to the
+    // terminal after arming, so this Ctrl+B belongs to the shell. Drop
+    // the overlay silently and let the key reach the PTY instead of
+    // consuming it as a toggle-off.
+    if (
+      options.terminalPrefixPassthrough &&
+      terminalShortcutTarget(e.target) &&
+      isShortcutPrefix(e)
+    ) {
+      hideShortcutPrefixOverlay();
+      return false;
+    }
     hideShortcutPrefixOverlay();
     if (e.key === "Escape") return consumeShortcutEvent(e);
     // Git chord keys answer first while its drawer is on screen. The git
@@ -575,6 +587,12 @@ function handleGlobalShortcut(e) {
     return consumeShortcutEvent(e);
   }
   if (!isShortcutPrefix(e)) return false;
+  // Terminal prefix passthrough: with the setting on and the terminal
+  // surface focused, the prefix chord belongs to the shell (readline
+  // Ctrl+B, tmux prefix): no interception, no overlay. Chords still
+  // arm when focus sits elsewhere.
+  if (options.terminalPrefixPassthrough && terminalShortcutTarget(e.target))
+    return false;
   if (editableShortcutTarget(e.target) && !terminalShortcutTarget(e.target))
     return false;
   showShortcutPrefixOverlay();
