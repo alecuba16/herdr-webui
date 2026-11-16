@@ -1431,14 +1431,15 @@ function panePanelChipDragEnd() {
   clearPanelDropPreview();
 }
 
-// Half-region hit test for the chip drag (v3): the hovered pane's
-// rectangle splits into four halves; the pointer's half names the target
-// {paneId, axis, first}. first=true means the dragged leaf lands before
-// the target (left/up), false after it (right/down). No dead center: a
-// half always resolves, the four halves tile the whole pane. Falls back
-// to the container rect when no pane sits under the pointer (gaps,
-// stub documents): the collector halves then, same rule as v2's bands
-// but full-height so nothing cancels mid-drag.
+// Corner-zone hit test for the chip/tab drag (v3.1): the trigger area is
+// the four CORNER regions of the hovered pane, one third of each axis
+// (both offsets within 1/3 of their sides). The middle cross is dead:
+// nothing accepts there, no preview paints, no drop lands. Inside a
+// corner, proximity to the two adjacent borders picks the split: nearer
+// the top/bottom border stacks (kind column, up/down by corner), nearer
+// the left/right border sides (kind row, left/right by corner).
+// Falls back to the container rect when no pane sits under the pointer
+// (gaps, stub documents): the collector corners then.
 function panelDropTargetAt(container, event) {
   if (!container || !container.getBoundingClientRect) return null;
   const pane = paneElementUnderPointer(container, event);
@@ -1447,14 +1448,15 @@ function panelDropTargetAt(container, event) {
   const x = (event.clientX || 0) - rect.left;
   const y = (event.clientY || 0) - rect.top;
   if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
-  const horizontal = x < rect.width / 2;
-  const vertical = y < rect.height / 2;
-  // The wider half wins the axis: a wide pane's left/right halves are
-  // what the pointer can actually express there, and a square pane
-  // resolves by the pointer's dominant offset (x splits first, the
-  // halves are equal).
-  if (rect.width >= rect.height) return { paneId, axis: "row", first: horizontal };
-  return { paneId, axis: "column", first: vertical };
+  const fx = x / rect.width;
+  const fy = y / rect.height;
+  const nearX = fx < 1 / 3 || fx > 2 / 3;
+  const nearY = fy < 1 / 3 || fy > 2 / 3;
+  if (!nearX || !nearY) return null;
+  const dx = Math.min(fx, 1 - fx);
+  const dy = Math.min(fy, 1 - fy);
+  if (dy <= dx) return { paneId, axis: "column", first: fy < 1 / 2 };
+  return { paneId, axis: "row", first: fx < 1 / 2 };
 }
 
 // Deepest .workspace-pane under the drag pointer. paneFromPoint climbs
@@ -1478,7 +1480,12 @@ function paneContainerPanelDragOver(event) {
   if (!paneDragPanelId) return;
   const container = el("workspacePanes");
   const target = panelDropTargetAt(container, event);
-  if (!target) return;
+  // Dead zones (v3.1 cross) must not keep the square painted from an
+  // earlier corner pass on the same drag path: a null target clears it.
+  if (!target) {
+    clearPanelDropPreview();
+    return;
+  }
   if (event.preventDefault) event.preventDefault();
   if (event.dataTransfer && "dropEffect" in event.dataTransfer)
     event.dataTransfer.dropEffect = "move";
@@ -2427,14 +2434,22 @@ function paneContainerTabDragOver(event) {
   if (onStrip) return;
   const container = el("workspacePanes");
   const target = panelDropTargetAt(container, event);
-  if (!target) return;
+  // Dead zones (v3.1 cross) must not keep the square painted from an
+  // earlier corner pass on the same drag path: a null target clears it.
+  if (!target) {
+    clearPanelDropPreview();
+    return;
+  }
   const owner = target.paneId ? paneForTab(paneRootFor(), drag.tabId) : null;
   const targetLeaf = target.paneId ? paneForPaneId(paneRootFor(), target.paneId) : null;
   // The preview square paints whenever the drop would act: a fresh tree
   // splits its only pane (v3), and an own-pane half split is a real move.
   // The strip keeps its caret hover; this guard only refuses drops that
   // cannot change the tree.
-  if (!targetLeaf) return;
+  if (!targetLeaf) {
+    clearPanelDropPreview();
+    return;
+  }
   if (event.preventDefault) event.preventDefault();
   if (event.dataTransfer && "dropEffect" in event.dataTransfer)
     event.dataTransfer.dropEffect = "move";

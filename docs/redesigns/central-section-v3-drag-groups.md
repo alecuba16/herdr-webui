@@ -21,6 +21,22 @@ v2 chunks (model re-bind, chips, per-leaf cards, Enter, edge re-dock).
 5. Chord and bar Split anchor on the leaf holding the ACTIVE terminal
    (route tab), not the focused leaf. Already shipped in v2 chunk D.
 
+## v3.1 amendment: corner zones replace halves (user, Nov 16)
+
+The half model above is superseded for the TRIGGER geometry only. The
+preview and drop semantics stay exactly as v3 defined them; only WHERE
+they trigger changes.
+
+- Trigger zones: the four CORNER regions of the hovered pane, one third
+  of each axis (both offsets within 1/3 of their sides). The middle
+  cross is dead: no preview paints there, no drop lands there.
+- Inside a corner, proximity to the two adjacent borders picks the
+  split: nearer the top/bottom border stacks (up/down), nearer the
+  left/right border sides (left/right). The corner's own side picks
+  which half the dragged element takes (first vs after).
+- Rationale: corners are unambiguous targets at the borders; the center
+  stays a safe dead zone so over-aimed drops do not reshape the tree.
+
 ## Drop regions replace edge bands
 
 - Hit test: the hovered pane's rectangle splits into four halves

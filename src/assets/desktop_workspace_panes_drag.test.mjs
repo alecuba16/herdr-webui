@@ -317,8 +317,8 @@ test("chip drop on a pane half re-docks the dragged leaf beside the target", () 
   assert.ok(paneEl, "target pane rendered");
   ctx.paneContainerPanelDrop({
     target: paneEl,
-    clientX: 18,
-    clientY: 12,
+    clientX: 21,
+    clientY: 20,
     preventDefault() {},
   });
   const root = panes.paneRoot();
@@ -353,8 +353,8 @@ test("dragover positions the dotted preview square and dragend clears it", () =>
   ctx.panePanelChipDragStart({ target: { dataset: { paneId: leaves[1].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
   ctx.paneContainerPanelDragOver({
     target: paneEl,
-    clientX: 200,
-    clientY: 40,
+    clientX: 290,
+    clientY: 15,
     preventDefault() {},
     dataTransfer: { dropEffect: null },
   });
@@ -393,8 +393,8 @@ test("group chip drag with an outside drop moves the whole group subtree", () =>
   // Drop on the standalone's right half: the group moves beside it.
   ctx.paneContainerPanelDrop({
     target: paneEl,
-    clientX: 18,
-    clientY: 12,
+    clientX: 21,
+    clientY: 20,
     preventDefault() {},
   });
   const root = panes.paneRoot();
@@ -428,8 +428,8 @@ test("member chip drag-out of the group ungroups it beside the group", () => {
   ctx.panePanelChipDragStart({ target: { dataset: { paneId: "gb" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
   ctx.paneContainerPanelDrop({
     target: paneEl,
-    clientX: 18,
-    clientY: 12,
+    clientX: 21,
+    clientY: 20,
     preventDefault() {},
   });
   const root = panes.paneRoot();
@@ -458,8 +458,8 @@ test("tab drop on a pane half creates a fresh panel holding the dragged tab", ()
   ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_2" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
   ctx.paneContainerTabDrop({
     target: paneEl,
-    clientX: 18,
-    clientY: 12,
+    clientX: 21,
+    clientY: 20,
     preventDefault() {},
   });
   const root = panes.paneRoot();
@@ -485,8 +485,8 @@ test("tab drop on its own pane half splits that pane instead of refusing", () =>
   ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
   ctx.paneContainerTabDrop({
     target: paneEl,
-    clientX: 18,
-    clientY: 12,
+    clientX: 21,
+    clientY: 20,
     preventDefault() {},
   });
   const leavesAfter = panes.paneLeaves(panes.paneRoot());
@@ -519,16 +519,16 @@ test("tab drop on a single-panel tree splits that panel instead of refusing", ()
   let canceled = false;
   ctx.paneContainerTabDragOver({
     target: paneEl,
-    clientX: 18,
-    clientY: 12,
+    clientX: 21,
+    clientY: 20,
     preventDefault() { canceled = true; },
     dataTransfer: { dropEffect: null },
   });
   assert.ok(canceled, "dragover cancels on the single-panel own-pane hover");
   ctx.paneContainerTabDrop({
     target: paneEl,
-    clientX: 18,
-    clientY: 12,
+    clientX: 21,
+    clientY: 20,
     preventDefault() {},
   });
   const leavesAfter = panes.paneLeaves(panes.paneRoot());
@@ -558,8 +558,8 @@ test("dragenter positions the preview square so fast releases still drop", () =>
   for (const handler of dragenterHandlers) {
     handler({
       target: paneEl,
-      clientX: 200,
-      clientY: 40,
+      clientX: 290,
+      clientY: 15,
       preventDefault() {},
       dataTransfer: { dropEffect: null },
     });
@@ -570,6 +570,91 @@ test("dragenter positions the preview square so fast releases still drop", () =>
   // And the chip-drag dragenter handler accepts the payload too.
   ctx.paneTabDragEnd();
   assert.equal(preview.style.display, "none", "dragend still clears");
+});
+
+test("dead-center cross refuses: no preview, no drop, nothing moves", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  bootFlatThreePanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, panes.paneLeaves(panes.paneRoot())[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  const leavesBefore = panes.paneLeaves(panes.paneRoot()).length;
+  ctx.panePanelChipDragStart({ target: { dataset: { paneId: panes.paneLeaves(panes.paneRoot())[2].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  // (150,50) is the middle cross of the 300x100 pane: inside every third,
+  // so no corner owns it and nothing must accept.
+  ctx.paneContainerPanelDragOver({
+    target: paneEl,
+    clientX: 150,
+    clientY: 50,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  const preview = document.getElementById("panelDropPreview");
+  assert.equal(preview ? preview.style.display : undefined, undefined, "no preview paints in the dead cross");
+  ctx.paneContainerPanelDrop({
+    target: paneEl,
+    clientX: 150,
+    clientY: 50,
+    preventDefault() {},
+  });
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, leavesBefore, "dead-center drop moved nothing");
+  // A mid-edge point (150,10) is in the top third vertically but the
+  // middle third horizontally: still no corner, still dead.
+  ctx.paneContainerPanelDrop({
+    target: paneEl,
+    clientX: 150,
+    clientY: 10,
+    preventDefault() {},
+  });
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, leavesBefore, "mid-edge drop moved nothing");
+});
+
+test("corner proximity picks the axis by the nearer border", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  bootFlatThreePanels(ctx, 2);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, panes.paneLeaves(panes.paneRoot())[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  // Top-LEFT corner, nearer the top border (dy=0.1 < dx=0.15): a column
+  // split with the fresh panel FIRST (above).
+  ctx.paneContainerTabDragOver({
+    target: paneEl,
+    clientX: 45,
+    clientY: 10,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  let preview = document.getElementById("panelDropPreview");
+  assert.ok(preview, "preview exists in the corner");
+  assert.equal(preview.style.top, "0px", "nearer top border paints the top half");
+  assert.equal(preview.style.left, "0px", "column split covers the full width");
+  assert.equal(preview.style.width, "300px", "column split strip spans the pane width");
+  assert.equal(preview.style.height, "50px", "column split strip is half the pane height");
+  ctx.paneTabDragEnd();
+  assert.equal(preview.style.display, "none", "dragend clears between cases");
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  // Top-LEFT corner, nearer the left border (dx=0.05 < dy=0.1): a row
+  // split with the fresh panel FIRST (left).
+  ctx.paneContainerTabDragOver({
+    target: paneEl,
+    clientX: 15,
+    clientY: 10,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  preview = document.getElementById("panelDropPreview");
+  assert.equal(preview.style.left, "0px", "nearer left border paints the left half");
+  assert.equal(preview.style.top, "0px", "row split covers the full height");
+  assert.equal(preview.style.width, "150px", "left half of the pane width");
+  assert.equal(preview.style.height, "100px", "row split strip spans the pane height");
+  ctx.paneTabDragEnd();
 });
 
 test("abandoned tab drag clears the shared preview square on dragend", () => {
@@ -584,8 +669,8 @@ test("abandoned tab drag clears the shared preview square on dragend", () => {
   ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_2" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
   ctx.paneContainerTabDragOver({
     target: paneEl,
-    clientX: 200,
-    clientY: 40,
+    clientX: 290,
+    clientY: 15,
     preventDefault() {},
     dataTransfer: { dropEffect: null },
   });
@@ -596,4 +681,58 @@ test("abandoned tab drag clears the shared preview square on dragend", () => {
   // dotted indicator sticks over the last hovered half.
   ctx.paneTabDragEnd();
   assert.equal(preview.style.display, "none", "dragend hides the preview square");
+});
+
+test("leaving a corner into the dead cross clears the painted preview", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  bootFlatThreePanels(ctx, 2);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, panes.paneLeaves(panes.paneRoot())[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  // Corner pass paints the square, then the pointer rides into the dead
+  // cross mid-drag. The square must clear on the dead dragover, not stick
+  // on the last corner half until dragend (live CDP drag found exactly
+  // that stuck square).
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerTabDragOver({
+    target: paneEl,
+    clientX: 15,
+    clientY: 10,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  let preview = document.getElementById("panelDropPreview");
+  assert.equal(preview.style.display, "block", "corner pass paints the square");
+  ctx.paneContainerTabDragOver({
+    target: paneEl,
+    clientX: 150,
+    clientY: 50,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  assert.equal(preview.style.display, "none", "dead-cross dragover clears the stale square");
+  ctx.paneTabDragEnd();
+  // Same contract on the chip drag path.
+  ctx.panePanelChipDragStart({ target: { dataset: { paneId: panes.paneLeaves(panes.paneRoot())[1].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerPanelDragOver({
+    target: paneEl,
+    clientX: 15,
+    clientY: 10,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  preview = document.getElementById("panelDropPreview");
+  assert.equal(preview.style.display, "block", "corner pass paints the square (chip)");
+  ctx.paneContainerPanelDragOver({
+    target: paneEl,
+    clientX: 150,
+    clientY: 50,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  assert.equal(preview.style.display, "none", "dead-cross dragover clears the stale square (chip)");
+  ctx.panePanelChipDragEnd();
 });
