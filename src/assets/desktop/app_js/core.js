@@ -884,6 +884,7 @@ function helpAndShortcutsBodyHtml() {
           <div class="shortcut-row"><kbd>${chord("sessions")}</kbd><span>Open the session manager.</span></div>
           <div class="shortcut-row"><kbd>${chord("terminalTail")}</kbd><span>Jump the terminal back to the latest output and resume follow, same as the strip's Follow button.</span></div>
           <div class="shortcut-row"><kbd>${chord("lensToggle")}</kbd><span>Toggle the chat/terminal lens over the active pane.</span></div>
+          <div class="shortcut-row"><kbd>Ctrl+P</kbd><span>In the chat composer, send the message queued: the agent picks it up at its next turn boundary while it works, or sends it straight away while idle. Hold the Send button for the same queue on touch.</span></div>
           <div class="shortcut-row"><kbd>${chord("rightRail")}</kbd><span>Cycle the right rail through Files, Git, Search, and Notes; a collapsed rail reopens on Files.</span></div>
           <div class="shortcut-row"><kbd>${chord("markdownView")}</kbd><span>Switch a markdown editor tab between rendered preview, source, and edit, same as the strip eye.</span></div>
           <div class="shortcut-row"><kbd>${chord("notesNew")}</kbd><span>Create a new note; opens the Notes rail first when it is closed.</span></div>

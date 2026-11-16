@@ -66,6 +66,21 @@
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             submit();
+            return;
+          }
+          // Ctrl+P (Meta+P on mac habits) enqueues: the same submit path
+          // as the long-press hold, for keyboards. While the agent runs,
+          // jcode queues the message (kitty Ctrl+Enter from the server);
+          // while idle it lands like a normal send. preventDefault keeps
+          // the browser print dialog out of the chat.
+          if (
+            (event.ctrlKey || event.metaKey) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            event.key.toLowerCase() === "p"
+          ) {
+            event.preventDefault();
+            submit(true);
           }
         });
         input.addEventListener("input", () => {
@@ -75,7 +90,7 @@
         });
       }
       if (send) {
-        send.title = "Send\nHold to queue while the agent is busy";
+        send.title = "Send\nHold or Ctrl+P to queue while the agent is busy";
         if (typeof PointerEvent !== "undefined") {
           send.addEventListener("pointerdown", (event) => {
             if (send.disabled) return;

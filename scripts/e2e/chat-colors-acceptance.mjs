@@ -190,6 +190,73 @@ async function main() {
     !!expandedDark.outputBg,
     expandedDark.outputBg || "no output element");
 
+  // Assistant markdown: the fixture's last assistant turn carries a
+  // heading, emphasis, inline code, a table, and a fenced block. The
+  // marked+DOMPurify bundle loads lazily, so first rows may paint as
+  // escaped plain text; the poll re-renders once the bundle lands.
+  // Wait for the upgrade, then assert the DOM shapes (both themes run
+  // after this point, one assertion here covers the render itself).
+  const mdState = await evalExpr(`new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      const content = document.querySelector(".terminal-lens-content");
+      const heading = content && content.querySelector(".lens-markdown h3");
+      if (heading) { resolve("rendered"); return; }
+      if (Date.now() - started > 15000) resolve("timeout"); else setTimeout(check, 400);
+    };
+    check();
+  })`);
+  const md = await evalExpr(`(() => {
+    const content = document.querySelector(".terminal-lens-content");
+    if (!content) return null;
+    return {
+      heading: !!content.querySelector(".lens-markdown h3"),
+      headingText: (content.querySelector(".lens-markdown h3") || {}).textContent || "",
+      emphasis: !!content.querySelector(".lens-markdown em"),
+      inlineCode: !!content.querySelector(".lens-markdown code"),
+      table: !!content.querySelector(".lens-markdown table"),
+      fence: !!content.querySelector(".lens-markdown pre"),
+      fenceLang: (content.querySelector(".lens-markdown pre code") || {}).className || "",
+      scriptLeak: !!content.querySelector(".lens-markdown script"),
+    };
+  })()`);
+  record("assistant markdown upgrades to rendered html", mdState === "rendered", `got ${mdState}`);
+  record("markdown heading renders (h3)", !!(md && md.headingText.trim() === "Fix plan"), `text ${(md && md.headingText) || "none"}`);
+  record("markdown emphasis and inline code render",
+    !!(md && md.emphasis && md.inlineCode), `em ${md && md.emphasis} code ${md && md.inlineCode}`);
+  record("markdown table and fenced rust block render",
+    !!(md && md.table && md.fence), `table ${md && md.table} fence ${md && md.fence}`);
+  record("sanitizer strips script tags", !(md && md.scriptLeak), `leak ${md && md.scriptLeak}`);
+
+  // Ctrl+P enqueue, the real path: the composer keydown fires the
+  // submit with enqueue:true; the server pastes the text into the pane
+  // and answers ok. The fixture jcode never consumes it (that is the
+  // terminal side), so the assertions stop at the HTTP contract and
+  // the composer's own queued note + pending bubble.
+  const enq = await evalExpr(`(async () => {
+    const input = document.getElementById("terminalComposerInput");
+    if (!input) return { error: "no composer input" };
+    input.value = "queue this from the keyboard";
+    input.dispatchEvent(new Event("input"));
+    const key = new KeyboardEvent("keydown", { key: "p", code: "KeyP", ctrlKey: true, bubbles: true, cancelable: true });
+    const accepted = input.dispatchEvent(key);
+    const started = Date.now();
+    while (Date.now() - started < 10000) {
+      const note = document.getElementById("terminalComposerNote");
+      const pending = document.querySelector(".lens-turn-pending");
+      if (note && !note.hidden && /queued/i.test(note.textContent) && pending)
+        return { note: note.textContent, pending: pending.textContent, accepted };
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const note = document.getElementById("terminalComposerNote");
+    return { note: note ? note.textContent : "", pending: null, accepted };
+  })()`);
+  record("ctrl+p chord consumed by the composer (print suppressed)", enq && enq.accepted === false, `dispatchEvent ${enq && enq.accepted}`);
+  record("ctrl+p announces the queued outcome", !!(enq && /queued/i.test(enq.note || "")), `note ${enq && enq.note}`);
+  record("ctrl+p clears the draft and shows the pending bubble",
+    !!(enq && enq.pending && /queue this from the keyboard/.test(enq.pending)),
+    `pending ${enq && enq.pending}`);
+
   // Screenshot for the record (visual evidence, not an assertion).
   const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
   const { writeFileSync } = await import("node:fs");

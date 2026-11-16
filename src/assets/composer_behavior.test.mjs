@@ -696,3 +696,90 @@ describe("composer long-press send", () => {
     equal(result.apiCalls.length, 0, "the pointer path owns the submit; the click arm stays inert");
   });
 });
+
+// ---- Ctrl+P enqueue (keyboard path) ----
+function fireKeydown(input, event) {
+  for (const fn of input.listeners.keydown || []) fn(event);
+}
+
+function ctrlP(shiftKey = false, altKey = false) {
+  return {
+    key: "p",
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey,
+    altKey,
+    preventDefault() { this.defaultPrevented = true; },
+    defaultPrevented: false,
+  };
+}
+
+describe("composer ctrl+p enqueue", () => {
+  it("ctrl+p submits with enqueue:true and suppresses print", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "keyboard queue");
+    const input = inputOf(result);
+    const key = ctrlP();
+    fireKeydown(input, key);
+    await timers.settle();
+    equal(result.apiCalls.length, 1, "one submit");
+    const body = JSON.parse(result.apiCalls[0].opt.body);
+    equal(body.text, "keyboard queue");
+    equal(body.enqueue, true, "ctrl+p enqueues");
+    equal(key.defaultPrevented, true, "print dialog suppressed");
+    equal(noteOf(result).textContent, "Queued for the running agent", "the queue outcome is announced");
+  });
+
+  it("meta+p enqueues too (mac command key)", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "mac queue");
+    const input = inputOf(result);
+    fireKeydown(input, { ...ctrlP(), ctrlKey: false, metaKey: true });
+    await timers.settle();
+    equal(result.apiCalls.length, 1, "one submit");
+    const body = JSON.parse(result.apiCalls[0].opt.body);
+    equal(body.enqueue, true, "meta+p enqueues");
+  });
+
+  it("ctrl+shift+p and ctrl+alt+p never enqueue", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    typeDraft(result, "plain p");
+    const input = inputOf(result);
+    fireKeydown(input, ctrlP(true));
+    fireKeydown(input, ctrlP(false, true));
+    await timers.settle();
+    equal(result.apiCalls.length, 0, "modified chords stay with the browser");
+  });
+
+  it("ctrl+p on an empty draft never submits", async () => {
+    const timers = fakeTimerKit();
+    const result = loadComposer({
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    result.ctx.HerdrComposer.overlay();
+    const input = inputOf(result);
+    fireKeydown(input, ctrlP());
+    await timers.settle();
+    equal(result.apiCalls.length, 0, "nothing to enqueue");
+  });
+
+  it("send button title names the hold and the ctrl+p chord", () => {
+    const result = loadComposer();
+    result.ctx.HerdrComposer.overlay();
+    const send = sendOf(result);
+    equal(send.title, "Send\nHold or Ctrl+P to queue while the agent is busy");
+  });
+});

@@ -1148,11 +1148,107 @@ describe("mobile composer long-press send", () => {
       extraGlobal: { PointerEvent: class PointerEvent {} },
     });
     module.syncComposer();
-    assert.equal(dom.send.title, "Send. Hold to queue while the agent is busy.");
+    assert.equal(dom.send.title, "Send. Hold or Ctrl+P to queue while the agent is busy.");
     assert.equal(
       dom.send.getAttribute("aria-label"),
-      "Send. Hold to queue while the agent is busy.",
+      "Send. Hold or Ctrl+P to queue while the agent is busy.",
     );
+  });
+});
+
+describe("mobile composer ctrl+p enqueue", () => {
+  // A hardware keyboard on a phone/tablet hits the composer keydown path:
+  // Ctrl+P enqueues exactly like the desktop chord.
+  const timersKit = () => {
+    const timers = [];
+    return {
+      setTimeout(fn) {
+        timers.push(fn);
+        return timers.length;
+      },
+      clearTimeout(id) {
+        if (id) timers[id - 1] = null;
+      },
+      async settle() {
+        await new Promise((resolve) => setImmediate(resolve));
+      },
+    };
+  };
+  const fireInputKey = (dom, event) => {
+    for (const fn of dom.input.listeners.keydown || []) fn(event);
+  };
+  const ctrlP = (over = {}) => ({
+    key: "p",
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    defaultPrevented: false,
+    ...over,
+  });
+
+  it("ctrl+p submits with enqueue:true and suppresses print", async () => {
+    const timers = timersKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "hardware keyboard queue";
+    const key = ctrlP();
+    fireInputKey(dom, key);
+    await timers.settle();
+    assert.equal(calls.api.length, 1, "one submit");
+    const body = JSON.parse(calls.api[0].opts.body);
+    assert.equal(body.text, "hardware keyboard queue");
+    assert.equal(body.enqueue, true, "ctrl+p enqueues");
+    assert.equal(key.defaultPrevented, true, "print dialog suppressed");
+    assert.equal(dom.note.textContent, "Queued for the running agent", "queue outcome announced");
+  });
+
+  it("meta+p enqueues too (mac keyboard)", async () => {
+    const timers = timersKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "mac queue";
+    fireInputKey(dom, ctrlP({ ctrlKey: false, metaKey: true }));
+    await timers.settle();
+    assert.equal(calls.api.length, 1, "one submit");
+    assert.equal(JSON.parse(calls.api[0].opts.body).enqueue, true, "meta+p enqueues");
+  });
+
+  it("ctrl+shift+p and ctrl+alt+p never enqueue", async () => {
+    const timers = timersKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    dom.input.value = "plain p";
+    fireInputKey(dom, ctrlP({ shiftKey: true }));
+    fireInputKey(dom, ctrlP({ altKey: true }));
+    await timers.settle();
+    assert.equal(calls.api.length, 0, "modified chords stay with the browser");
+  });
+
+  it("ctrl+p on an empty draft never submits", async () => {
+    const timers = timersKit();
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({
+      dom,
+      extraGlobal: { PointerEvent: class PointerEvent {}, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    });
+    module.syncComposer();
+    fireInputKey(dom, ctrlP());
+    await timers.settle();
+    assert.equal(calls.api.length, 0, "nothing to enqueue");
   });
 });
 

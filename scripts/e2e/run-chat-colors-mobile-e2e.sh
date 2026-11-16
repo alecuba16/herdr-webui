@@ -109,6 +109,10 @@ messages = [
     {"id": "m6", "role": "assistant", "content": [
         {"type": "text", "text": "The filter merge drops the query when the scope is empty. Fix incoming."},
     ]},
+    {"id": "m7", "role": "user", "content": [{"type": "text", "text": "show me the markdown fixture"}]},
+    {"id": "m8", "role": "assistant", "content": [
+        {"type": "text", "text": "### Fix plan\n\n1. merge the *scope* filter\n2. keep the `query`\n\n```rust\nlet query = scope.unwrap_or(query);\n```"},
+    ]},
 ]
 snapshot = {
     "id": session_id,
