@@ -703,7 +703,14 @@ function terminalHomeLeafFor(wsId) {
   const leaves = paneLeaves(root);
   if (pendingTabPlacements && pendingTabPlacements.has("__next__")) {
     const pending = paneForPaneId(root, pendingTabPlacements.get("__next__"));
-    if (pending && leafWorkspaceId(pending) === wsId) {
+    if (pending && (leafWorkspaceId(pending) === wsId || leafWorkspaceId(pending) === null)) {
+      // The + contract: a placement wins even on an unbound panel. A
+      // fresh split leaf is unbound by construction, and rejecting its
+      // placement (the strict same-ws check) would route the new
+      // terminal into the first bound sibling instead, stranding the
+      // fresh panel empty forever. Unbound = adoptable for any ws,
+      // same as the ladder's adoption step below.
+      if (leafWorkspaceId(pending) === null) pending.wsId = wsId;
       pendingTabPlacements.delete("__next__");
       return pending;
     }
@@ -861,10 +868,13 @@ function syncTerminalTabsIntoTree(root) {
   // Route focus-or-mint (collector): a ws-only route (sidebar click,
   // workspace switch with no tab named) must land on a panel of that
   // workspace. Focus its focused-or-first bound panel; when the ws has
-  // no panel at all, mint an empty one beside the current focus. This
-  // is the sidebar's focus-or-mint contract at the model layer. Skips
-  // when a tab route exists (the owner-leaf pass above owns that case)
-  // and when no tree is renderable yet (dashboard boot).
+  // no panel at all, ADOPT an unbound panel before minting: fresh
+  // splits and boot leaves are unbound by construction, and minting
+  // beside them would grow the tree on every workspace open (the same
+  // adoption ladder terminalHomeLeafFor runs for tabs). Only a tree
+  // whose every panel belongs to another workspace mints. Skips when a
+  // tab route exists (the owner-leaf pass above owns that case) and
+  // when no tree is renderable yet (dashboard boot).
   if (routeChanged && !routeTab && state.ws) {
     const target = paneRootFor();
     if (paneTreeRenderable(target)) {
@@ -875,10 +885,21 @@ function syncTerminalTabsIntoTree(root) {
           changed = true;
         }
       } else {
-        const fresh = mintPanelForWorkspace(state.ws, activeLeaf(target) || paneLeaves(target)[0]);
-        if (fresh) {
-          focusLeaf(paneRootFor(), fresh);
+        const focused = activeLeaf(target);
+        const unbound =
+          focused && !leafWorkspaceId(focused)
+            ? focused
+            : paneLeaves(target).find((leaf) => !leafWorkspaceId(leaf)) || null;
+        if (unbound) {
+          unbound.wsId = state.ws;
+          focusLeaf(target, unbound);
           changed = true;
+        } else {
+          const fresh = mintPanelForWorkspace(state.ws, focused || paneLeaves(target)[0]);
+          if (fresh) {
+            focusLeaf(paneRootFor(), fresh);
+            changed = true;
+          }
         }
       }
     }

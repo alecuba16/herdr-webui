@@ -361,7 +361,9 @@ function loadPanes(document, stateWs) {
 function bootSplitWithTwoTerminals(ctx, renderer) {
   WsStub.instances.length = 0;
   ctx.HerdrTerminalRenderer = renderer;
-  ctx.state.tabs = [{ tab_id: "tab_1", title: "one" }];
+  // Collector model: the sync binds each tab through its row's
+  // workspace_id (the production ClientShellTab always carries one).
+  ctx.state.tabs = [{ tab_id: "tab_1", title: "one", workspace_id: "ws-1" }];
   ctx.state.tab = "tab_1";
   ctx.state.panes = [
     { tab_id: "tab_1", terminal_id: "term-aaa", focused: true, pane_id: "p1" },
@@ -375,7 +377,7 @@ function bootSplitWithTwoTerminals(ctx, renderer) {
   // (exactly what the strip + button does through newTabForPane).
   const leaves = panes.paneLeaves(panes.paneRoot());
   panes.newTabForPane(leaves[1].paneId);
-  ctx.state.tabs.push({ tab_id: "tab_2", title: "two" });
+  ctx.state.tabs.push({ tab_id: "tab_2", title: "two", workspace_id: "ws-1" });
   ctx.state.panes.push({ tab_id: "tab_2", terminal_id: "term-bbb", focused: false, pane_id: "p2" });
   panes.renderWorkspacePanes();
   return panes;

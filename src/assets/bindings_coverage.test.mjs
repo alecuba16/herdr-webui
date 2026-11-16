@@ -314,14 +314,13 @@ describe("bindings.js keydown delegation (Enter/Space on span role=button)", () 
     assert.equal(clicks, 1, "unrelated keys never synthesize clicks");
   });
 
-  it("Enter on the empty workspace surface creates the first terminal", () => {
+  it("Enter on the empty focused panel creates a terminal; a tabbed panel stays inert", () => {
     const { ctx, getElement } = boot();
     vm.runInContext(
       `window.__newTab = 0;
       newTab = function () { window.__newTab++; };
       state.ws = "ws1";
       state.tab = null;
-      workspaceHasOpenFileOrGitTab = function () { return false; };
       modalOpen = function () { return false; };`,
       ctx,
     );
@@ -330,15 +329,34 @@ describe("bindings.js keydown delegation (Enter/Space on span role=button)", () 
     // span-button lookup hijack the Enter press first
     bodyTarget.closest = (sel) => (sel === "#workspacePanes" ? bodyTarget : null);
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
-    assert.equal(ctx.window.__newTab, 1);
+    assert.equal(ctx.window.__newTab, 1, "empty focused panel mints on Enter");
     // Modal open: Enter passes through.
     vm.runInContext("modalOpen = function () { return true; };", ctx);
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
     assert.equal(ctx.window.__newTab, 1);
-    // Workspace without an open git/file tab: the workspace itself gates it.
-    vm.runInContext("modalOpen = function () { return false; }; state.tab = 'tab1';", ctx);
+    vm.runInContext("modalOpen = function () { return false; };", ctx);
+    // Collector rule: state.tab no longer gates Enter (the focused
+    // panel does). A real tab row in the focused panel blocks it.
+    const panes = ctx.window.HerdrWorkspacePanes;
+    const paneState = panes.panesStateFor("ws1");
+    vm.runInContext(
+      `state.tabs = [{ tab_id: "tab1", workspace_id: "ws1" }];`,
+      ctx,
+    );
+    paneState.root.tabs = ["tab1"];
+    paneState.root.active = "tab1";
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
-    assert.equal(ctx.window.__newTab, 1, "a selected tab blocks the boot Enter");
+    assert.equal(ctx.window.__newTab, 1, "a real tab in the focused panel blocks the Enter mint");
+    // Empty focused panel re-arms the mint (the tab lives in a sibling).
+    const fresh = { kind: "pane", paneId: "pempty", tabs: [], active: null };
+    paneState.root = {
+      kind: "row",
+      children: [paneState.root, fresh],
+      sizes: [1, 1],
+      activePaneId: "pempty",
+    };
+    ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
+    assert.equal(ctx.window.__newTab, 2, "an empty focused sibling mints on Enter");
   });
 });
 
