@@ -68,8 +68,8 @@ document.addEventListener("keydown", (e) => {
   // Enter creates the first terminal only while no file or Git pane tab
   // is open. The pane column scope covers the empty body and the leaf card.
   // Buttons keep their native Enter path (the early return above), so a
-  // focused pane control (the card's own New terminal button, pane strip
-  // buttons) still activates itself: this branch only fires for
+  // focused pane control (the card's own New terminal button, location bar
+  // pane buttons) still activates itself: this branch only fires for
   // non-button targets, which is why the leaf focus claim in
   // syncWorkspaceEmptyLeaf matters more than the scope check.
   if (

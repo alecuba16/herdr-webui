@@ -362,8 +362,9 @@ async function main() {
           console.log("FAIL file editor: .herdr-editor did not mount after file click");
         }
         await auditSurface("file editor", ".herdr-editor", { required: true });
-        // Find bar: the pane strip owns the control for the active editor.
-        const findOpened = await evalJs(`(() => { const b = document.querySelector('.pane-find-button'); if (!b) return false; b.click(); return !!document.querySelector('.herdr-editor-find:not([hidden])'); })()`);
+        // Find bar: the location bar's pane controls own the find button
+        // for the focused editor.
+        const findOpened = await evalJs(`(() => { const b = document.querySelector('.location-bar .pane-find-button'); if (!b) return false; b.click(); return !!document.querySelector('.herdr-editor-find:not([hidden])'); })()`);
         if (findOpened) {
           await auditSurface("editor find bar", ".herdr-editor-find", { required: true });
           await evalJs(`(() => { document.activeElement && document.activeElement.blur && document.activeElement.blur(); return true; })()`);

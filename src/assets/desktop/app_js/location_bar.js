@@ -206,7 +206,12 @@
           discovery.defaultBranch || "",
           discovery.createOrigin || "",
         ].join(":");
-    return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, branchToken, worktreeToken, discoveryToken].join("|");
+    const paneControlsToken = (() => {
+      const panes = window.HerdrWorkspacePanes;
+      if (!panes || typeof panes.paneBarControlsSignature !== "function") return "none";
+      try { return panes.paneBarControlsSignature(); } catch (_) { return "none"; }
+    })();
+    return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, branchToken, worktreeToken, discoveryToken, paneControlsToken].join("|");
   }
 
   // Chip click handlers: path opens the picker (phase 2), branch and
@@ -240,6 +245,18 @@
     );
   }
 
+  // Pane controls ride the bar (one group, focused pane subject). They
+  // pin to the bar's right end so the chips keep their left-to-right
+  // path/branch order and the controls never shift when a branch name
+  // grows. The panes module owns the markup: same builders that used to
+  // render inside each strip, so the buttons keep their handlers,
+  // titles, and shortcut annotations.
+  function paneControls() {
+    const panes = window.HerdrWorkspacePanes;
+    if (!panes || typeof panes.paneBarControlsHtml !== "function") return "";
+    try { return panes.paneBarControlsHtml(); } catch (_) { return ""; }
+  }
+
   function renderBar(workspace, cwd, facts) {
     // Path chip: always present while the bar is visible. The button
     // contract (class, title, name span) matches the drawer chips so the
@@ -265,6 +282,7 @@
     }
     return (
       chips.join("") +
+      paneControls() +
       (bar.branchList ? renderBranchPopover() : "") +
       (bar.worktreeList ? renderWorktreePopover() : "") +
       (bar.discoveryList ? renderDiscoveryPopover() : "")

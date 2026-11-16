@@ -312,10 +312,11 @@ async function runPass(layout, cdp) {
         const check = () => {
           const panes = Array.from(document.querySelectorAll(".workspace-pane[data-pane-id]"));
           if (panes.length >= 2) {
-            // The focused fresh pane is the split's new sibling: find the
-            // pane whose strip has no terminal tab buttons.
+            // The focused fresh pane is the split's new sibling: its strip
+            // has no terminal tab buttons. The + lives in the location
+            // bar's pane controls now and acts on the focused pane.
             const fresh = panes.find((p) => !p.querySelector('.pane-tab[data-tab-kind="terminal"]'));
-            const plus = fresh && fresh.querySelector('.pane-strip-button[aria-label="New panel"]');
+            const plus = fresh && document.querySelector('.location-bar .pane-strip-button[aria-label="New panel in a workspace"], .location-bar .pane-strip-button[aria-label="New panel"]');
             if (!fresh || !plus) { resolve("no fresh pane +"); return; }
             plus.click();
             const t0 = Date.now();
@@ -408,7 +409,7 @@ async function runPass(layout, cdp) {
       const aux = document.querySelector(".pane-terminal-aux");
       const owner = aux && panes.find((p) => p.contains(aux));
       if (!owner) { resolve("no owner pane"); return; }
-      const btn = owner.querySelector('.pane-strip-button[aria-label="Close pane and move tabs to the other pane"]');
+      const btn = owner && document.querySelector('.location-bar .pane-strip-button[aria-label="Close pane and move tabs to the other pane"]');
       if (!btn) { resolve("no close button"); return; }
       btn.click();
       setTimeout(() => {

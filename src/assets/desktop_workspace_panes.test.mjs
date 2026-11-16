@@ -998,23 +998,25 @@ test("workspaceIdForTab resolves the row's workspace and falls back on a missing
   assert.equal(panes.workspaceIdForTab(null), "ws-1", "empty id falls back to state.ws");
 });
 
-test("the strip + opens the picker with multiple workspaces and stays direct with one", () => {
+test("the bar + opens the picker with multiple workspaces and stays direct with one", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
   panes.renderWorkspacePanes();
-  let strip = nodes.container.querySelector(".pane-tab-strip") || document.getElementById("workspacePanes").children[0];
-  const singlePlus = JSON.stringify(strip ? strip.innerHTML : "");
-  assert.ok(!singlePlus.includes("pane-new-picker"), "single workspace keeps the direct create");
+  // Strips carry only tabs now: the + lives in the bar controls.
+  const strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.ok(!strip.innerHTML.includes("pane-new-picker"), "strip carries no + control");
+  assert.ok(!strip.innerHTML.includes("newTabForPane"), "strip carries no pane commands");
+  let barControls = panes.paneBarControlsHtml();
+  assert.ok(!barControls.includes("pane-new-picker"), "single workspace keeps the direct create");
   // A second workspace switches the + to the picker entry (D3).
   ctx.state.workspaces.push({ workspace_id: "ws-2", label: "feat" });
   panes.renderWorkspacePanes();
-  const strips = [...nodes.container.querySelectorAll(".pane-tab-strip")];
-  assert.ok(strips.length >= 1, "strip rendered");
-  assert.ok(strips.some((s) => s.innerHTML.includes("pane-new-picker")), "multi-workspace + opens the picker");
-  assert.ok(strips.every((s) => !s.innerHTML.includes("newTabForPane('')")), "no empty-pane direct create leak");
+  barControls = panes.paneBarControlsHtml();
+  assert.ok(barControls.includes("pane-new-picker"), "multi-workspace + opens the picker");
+  assert.ok(!barControls.includes("newTabForPane('')"), "no empty-pane direct create leak");
 });
 
 // ---- Phase 5: maximize + [⋮] pane menu --------------------------------
@@ -1724,10 +1726,10 @@ test("closePaneFor heals a dangling pointer to a migrated git tab and re-mounts 
   assert.deepEqual(gitCalls, ["changes"], "healed git tab re-mounted through openGitTab");
 });
 
-// The strip find control: an editor-active leaf renders the ⌕ button in
-// .pane-strip-controls, and clicking it opens find on the pane's mounted
-// editor. Terminal and git actives render no find control.
-test("strip find control renders for editor tabs and opens the mounted editor", () => {
+// The bar find control: an editor-active focused leaf renders the ⌕
+// button in the bar's pane controls, and clicking it opens find on the
+// pane's mounted editor. Terminal and git actives render no find control.
+test("bar find control renders for editor tabs and opens the mounted editor", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   ctx.state.tabs = [{ tab_id: "tab_2" }];
@@ -1736,12 +1738,13 @@ test("strip find control renders for editor tabs and opens the mounted editor", 
   panes.renderWorkspacePanes();
   const root = panes.paneRoot();
   const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(!strip.innerHTML.includes("pane-find-button"), "terminal active renders no find control");
+  assert.ok(!strip.innerHTML.includes("pane-find-button"), "strip carries no find control");
+  assert.ok(!panes.paneBarControlsHtml().includes("pane-find-button"), "terminal active renders no find control");
 
-  // Editor tab active: the strip carries the find control.
+  // Editor tab active: the bar carries the find control.
   root.tabs.push("editor:src/demo.py");
   panes.setActivePaneTab("editor:src/demo.py");
-  assert.ok(strip.innerHTML.includes("pane-find-button"), "editor active renders the strip find control");
+  assert.ok(panes.paneBarControlsHtml().includes("pane-find-button"), "editor active renders the bar find control");
 
   // A mounted editor inside the pane content slot: openPaneEditorFind must
   // resolve it and hand it to HerdrEditor.openFind.
@@ -1768,7 +1771,7 @@ test("strip find control renders for editor tabs and opens the mounted editor", 
   assert.equal(openFindCalls[openFindCalls.length - 1], secondEditor, "visible editor wins over hidden");
 });
 
-test("strip find control absent for git tabs", () => {
+test("bar find control absent for git tabs", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1776,8 +1779,7 @@ test("strip find control absent for git tabs", () => {
   const root = panes.paneRoot();
   root.tabs.push("git:changes");
   panes.setActivePaneTab("git:changes");
-  const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(!strip.innerHTML.includes("pane-find-button"), "git active renders no find control");
+  assert.ok(!panes.paneBarControlsHtml().includes("pane-find-button"), "git active renders no find control");
 });
 
 // ---- editor open race (Tu2) ---------------------------------------------
@@ -1897,10 +1899,10 @@ test("pane strip tabs carry middle-click close routing", () => {
   assert.deepEqual(closed[1], ["editor", encodeURIComponent("src/readme.md")], "editor id stays encoded");
 });
 
-// Markdown strip control: the eye button mirrors the file's view state
-// (preview shows the source toggle, source shows edit, edit shows
+// Markdown bar control: the eye button mirrors the focused file's view
+// state (preview shows the source toggle, source shows edit, edit shows
 // preview). Binary and truncated files get no control.
-test("markdown strip control follows the file view state", () => {
+test("markdown bar control follows the file view state", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const views = [];
@@ -1925,7 +1927,8 @@ test("markdown strip control follows the file view state", () => {
   panes.renderWorkspacePanes();
 
   const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(strip.innerHTML.includes("paneMarkdownSource('src%2Freadme.md')"),
+  assert.ok(!strip.innerHTML.includes("paneMarkdownSource"), "strip carries no markdown control");
+  assert.ok(panes.paneBarControlsHtml().includes("paneMarkdownSource('src%2Freadme.md')"),
     "preview state offers the source view");
 
   // Source state offers edit; edit state offers preview. The eye is
@@ -1935,16 +1938,16 @@ test("markdown strip control follows the file view state", () => {
     : { path, editing: false, previewSource: false, binary: false, truncated: true, dirty: false });
   root.active = "editor:src/huge.md";
   panes.renderWorkspacePanes();
-  assert.ok(!strip.innerHTML.includes("paneMarkdownEdit"), "truncated markdown shows no edit toggle");
-  assert.ok(!strip.innerHTML.includes("paneMarkdownSource"), "truncated markdown shows no eye at all");
+  assert.ok(!panes.paneBarControlsHtml().includes("paneMarkdownEdit"), "truncated markdown shows no edit toggle");
+  assert.ok(!panes.paneBarControlsHtml().includes("paneMarkdownSource"), "truncated markdown shows no eye at all");
   root.active = "editor:src/readme.md";
   panes.renderWorkspacePanes();
-  assert.ok(strip.innerHTML.includes("paneMarkdownEdit('src%2Freadme.md')"),
+  assert.ok(panes.paneBarControlsHtml().includes("paneMarkdownEdit('src%2Freadme.md')"),
     "source state offers edit");
 
   ctx.window.HerdrFileBrowser.editorFor = (path) => ({ path, editing: true, previewSource: false, binary: false, truncated: false, dirty: false });
   panes.renderWorkspacePanes();
-  assert.ok(strip.innerHTML.includes("paneMarkdownPreview('src%2Freadme.md')"),
+  assert.ok(panes.paneBarControlsHtml().includes("paneMarkdownPreview('src%2Freadme.md')"),
     "edit state offers the preview");
 
   // The strip dispatchers forward to the registry API.

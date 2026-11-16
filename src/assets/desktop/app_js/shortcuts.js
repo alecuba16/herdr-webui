@@ -449,10 +449,9 @@ function runPrefixedShortcut(e) {
       return maximizeActivePane();
     },
     togglePaneMenu: () => {
-      // The active pane is a tree pointer, not a DOM class: resolve its
-      // element, then the [⋮] inside its strip.
-      const pane = activePaneElement();
-      const button = pane && pane.querySelector ? pane.querySelector(".pane-menu-button") : null;
+      // The [⋮] rides the location bar and acts on the focused pane; the
+      // bar renders it only while the pane area is live.
+      const button = document.querySelector(".location-bar .pane-bar-controls .pane-menu-button");
       if (!button) return false;
       togglePaneMenu(button);
       return true;
@@ -493,9 +492,8 @@ function runPrefixedShortcut(e) {
     },
     markdownView: () => {
       // Cycle the active editor tab's markdown view the same way the
-      // strip eye does: preview -> source -> edit -> preview.
-      const pane = activePaneElement();
-      const button = pane && pane.querySelector ? pane.querySelector(".pane-md-button") : null;
+      // bar eye does: preview -> source -> edit -> preview.
+      const button = document.querySelector(".location-bar .pane-bar-controls .pane-md-button");
       if (button) { button.click(); return true; }
       return false;
     },

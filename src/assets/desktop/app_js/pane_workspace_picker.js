@@ -1,6 +1,7 @@
-// Workspace picker for the pane strips (D3/D6). The `+` in a strip can
-// start a terminal in ANY workspace, not only the selected one, and the
-// workspace badge opens the same picker scoped to its pane. One popover
+// Workspace picker for pane surfaces (D3/D6). The `+` in the location
+// bar controls (and a strip's workspace badge) can start a terminal in
+// ANY workspace, not only the selected one; the badge's picker is
+// scoped to its pane. One popover
 // machinery serves both entries: rows list every workspace with its
 // worktree name and branch (near-identical worktree names otherwise
 // mislead, UX review finding 4), the current workspace stays one click

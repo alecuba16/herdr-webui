@@ -117,12 +117,14 @@ async function main() {
       stubs: stubs.length,
       stubKeys: stubs.map((s) => s.dataset.paneId),
       stripTabs: stubs.map((s) => Array.from(s.querySelectorAll(".pane-tab")).map((t) => (t.textContent || "").trim()).join("|")),
-      hasControls: stubs.every((s) => s.querySelector(".pane-strip-controls")),
+      stripsBare: stubs.every((s) => !s.querySelector(".pane-strip-controls")),
+      barControls: !!document.querySelector(".location-bar .pane-bar-controls"),
     });
   })()`);
   let railInfo = null;
   try { railInfo = JSON.parse(rail); } catch { railInfo = null; }
-  record("rail renders the hidden sibling strip", !!railInfo && railInfo.stubs === 1 && railInfo.hasControls, rail.slice(0, 300));
+  record("rail renders the hidden sibling strip", !!railInfo && railInfo.stubs === 1 && railInfo.stripsBare, rail.slice(0, 300));
+  record("bar carries the pane controls while maximized", !!railInfo && railInfo.barControls === true, rail.slice(0, 300));
   record("rail strip shows the sibling editor tab", !!railInfo && /README/i.test(String(railInfo.stripTabs)), rail.slice(0, 300));
 
   // Clicking the maximized pane's own tab keeps the flat view.

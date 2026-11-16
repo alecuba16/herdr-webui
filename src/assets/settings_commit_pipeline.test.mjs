@@ -1003,12 +1003,13 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     assert.equal(vm.runInContext("window.__maximized", d.ctx), true);
   });
 
-  it("togglePaneMenu resolves the active pane strip button", () => {
+  it("togglePaneMenu resolves the location bar menu button", () => {
     const d = armedContext(`options.webuiShortcuts = { togglePaneMenu: "Digit1" };
-      activePaneElement = () => ({ querySelector: () => "the-button" });`);
+      window.__barButton = { click() {}, focus() {} };
+      document.querySelector = (sel) => (String(sel).includes("pane-menu-button") ? window.__barButton : null);`);
     d.arm();
     d.press("Digit1");
-    assert.equal(vm.runInContext("window.__paneMenu", d.ctx), "the-button", "the strip button toggles");
+    assert.equal(vm.runInContext("window.__paneMenu", d.ctx), vm.runInContext("window.__barButton", d.ctx), "the bar menu button toggles");
   });
 
   it("focus cycling walks focusable controls around the document", async () => {

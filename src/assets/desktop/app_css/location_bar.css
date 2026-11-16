@@ -59,6 +59,29 @@
   outline: none;
 }
 
+/* Pane controls in the bar: the panes module ships the same markup the
+   strips used to carry (.pane-strip-controls + .pane-strip-button, from
+   panes.css), so the button language is identical. The bar-side rules
+   pin the group to the right end past the chips and keep it outside
+   the horizontal chip scroll so a long branch name never pushes the
+   controls off view. */
+.location-bar .pane-bar-controls {
+  margin-left: auto;
+  position: sticky;
+  right: 0;
+  padding-left: 8px;
+  background: var(--panel2, var(--panel));
+}
+
+.location-bar .pane-strip-button {
+  flex: 0 0 auto;
+}
+
+.location-bar .pane-strip-button:focus-visible {
+  box-shadow: var(--focus-ring, 0 0 0 2px rgba(56, 139, 253, 0.22));
+  outline: none;
+}
+
 /* Chip icons: one mask per chip kind (folder / link / git) so each chip
    reads without its title. Mask color follows the chip text. */
 .location-bar .location-bar-chip-icon {

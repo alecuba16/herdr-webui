@@ -1023,6 +1023,11 @@ function renderWorkspacePanes() {
   // Mirror the tree's active pointer onto the pane elements (focus ring).
   if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.applyFocusClasses === "function")
     window.HerdrPaneFocus.applyFocusClasses();
+  // The bar's pane controls act on the focused leaf, so every reshape
+  // (split, close, maximize, focus follow) must repaint them. The bar
+  // sync is signature-gated: a no-change reshape costs one string compare.
+  if (window.HerdrLocationBar && typeof window.HerdrLocationBar.sync === "function")
+    window.HerdrLocationBar.sync();
 }
 
 function paneLeafElement(container, root, leaf) {
@@ -1091,7 +1096,7 @@ function renderLeafInto(pane, leaf) {
       if (isGitTab(tabId)) return paneGitTabButtonHtml(tabId, tabId === activeTab);
       return paneTerminalTabButtonHtml(paneTerminalTabById(tabId), tabId === activeTab);
     })
-    .join("") + paneWorkspaceBadgeHtml(leaf) + paneStripControlsHtml(leaf);
+    .join("") + paneWorkspaceBadgeHtml(leaf);
   if (strip.__herdrPaneSignature !== stripHtml) {
     strip.__herdrPaneSignature = stripHtml;
     strip.innerHTML = stripHtml;
@@ -1273,13 +1278,46 @@ function paneTabAuxClick(event, kind, rawId) {
   if (kind === "terminal") { void closeTab(decodeURIComponentSafe(rawId)); return; }
 }
 
-function paneStripControlsHtml(leaf) {
-  return `<span class="pane-strip-controls">${paneNewTabControlHtml(leaf)}${paneSplitControlsHtml(leaf)}${panePaneControlsHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
+// The location bar owns the pane controls now: one control group above
+// the panes acting on the focused leaf. Strips carry only tabs and the
+// workspace badge. Same builders, same handlers, one subject: the active
+// leaf resolves here instead of coming from the pressed pane's strip.
+function paneBarControlsHtml() {
+  const root = paneRootFor();
+  if (!paneTreeRenderable(root)) return "";
+  const leaf = activeLeaf(root);
+  if (!leaf) return "";
+  // The dashboard owns the pane area in the empty state: pane controls
+  // would target dead chrome, the bar renders none.
+  if (dashboardOwnsPaneArea()) return "";
+  return `<span class="pane-strip-controls pane-bar-controls">${paneNewTabControlHtml(leaf)}${paneSplitControlsHtml(leaf)}${panePaneControlsHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
 }
 
-// The editor tab's find/replace control lives in the strip next to the
-// other pane controls (it used to float inside the editor body). Only an
-// editor-active leaf shows it: terminal and git tabs have no find surface.
+// Signature for the bar's render loop: every input that changes the
+// controls' markup or state, so the bar repaints only on real change.
+function paneBarControlsSignature() {
+  const root = paneRootFor();
+  if (!paneTreeRenderable(root) || dashboardOwnsPaneArea()) return "none";
+  const leaf = activeLeaf(root);
+  if (!leaf) return "none";
+  const parent = parentSplitOf(root, leaf);
+  const maximized = maximizedLeaf(root) === leaf;
+  const activeTab = leaf.active || (leaf.tabs || [])[0] || null;
+  const tabKind = isEditorTab(activeTab) ? "editor" : isGitTab(activeTab) ? "git" : activeTab ? "term" : "none";
+  return [
+    leaf.paneId,
+    parent ? parent.kind : "",
+    paneLeaves(root).length,
+    maximized ? "max" : "",
+    tabKind,
+    paneMarkdownControlHtml(leaf) ? "md" : "",
+  ].join(":");
+}
+
+// The editor tab's find/replace control lives next to the other pane
+// controls in the location bar (it used to float inside the editor
+// body). Only an editor-active leaf shows it: terminal and git tabs
+// have no find surface.
 function paneFindControlHtml(leaf) {
   const activeTab = leaf && leaf.active;
   if (!activeTab || !isEditorTab(activeTab)) return "";
@@ -1584,20 +1622,23 @@ function closePaneMenu() {
   if (button && typeof button.focus === "function") button.focus();
 }
 
-// The pane strip is innerHTML-swapped on re-renders; this resolves the
-// current [⋮] button for a pane so menu close restores focus to a live
-// node even after the strip that opened the menu was replaced. Returns
+// The pane menu button lives in the location bar, which repaints on
+// focus moves; this resolves the live [⋮] for a pane so menu close
+// restores focus to a real node even after the bar re-rendered. Returns
 // null where the host document cannot query (unit-test fake DOMs), so
 // closePaneMenu falls back to the captured button ref.
 function paneButtonByPaneId(paneId) {
   if (typeof document.querySelector !== "function" || typeof CSS === "undefined" || !CSS.escape) return null;
-  // "*" resolves any pane's button: the fallback for a menu whose own
-  // pane vanished while it was open (closePaneMenu hands focus to the
-  // survivor so it never lands on body).
-  const pane = paneId === "*"
-    ? document.querySelector(".workspace-pane[data-pane-id]")
-    : document.querySelector(`.workspace-pane[data-pane-id="${CSS.escape(String(paneId))}"]`);
-  const button = pane && pane.querySelector(".pane-menu-button");
+  // The bar renders one controls group for the focused pane, so the
+  // pane selector must agree with it: when the requested pane is the
+  // active one its button is live, otherwise the bar is showing
+  // another pane's controls and no node can serve the request.
+  const root = paneRootFor();
+  const leaf = paneId === "*" ? activeLeaf(root) : paneForPaneId(root, paneId);
+  const active = activeLeaf(root);
+  if (!leaf || !active || leaf.paneId !== active.paneId) return null;
+  const bar = document.querySelector(".location-bar .pane-bar-controls");
+  const button = bar && bar.querySelector(".pane-menu-button");
   return button || null;
 }
 
@@ -3093,6 +3134,11 @@ window.HerdrWorkspacePanes = {
   nonTerminalTabActive: paneNonTerminalTabActive,
   openPaneEditorFind,
   saveWorkspacePanesStates,
+  // Location bar pane controls: one group above the panes acting on the
+  // focused leaf. The bar renders it and keys its repaints off the
+  // signature.
+  paneBarControlsHtml,
+  paneBarControlsSignature,
   forgetWorkspacePanes,
   pruneWorkspaceTabsFromPanes,
   // Phase 4: split tree surface. paneLeaves/activePane expose the tree

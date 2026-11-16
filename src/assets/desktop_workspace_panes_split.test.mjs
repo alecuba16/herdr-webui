@@ -611,8 +611,11 @@ test("maximize rail renders the hidden sibling strips and clears on restore", ()
   const strip = stub.querySelector(".pane-tab-strip");
   assert.ok(strip, "stub renders the sibling strip");
   assert.ok(strip.__innerHTML.includes("rail.py"), "sibling editor tab visible in the rail");
-  assert.ok(strip.__innerHTML.includes("maximizePaneFor"), "strip controls stay live");
-  assert.ok(strip.__innerHTML.includes("closePaneFor"), "strip close stays live");
+  // Strips carry tabs only now: the pane commands live in the bar
+  // controls, and the hidden sibling acts on itself once a rail tab
+  // click restores focus to its leaf.
+  assert.ok(!strip.__innerHTML.includes("maximizePaneFor"), "strip carries no pane commands");
+  assert.ok(!strip.__innerHTML.includes("closePaneFor"), "strip carries no close");
   // Restore: the rail goes, the split layout comes back.
   assert.equal(panes.maximizePaneFor(leaves[0].paneId), true, "restore accepted");
   assert.equal(nodes.container.querySelectorAll(".pane-strip-rail").length, 0, "rail cleared on restore");
@@ -1175,4 +1178,57 @@ test("rescue parks the empty-leaf card before a collapsed pane subtree is droppe
     "remount path adopts the rescued card into the pane content");
   assert.equal(document.getElementById("workspaceEmptyLeaf"), card,
     "card still reachable after the remount pass");
+});
+
+// ---- location bar pane controls ------------------------------------------
+// One control group above the panes, acting on the focused leaf. Strips
+// carry tabs only. The signature drives the bar's repaint loop, so it
+// must move with focus and reshape.
+test("bar controls render once, act on the focused leaf, and tracks focus", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "tab_2");
+
+  // Strips carry no commands; the bar group carries the full set.
+  const strip = nodes.container.querySelector(".pane-tab-strip");
+  const controls = panes.paneBarControlsHtml();
+  assert.ok(!strip.__innerHTML.includes("splitPaneDownFor"), "strip carries no split command");
+  assert.ok(controls.includes("pane-new-picker") || controls.includes("newTabForPane"), "bar carries the + control");
+  assert.ok(controls.includes("splitPaneDownFor"), "bar carries split down");
+  assert.ok(controls.includes("togglePaneMenu"), "bar carries the pane menu");
+
+  // A split doubles the leaves but the bar still renders one group for
+  // the focused leaf: the fresh sibling is active after split.
+  assert.equal(panes.splitPaneDown(), true, "split accepted");
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  assert.equal(leaves.length, 2, "two leaves");
+  const afterSplit = panes.paneBarControlsHtml();
+  assert.ok(afterSplit.includes("maximizePaneFor"), "maximize appears once a split exists");
+  assert.ok(afterSplit.includes("closePaneFor"), "close appears once a split exists");
+  const targetId = leaves[1].paneId;
+  assert.ok(afterSplit.includes(`'${encodeURIComponent(targetId)}'`),
+    "commands target the focused leaf");
+
+  // Focusing the first leaf moves the commands with it: the signature
+  // changes, the markup names the other pane.
+  const beforeFocus = panes.paneBarControlsSignature();
+  panes.maximizePaneFor(targetId);
+  panes.maximizePaneFor(targetId);
+  // focusLeaf is not exported; activate a tab on the first leaf instead.
+  leaves[0].tabs.push("editor:src/a.py");
+  ctx.HerdrWorkspacePanes.setActivePaneTab("editor:src/a.py");
+  assert.equal(panes.paneRoot().activePaneId, leaves[0].paneId, "focus moved to the first leaf");
+  assert.notEqual(panes.paneBarControlsSignature(), beforeFocus, "signature moved with focus");
+  assert.ok(panes.paneBarControlsHtml().includes(`'${encodeURIComponent(leaves[0].paneId)}'`),
+    "commands target the newly focused leaf");
+
+  // The dashboard takeover suppresses the group: pane controls would
+  // target dead chrome.
+  const dashboard = document.getElementById("projectDashboard");
+  if (dashboard) {
+    dashboard.hidden = false;
+    assert.equal(panes.paneBarControlsHtml(), "", "dashboard takeover hides the controls");
+    assert.equal(panes.paneBarControlsSignature(), "none", "signature reports the takeover");
+  }
 });
