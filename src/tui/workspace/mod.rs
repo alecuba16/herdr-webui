@@ -101,8 +101,10 @@ impl TuiApp {
         workspace_status(self, result);
     }
     /// Webui `nextPanel` / `prevPanel`: move the selected tab within the
-    /// selected workspace. The webui focuses the terminal of the next
-    /// panel; the TUI selects it so Enter attaches.
+    /// selected workspace. On a split screen (2+ tiles or zoom) the
+    /// focused tile is both the anchor and the target: the walk moves
+    /// `split_focus` onto the next panel's pane, so the chord stays
+    /// visible (it used to move only the hidden sidebar cursor).
     pub fn move_panel(&mut self, delta: isize) -> WorkspaceResult {
         let Some(workspace) = self
             .selected_workspace()
@@ -116,20 +118,40 @@ impl TuiApp {
         if len == 0 {
             return Err("no panels in this workspace".to_string());
         }
+        // Anchor on the focused tile: view_pane() follows split_focus,
+        // so a sidebar anchor lands the next panel on an invisible cursor.
+        let split_view = crate::tui::render::split_active(self);
+        let focused_pane_tab = if split_view {
+            self.focused_pane_id()
+                .and_then(|pane_id| {
+                    self.snapshot
+                        .panes
+                        .iter()
+                        .find(|pane| pane.id == pane_id)
+                        .map(|pane| pane.tab_id.clone())
+                })
+                .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
+        } else {
+            None
+        };
         // The cursor tracks the pane the TUI actually selected (the
         // selected agent's tab), because the snapshot's active_tab_id
         // only follows a real backend focus, not the local selection.
         // Without this, moving twice from a non-active tab jumps back.
-        let current = self
-            .selected_agent_pane_id()
-            .and_then(|pane_id| {
-                self.snapshot
-                    .panes
-                    .iter()
-                    .find(|pane| pane.id == pane_id)
-                    .map(|pane| pane.tab_id.clone())
+        // On a split screen the focused tile wins, even when the sidebar
+        // cursor sits elsewhere (focus walker, cross-workspace tiles).
+        let current = focused_pane_tab
+            .or_else(|| {
+                self.selected_agent_pane_id()
+                    .and_then(|pane_id| {
+                        self.snapshot
+                            .panes
+                            .iter()
+                            .find(|pane| pane.id == pane_id)
+                            .map(|pane| pane.tab_id.clone())
+                    })
+                    .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
             })
-            .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
             .or_else(|| {
                 tabs.iter()
                     .position(|tab| Some(&tab.id) == active_tab_id.as_ref())
@@ -148,7 +170,7 @@ impl TuiApp {
             .snapshot
             .panes
             .iter()
-            .find(|pane| pane.tab_id == tab_id)
+            .find(|pane| pane.tab_id == tab_id && pane.workspace_id == workspace_id)
         {
             if let Some(index) = self
                 .snapshot
@@ -158,7 +180,34 @@ impl TuiApp {
             {
                 self.selected_agent = index;
             }
+            // Move the tile focus too: view_pane feeds Enter-attach, lens,
+            // and the tail, so without it the chord reads dead on splits.
+            if split_view {
+                if self.split_tree.contains_pane(&pane.id) {
+                    // One pane, one tile (webui one-home rule): the
+                    // pane keeps its existing home, focus moves to it.
+                    self.split_focus = Some(pane.id.clone());
+                } else {
+                    // Homeless pane takes the focused leaf (webui
+                    // active-leaf seeding), swapping panes instead of
+                    // duplicating tiles.
+                    // Under zoom the focus can sit off the lone leaf;
+                    // the swap then anchors on the first leaf, the
+                    // only rendered surface.
+                    let old = self
+                        .focused_pane_id()
+                        .filter(|id| self.split_tree.contains_pane(id))
+                        .or_else(|| self.split_tree.leaves().first().map(|id| id.to_string()))
+                        .unwrap_or_default();
+                    self.split_tree =
+                        crate::tui::split::replace_leaf(&self.split_tree, &old, &pane.id);
+                    self.split_focus = Some(pane.id.clone());
+                }
+            }
         }
+        // refresh_tail follows view_pane (the just-focused tile), so it
+        // loads the new panel's tail and resets scroll/buffers on the
+        // pane switch.
         self.refresh_tail();
         Ok(format!("panel {}/{}", next + 1, len))
     }

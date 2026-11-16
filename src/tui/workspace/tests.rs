@@ -114,6 +114,106 @@ fn prefix_bracket_shortcuts_move_panels() {
 }
 
 #[test]
+fn panel_walk_moves_the_focused_tile_on_split_screens() {
+    // Regression: the chord used to move only the hidden sidebar
+    // cursor, so the screen the user looks at never changed.
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    let mut app = app_with_snapshot(workspace_snapshot());
+    // Both ws_1 panes on the tree: focus moves between existing
+    // tiles, one-home rule, no leaf swap.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    // Sidebar cursor parked on ws_2's pane_3: the walk must score
+    // from the focused tile, not this cursor.
+    app.selected_agent = 2;
+    assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_1"));
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char(']')));
+    assert_eq!(
+        app.view_pane().map(|pane| pane.id.as_str()),
+        Some("pane_2"),
+        "Ctrl+B ] must move the focused tile on a split screen"
+    );
+    assert_eq!(app.split_focus.as_deref(), Some("pane_2"));
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1", "pane_2"]);
+    assert_eq!(app.selected_agent, 1, "the sidebar cursor follows the walk");
+
+    // Wrapping back: prev from pane_2 lands on pane_1's tab, focus
+    // moves with it (selectRelativePanel wrap parity).
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('[')));
+    assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_1"));
+    assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+}
+
+#[test]
+fn panel_walk_replaces_the_focused_tile_when_the_pane_has_no_tile() {
+    // One-home rule: a homeless pane lands in the focused leaf
+    // instead of spawning a duplicate tile (webui active-leaf parity).
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    let mut app = app_with_snapshot(workspace_snapshot());
+    // Focused leaf pane_1 (ws_1), sibling pane_3 (ws_2): walking to
+    // ws_1's tileless pane_2 must swap the focused leaf in place.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_3"),
+            crate::tui::split::SplitNode::leaf("pane_1"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.selected_workspace = 0;
+    app.selected_agent = 0;
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char(']')));
+    assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_2"));
+    assert_eq!(app.split_focus.as_deref(), Some("pane_2"));
+    assert_eq!(
+        app.split_tree.leaves(),
+        vec!["pane_3", "pane_2"],
+        "the tileless panel takes the focused leaf, no duplicate tile"
+    );
+
+    // Walking back rehomes pane_1 the same way: the layout shape holds
+    // while each step swaps the focused leaf's pane.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('[')));
+    assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_1"));
+    assert_eq!(app.split_tree.leaves(), vec!["pane_3", "pane_1"]);
+}
+
+#[test]
+fn panel_walk_anchors_on_the_focused_tile_under_zoom() {
+    // Zoom keeps split_active true with a single tile: the walk must
+    // still switch panels on the maximized surface.
+    let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_2");
+    app.split_focus = Some("pane_2".to_string());
+    app.split_zoomed = true;
+    app.selected_workspace = 0;
+    app.selected_agent = 1;
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('[')));
+    assert_eq!(
+        app.view_pane().map(|pane| pane.id.as_str()),
+        Some("pane_1"),
+        "zoomed walk must still switch panels on the maximized surface"
+    );
+    assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
 fn prefix_n_opens_folder_picker_and_stages_on_enter() {
     let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
     let (mut app, _stop) = app_with_fake_backend();
