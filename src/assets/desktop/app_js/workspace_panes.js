@@ -1100,6 +1100,19 @@ function wirePanelChipDrag(container) {
   container.__herdrPanelDragWired = true;
   container.addEventListener("dragover", paneContainerPanelDragOver);
   container.addEventListener("drop", paneContainerPanelDrop);
+  // Tab drags share the container wiring (v3): the chip handlers no-op
+  // while paneDragPanelId is null and the tab handlers no-op while no
+  // tab drag is active, so one wiring serves both payloads.
+  container.addEventListener("dragover", paneContainerTabDragOver);
+  container.addEventListener("drop", paneContainerTabDrop);
+  // dragleave fires on every child boundary crossing; the preview only
+  // clears when the pointer truly leaves the collector (relatedTarget
+  // outside it), so a pane-edge hover does not flicker the square.
+  container.addEventListener("dragleave", (event) => {
+    const related = event.relatedTarget;
+    if (!related || (typeof related.closest === "function" && !related.closest("#workspacePanes")))
+      clearPanelDropPreview();
+  });
 }
 
 function renderWorkspacePanes() {
@@ -1267,14 +1280,50 @@ function markCurrentWorkspacePane(pane, leaf) {
 }
 
 // Panel chip (collector model): one chip per strip's leading edge, only
-// when the tree holds more than one panel. The chip names the panel's
-// workspace (worktree display name when it has one), click focuses the
-// panel, drag carries the whole panel (text/herdr-panel-chip payload,
-// chunk C wires the drop). Single-panel trees hide the chip: one panel
-// names itself through the location bar and sidebar already.
+// when the tree holds more than one panel. Standalone panels name their
+// workspace (worktree display name when it has one). Panels inside a
+// GROUP (a top-level split subtree with 2+ leaves, v3) share ONE group
+// chip instead: the icon marks the group, the number is the member
+// count, click focuses the group's last-focused leaf, and the drag
+// carries the whole GROUP (paneGroupDragStart). Dragging a MEMBER out
+// (dropping beside the group, not inside it) ungroups it. Single-panel
+// trees hide the chip: one panel names itself through the location bar
+// and sidebar already.
+function paneGroupChipHtml(root, group) {
+  const members = group ? paneLeaves(group) : [];
+  const focusedMember = (group && group.kind !== "pane" && group.activePaneId
+    && paneForPaneId(root, group.activePaneId)) || (members.find((leaf) => leaf === activeLeaf(root)) || members[0]);
+  if (!focusedMember) return "";
+  const label = `▣ ${members.length}`;
+  const title = `Panel group (${members.length} panels)`;
+  const encodedFocus = focusedMember.paneId ? encodeURIComponent(focusedMember.paneId) : "";
+  return `<button class="pane-panel-chip pane-panel-group-chip" draggable="true" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-pane-id="${escapeAttr(focusedMember.paneId || "")}" data-group-chip="1" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedFocus)}')" ondragstart="paneGroupChipDragStart(event)" ondragend="panePanelChipDragEnd()">${escapeHtml(label)}</button>`;
+}
+
+// The top-level subtree owning a leaf: a group when it is a split with
+// 2+ leaves, else null (the leaf is standalone). Derived, never stored:
+// the tree already expresses membership and a stored flag would drift
+// on every reshape.
+function paneGroupForLeaf(root, leaf) {
+  if (!root || !leaf || !isPaneSplit(root)) return null;
+  const holder = root.children.find((child) => child === leaf
+    || (isPaneSplit(child) && paneLeaves(child).includes(leaf)));
+  return holder && isPaneSplit(holder) && paneLeaves(holder).length >= 2 ? holder : null;
+}
+
 function panePanelChipHtml(leaf) {
   const root = paneRootFor();
   if (!leaf || paneLeaves(root).length < 2) return "";
+  // Group chips render on the group's FOCUSED member strip only; the
+  // other members keep standalone chips. Every member stays draggable
+  // (the drag-out ungroup needs a per-member handle), and one group
+  // chip names the group instead of every strip repeating it.
+  const group = paneGroupForLeaf(root, leaf);
+  const active = activeLeaf(root);
+  if (group && group !== root && leaf === active) return paneGroupChipHtml(root, group);
+  // Non-focused members fall through: their workspace-name chip doubles
+  // as the drag-out handle (a drop beside the group re-parents this
+  // member alone, ungrouping it).
   const wsId = leafWorkspaceId(leaf);
   const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
   const label = workspace
@@ -1324,6 +1373,11 @@ function focusPanelFor(encodedPaneId) {
 
 // Chip drag payload (chunk C wires the drop edges): the panel identity,
 // not the workspace, so the drop re-docks THIS panel wherever it lands.
+// Group drag state: the member id whose GROUP the drag carries, or the
+// member a group drag wants to ungroup. Cleared wherever the panel id
+// clears.
+let paneDragGroupMemberId = null;
+
 function panePanelChipDragStart(event) {
   if (!event || !event.dataTransfer) return;
   const paneId = event.target && event.target.dataset ? event.target.dataset.paneId : "";
@@ -1336,76 +1390,153 @@ function panePanelChipDragStart(event) {
   event.dataTransfer.effectAllowed = "move";
 }
 
-function panePanelChipDragEnd() {
-  paneDragPanelId = null;
-  clearPanelDropEdge();
+// Group chip drag (v3): the drag carries the GROUP, identified by the
+// chip's focused member id. paneDragGroupMemberId rides beside the
+// panel id: the drop resolves the group through the member, a drop
+// INSIDE the group reorders within it (the member leaf moves, same as a
+// standalone chip drop), and a drop OUTSIDE the group re-parents the
+// whole GROUP subtree when the drop names a leaf OUTSIDE it. Ungroup
+// uses the member chip's own drag: panePanelChipDragStart on a member
+// whose group chip exists drops the MEMBER alone (reDockPanelLeaf),
+// which is the drag-out the user asked for. The payload keeps the
+// herdr-panel-chip type so every drop site already in flight accepts it.
+function paneGroupChipDragStart(event) {
+  if (!event || !event.dataTransfer) return;
+  const chip = event.target;
+  const memberId = chip && chip.dataset ? chip.dataset.paneId : "";
+  if (!memberId) {
+    if (event.preventDefault) event.preventDefault();
+    return;
+  }
+  paneDragPanelId = memberId;
+  paneDragGroupMemberId = memberId;
+  event.dataTransfer.setData("text/herdr-panel-chip", memberId);
+  event.dataTransfer.effectAllowed = "move";
 }
 
-// Edge zone hit test for the chip drag: the collector container's four
-// edges, a 14px band each, resolving to before/after on the two axes.
-// Left/up = dragged first child, right/down = dragged last. Center (and
-// anything outside the band map) is null: dropping there cancels, per
-// the design (outside the four zones is a no-op, and row-level re-dock
-// beside a specific sibling is out of scope for v2).
-function panelDropEdgeAt(container, event) {
+function panePanelChipDragEnd() {
+  paneDragPanelId = null;
+  paneDragGroupMemberId = null;
+  clearPanelDropPreview();
+}
+
+// Half-region hit test for the chip drag (v3): the hovered pane's
+// rectangle splits into four halves; the pointer's half names the target
+// {paneId, axis, first}. first=true means the dragged leaf lands before
+// the target (left/up), false after it (right/down). No dead center: a
+// half always resolves, the four halves tile the whole pane. Falls back
+// to the container rect when no pane sits under the pointer (gaps,
+// stub documents): the collector halves then, same rule as v2's bands
+// but full-height so nothing cancels mid-drag.
+function panelDropTargetAt(container, event) {
   if (!container || !container.getBoundingClientRect) return null;
-  const rect = container.getBoundingClientRect();
+  const pane = paneElementUnderPointer(container, event);
+  const rect = (pane && pane.getBoundingClientRect ? pane : container).getBoundingClientRect();
+  const paneId = pane && pane.dataset ? pane.dataset.paneId : null;
   const x = (event.clientX || 0) - rect.left;
   const y = (event.clientY || 0) - rect.top;
   if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
-  const band = 14;
-  if (x <= band) return { axis: "row", first: true };
-  if (x >= rect.width - band) return { axis: "row", first: false };
-  if (y <= band) return { axis: "column", first: true };
-  if (y >= rect.height - band) return { axis: "column", first: false };
+  const horizontal = x < rect.width / 2;
+  const vertical = y < rect.height / 2;
+  // The wider half wins the axis: a wide pane's left/right halves are
+  // what the pointer can actually express there, and a square pane
+  // resolves by the pointer's dominant offset (x splits first, the
+  // halves are equal).
+  if (rect.width >= rect.height) return { paneId, axis: "row", first: horizontal };
+  return { paneId, axis: "column", first: vertical };
+}
+
+// Deepest .workspace-pane under the drag pointer. paneFromPoint climbs
+// from the event target instead of elementFromPoint: the drag ghost
+// intercepts hit testing, but the event target chain stays real.
+function paneElementUnderPointer(container, event) {
+  let node = event && event.target;
+  while (node && node !== container) {
+    if (hasClass(node, "workspace-pane") && node.dataset && node.dataset.paneId) return node;
+    node = node.parentElement;
+  }
   return null;
 }
 
-function clearPanelDropEdge() {
-  const container = el("workspacePanes");
-  if (container && container.classList && container.classList.remove) {
-    container.classList.remove("panel-drop-left", "panel-drop-right", "panel-drop-up", "panel-drop-down");
-  }
-}
-
-function panelDropEdgeClass(edge) {
-  if (!edge) return "";
-  if (edge.axis === "row") return edge.first ? "panel-drop-left" : "panel-drop-right";
-  return edge.first ? "panel-drop-up" : "panel-drop-down";
-}
-
-// Container dragover for the chip drag: highlight the hovered edge, or
-// clear when the pointer sits in the dead center. preventDefault only
-// inside a live zone so the browser keeps its default refusal elsewhere
-// (the drop would otherwise land on whatever element sits under the
+// Container dragover for the chip drag: position the dotted preview
+// square over the hovered half. preventDefault only while a target
+// resolves so the browser keeps its default refusal elsewhere (the
+// drop would otherwise land on whatever element sits under the
 // pointer, e.g. a tab strip running its own tab-drop logic).
 function paneContainerPanelDragOver(event) {
   if (!paneDragPanelId) return;
   const container = el("workspacePanes");
-  const edge = panelDropEdgeAt(container, event);
-  clearPanelDropEdge();
-  if (!edge) return;
+  const target = panelDropTargetAt(container, event);
+  if (!target) return;
   if (event.preventDefault) event.preventDefault();
   if (event.dataTransfer && "dropEffect" in event.dataTransfer)
     event.dataTransfer.dropEffect = "move";
-  const cls = panelDropEdgeClass(edge);
-  if (container && container.classList && container.classList.add) container.classList.add(cls);
+  positionPanelDropPreview(container, event, target);
 }
 
-// Chip drop: re-dock the dragged panel at the hovered edge by WRAPPING
-// the root (design: left/up puts the dragged leaf before the old root,
-// right/down after it; newRoot = {kind, sizes:[1,1], children}). The
-// dragged leaf keeps tabs, active pointer, wsId, and panelLabel. A
-// dragged ROOT leaf cancels: wrapping it would nest the tree one level
-// with itself as the only child, a shape nothing renders better.
+// The preview square: one singleton overlay, repositioned per
+// dragover. Never per-pane nodes: the render loop re-parents pane
+// content on every pass and must not own drag chrome. Cleared on
+// dragleave/drop/dragend; a missing rect (stub documents) hides it.
+function positionPanelDropPreview(container, event, target) {
+  let preview = document.getElementById("panelDropPreview");
+  if (!preview) {
+    preview = document.createElement("div");
+    preview.id = "panelDropPreview";
+    preview.className = "panel-drop-preview";
+    preview.setAttribute("aria-hidden", "true");
+  }
+  if (preview.parentElement !== container && container.appendChild)
+    container.appendChild(preview);
+  const pane = target.paneId ? findPaneElementById(container, target.paneId) : null;
+  const host = pane && pane.getBoundingClientRect ? pane : container;
+  const rect = host.getBoundingClientRect ? host.getBoundingClientRect() : null;
+  if (!rect || !preview.style) {
+    if (preview.hidden !== undefined) preview.hidden = true;
+    return;
+  }
+  if (preview.hidden) preview.hidden = false;
+  const half = target.axis === "row"
+    ? { left: target.first ? rect.left : rect.left + rect.width / 2, top: rect.top, width: rect.width / 2, height: rect.height }
+    : { left: rect.left, top: target.first ? rect.top : rect.top + rect.height / 2, width: rect.width, height: rect.height / 2 };
+  const hostRect = container.getBoundingClientRect ? container.getBoundingClientRect() : { left: 0, top: 0 };
+  preview.style.left = (half.left - hostRect.left) + "px";
+  preview.style.top = (half.top - hostRect.top) + "px";
+  preview.style.width = half.width + "px";
+  preview.style.height = half.height + "px";
+  preview.style.display = "block";
+}
+
+// Preview teardown on dragleave/drop/dragend: the overlay is chrome
+// owned by the drag, never by a render pass.
+function clearPanelDropPreview() {
+  const preview = document.getElementById("panelDropPreview");
+  if (preview && preview.style) preview.style.display = "none";
+}
+
+// Chip drop (v3): the hovered pane splits at the hovered half and the
+// dragged leaf takes that half. Same extend/nest mechanics as Split,
+// anchored on the TARGET pane (not the route): the user points at the
+// landing spot, the tree wraps to honor it. The dragged leaf keeps
+// tabs, active pointer, wsId, and panelLabel. A dragged ROOT leaf
+// cancels: a single-panel tree has nothing to split beside.
+// GROUP drags (paneDragGroupMemberId set): a drop targeting a leaf
+// OUTSIDE the dragged group moves the WHOLE GROUP (the subtree re-docks
+// beside the target, splitting at the hovered half); a drop INSIDE the
+// group reorders the member within it (the member leaf alone moves,
+// same as a standalone chip drop). MEMBER drags without the group flag
+// stay single-panel moves, which is the drag-out ungroup: the member
+// re-parents beside the group and the group keeps 1 fewer member.
 function paneContainerPanelDrop(event) {
   if (!paneDragPanelId) return;
   const container = el("workspacePanes");
-  const edge = panelDropEdgeAt(container, event);
+  const target = panelDropTargetAt(container, event);
   const draggedId = paneDragPanelId;
+  const groupMemberId = paneDragGroupMemberId;
   paneDragPanelId = null;
-  clearPanelDropEdge();
-  if (!edge) return;
+  paneDragGroupMemberId = null;
+  clearPanelDropPreview();
+  if (!target) return;
   if (event.preventDefault) event.preventDefault();
   const entry = panesStateFor();
   if (!entry) return;
@@ -1414,7 +1545,20 @@ function paneContainerPanelDrop(event) {
     renderWorkspacePanes();
     return;
   }
-  reDockPanelLeaf(draggedId, edge);
+  if (groupMemberId) {
+    const group = paneGroupForLeaf(root, paneForPaneId(root, groupMemberId));
+    const targetLeaf = target.paneId ? paneForPaneId(root, target.paneId) : null;
+    const insideGroup = !!(group && targetLeaf && group !== root
+      && paneLeaves(group).includes(targetLeaf));
+    if (group && group !== root && !insideGroup && targetLeaf) {
+      reDockGroupSubtree(group, target);
+      return;
+    }
+    // Inside-group drops and degenerate groups (the whole tree) fall
+    // through to the member re-dock: the member moves within its group
+    // exactly like a standalone panel drop beside a sibling.
+  }
+  reDockPanelLeaf(draggedId, target);
 }
 
 // Collapses any split the detach emptied down to one child: the live
@@ -1429,7 +1573,13 @@ function collapseSingleChildSplits(node) {
   return node;
 }
 
-function reDockPanelLeaf(paneId, edge) {
+// Half-region re-dock (v3): the TARGET pane splits at the drop half and
+// the dragged leaf takes that half. Detach first (same no-collapse rule
+// as the root wrap), then wrap the target leaf in a split of the drop
+// axis with the dragged leaf on the pointer's side. The drop's paneId
+// may be null (pointer over a gap): the old root-wrap behavior covers
+// that, the collector halves are the landing spot then.
+function reDockPanelLeaf(paneId, target) {
   const entry = panesStateFor();
   if (!entry) return;
   const root = entry.root;
@@ -1445,20 +1595,110 @@ function reDockPanelLeaf(paneId, edge) {
   slot.holder.splice(slot.index, 1);
   // The detach can empty a nested split down to one child somewhere in
   // the old tree; the renderer refuses those, so collapse them before
-  // the wrap reads the old root.
-  const oldRoot = collapseSingleChildSplits(entry.root) || leaf;
-  const axis = edge.axis === "row" ? "row" : "column";
-  entry.root = {
-    kind: axis,
-    sizes: [1, 1],
-    children: edge.first ? [leaf, oldRoot] : [oldRoot, leaf],
-  };
+  // the wrap reads the tree.
+  const healedRoot = collapseSingleChildSplits(entry.root) || leaf;
+  entry.root = healedRoot;
+  const axis = target.axis === "row" ? "row" : "column";
+  const targetLeaf = target.paneId && paneForPaneId(entry.root, target.paneId);
+  if (!targetLeaf || targetLeaf === leaf) {
+    // Gap drop or a self-target (stale DOM id): wrap the root, the v2
+    // behavior. Self-targets cancel: the leaf is already detached, and
+    // re-inserting it beside itself would nest the tree for nothing.
+    if (!targetLeaf) {
+      entry.root = {
+        kind: axis,
+        sizes: [1, 1],
+        children: target.first ? [leaf, healedRoot] : [healedRoot, leaf],
+      };
+    } else {
+      // Re-attach the detached leaf where it came from: the tree must
+      // not lose a panel to a no-op drop.
+      const back = findLeafSlot(entry.root, targetLeaf);
+      if (back && back.holder !== "root") back.holder.splice(back.index, 0, leaf);
+      else entry.root = { kind: "row", sizes: [1, 1], children: [leaf, entry.root] };
+    }
+  } else {
+    const targetSlot = findLeafSlot(entry.root, targetLeaf);
+    if (targetSlot && targetSlot.holder === "root") {
+      entry.root = {
+        kind: axis,
+        sizes: [1, 1],
+        children: target.first ? [leaf, entry.root] : [entry.root, leaf],
+      };
+    } else if (targetSlot && targetSlot.parent.kind === axis) {
+      // Extend: the dragged leaf joins the target's own axis at the
+      // hovered half, sharing the target's slot size.
+      const share = Math.max(1, targetSlot.parent.sizes[targetSlot.index] || 1) / 2;
+      targetSlot.holder.splice(target.first ? targetSlot.index : targetSlot.index + 1, 0, leaf);
+      targetSlot.parent.sizes.splice(target.first ? targetSlot.index : targetSlot.index + 1, 0, share);
+      targetSlot.parent.sizes[targetSlot.index + (target.first ? 1 : 0)] = share;
+    } else if (targetSlot) {
+      // Nest: the target leaf keeps its slot, an inner split of the
+      // drop axis pairs it with the dragged leaf on the pointer's side.
+      targetSlot.holder[targetSlot.index] = {
+        kind: axis,
+        sizes: [1, 1],
+        children: target.first ? [leaf, targetLeaf] : [targetLeaf, leaf],
+      };
+    }
+  }
   // Focus follows the moved panel; the route write lands through the
   // same sync pass every reshape uses.
   focusLeaf(entry.root, leaf);
   saveWorkspacePanesStates();
   renderWorkspacePanes();
   writeRouteFromLeaf(leaf);
+}
+
+// Group move (v3): detach the whole GROUP subtree and re-dock it beside
+// the target leaf at the hovered half. Same slot mechanics as the member
+// re-dock, applied to the subtree node: extend when the target's parent
+// runs the drop axis, nest otherwise, wrap the root when the target is
+// the root leaf. The subtree keeps its inner shape and ids.
+function reDockGroupSubtree(group, target) {
+  const entry = panesStateFor();
+  if (!entry) return;
+  const root = entry.root;
+  if (!root || !isPaneSplit(group) || group === root) return;
+  const axis = target.axis === "row" ? "row" : "column";
+  const targetLeaf = target.paneId ? paneForPaneId(root, target.paneId) : null;
+  if (!targetLeaf) return;
+  // Detach the group from its slot.
+  const groupSlot = (root.children || []).indexOf(group);
+  if (groupSlot < 0) return;
+  root.children.splice(groupSlot, 1);
+  if (Array.isArray(root.sizes)) root.sizes.splice(groupSlot, 1);
+  // A 2-slot root holding the group alone collapses to the single
+  // survivor: the renderer refuses 1-child splits, and the wrap below
+  // re-expresses the pair.
+  const healed = collapseSingleChildSplits(root) || targetLeaf;
+  entry.root = healed;
+  const liveTarget = paneForPaneId(entry.root, target.paneId);
+  if (!liveTarget) {
+    entry.root = { kind: axis, sizes: [1, 1], children: target.first ? [group, entry.root] : [entry.root, group] };
+  } else {
+    const slot = findLeafSlot(entry.root, liveTarget);
+    if (slot && slot.holder === "root") {
+      entry.root = { kind: axis, sizes: [1, 1], children: target.first ? [group, entry.root] : [entry.root, group] };
+    } else if (slot && slot.parent.kind === axis) {
+      const share = Math.max(1, slot.parent.sizes[slot.index] || 1) / 2;
+      slot.holder.splice(target.first ? slot.index : slot.index + 1, 0, group);
+      slot.parent.sizes.splice(target.first ? slot.index : slot.index + 1, 0, share);
+      slot.parent.sizes[slot.index + (target.first ? 1 : 0)] = share;
+    } else if (slot) {
+      slot.holder[slot.index] = { kind: axis, sizes: [1, 1], children: target.first ? [group, liveTarget] : [liveTarget, group] };
+    } else {
+      return;
+    }
+  }
+  // Focus keeps the group's active member; the route write rides the
+  // same sync pass every reshape uses.
+  const members = paneLeaves(group);
+  const focusMember = (group.activePaneId && paneForPaneId(entry.root, group.activePaneId)) || members[0];
+  focusLeaf(entry.root, focusMember || members[0]);
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+  if (focusMember) writeRouteFromLeaf(focusMember);
 }
 
 function renderLeafInto(pane, leaf) {
@@ -2156,6 +2396,97 @@ function activeDragKind() {
   if (paneDragTabId) return { kind: "tab", tabId: paneDragTabId };
   if (state.dragWorkspace) return { kind: "workspace", workspaceId: state.dragWorkspace };
   return null;
+}
+
+// Container-level TAB drag (v3): dropping a tab on a pane HALF creates
+// a new panel there holding the tab. The strip's own dragover keeps the
+// caret reorder flow; this handler owns pane-content hovers while a tab
+// drag is in flight. Preview square is shared with the chip drag (one
+// overlay, positioned the same way).
+function paneContainerTabDragOver(event) {
+  const drag = activeDragKind();
+  if (!drag || drag.kind !== "tab") return;
+  // The strip owns its own hover: skip when the pointer rides a strip
+  // so the caret keeps precedence and the square never overlaps it.
+  const onStrip = event.target && event.target.closest && event.target.closest(".pane-tab-strip");
+  if (onStrip) return;
+  const container = el("workspacePanes");
+  const target = panelDropTargetAt(container, event);
+  if (!target) return;
+  const owner = target.paneId ? paneForTab(paneRootFor(), drag.tabId) : null;
+  const targetLeaf = target.paneId ? paneForPaneId(paneRootFor(), target.paneId) : null;
+  // No-op drops do not paint a square: a single-panel tree has nothing
+  // to split beside, and a tab dropped on its own pane just reorders.
+  if (!targetLeaf || (owner && owner === targetLeaf && paneLeaves(paneRootFor()).length < 2)) return;
+  if (event.preventDefault) event.preventDefault();
+  if (event.dataTransfer && "dropEffect" in event.dataTransfer)
+    event.dataTransfer.dropEffect = "move";
+  positionPanelDropPreview(container, event, target);
+}
+
+// Tab drop on a pane half: split the target at the hovered half, park a
+// fresh empty leaf there, then move the dragged tab into it (the same
+// movePaneTabTo mechanics, no surface re-create). Own-pane drops fall
+// through to the strip reorder path (the tab never left the pane, the
+// caret owns that drop).
+function paneContainerTabDrop(event) {
+  const drag = activeDragKind()
+    || (event.dataTransfer && event.dataTransfer.getData
+      ? { kind: "tab", tabId: event.dataTransfer.getData("text/herdr-pane-tab") }
+      : null);
+  if (!drag || drag.kind !== "tab") return;
+  const onStrip = event.target && event.target.closest && event.target.closest(".pane-tab-strip");
+  if (onStrip) return;
+  const container = el("workspacePanes");
+  const target = panelDropTargetAt(container, event);
+  const tabId = drag.tabId;
+  paneTabDragEnd();
+  clearPanelDropPreview();
+  if (!target || !target.paneId) return;
+  const root = paneRootFor();
+  if (!paneTreeRenderable(root)) return;
+  const source = paneForTab(root, tabId);
+  const targetLeaf = paneForPaneId(root, target.paneId);
+  if (!source || !targetLeaf) return;
+  if (targetLeaf === source) return;
+  if (paneLeaves(root).length < 2) return;
+  if (event.preventDefault) event.preventDefault();
+  const fresh = newEmptyLeaf();
+  fresh.wsId = leafWorkspaceId(targetLeaf) || leafWorkspaceId(source);
+  if (!splitLeafWith(targetLeaf, fresh, target)) return;
+  // The fresh leaf owns the moved tab: same placement contract as a
+  // + mint, so the sync never re-homes the id on the next snapshot.
+  if (movePaneTabTo(tabId, fresh.paneId, null)) {
+    focusLeaf(paneRootFor(), fresh);
+    saveWorkspacePanesStates();
+    renderWorkspacePanes();
+  }
+}
+
+// Split the TARGET leaf at the drop half with a GIVEN fresh leaf (the
+// tab drop owns its leaf so it can move the tab in after). Same
+// extend/nest mechanics as splitActivePane, anchored on the target.
+function splitLeafWith(targetLeaf, fresh, target) {
+  const entry = panesStateFor();
+  const root = entry.root;
+  if (!paneTreeRenderable(root) || !targetLeaf) return false;
+  const axis = target.axis === "row" ? "row" : "column";
+  const slot = findLeafSlot(root, targetLeaf);
+  if (!slot) return false;
+  if (slot.holder === "root") {
+    entry.root = { kind: axis, sizes: [1, 1], children: target.first ? [fresh, entry.root] : [entry.root, fresh] };
+    return true;
+  }
+  if (slot.parent.kind === axis) {
+    if (!Array.isArray(slot.parent.sizes)) slot.parent.sizes = slot.holder.map(() => 1);
+    const share = Math.max(1, slot.parent.sizes[slot.index] || 1) / 2;
+    slot.holder.splice(target.first ? slot.index : slot.index + 1, 0, fresh);
+    slot.parent.sizes.splice(target.first ? slot.index : slot.index + 1, 0, share);
+    slot.parent.sizes[slot.index + (target.first ? 1 : 0)] = share;
+    return true;
+  }
+  slot.holder[slot.index] = { kind: axis, sizes: [1, 1], children: target.first ? [fresh, targetLeaf] : [targetLeaf, fresh] };
+  return true;
 }
 
 function paneStripDragOver(event) {

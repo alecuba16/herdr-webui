@@ -619,10 +619,14 @@ test("parking beyond the cap evicts least-recently-focused first", async () => {
   for (let i = 0; i < 8; i += 1) panes.splitPaneRight();
   const leaves = panes.paneLeaves(panes.paneRoot());
   assert.ok(leaves.length >= 10, "ten leaves stand");
+  // The chord splits anchor on the route leaf, so paneLeaves walks the
+  // nested chain in creation-reversed order (p1, p10, p9, ...). Resolve
+  // each tab's target leaf BY ID, not by walk position.
+  const leafById = new Map(leaves.map((leaf) => [leaf.paneId, leaf]));
   for (let i = 3; i <= 10; i += 1) {
     ctx.state.tabs.push({ tab_id: `tab_${i}`, title: `t${i}` });
     ctx.state.panes.push({ tab_id: `tab_${i}`, terminal_id: `term-${i}`, focused: false, pane_id: `p${i}` });
-    const leaf = leaves[i - 1];
+    const leaf = leafById.get(`p${i}`);
     leaf.tabs = [`tab_${i}`];
     leaf.active = `tab_${i}`;
   }

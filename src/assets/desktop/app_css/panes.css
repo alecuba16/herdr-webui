@@ -348,21 +348,31 @@
   cursor: grabbing;
 }
 
-/* Chip re-dock edge zones: one 3px accent line inset on the hovered
- edge of the collector, only while a chip drag is in flight (JS adds
- panel-drop-left/right/up/down). Pointer-events none: the line is an
- overlay, never a drop target itself. */
-.workspace-panes.panel-drop-left {
-  box-shadow: inset 3px 0 0 var(--accent);
+/* Group chip (v3): same hit area and grab cursor as the member chip,
+ the double-border accent distinguishes the group from a lone panel
+ without adding a color the theme does not define. Count text inherits
+ the chip font; the ▣ glyph already carries the icon. */
+.pane-panel-group-chip {
+  border: 1px solid var(--accent);
+  border-left-width: 2px;
+  background: color-mix(in srgb, var(--accent-soft), var(--accent) 14%);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
-.workspace-panes.panel-drop-right {
-  box-shadow: inset -3px 0 0 var(--accent);
-}
-.workspace-panes.panel-drop-up {
-  box-shadow: inset 0 3px 0 var(--accent);
-}
-.workspace-panes.panel-drop-down {
-  box-shadow: inset 0 -3px 0 var(--accent);
+
+/* Half-region drop preview (v3): a dotted, shaded square over the
+ hovered half of the target pane while a chip or tab drag is in flight.
+ Absolute against the collector (JS positions it per dragover);
+ pointer-events none so it never becomes the drop target itself and
+ the drag events keep hitting the pane under the pointer. */
+.panel-drop-preview {
+  position: absolute;
+  z-index: 30;
+  border: 2px dotted var(--accent);
+  border-radius: var(--radius, 6px);
+  background: color-mix(in srgb, var(--accent), transparent 84%);
+  pointer-events: none;
+  display: none;
 }
 
 .pane-ws-badge:hover {
