@@ -1265,9 +1265,13 @@ async function closeTab(id) {
       // socket and wterm instance this tab owned.
       if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseForTab(id);
       // The closed terminal may have been a split leaf's last tab: drop
-      // the empty pane so the survivor takes the layout back.
+      // the empty pane so the survivor takes the layout back (v3.2
+      // auto-close; the focused-leaf and last-panel invariants live in
+      // the pane module's sweep).
       if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
         window.HerdrWorkspacePanes.collapseLeafForClosedTab(id);
+      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.sweepAbandonedEmptyLeaves)
+        window.HerdrWorkspacePanes.sweepAbandonedEmptyLeaves();
       if (closingWorkspaceId && typeof maybeAutoCloseWorkspace === "function")
         maybeAutoCloseWorkspace(closingWorkspaceId);
       if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {

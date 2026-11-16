@@ -464,11 +464,14 @@ test("tab drop on a pane half creates a fresh panel holding the dragged tab", ()
   });
   const root = panes.paneRoot();
   const leavesAfter = panes.paneLeaves(root);
-  assert.equal(leavesAfter.length, 3, "drop minted a fresh panel");
+  // v3.2: the drag emptied the source leaf (armed), so the sweep folds
+  // it on the same render: the fresh panel takes the tab, the tree
+  // keeps two panels (the untouched sibling + the fresh one).
+  assert.equal(leavesAfter.length, 2, "drop minted a fresh panel and folded the emptied source");
   const holder = leavesAfter.find((leaf) => leaf.tabs.includes("tab_2"));
   assert.ok(holder, "dragged tab lives in the tree");
   assert.notEqual(holder.paneId, leaves[1].paneId, "the tab moved to a NEW panel");
-  assert.deepEqual([...leaves[1].tabs], [], "source leaf emptied");
+  assert.ok(!leavesAfter.some((leaf) => leaf.paneId === leaves[1].paneId), "emptied source left the tree");
 });
 
 test("tab drop on its own pane half splits that pane instead of refusing", () => {
@@ -490,11 +493,14 @@ test("tab drop on its own pane half splits that pane instead of refusing", () =>
     preventDefault() {},
   });
   const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  // v3.2: the own-pane half drop is a split gesture: the fresh half
+  // takes the tab and the emptied remaining half STANDS like a fresh
+  // split, so the tree grows by one panel.
   assert.equal(leavesAfter.length, 3, "own-pane drop minted a fresh panel");
   const holder = leavesAfter.find((leaf) => leaf.tabs.includes("tab_1"));
   assert.ok(holder, "dragged tab lives in the tree");
   assert.notEqual(holder.paneId, source.paneId, "the tab moved to the new half panel");
-  assert.deepEqual([...source.tabs], [], "source leaf released the tab");
+  assert.ok(leavesAfter.some((leaf) => leaf.paneId === source.paneId && !leaf.tabs.length), "emptied half stands as a fresh split");
 });
 
 test("tab drop on a single-panel tree splits that panel instead of refusing", () => {
@@ -532,6 +538,8 @@ test("tab drop on a single-panel tree splits that panel instead of refusing", ()
     preventDefault() {},
   });
   const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  // v3.2: single-panel own-pane drop is the split gesture too: the
+  // fresh half holds the tab and the emptied original half stands.
   assert.equal(leavesAfter.length, 2, "single-panel drop split the tree");
   const holder = leavesAfter.find((l) => l.tabs.includes("tab_1"));
   assert.ok(holder, "dragged tab lives in the fresh half");
