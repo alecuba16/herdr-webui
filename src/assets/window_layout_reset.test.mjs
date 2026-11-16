@@ -313,7 +313,20 @@ describe("window layout reset integration", () => {
       "(() => { const out = []; for (const k of Object.keys(localStorage)) out.push(k); return JSON.stringify(out); })()",
       ctx,
     ));
-    assert.ok(!keys.includes("herdr-web-workspace-panes"), "panes store cleared");
+    // Collector model: the reset rebuilds a single pane in place, and
+    // the panes module persists the fresh session tree on that render.
+    // The key re-appearing with a one-leaf session entry is correct; the
+    // invariant is the STALE layout (split tree, maximized id) is gone.
+    const panesStore = vm.runInContext("localStorage.getItem('herdr-web-workspace-panes')", ctx);
+    if (panesStore != null) {
+      const stored = JSON.parse(panesStore);
+      const keys = Object.keys(stored);
+      assert.ok(keys.every((k) => k === "__session__"), "only the session tree persists after reset");
+      const sessionRoot = stored.__session__ && stored.__session__.root;
+      assert.ok(sessionRoot && sessionRoot.kind === "pane", "reset rebuilds a single pane");
+      assert.equal(stored.__session__.maximizedPaneId ?? null, null, "maximized state cleared");
+      assert.ok(!Array.isArray(sessionRoot.children), "no split survives the reset");
+    }
     // The reset writes the fresh defaults back through the canonical
     // setters on purpose: shell mode "terminal" (same as absent for the
     // restore reads) and sidebar flags "0". The right sidebar reads
@@ -424,8 +437,16 @@ describe("window layout reset integration", () => {
     `, ctx);
     const done = await vm.runInContext("resetWindowLayout({ skipConfirm: true })", ctx);
     assert.equal(done, true);
+    // Collector model: the reset rebuilds a fresh single-pane session
+    // tree in place, so the store re-appears with the fresh entry, not
+    // the stale pre-reset blob ("keep" is gone either way).
     const kept = vm.runInContext("localStorage.getItem('herdr-web-workspace-panes')", ctx);
-    assert.equal(kept, null);
+    assert.notEqual(kept, "keep");
+    if (kept != null) {
+      const stored = JSON.parse(kept);
+      const sessionRoot = stored.__session__ && stored.__session__.root;
+      assert.ok(sessionRoot && sessionRoot.kind === "pane", "skipConfirm reset leaves a single pane tree");
+    }
   });
 
   it("the settings module registers a Window layout section calling the reset", () => {
