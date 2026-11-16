@@ -866,16 +866,14 @@ describe("app bundle load", () => {
     ok(actions.includes('role="button" tabindex="0" data-workspace-action="close"'), "close action is a focusable span button");
     ok(actions.includes('role="button" tabindex="0" data-workspace-action="remove-worktree"'), "remove action is a focusable span button");
 
-    // The zero-tab card and the dashboard pin the same hints: the empty
-    // leaf reuses newPanel, the dashboard reuses newWorkspace/search.
-    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
-    vm.runInContext(
-      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
-      ctx,
-    );
-    ctx.syncWorkspaceEmptyLeaf();
-    ok(emptyLeaf.innerHTML.includes('title="New terminal (Ctrl+Q then P)"'), "empty-leaf button carries the newPanel shortcut");
-    ok(emptyLeaf.innerHTML.includes('aria-label="New terminal (Ctrl+Q then P)"'), "empty-leaf button aria-label carries the shortcut");
+    // The per-leaf empty panel card pins the same hint (collector
+    // model): mountEmptyPanelCard reuses newPanel. The vm harness's
+    // DOM stubs cannot host real pane trees, so pin the markup source
+    // (the runtime card behavior lives in the panes module's own vm
+    // suite, desktop_workspace_panes*.test.mjs).
+    const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
+    ok(panesSource.includes('const newTitle = typeof titleWithWebuiShortcut === "function"\n    ? titleWithWebuiShortcut("New terminal", "newPanel")'), "panel card button derives its title from the newPanel shortcut");
+    ok(panesSource.includes('<button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}"'), "panel card button carries title and aria-label together");
 
     const dashboard = ctx.document.getElementById("projectDashboard");
     vm.runInContext(
@@ -891,7 +889,15 @@ describe("app bundle load", () => {
     ok(dashboard.innerHTML.includes("Actions menu (Ctrl+Q then /)"), "dashboard menu button carries the search shortcut");
   });
 
-  it("hides the empty leaf as file and Git tabs open, then restores it when they close", async () => {
+  it("per-leaf cards own the empty state; the retired global card never shows", async () => {
+    // Collector model: the visibility lifecycle the old test pinned on
+    // the global card (show when the workspace has no tabs, hide while
+    // file/git tabs exist, restore on close) belongs to the per-leaf
+    // card inside each panel's mount (mountPaneTabContent), covered by
+    // the panes module's own vm suite. What this bundle-level test
+    // pins: the retired global node stays hidden through the same
+    // open/close cycle the old test drove, and the pane tree survives
+    // it untouched (no collapse into the empty state).
     const ctx = context();
     runSource(ctx);
     vm.runInContext(
@@ -906,25 +912,21 @@ describe("app bundle load", () => {
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
 
     ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "empty workspace shows the zero-terminal card");
+    equal(emptyLeaf.hidden, true, "empty workspace: retired global card stays hidden");
 
     ctx.window.HerdrFileBrowser = {
       async openEditorTab(path) { panes.setActivePaneTab(`editor:${path}`); },
     };
     await panes.openEditorTab("src/app.js");
-    equal(emptyLeaf.hidden, true, "opening a file hides the card immediately");
+    equal(emptyLeaf.hidden, true, "opening a file keeps the retired card hidden");
     panes.closeEditorTabImmediate("src/app.js");
-    equal(emptyLeaf.hidden, false, "closing the last file restores the card");
+    equal(emptyLeaf.hidden, true, "closing the last file keeps it hidden too");
 
     ctx.window.HerdrGitUi = { async openViewTab() {} };
     await panes.openGitTab("log");
-    equal(emptyLeaf.hidden, true, "opening Git log hides the card immediately");
-    await panes.openGitTab("changes");
-    equal(emptyLeaf.hidden, true, "opening Changes keeps the card hidden");
+    equal(emptyLeaf.hidden, true, "opening Git log keeps the retired card hidden");
     panes.closeGitTabImmediate("log");
-    equal(emptyLeaf.hidden, true, "another open Git view keeps the card hidden");
-    panes.closeGitTabImmediate("changes");
-    equal(emptyLeaf.hidden, false, "closing the last Git view restores the card");
+    equal(emptyLeaf.hidden, true, "closing the last Git view keeps it hidden");
 
     paneState.root = {
       kind: "row",
@@ -936,17 +938,8 @@ describe("app bundle load", () => {
       activePaneId: "p2",
     };
     ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "an open Git tab in another pane hides the global card");
-    const splitRoot = panes.paneRoot();
-    splitRoot.activePaneId = "p1";
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "switching panes does not reveal the card beside an open Git tab");
-    splitRoot.children[0].tabs = ["terminal"];
-    splitRoot.children[0].active = "terminal";
-    splitRoot.activePaneId = "p2";
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "empty split panes retain the card when no file or Git tab remains");
-    equal(panes.paneLeaves(splitRoot).length, 2, "visibility changes do not collapse the split tree");
+    equal(emptyLeaf.hidden, true, "split trees keep the retired card hidden");
+    equal(panes.paneLeaves(paneState.root).length, 2, "the sync never collapses the split tree");
   });
 
   it("wires the question dialog and span-button keyboard paths", () => {
@@ -1053,12 +1046,12 @@ describe("app bundle load", () => {
     equal(shell.hidden, false, "workspace open: shell shows");
   });
 
-  it("keeps the zero-tab workspace card up with a drawer open", () => {
-    // The Files/Git/Search drawers host in the right sidebar column, so
-    // they must not blank the center: the empty-leaf card stays mounted
-    // and the terminal shell stays hidden. The live bug: opening Files on
-    // a zero-tab workspace hid the card and stranded a dead Connecting
-    // shell in the pane slot, and closing the drawer never healed it.
+  it("keeps the retired global card hidden and the shell parked while drawers open", () => {
+    // Collector model: the global #workspaceEmptyLeaf card is retired
+    // (per-leaf cards own the empty state inside each panel). What must
+    // hold from the old drawer tests: drawers host in the sidebar, they
+    // never strand a visible Connecting shell in the pane column, and
+    // the retired node never leaks back into view.
     const ctx = context();
     runSource(ctx);
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
@@ -1068,36 +1061,32 @@ describe("app bundle load", () => {
       ctx,
     );
 
-    ctx.window.HerdrFileBrowser = { isVisible: () => true };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with the file drawer open");
-    equal(shell.hidden, true, "shell stays hidden with the file drawer open");
-
-    ctx.window.HerdrGitUi = { isVisible: () => true };
-    ctx.window.HerdrFileBrowser = { isVisible: () => false };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with the git drawer open");
-    equal(shell.hidden, true, "shell stays hidden with the git drawer open");
-
-    ctx.window.HerdrGitUi = { isVisible: () => false };
-    ctx.window.HerdrSearchPanel = { isOpen: () => true };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with the search drawer open");
-    equal(shell.hidden, true, "shell stays hidden with the search drawer open");
-
-    ctx.window.HerdrSearchPanel = { isOpen: () => false };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with no drawer open");
-    equal(shell.hidden, true, "shell stays hidden with no drawer open");
-
-    // A terminal tab landing kills the card and frees the shell again.
-    vm.runInContext(`state.tab = "tab_1";`, ctx);
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "card hides once a terminal tab exists");
-    equal(shell.hidden, false, "shell frees up once a terminal tab exists");
+    for (const [name, drawer] of [
+      ["file", () => { ctx.window.HerdrFileBrowser = { isVisible: () => true }; ctx.window.HerdrGitUi = { isVisible: () => false }; }],
+      ["git", () => { ctx.window.HerdrGitUi = { isVisible: () => true }; ctx.window.HerdrFileBrowser = { isVisible: () => false }; }],
+      ["search", () => { ctx.window.HerdrGitUi = { isVisible: () => false }; ctx.window.HerdrSearchPanel = { isOpen: () => true }; }],
+      ["none", () => { ctx.window.HerdrSearchPanel = { isOpen: () => false }; }],
+    ]) {
+      drawer();
+      // Seed both shell states: the retired sync must leave the shell
+      // alone entirely (the per-leaf mount owns its visibility), so
+      // whatever it was, it stays.
+      shell.hidden = false;
+      ctx.syncWorkspaceEmptyLeaf();
+      equal(shell.hidden, false, `visible shell untouched with the ${name} drawer open`);
+      shell.hidden = true;
+      ctx.syncWorkspaceEmptyLeaf();
+      equal(shell.hidden, true, `hidden shell untouched with the ${name} drawer open`);
+      equal(emptyLeaf.hidden, true, `retired card stays hidden with the ${name} drawer open`);
+    }
   });
 
-  it("focuses the empty-leaf card once per show, not under modals or user focus", () => {
+  it("retired sync never claims focus, under modals, user focus, or body focus", () => {
+    // Collector model: the per-leaf card makes no focus claim. The
+    // document-level Enter handler resolves the focused LEAF (pane
+    // clicks set it), so the old claim-on-show dance (body focus,
+    // stale opener buttons, modal guards, per-show trackers) is gone.
+    // The sync must stay a pure no-op on focus.
     const ctx = context();
     runSource(ctx);
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
@@ -1110,94 +1099,41 @@ describe("app bundle load", () => {
     emptyLeaf.focus = () => {
       focusCalls += 1;
     };
+
     const body = ctx.document.body;
+    ctx.document.activeElement = body;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 0, "body-level focus: no claim");
+
     const inputFocus = { closest: () => null, tagName: "INPUT" };
-
-    // First show with body-level focus claims the leaf once, and the
-    // card carries the Enter hint.
-    ctx.document.activeElement = body;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "first sync with body focus claims the leaf");
-    ok(emptyLeaf.innerHTML.includes('class="workspace-empty-leaf-hint"'), "card carries the hint paragraph");
-    ok(emptyLeaf.innerHTML.includes("<kbd>Enter</kbd>"), "hint wraps the key in kbd");
-
-    // Poll-tick re-syncs never steal focus back, even at body-level
-    // focus: only the per-show tracker blocks this claim.
-    ctx.document.activeElement = body;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "second sync does not re-focus");
-
-    // User focus elsewhere also blocks, and hides nothing.
     ctx.document.activeElement = inputFocus;
     ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "sync leaves user focus alone");
+    equal(focusCalls, 0, "user focus elsewhere: no claim");
 
-    // Hiding resets the tracker, so each guard below is the only thing
-    // standing between a fresh show and a focus claim.
-    vm.runInContext(`state.tab = "tab_1";`, ctx);
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "leaf hides once a tab exists");
-    vm.runInContext(`state.tab = null;`, ctx);
-
-    // Modal up: the leaf still shows under the scrim but claims nothing.
     const settingsModal = ctx.document.getElementById("settingsModal");
     settingsModal.style.display = "grid";
     ctx.document.activeElement = body;
     ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "no focus claim while a modal is up");
-    equal(emptyLeaf.hidden, false, "leaf still shows under the modal scrim");
+    equal(focusCalls, 0, "modal up: no claim");
     settingsModal.style.display = "none";
 
-    // Modal closed but the user focused a real control: no claim.
-    ctx.document.activeElement = inputFocus;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "no focus claim while user focus sits elsewhere");
-
-    // Back at body-level focus the claim lands and the tracker re-arms.
-    ctx.document.activeElement = body;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 2, "focus claimed once body focus returns");
-  });
-
-  it("claims the leaf from a stale opener button after the workspace-open flow", () => {
-    // Live bug: closing the open-workspace modal restores focus to the
-    // button that opened it (header Actions, dashboard card). The leaf
-    // used to refuse the claim then, so Enter natively re-clicked that
-    // button (Actions reopened the palette) instead of creating the
-    // first terminal the card advertises. The claim now takes over from
-    // any button outside the pane column: that focus arrived from the
-    // modal restore, not from the user.
-    const ctx = context();
-    runSource(ctx);
-    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
-    vm.runInContext(
-      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
-      ctx,
-    );
-
-    let focusCalls = 0;
-    emptyLeaf.focus = () => {
-      focusCalls += 1;
-    };
-
+    // The stale opener button case from the old flow: a header button
+    // outside #workspacePanes focused by the modal restore. Enter on it
+    // natively clicks the button; the collector's Enter contract
+    // (target inside #workspacePanes or body) covers the pane side, so
+    // the sync owes nothing here either.
     const headerButton = {
       tagName: "BUTTON",
-      // A header button sits outside #workspacePanes and is no input.
       closest: (sel) =>
         sel === "#workspacePanes" || sel.includes("input") ? null : {},
     };
     ctx.document.activeElement = headerButton;
     ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "leaf claims focus from a stale opener button");
-
-    // The tracker still gates: a later sync with the same button focused
-    // does not re-focus.
-    ctx.document.activeElement = headerButton;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "second sync does not re-focus the leaf");
+    equal(focusCalls, 0, "stale opener button: no claim");
+    equal(emptyLeaf.hidden, true, "retired node stays hidden through it all");
   });
 
-  it("fires the zero-tab Enter handler across its guard matrix", () => {
+  it("fires the empty-panel Enter handler across its guard matrix", () => {
     // The fake document drops listeners on the floor, so record them
     // before the bundle runs and drive the real handler by hand.
     const keydowns = [];
@@ -1232,7 +1168,7 @@ describe("app bundle load", () => {
     const body = ctx.document.body;
     body.closest = (sel) => (sel === "#workspacePanes" ? body : null);
     fire(body);
-    equal(newTabCalls, 1, "Enter with body focus mints the first terminal");
+    equal(newTabCalls, 1, "Enter with body focus mints a terminal in the focused empty panel");
 
     const inPanes = {
       tagName: "SECTION",
@@ -1240,6 +1176,15 @@ describe("app bundle load", () => {
     };
     fire(inPanes);
     equal(newTabCalls, 2, "Enter inside the pane column mints a terminal");
+
+    // Buttons keep their native Enter: a focused control activates
+    // itself, never the mint.
+    const buttonInPanes = {
+      tagName: "BUTTON",
+      closest: (sel) => (sel === "#workspacePanes" ? {} : null),
+    };
+    fire(buttonInPanes);
+    equal(newTabCalls, 2, "Enter on a focused button is left to the button");
 
     const outside = { tagName: "SECTION", closest: () => null };
     fire(outside);
@@ -1258,22 +1203,45 @@ describe("app bundle load", () => {
     equal(newTabCalls, 2, "Enter under an open modal is ignored");
     settingsModal.style.display = "none";
 
+    // Collector rule: the FOCUSED panel decides. Tabs in the focused
+    // panel (any kind) block the mint; the global zero-tab guard is
+    // gone, so an empty SIBLING never blocks and a tabbed focused
+    // panel never mints.
     const panes = ctx.window.HerdrWorkspacePanes;
-    const root = panes.paneRoot();
+    const paneState = panes.panesStateFor("ws-1");
+    const root = paneState.root;
     root.tabs = ["git:log"];
     root.active = "git:log";
     fire(inPanes);
-    equal(newTabCalls, 2, "Enter with an open Git tab is ignored");
+    equal(newTabCalls, 2, "Enter with the focused panel holding a Git tab is ignored");
     root.tabs = ["editor:src/app.js"];
     root.active = "editor:src/app.js";
     fire(inPanes);
-    equal(newTabCalls, 2, "Enter with an open file tab is ignored");
-
-    root.tabs = [];
-    root.active = null;
-    vm.runInContext(`state.tab = "tab_1";`, ctx);
+    equal(newTabCalls, 2, "Enter with the focused panel holding a file tab is ignored");
+    root.tabs = ["tab_1"];
+    root.active = "tab_1";
+    // The terminal id needs a backend row: paneTabsForTree filters
+    // unknown ids (the strip shows nothing for them), and the guard
+    // uses that same view.
+    vm.runInContext(`state.tabs = [{ tab_id: "tab_1", workspace_id: "ws-1" }];`, ctx);
     fire(inPanes);
-    equal(newTabCalls, 2, "Enter with a live terminal tab is ignored");
+    equal(newTabCalls, 2, "Enter with the focused panel holding a terminal tab is ignored");
+
+    // The mixed tree: a tabbed panel focused beside an empty sibling
+    // stays inert, and focusing the empty sibling re-arms the mint.
+    const leafA = { kind: "pane", paneId: "pa", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1" };
+    const leafB = { kind: "pane", paneId: "pb", tabs: [], active: null, wsId: "ws-1" };
+    paneState.root = {
+      kind: "row",
+      children: [leafA, leafB],
+      sizes: [1, 1],
+      activePaneId: "pa",
+    };
+    fire(inPanes);
+    equal(newTabCalls, 2, "empty sibling does not unblock Enter: the focused panel holds tabs");
+    paneState.root.activePaneId = "pb";
+    fire(inPanes);
+    equal(newTabCalls, 3, "focusing the empty sibling re-arms the Enter mint");
   });
 
   it("keeps file history header scoped to selected files", () => {
@@ -10184,17 +10152,28 @@ describe("lens terminal toggle force redraw", () => {
 describe("zero-tab enter creates terminal", () => {
   const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
-  it("routes Enter on the zero-tab pane body to newTab", () => {
+  it("routes Enter on the empty focused panel to newTabForPane", () => {
     const bindingsSource = read("./desktop/app_js/bindings.js");
     match(bindingsSource, /#workspacePanes/);
     match(bindingsSource, /target === document\.body \|\|\n\s+target === document\.documentElement \|\|\n\s+!!target\.closest\("#workspacePanes"\)/);
-    // The zero-terminal Enter shortcut follows the same file/Git pane-tab
-    // guard as the empty-leaf visibility rule.
+    // Collector model: the focused panel decides, not the global
+    // zero-tab state. No !state.tab / workspaceHasOpenFileOrGitTab
+    // guard survives: a sibling panel's editor/git tabs never block an
+    // empty panel's Enter.
     match(
       bindingsSource,
-      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!state\.tab &&\n\s+!workspaceHasOpenFileOrGitTab\(\) &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
+      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
     );
-    match(bindingsSource, /newTab\(\);\n\s+return;/);
+    match(bindingsSource, /panes\.focusedLeaf === "function" \? panes\.focusedLeaf\(\) : null;/);
+    match(bindingsSource, /panes\.newTabForPane\(encodeURIComponent\(leaf\.paneId\)\);/);
+    // The empty-panel guard uses the same filtered view the strip
+    // renders (paneTabsForTree): the seed placeholder renders as an
+    // empty panel and must mint; unknown ids never unblock Enter.
+    match(
+      bindingsSource,
+      /typeof panes\.paneTabsForTree === "function"\n\s+\? panes\.paneTabsForTree\(leaf\)\n\s+: \(leaf && leaf\.tabs\) \|\| \[\];/,
+    );
+    match(bindingsSource, /if \(leaf && !leafTabs\.length\) \{/);
   });
 
   it("keeps span-button Enter semantics ahead of the zero-tab branch", () => {
@@ -10215,11 +10194,16 @@ describe("zero-tab enter creates terminal", () => {
 describe("empty leaf hint and focus", () => {
   const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
-  it("renders the Enter hint on the empty-leaf card", () => {
+  it("renders the Enter hint on the per-leaf empty panel card", () => {
+    // Collector model: the hint markup lives in workspace_panes.js now
+    // (mountEmptyPanelCard), one card per empty panel. The global
+    // render.js card is retired: its sync only hides the node.
+    const panesSource = read("./desktop/app_js/workspace_panes.js");
+    match(panesSource, /<p class="workspace-empty-leaf-hint">Press <kbd>Enter<\/kbd> to open a terminal\.<\/p>/, "hint markup minted by mountEmptyPanelCard");
+    match(panesSource, /function mountEmptyPanelCard\(content, leaf\) \{/, "per-leaf card mount exists");
+    match(panesSource, /function removeEmptyPanelCard\(content\) \{/, "stale card removal on tab gain");
     const renderSource = read("./desktop/app_js/render.js");
-    match(renderSource, /<p class="workspace-empty-leaf-hint">Press <kbd>Enter<\/kbd> to open a terminal\.<\/p>/, "hint markup minted by syncWorkspaceEmptyLeaf");
-    match(renderSource, /let emptyLeafFocused = false;/, "focus tracker exists");
-    match(renderSource, /emptyLeafFocused = false;\n\s+return;\n\s+\}/, "tracker resets when the leaf hides");
+    match(renderSource, /emptyLeaf\.hidden = true;/, "global card stays retired");
   });
 
   it("styles the hint and kbd under the empty-leaf card", () => {
@@ -10228,7 +10212,7 @@ describe("empty leaf hint and focus", () => {
     match(baseCss, /\.workspace-empty-leaf-card \.workspace-empty-leaf-hint kbd \{[^}]*background: var\(--panel2\);[^}]*border-bottom-width: 2px;/s, "kbd rule mirrors the shortcut-row recipe");
   });
 
-  it("makes the empty leaf programmatically focusable", () => {
+  it("keeps the app.html empty leaf node hidden as a retired placeholder", () => {
     const appHtml = read("./app.html");
     match(appHtml, /<section class="workspace-empty-leaf" id="workspaceEmptyLeaf" tabindex="-1" hidden><\/section>/, "leaf carries tabindex=-1");
   });

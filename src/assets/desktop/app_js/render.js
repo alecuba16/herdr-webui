@@ -133,6 +133,9 @@ let lastThemeHeadIcon = null;
 // show. render() reruns on every poll tick; the flag stops each sync
 // from stealing focus back from whatever the user opened meanwhile.
 let emptyLeafFocused = false;
+// Retired with the singleton card (collector model): kept because the
+// vm harnesses reference it when driving syncWorkspaceEmptyLeaf, and the
+// reset below is the last write.
 
 function panesByTabIndex() {
   const map = new Map();
@@ -159,71 +162,19 @@ function syncProjectDashboard() {
   if (!showDashboard) return;
   dashboard.innerHTML = renderProjectDashboard();
 }
-// Keep the zero-terminal card only while the workspace has no open file or
-// Git pane tabs. Those tabs own the center pane independently of state.tab.
-function workspaceHasOpenFileOrGitTab() {
-  const panes = window.HerdrWorkspacePanes;
-  if (
-    !state.ws ||
-    !panes ||
-    !panes.paneRoot ||
-    !panes.paneLeaves ||
-    !panes.isEditorTab ||
-    !panes.isGitTab
-  )
-    return false;
-  const root = panes.paneRoot();
-  return panes.paneLeaves(root).some((leaf) =>
-    (leaf.tabs || []).some(
-      (tabId) => panes.isEditorTab(tabId) || panes.isGitTab(tabId),
-    ),
-  );
-}
-
 function syncWorkspaceEmptyLeaf() {
-  const emptyLeaf = el("workspaceEmptyLeaf"),
-    shell = el("terminalShell");
+  const emptyLeaf = el("workspaceEmptyLeaf");
   if (!emptyLeaf) return;
-  const show = !!state.ws && !state.tab && !workspaceHasOpenFileOrGitTab();
-  emptyLeaf.hidden = !show;
-  if (shell) shell.hidden = show;
-  if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.mountEmptyLeafInPane)
-    window.HerdrWorkspacePanes.mountEmptyLeafInPane(show);
-  if (!show) {
-    emptyLeafFocused = false;
-    return;
-  }
-  const workspace = (state.workspaces || []).find((w) => w.workspace_id === state.ws);
-  const name = workspace ? (workspace.worktree ? worktreeDisplayName(workspace) : workspace.label) : "";
-  const newTitle = titleWithWebuiShortcut("New terminal", "newPanel");
-  emptyLeaf.innerHTML = `<div class="workspace-empty-leaf-card"><h1>${escapeHtml(name || "Workspace")}</h1><p>No terminal in this workspace yet. Files, Git, and Search still work.</p><p class="workspace-empty-leaf-hint">Press <kbd>Enter</kbd> to open a terminal.</p><button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTab()">New terminal</button></div>`;
-  // Claim focus once per show so the pane body has a concrete Enter
-  // target instead of relying on body-level focus alone. A modal holds
-  // its own focus (open-workspace dialog, question modal), and so does
-  // anything the user actually focused; only the body-level default
-  // is up for grabs. One exception rides along: the control that opened
-  // the workspace (header Actions, dashboard card) gets its focus back
-  // when the open-workspace modal closes, so the zero-tab render lands
-  // with that button focused. Enter would then natively re-click it
-  // (Actions reopens the palette) instead of creating the first
-  // terminal the card advertises. A button outside the pane column is
-  // never something the user focused on purpose here: focus landed on
-  // it from the modal-restore, so the leaf claims it too.
-  if (!emptyLeafFocused && !modalOpen()) {
-    const active = document.activeElement;
-    const staleOpenerButton =
-      active &&
-      active.tagName === "BUTTON" &&
-      !(active.closest && active.closest("#workspacePanes")) &&
-      !(active.closest && active.closest("input, select, textarea, [contenteditable='true']"));
-    if (
-      ((!active || active === document.body || active === document.documentElement) || staleOpenerButton) &&
-      emptyLeaf.focus
-    ) {
-      emptyLeaf.focus();
-      emptyLeafFocused = true;
-    }
-  }
+  // Collector model: the singleton zero-terminal card retired. Per-leaf
+  // empty panel cards (mountEmptyPanelCard in workspace_panes.js) own
+  // the empty state now: one card per empty panel, naming its own bound
+  // workspace. The old global condition (no route tab, no file/git tab)
+  // could not express a mixed tree (empty panel beside a terminal
+  // panel), and it fought the per-leaf cards for the content slot. The
+  // node stays hidden at its app.html home; mountEmptyLeafInPane's
+  // mount path is dead too, kept exported only for the vm harnesses.
+  emptyLeaf.hidden = true;
+  emptyLeafFocused = false;
 }
 function renderProjectDashboard() {
   const actionsMenu = window.HerdrActionRegistry.action("actions-menu");

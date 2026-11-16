@@ -1062,9 +1062,22 @@ function ensureDivider(element, dividerFor, kind) {
   return divider;
 }
 
+// One-time drag wiring on the collector container for chip drags.
+// Signature-gated so every render pass costs one boolean check. The vm
+// harnesses run fake elements without addEventListener: skip wiring
+// there, same contract as wirePaneStripDrag.
+function wirePanelChipDrag(container) {
+  if (!container || container.__herdrPanelDragWired) return;
+  if (typeof container.addEventListener !== "function") return;
+  container.__herdrPanelDragWired = true;
+  container.addEventListener("dragover", paneContainerPanelDragOver);
+  container.addEventListener("drop", paneContainerPanelDrop);
+}
+
 function renderWorkspacePanes() {
   const container = el("workspacePanes");
   if (!container) return;
+  wirePanelChipDrag(container);
   // The no-workspace dashboard owns the container: no pane skeleton
   // renders until a workspace opens, or the takeover would rebuild
   // dead chrome right after the dashboard mount pass detached it.
@@ -1286,12 +1299,138 @@ function focusPanelFor(encodedPaneId) {
 function panePanelChipDragStart(event) {
   if (!event || !event.dataTransfer) return;
   const paneId = event.target && event.target.dataset ? event.target.dataset.paneId : "";
-  event.dataTransfer.setData("text/herdr-panel-chip", paneId || "");
+  if (!paneId) {
+    if (event.preventDefault) event.preventDefault();
+    return;
+  }
+  paneDragPanelId = paneId;
+  event.dataTransfer.setData("text/herdr-panel-chip", paneId);
   event.dataTransfer.effectAllowed = "move";
 }
 
 function panePanelChipDragEnd() {
-  // Chunk C: clear the edge highlight state.
+  paneDragPanelId = null;
+  clearPanelDropEdge();
+}
+
+// Edge zone hit test for the chip drag: the collector container's four
+// edges, a 14px band each, resolving to before/after on the two axes.
+// Left/up = dragged first child, right/down = dragged last. Center (and
+// anything outside the band map) is null: dropping there cancels, per
+// the design (outside the four zones is a no-op, and row-level re-dock
+// beside a specific sibling is out of scope for v2).
+function panelDropEdgeAt(container, event) {
+  if (!container || !container.getBoundingClientRect) return null;
+  const rect = container.getBoundingClientRect();
+  const x = (event.clientX || 0) - rect.left;
+  const y = (event.clientY || 0) - rect.top;
+  if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+  const band = 14;
+  if (x <= band) return { axis: "row", first: true };
+  if (x >= rect.width - band) return { axis: "row", first: false };
+  if (y <= band) return { axis: "column", first: true };
+  if (y >= rect.height - band) return { axis: "column", first: false };
+  return null;
+}
+
+function clearPanelDropEdge() {
+  const container = el("workspacePanes");
+  if (container && container.classList && container.classList.remove) {
+    container.classList.remove("panel-drop-left", "panel-drop-right", "panel-drop-up", "panel-drop-down");
+  }
+}
+
+function panelDropEdgeClass(edge) {
+  if (!edge) return "";
+  if (edge.axis === "row") return edge.first ? "panel-drop-left" : "panel-drop-right";
+  return edge.first ? "panel-drop-up" : "panel-drop-down";
+}
+
+// Container dragover for the chip drag: highlight the hovered edge, or
+// clear when the pointer sits in the dead center. preventDefault only
+// inside a live zone so the browser keeps its default refusal elsewhere
+// (the drop would otherwise land on whatever element sits under the
+// pointer, e.g. a tab strip running its own tab-drop logic).
+function paneContainerPanelDragOver(event) {
+  if (!paneDragPanelId) return;
+  const container = el("workspacePanes");
+  const edge = panelDropEdgeAt(container, event);
+  clearPanelDropEdge();
+  if (!edge) return;
+  if (event.preventDefault) event.preventDefault();
+  if (event.dataTransfer && "dropEffect" in event.dataTransfer)
+    event.dataTransfer.dropEffect = "move";
+  const cls = panelDropEdgeClass(edge);
+  if (container && container.classList && container.classList.add) container.classList.add(cls);
+}
+
+// Chip drop: re-dock the dragged panel at the hovered edge by WRAPPING
+// the root (design: left/up puts the dragged leaf before the old root,
+// right/down after it; newRoot = {kind, sizes:[1,1], children}). The
+// dragged leaf keeps tabs, active pointer, wsId, and panelLabel. A
+// dragged ROOT leaf cancels: wrapping it would nest the tree one level
+// with itself as the only child, a shape nothing renders better.
+function paneContainerPanelDrop(event) {
+  if (!paneDragPanelId) return;
+  const container = el("workspacePanes");
+  const edge = panelDropEdgeAt(container, event);
+  const draggedId = paneDragPanelId;
+  paneDragPanelId = null;
+  clearPanelDropEdge();
+  if (!edge) return;
+  if (event.preventDefault) event.preventDefault();
+  const entry = panesStateFor();
+  if (!entry) return;
+  const root = entry.root;
+  if (root && root.kind === "pane" && root.paneId === draggedId) {
+    renderWorkspacePanes();
+    return;
+  }
+  reDockPanelLeaf(draggedId, edge);
+}
+
+// Collapses any split the detach emptied down to one child: the live
+// renderer refuses <2-child splits (isPaneSplit), and the load-time
+// normalizePaneTree is not in this path. Returns the collapsed node, or
+// null when the detach left nothing (caller decides the fallback).
+function collapseSingleChildSplits(node) {
+  if (!node || (node.kind !== "row" && node.kind !== "column")) return node;
+  if (!Array.isArray(node.children)) return node;
+  node.children = node.children.filter(Boolean).map(collapseSingleChildSplits).filter(Boolean);
+  if (node.children.length < 2) return node.children[0] || null;
+  return node;
+}
+
+function reDockPanelLeaf(paneId, edge) {
+  const entry = panesStateFor();
+  if (!entry) return;
+  const root = entry.root;
+  if (!root) return;
+  const leaf = paneForPaneId(root, paneId);
+  if (!leaf) return;
+  const slot = findLeafSlot(root, leaf);
+  if (!slot || slot.holder === "root") return;
+  // Detach without collapsing: the old tree must keep its exact shape
+  // under the remaining leaf (dropLeafFromTree's sibling promotion and
+  // single-child collapse would flatten one split level per re-dock,
+  // eating the layout the user built).
+  slot.holder.splice(slot.index, 1);
+  // The detach can empty a nested split down to one child somewhere in
+  // the old tree; the renderer refuses those, so collapse them before
+  // the wrap reads the old root.
+  const oldRoot = collapseSingleChildSplits(entry.root) || leaf;
+  const axis = edge.axis === "row" ? "row" : "column";
+  entry.root = {
+    kind: axis,
+    sizes: [1, 1],
+    children: edge.first ? [leaf, oldRoot] : [oldRoot, leaf],
+  };
+  // Focus follows the moved panel; the route write lands through the
+  // same sync pass every reshape uses.
+  focusLeaf(entry.root, leaf);
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+  writeRouteFromLeaf(leaf);
 }
 
 function renderLeafInto(pane, leaf) {
@@ -1856,6 +1995,12 @@ function paneButtonByPaneId(paneId) {
 // element the dragover handler moves between tab slots, so the drop
 // target is always a concrete index, not an approximate hover.
 let paneDragTabId = null;
+
+// Panel chip drag (collector, chunk C): the dragged leaf's paneId while
+// a text/herdr-panel-chip payload is in flight. The dragover edge zones
+// on #workspacePanes read this, not the payload (getData is forbidden
+// during dragover; only types are readable).
+let paneDragPanelId = null;
 
 function paneTabDragStart(event) {
   if (!event || !event.target || !event.target.dataset) return;
@@ -3007,6 +3152,83 @@ function mountEmptyLeafInPane(shown) {
   if (content && emptyLeaf.parentElement !== content) content.appendChild(emptyLeaf);
 }
 
+// Per-leaf empty panel card (collector model): replaces the singleton
+// #workspaceEmptyLeaf card render.js owned. Signature-gated innerHTML
+// keeps a no-change render pass from rebuilding the card (focus stays
+// put). The card is one .workspace-empty-leaf element per leaf: the
+// existing card CSS (.workspace-empty-leaf + .workspace-empty-leaf-card)
+// styles it, no new styles. Named-panel chip already identifies the
+// workspace at the strip; the card repeats the PATH because the empty
+// state is where the user asks "where am I".
+function mountEmptyPanelCard(content, leaf) {
+  if (!content) return;
+  // Direct-child scan, not a :scope selector: the vm test stubs run a
+  // hand-rolled querySelector that may not parse scoping syntax.
+  let card = [...(content.children || [])].find(
+    (child) => hasClass(child, "workspace-empty-leaf") && child !== el("workspaceEmptyLeaf"),
+  );
+  if (!card) {
+    card = document.createElement("section");
+    card.className = "workspace-empty-leaf";
+    card.setAttribute("tabindex", "-1");
+    const inner = document.createElement("div");
+    inner.className = "workspace-empty-leaf-card";
+    card.appendChild(inner);
+    content.appendChild(card);
+  }
+  const wsId = leafWorkspaceId(leaf);
+  const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
+  const name = workspace
+    ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
+    : "";
+  const newTitle = typeof titleWithWebuiShortcut === "function"
+    ? titleWithWebuiShortcut("New terminal", "newPanel")
+    : "New terminal";
+  const html = `<h1>${escapeHtml(name || wsId || "Empty panel")}</h1>`
+    + `<p>No terminal in this panel yet.</p>`
+    + `<p class="workspace-empty-leaf-hint">Press <kbd>Enter</kbd> to open a terminal.</p>`
+    + `<button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTabForPane('${escapeAttr(encodeURIComponent(leaf.paneId))}')">New terminal</button>`;
+  if (card.__herdrEmptySignature !== html) {
+    card.__herdrEmptySignature = html;
+    const inner = card.querySelector(".workspace-empty-leaf-card");
+    if (inner) inner.innerHTML = html;
+  }
+  if (card.hidden) card.hidden = false;
+}
+
+// A card from the leaf's last empty state: removed the moment the
+// leaf holds tabs again (the live surface owns the slot).
+function removeEmptyPanelCard(content) {
+  if (!content || !content.children) return;
+  for (const child of [...content.children]) {
+    if (hasClass(child, "workspace-empty-leaf") && child !== el("workspaceEmptyLeaf")) {
+      detachDomNode(child);
+    }
+  }
+}
+
+// The shell must never linger inside an empty panel's slot. Scope is
+// strictly THIS slot: a sibling terminal leaf can own the shell (owner
+// resolution), and ripping it out of its live slot here would blank a
+// rendered terminal. Only when the shell actually sits in this empty
+// slot (this leaf owned it before its last tab closed) does it move
+// back to the #workspacePanes home, hidden, same as the editor/git
+// owner branch.
+function parkTerminalShellForEmptyLeaf(content) {
+  if (!content) return;
+  const terminalShell = el("terminalShell");
+  if (!terminalShell || terminalShell.parentElement !== content) return;
+  const panesContainer = el("workspacePanes");
+  if (panesContainer) {
+    if (terminalShell.parentElement) terminalShell.parentElement.removeChild(terminalShell);
+    panesContainer.appendChild(terminalShell);
+  }
+  if (terminalShell.style) terminalShell.style.display = "none";
+  // Stale editor/git containers from a previous tab state hide too:
+  // the card owns the slot now.
+  hideStalePaneContainers(content);
+}
+
 function mountPaneTabContent(pane, leafArg, auxTabs) {
   const content = pane.querySelector(".pane-content");
   if (!content) return;
@@ -3022,6 +3244,27 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
   const leaf = leafArg || activeLeaf(root);
   if (!leaf) return;
   const activeTab = leaf.active;
+  // Empty panel card (collector): a tabs-empty leaf is a valid standing
+  // state, and its content slot carries the affordance instead of a
+  // blank hole. The card names the bound workspace and routes Enter
+  // through the document-level keydown (the pane body owns the key,
+  // not the card). The singleton global #workspaceEmptyLeaf card this
+  // replaces could only ever show for ONE workspace state; per-leaf
+  // cards cover every panel in a mixed tree. No bound ws (unbound
+  // survivor after its workspace closed) keeps a generic hint: Enter
+  // routes through newTabForPane's discovery path only when a ws
+  // exists, and state.ws gates the keydown, so the card is inert
+  // chrome there, still naming what the panel is.
+  const leafTabs = paneTabsForTree(leaf);
+  if (!leafTabs.length) {
+    mountEmptyPanelCard(content, leaf);
+    parkTerminalShellForEmptyLeaf(content);
+    return;
+  }
+  // The leaf has tabs: a card from its last empty state is stale chrome
+  // competing with the live surface for the slot. Remove it before any
+  // shell/container mount so the one-surface-per-slot invariant holds.
+  removeEmptyPanelCard(content);
   const activeIsTerminal = !!activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab);
   const aux = window.HerdrPaneTerminals;
   // D8 cache: a leaf whose active tab is not a terminal anymore parks

@@ -348,6 +348,23 @@
   cursor: grabbing;
 }
 
+/* Chip re-dock edge zones: one 3px accent line inset on the hovered
+ edge of the collector, only while a chip drag is in flight (JS adds
+ panel-drop-left/right/up/down). Pointer-events none: the line is an
+ overlay, never a drop target itself. */
+.workspace-panes.panel-drop-left {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.workspace-panes.panel-drop-right {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+.workspace-panes.panel-drop-up {
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+.workspace-panes.panel-drop-down {
+  box-shadow: inset 0 -3px 0 var(--accent);
+}
+
 .pane-ws-badge:hover {
   background: color-mix(in srgb, var(--accent), transparent 78%);
 }
