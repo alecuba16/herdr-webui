@@ -55,6 +55,25 @@ function makeNode(id, className) {
       if (child.parentNode === node) child.parentNode = null;
       return child;
     },
+    // The renderer's reconcile enforces the pane/divider DOM order via
+    // insertBefore after extends splice fresh panes mid-array; the stub
+    // must mirror the real DOM contract.
+    insertBefore(child, anchor) {
+      if (child.parentNode) {
+        const siblings = child.parentNode.children;
+        const at = siblings.indexOf(child);
+        if (at >= 0) siblings.splice(at, 1);
+      }
+      child.parentNode = node;
+      if (!anchor) {
+        node.children.push(child);
+        return child;
+      }
+      const at = node.children.indexOf(anchor);
+      if (at < 0) node.children.push(child);
+      else node.children.splice(at, 0, child);
+      return child;
+    },
     querySelector(selector) {
       const wantId = selector.startsWith("#") ? selector.slice(1) : null;
       const wantClass = selector.startsWith(".") ? selector.slice(1) : null;
@@ -986,6 +1005,43 @@ test("the badge labels a single-workspace leaf on a mixed tree and routes on cli
   assert.ok(otherBadge.includes("main"), "sibling leaf badges its own workspace");
 });
 
+test("pane-owns-current marks only the selected workspace's pane on a mixed tree", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  panes.renderWorkspacePanes();
+  // Single-workspace tree: the marker would fire on every pane and
+  // carry no information, so it stays off.
+  for (const pane of nodes.container.querySelectorAll(".workspace-pane")) {
+    assert.ok(!pane.classList.contains("pane-owns-current"), "single-workspace tree carries no marker");
+  }
+  // Mixed tree, one leaf per workspace: only the selected workspace's
+  // pane wears the marker.
+  ctx.state.tabsById = { tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "other" } };
+  panes.renderWorkspacePanes();
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRootFor());
+  leaves[0].tabs = ["tab_2"];
+  leaves[0].active = "tab_2";
+  leaves[1].tabs = ["tab_9"];
+  leaves[1].active = "tab_9";
+  panes.renderWorkspacePanes();
+  const marked = nodes.container.querySelectorAll(".workspace-pane").filter((p) => p.classList.contains("pane-owns-current"));
+  assert.equal(marked.length, 1, "exactly one pane wears the marker");
+  assert.equal(marked[0].dataset.paneId, leaves[0].paneId, "the selected workspace's pane carries it");
+  // Switching the selection moves the marker with it.
+  ctx.state.ws = "ws-2";
+  panes.renderWorkspacePanes();
+  const markedAfter = nodes.container.querySelectorAll(".workspace-pane").filter((p) => p.classList.contains("pane-owns-current"));
+  assert.equal(markedAfter.length, 1, "still exactly one marker after the switch");
+  assert.equal(markedAfter[0].dataset.paneId, leaves[1].paneId, "the marker followed the selection");
+});
+
 test("workspaceIdForTab resolves the row's workspace and falls back on a missing row", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
@@ -1330,23 +1386,24 @@ test("strip controls render per leaf with orientation hiding and split gating", 
   ctx.state.tab = "tab_2";
   panes.renderWorkspacePanes();
 
-  // Single-leaf tree: both split buttons render (no parent split to
-  // flip), maximize/close hide (nothing to maximize into or collapse).
+  // Single-leaf tree: both split buttons render, maximize/close hide
+  // (nothing to maximize into or collapse).
   const root = panes.paneRoot();
   const singleSplit = ctx.paneSplitControlsHtml(root);
   assert.ok(singleSplit.includes("splitPaneRightFor"), "flat leaf offers split right");
   assert.ok(singleSplit.includes("splitPaneDownFor"), "flat leaf offers split down");
   assert.equal(ctx.panePaneControlsHtml(root), "", "single leaf hides maximize/close");
 
-  // After splitPaneRight: both leaves sit in a row, so both strips hide
-  // split-right (that style is applied) and show split-down (the flip).
+  // After splitPaneRight: both leaves sit in a row. tmux model: both
+  // buttons stay visible everywhere (right extends the row, down
+  // nests a column inside the pressed pane).
   panes.splitPaneRight();
   const rowRoot = panes.paneRoot();
   const leaves = panes.paneLeaves(rowRoot);
   for (const leaf of leaves) {
     const html = ctx.paneSplitControlsHtml(leaf);
-    assert.ok(!html.includes("splitPaneRightFor"), "row child hides split right");
-    assert.ok(html.includes("splitPaneDownFor"), "row child offers the down flip");
+    assert.ok(html.includes("splitPaneRightFor"), "row child still offers split right (extend)");
+    assert.ok(html.includes("splitPaneDownFor"), "row child offers split down (nest)");
     const paneCtrl = ctx.panePaneControlsHtml(leaf);
     assert.ok(paneCtrl.includes("maximizePaneFor"), "row child offers maximize");
     assert.ok(paneCtrl.includes("closePaneFor"), "row child offers close");
@@ -1360,30 +1417,30 @@ test("strip controls render per leaf with orientation hiding and split gating", 
   }
 });
 
-test("splitPaneFor flips the orientation in place and nests on the same kind", () => {
+test("splitPaneFor extends on the same kind and nests on the other", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-21");
   const panes = ctx.HerdrWorkspacePanes;
   panes.splitPaneRight();
   const before = panes.paneLeaves(panes.paneRoot());
 
-  // Pressing split-down on a row child flips the parent's orientation:
-  // same leaves, same order, kind swaps.
-  assert.equal(panes.splitPaneDownFor(before[0].paneId), true, "flip accepted");
-  const flipped = panes.paneRoot();
-  assert.equal(flipped.kind, "column", "parent flipped to column");
-  assert.equal(panes.paneLeaves(flipped).length, 2, "no new leaf created on a flip");
-  assert.equal(flipped.children[0].paneId, before[0].paneId, "leaf order preserved");
-  assert.equal(flipped.activePaneId, before[0].paneId, "focus sits on the pressed leaf");
+  // Pressing split-right on a row child extends the row: a fresh
+  // sibling splices in after the pressed leaf, no wrapper changes.
+  assert.equal(panes.splitPaneRightFor(before[0].paneId), true, "extend accepted");
+  const extended = panes.paneRoot();
+  assert.equal(extended.kind, "row", "row stays a row");
+  assert.equal(extended.children.length, 3, "a third leaf joined the row");
+  assert.equal(extended.children[0].paneId, before[0].paneId, "pressed leaf keeps its slot");
+  assert.equal(extended.activePaneId, extended.children[1].paneId, "focus lands on the fresh pane");
 
-  // Split-down again on the same child (same kind now): nests a real
-  // column split inside instead of flipping.
+  // Pressing split-down on a row child nests instead: the pressed
+  // leaf wraps into a fresh column split holding two leaves.
   assert.equal(panes.splitPaneDownFor(before[0].paneId), true, "nested split accepted");
   const nested = panes.paneRoot();
-  assert.equal(nested.kind, "column", "outer keeps its direction");
+  assert.equal(nested.kind, "row", "outer keeps its direction");
   const inner = nested.children.find((child) => child.kind === "column");
   assert.ok(inner, "inner column split wraps the pressed leaf");
-  assert.equal(panes.paneLeaves(nested).length, 3, "three leaves after nesting");
+  assert.equal(panes.paneLeaves(nested).length, 4, "four leaves after nesting");
 });
 
 test("newTabForPane parks the placement and the sync consumes it once", async () => {
@@ -1584,17 +1641,17 @@ test("closePaneFor moves tabs to the edge leaf of a split sibling", async () => 
   const panes = ctx.HerdrWorkspacePanes;
   panes.splitPaneRight();
   const firstId = panes.paneRoot().children[0].paneId;
-  // First split-down on the row child flips the row into a column
-  // (orientation flip), the second nests an inner column split under
-  // it (same kind). The closing leaf's sibling is now that inner
-  // split: closing hands its tabs to the edge leaf nearest the closing
-  // pane (the split's first leaf, because the closing pane sits after
-  // it in the column).
+  // First split-down on the row child nests a column split under it;
+  // the second extends that inner column with a third leaf. The
+  // closing leaf's sibling is now that inner split: closing hands its
+  // tabs to the edge leaf nearest the closing pane (the split's first
+  // leaf, because the closing pane sits after it in the row).
   panes.splitPaneDownFor(firstId);
-  assert.equal(panes.paneRoot().kind, "column", "first down press flips the row");
+  const rootAfterFirst = panes.paneRoot();
+  assert.equal(rootAfterFirst.kind, "row", "row root stays a row");
   panes.splitPaneDownFor(firstId);
   const root = panes.paneRoot();
-  assert.equal(root.kind, "column", "column root");
+  assert.equal(root.kind, "row", "row root");
   const inner = root.children.find((child) => child.kind === "column");
   assert.ok(inner, "inner column exists");
   const closingLeaf = root.children.find((child) => child.kind === "pane" && child !== inner);
@@ -1604,8 +1661,10 @@ test("closePaneFor moves tabs to the edge leaf of a split sibling", async () => 
   closingLeaf.tabs.push("editor:src/x.py");
   assert.equal(await panes.closePaneFor(closingLeaf.paneId), true, "close accepted");
   assert.ok(expected.tabs.includes("editor:src/x.py"), "tabs landed in the nearest edge leaf");
+  // The root row held just the inner column and the closing leaf, so
+  // closing promotes the column straight into the root slot.
   assert.equal(panes.paneRoot().kind, "column", "inner column promoted to root");
-  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "two leaves remain");
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 3, "three leaves remain in the promoted column");
 });
 
 test("maximizePaneFor toggles the pressed pane and clears on the other pane", () => {

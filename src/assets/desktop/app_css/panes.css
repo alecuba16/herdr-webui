@@ -73,6 +73,27 @@
   background: color-mix(in srgb, var(--accent, transparent) 12%, var(--panel2, var(--panel)));
 }
 
+/* Current-workspace marker: a green border on the pane hosting the
+   selected workspace's panels (mixed trees only; single-workspace
+   trees never apply the class). Green reads as "home" next to the
+   blue focus ring, and never color alone: the strip's workspace badge
+   names the workspace on the same pane. Dashed keeps it distinct from
+   the solid focus ring at a glance. */
+.workspace-pane.pane-owns-current::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 2px dashed var(--git-added-color, var(--accent));
+  border-radius: 4px;
+  z-index: 1;
+}
+
+.workspace-pane.pane-owns-current.is-active::after {
+  border-style: solid;
+  border-color: var(--git-added-color);
+}
+
 .workspace-pane .pane-content {
   flex: 1;
   min-height: 0;

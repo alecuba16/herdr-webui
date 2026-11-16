@@ -281,6 +281,11 @@ let paneIdCounter = 0;
 // DOM reconcile (two panes keyed by one id) and paneForPaneId lookups.
 const usedPaneIds = new Set();
 
+// Split ids share the counter pattern: one session tree, one namespace,
+// persistence keeps the minted ids stable across reloads.
+let splitIdCounter = 0;
+const usedSplitIds = new Set();
+
 function newLeaf(paneId) {
   let id = paneId;
   if (!id) {
@@ -359,6 +364,9 @@ function normalizePaneTree(root) {
   }
   if (isPaneSplit(root)) {
     if (!Array.isArray(root.sizes)) root.sizes = [];
+    // Loaded splits keep their minted id: re-register it so newSplitId
+    // never mints a duplicate across reloads.
+    if (root.splitId) usedSplitIds.add(root.splitId);
     root.sizes = root.children.map((_, i) => (Number.isFinite(root.sizes[i]) && root.sizes[i] > 0 ? root.sizes[i] : 1));
     return root;
   }
@@ -807,11 +815,21 @@ function syncTerminalTabsIntoTree(root) {
 // mismatched children are removed, missing ones are created. The strips
 // stay signature-gated (innerHTML only on the strip itself).
 
-// Split node ids stay kind-free: an orientation flip rewrites the node's
-// kind but keeps its identity, so the reconcile reuses the same DOM subtree
-// (class swap only) instead of rebuilding it and orphaning live containers.
-function splitNodeId(node, index) {
-  return `split-${index}`;
+// Split wrappers reconcile by a persistent splitId, never by tree
+// index: an extend splice (tmux model) shifts sibling indices, and an
+// index-keyed wrapper would tear down and rebuild nested subtrees,
+// orphaning live containers. The id mints once and persists in storage.
+function newSplitId() {
+  do splitIdCounter++;
+  while (usedSplitIds.has(`s${splitIdCounter}`));
+  const id = `s${splitIdCounter}`;
+  usedSplitIds.add(id);
+  return id;
+}
+
+function splitNodeId(node) {
+  if (!node.splitId) node.splitId = newSplitId();
+  return node.splitId;
 }
 
 function reconcileSplitNode(container, node, idPath) {
@@ -835,7 +853,7 @@ function reconcileSplitNode(container, node, idPath) {
   // Child split ids extend the parent path so two same-index splits in
   // different parents never collide.
   const childIds = node.children.map((child, i) =>
-    isPaneSplit(child) ? `${idPath}/${splitNodeId(child, i)}` : (child.paneId || `p?${i}`));
+    isPaneSplit(child) ? `${idPath}/${splitNodeId(child)}` : (child.paneId || `p?${i}`));
   [...element.children].forEach((child) => {
     const isDivider = hasClass(child, "pane-divider");
     // Split wrappers carry data-split-id, leaves carry data-pane-id. Keying
@@ -896,15 +914,26 @@ function reconcileSplitNode(container, node, idPath) {
     }
     if (i < node.children.length - 1) {
       const dividerFor = childIds[i + 1];
-      const divider = ensureDivider(element, dividerFor, node.kind);
-      // Keep the divider adjacent to this child (appendChild order below
-      // may have drifted after reconcile removals). The node-test stubs
-      // lack insertBefore: appendChild keeps a workable order there.
-      if (divider.previousElementSibling !== mount) {
-        if (element.insertBefore && mount.nextSibling) element.insertBefore(divider, mount.nextSibling);
-        else if (element.appendChild) element.appendChild(divider);
-      }
+      ensureDivider(element, dividerFor, node.kind);
     }
+  });
+  // Extend splices fresh panes mid-array while reuse keeps existing
+  // mounts where they sat, so DOM order can drift from tree order (the
+  // pressed pane's old neighbor ends up before the newcomer, and
+  // dividers straddle the wrong pair). Enforce the interleaved
+  // sequence (pane, divider, pane, ...) once, by identity: on a stable
+  // tree the walk matches and nothing moves.
+  const expected = [];
+  node.children.forEach((child, i) => {
+    const mount = [...element.children].find((c) => c.dataset && c.dataset.paneId === childIds[i]);
+    if (mount) expected.push(mount);
+    if (i < node.children.length - 1) {
+      const divider = [...element.children].find((c) => c.dataset && c.dataset.dividerFor === childIds[i + 1]);
+      if (divider) expected.push(divider);
+    }
+  });
+  expected.forEach((want, i) => {
+    if (element.children[i] !== want) element.insertBefore(want, element.children[i] || null);
   });
   return element;
 }
@@ -923,8 +952,10 @@ function ensureDivider(element, dividerFor, kind) {
     divider.title = "Drag to resize";
     element.appendChild(divider);
   }
-  // A flip reuses the divider node: the aria orientation must follow the
-  // split's current kind, not the kind the divider was created with.
+  // A kind never changes after creation now (tmux model: same-kind
+  // presses extend, other-kind presses nest, nothing flips), but the
+  // check stays: the aria orientation must match the split's current
+  // kind even if a future edit path reuses a divider node.
   const orientation = kind === "row" ? "vertical" : "horizontal";
   if (divider.setAttribute && divider.getAttribute("aria-orientation") !== orientation)
     divider.setAttribute("aria-orientation", orientation);
@@ -962,7 +993,7 @@ function renderWorkspacePanes() {
   // whole app resolves by id. Build the layout with createElement so those
   // nodes stay attached, then move #terminalShell into its leaf below.
   if (!maxLeaf && isPaneSplit(treeRoot)) {
-    reconcileSplitNode(container, treeRoot, splitNodeId(treeRoot, 0));
+    reconcileSplitNode(container, treeRoot, splitNodeId(treeRoot));
   } else {
     // Single leaf: keep the Phase 3 flat contract (no wrapper element),
     // so existing callers and probes that query .workspace-pane directly
@@ -1085,10 +1116,24 @@ function paneWorkspaceBadgeHtml(leaf) {
   return `<button class="pane-ws-badge" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.stopPropagation();HerdrPaneWorkspacePicker.openPicker(this,'${escapeAttr(encodedPane)}','switch')">${escapeHtml(label)}</button>`;
 }
 
+// Leaves hosting the selected workspace's terminal panels carry the
+// pane-owns-current class: on mixed trees it paints a distinct border
+// so the home pane reads at a glance (the D4 badge names it, the border
+// locates it). Single-workspace trees skip the class: every pane would
+// wear it, no information.
+function markCurrentWorkspacePane(pane, leaf) {
+  if (!pane || !pane.classList) return;
+  const ids = leafWorkspaceIds(leaf);
+  const owns = treeIsMixed() && ids.length === 1 && ids[0] === state.ws;
+  if (owns && !pane.classList.contains("pane-owns-current")) pane.classList.add("pane-owns-current");
+  if (!owns && pane.classList.contains("pane-owns-current")) pane.classList.remove("pane-owns-current");
+}
+
 function renderLeafInto(pane, leaf) {
   const strip = pane.querySelector(".pane-tab-strip");
   if (!strip) return;
   wirePaneStripDrag(strip);
+  markCurrentWorkspacePane(pane, leaf);
   const activeTab = paneActiveTab(leaf);
   const stripHtml = paneTabsForTree(leaf)
     .map((tabId) => {
@@ -1168,7 +1213,7 @@ function cleanupAbandonedLayout(container, root) {
       // still names a live leaf (the split built its own element).
       if (isPaneSplit(root) || !keepPaneIds.has(child.dataset.paneId)) drop(child);
     } else if (hasClass(child, "pane-row") || hasClass(child, "pane-column")) {
-      if (isPaneSplit(root) && child.dataset.splitId === splitNodeId(root, 0)) return;
+      if (isPaneSplit(root) && child.dataset.splitId === splitNodeId(root)) return;
       drop(child);
     }
   });
@@ -1417,20 +1462,13 @@ function paneNewTabControlHtml(leaf) {
   return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newTabForPane('${escapeAttr(encoded)}')">+</button>`;
 }
 
-// The split pair is view-aware: the button matching the leaf's current
-// split style hides (that style is already applied), the other one either
-// creates the split or flips the existing orientation in place.
+// The split pair is always fully offered (tmux model): any pane can grow
+// in BOTH directions at any depth. Same-kind parent extends, different
+// kind nests; both mechanics add a pane, so no button ever hides.
 function paneSplitControlsHtml(leaf) {
-  const root = paneRootFor();
-  const parent = leaf ? parentSplitOf(root, leaf) : null;
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  const isRow = parent ? parent.kind === "row" : paneRootFor().kind === "row";
-  const rightButton = isRow
-    ? ""
-    : `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("Split right", "splitRight"))}" aria-label="Split right" onclick="event.preventDefault();splitPaneRightFor('${escapeAttr(encoded)}')">◫</button>`;
-  const downButton = !isRow && parent
-    ? ""
-    : `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("Split down", "splitDown"))}" aria-label="Split down" onclick="event.preventDefault();splitPaneDownFor('${escapeAttr(encoded)}')">⊟</button>`;
+  const rightButton = `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("Split right", "splitRight"))}" aria-label="Split right" onclick="event.preventDefault();splitPaneRightFor('${escapeAttr(encoded)}')">◫</button>`;
+  const downButton = `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("Split down", "splitDown"))}" aria-label="Split down" onclick="event.preventDefault();splitPaneDownFor('${escapeAttr(encoded)}')">⊟</button>`;
   return rightButton + downButton;
 }
 
@@ -1897,6 +1935,11 @@ function wirePaneStripDrag(strip) {
 // never leaves its leaf. Focus moves to the new leaf so the next sidebar
 // open (file click, git status row) lands there.
 
+// tmux model: every split adds a pane. Same-kind parent splices the
+// fresh sibling into the leaf's own axis (extend), different-kind parent
+// wraps the leaf in a nested split (nest). Orientation never rewrites
+// an existing split node: dividers and reconciled subtree identities
+// stay stable across reshapes.
 function splitActivePane(kind) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
@@ -1910,14 +1953,23 @@ function splitActivePane(kind) {
   const leaf = activeLeaf(root);
   if (!leaf) return false;
   const fresh = newEmptyLeaf();
-  const next = { kind, sizes: [1, 1], children: [leaf, fresh] };
   const slot = findLeafSlot(root, leaf);
   if (!slot) return false;
   if (slot.holder === "root") {
     const stateEntry = panesStateFor();
-    stateEntry.root = next;
+    stateEntry.root = { kind, sizes: [1, 1], children: [leaf, fresh] };
+  } else if (slot.parent.kind === kind) {
+    // Extend: the sibling joins the leaf's own axis, halving the
+    // pressed pane's share so the split keeps its total size.
+    if (!Array.isArray(slot.parent.sizes)) slot.parent.sizes = slot.holder.map(() => 1);
+    const share = Math.max(1, slot.parent.sizes[slot.index] || 1) / 2;
+    slot.holder.splice(slot.index + 1, 0, fresh);
+    slot.parent.sizes.splice(slot.index + 1, 0, share);
+    slot.parent.sizes[slot.index] = share;
   } else {
-    slot.holder[slot.index] = next;
+    // Nest: the leaf keeps its slot, an inner split of the new kind
+    // pairs it with the fresh sibling.
+    slot.holder[slot.index] = { kind, sizes: [1, 1], children: [leaf, fresh] };
   }
   // The swap above may have replaced the root object; re-read it before
   // focusing so activePaneId lands on the tree that actually renders.
@@ -1927,14 +1979,15 @@ function splitActivePane(kind) {
   return true;
 }
 
-// Where a leaf sits in the tree: {holder, index} where holder is "root"
-// (the leaf is the root) or the children array containing it.
+// Where a leaf sits in the tree: {holder, index, parent} where holder
+// is "root" (the leaf is the root) or the children array containing it,
+// parent the split node owning that array (null in the root case).
 function findLeafSlot(root, leaf) {
-  if (root === leaf) return { holder: "root", index: 0 };
+  if (root === leaf) return { holder: "root", index: 0, parent: null };
   const walk = (node) => {
     if (!isPaneSplit(node)) return null;
     for (let i = 0; i < node.children.length; i++) {
-      if (node.children[i] === leaf) return { holder: node.children, index: i };
+      if (node.children[i] === leaf) return { holder: node.children, index: i, parent: node };
       const found = walk(node.children[i]);
       if (found) return found;
     }
@@ -1974,23 +2027,14 @@ function leafForPaneId(root, encodedPaneId) {
   return paneForPaneId(root, paneId) || activeLeaf(root);
 }
 
-// Strip split buttons: act on the pane whose strip was pressed. When the
-// pane already sits inside that split style, flip the parent orientation
-// in place instead of nesting a redundant split.
+// Strip split buttons: act on the pane whose strip was pressed. One
+// rule: focus the target leaf, then the same extend/nest mechanic the
+// chords use. Both buttons stay available at any depth (tmux model).
 function splitPaneFor(encodedPaneId, kind) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
   const leaf = leafForPaneId(root, encodedPaneId);
   if (!leaf) return false;
-  const parent = parentSplitOf(root, leaf);
-  if (parent && parent.kind !== kind) {
-    parent.kind = kind;
-    if (maximizedLeaf(root)) panesStateFor().maximizedPaneId = null;
-    focusLeaf(root, leaf);
-    saveWorkspacePanesStates();
-    renderWorkspacePanes();
-    return true;
-  }
   focusLeaf(root, leaf);
   return splitActivePane(kind);
 }
@@ -2776,7 +2820,7 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
     if (aux && activeTab && typeof aux.parkForTab === "function") aux.parkForTab(activeTab);
   };
   const terminalShell = el("terminalShell");
-  // Reshape commands (split, flip, maximize, close-promote) move pane
+  // Reshape commands (split, maximize, close-promote) move pane
   // elements around without calling back into the owning module, so
   // the active editor/git container can sit parked in #workspacePanes
   // while its pane shows a blank slot. Claim it here on every render for
@@ -3010,16 +3054,23 @@ function wireDividerDrag(divider) {
     if (event.button !== 0) return;
     const parent = divider.parentElement;
     if (!parent) return;
-    const growChildren = [...parent.children].filter((child) =>
-      !hasClass(child, "pane-divider"));
-    // The divider resizes the child before it; previousElementSibling is
-    // unavailable on the node-test stubs, so resolve via children order.
-    const previous = divider.previousElementSibling
-      || (parent.children || []).filter((c) => !hasClass(c, "pane-divider"))
-        .filter((c) => (parent.children || []).indexOf(c) < (parent.children || []).indexOf(divider)).pop();
-    const index = growChildren.indexOf(previous);
-    if (index !== 0 || growChildren.length !== 2) return;
-    dragging = { parent, growChildren, startX: event.clientX, startY: event.clientY, starts: growChildren.map((child) => parseFloat(child.style.flexGrow) || 1) };
+    const growChildren = [...parent.children].filter((child) => !hasClass(child, "pane-divider"));
+    // The divider resizes the pair straddling it (tmux model): with
+    // three or more children only the child before it and the child
+    // after it move, the neighbors keep their share.
+    const all = [...(parent.children || [])];
+    const dividerAt = all.indexOf(divider);
+    const before = all.slice(0, dividerAt).reverse().find((child) => !hasClass(child, "pane-divider"));
+    const after = all.slice(dividerAt + 1).find((child) => !hasClass(child, "pane-divider"));
+    if (!before || !after) return;
+    dragging = {
+      parent,
+      growChildren,
+      pair: [before, after],
+      startX: event.clientX,
+      startY: event.clientY,
+      starts: { before: parseFloat(before.style.flexGrow) || 1, after: parseFloat(after.style.flexGrow) || 1 },
+    };
     divider.setPointerCapture && divider.setPointerCapture(event.pointerId);
     event.preventDefault();
   });
@@ -3028,16 +3079,18 @@ function wireDividerDrag(divider) {
     // pane-column stacks children vertically: the divider lies flat and
     // the drag walks the parent's height.
     const verticalStack = String(dragging.parent.className || "").includes("pane-column");
-    const total = dragging.starts[0] + dragging.starts[1];
+    const total = dragging.starts.before + dragging.starts.after;
     const rect = dragging.parent.getBoundingClientRect();
     const delta = verticalStack ? event.clientY - dragging.startY : event.clientX - dragging.startX;
     const axisSize = Math.max(1, verticalStack ? rect.height : rect.width);
-    const fraction = Math.max(0.1, Math.min(0.9, (dragging.starts[0] / total) + delta / axisSize));
-    dragging.growChildren[0].style.flexGrow = String(fraction * total);
-    dragging.growChildren[1].style.flexGrow = String((1 - fraction) * total);
+    const fraction = Math.max(0.1, Math.min(0.9, (dragging.starts.before / total) + delta / axisSize));
+    dragging.pair[0].style.flexGrow = String(fraction * total);
+    dragging.pair[1].style.flexGrow = String((1 - fraction) * total);
   });
   const finish = () => {
     if (!dragging) return;
+    // Persist the FULL size array: the drag moved one pair, but the tree
+    // node's sizes cover every child of the split.
     const sizes = dragging.growChildren.map((child) => parseFloat(child.style.flexGrow) || 1);
     writeDividerSizes(dragging.parent, sizes);
     dragging = null;
@@ -3072,12 +3125,12 @@ function findSplitByPath(root, path) {
     for (let i = 0; i < node.children.length; i++) {
       const child = node.children[i];
       if (!isPaneSplit(child)) continue;
-      const found = walk(child, `${id}/${splitNodeId(child, i)}`);
+      const found = walk(child, `${id}/${splitNodeId(child)}`);
       if (found) return found;
     }
     return null;
   };
-  return walk(root, splitNodeId(root, 0));
+  return walk(root, splitNodeId(root));
 }
 
 // The active leaf's .workspace-pane element, the mount target for the

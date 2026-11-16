@@ -57,6 +57,26 @@ function makeNode(id, className) {
       if (child.parentNode === node) child.parentNode = null;
       return child;
     },
+    // Real browsers interleave dividers between children via the
+    // renderer's insertBefore; without it here, 3+ child splits pile
+    // the dividers at the end and the pair-drag lookup finds no
+    // "after" neighbor. Mirror the DOM contract.
+    insertBefore(child, anchor) {
+      if (child.parentNode) {
+        const siblings = child.parentNode.children;
+        const at = siblings.indexOf(child);
+        if (at >= 0) siblings.splice(at, 1);
+      }
+      child.parentNode = node;
+      if (!anchor) {
+        node.children.push(child);
+        return child;
+      }
+      const at = node.children.indexOf(anchor);
+      if (at < 0) node.children.push(child);
+      else node.children.splice(at, 0, child);
+      return child;
+    },
     querySelector(selector) {
       const wantId = selector.startsWith("#") ? selector.slice(1) : null;
       const wantClass = selector.startsWith(".") ? selector.slice(1) : null;
@@ -135,6 +155,34 @@ function makeNode(id, className) {
   Object.defineProperty(node, "parentElement", {
     get() {
       return node.parentNode;
+    },
+  });
+  // Element siblings: the renderer's divider placement reads
+  // nextSibling/previousElementSibling and calls insertBefore, and the
+  // pair-drag lookup depends on the interleaved order those produce.
+  Object.defineProperty(node, "nextSibling", {
+    get() {
+      if (!node.parentNode) return null;
+      const at = node.parentNode.children.indexOf(node);
+      return at >= 0 && at + 1 < node.parentNode.children.length
+        ? node.parentNode.children[at + 1]
+        : null;
+    },
+  });
+  Object.defineProperty(node, "previousElementSibling", {
+    get() {
+      if (!node.parentNode) return null;
+      const at = node.parentNode.children.indexOf(node);
+      return at > 0 ? node.parentNode.children[at - 1] : null;
+    },
+  });
+  Object.defineProperty(node, "nextElementSibling", {
+    get() {
+      if (!node.parentNode) return null;
+      const at = node.parentNode.children.indexOf(node);
+      return at >= 0 && at + 1 < node.parentNode.children.length
+        ? node.parentNode.children[at + 1]
+        : null;
     },
   });
   return node;
@@ -445,14 +493,15 @@ test("BUG A regression: nested splits keep identity across repeated renders", ()
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "tab_2");
-  // Build a 3-pane layout: row split, then a column split inside the
-  // first child (the nested case the stale key used to rebuild).
+  // Build a 4-pane layout: row split, then a column nested in the first
+  // child, then the column extended by a third sibling (tmux model:
+  // every press adds a pane).
   panes.splitPaneRight();
   const firstPaneId = panes.paneRoot().children[0].paneId;
-  panes.splitPaneDownFor(firstPaneId); // flips row to column
   panes.splitPaneDownFor(firstPaneId); // nests an inner column
+  panes.splitPaneDownFor(firstPaneId); // extends the inner column
   const root = panes.paneRoot();
-  assert.equal(panes.paneLeaves(root).length, 3, "three leaves");
+  assert.equal(panes.paneLeaves(root).length, 4, "four leaves");
   const panesBefore = paneElements(nodes).slice();
   const splitsBefore = splitElements(nodes).slice();
   const dividersBefore = dividerElements(nodes).slice();
@@ -470,10 +519,9 @@ test("BUG A regression: stale dividers are pruned when a leaf gets wrapped into 
   bootstrapPanes(ctx, "tab_2");
   panes.splitPaneRight();
   const secondLeafId = panes.paneLeaves(panes.paneRoot())[1].paneId;
-  // First down flips the root row to a column; the second wraps the leaf
-  // into an inner column. The root divider used to key on the wrapped
-  // leaf and survived the reconcile, painting a phantom drag handle.
-  panes.splitPaneDownFor(encodeURIComponent(secondLeafId));
+  // The first down press wraps the leaf into an inner column (nest); the
+  // root divider used to key on the wrapped leaf and survived the
+  // reconcile, painting a phantom drag handle.
   panes.splitPaneDownFor(encodeURIComponent(secondLeafId));
   for (let i = 0; i < 3; i++) panes.renderWorkspacePanes();
   const rootWrapper = splitElements(nodes)[0];
@@ -483,18 +531,19 @@ test("BUG A regression: stale dividers are pruned when a leaf gets wrapped into 
   assert.equal(rootDividers.length, 1, "root keeps exactly one divider, no phantom");
   const innerWrapper = rootWrapper.children.find((c) => c.className.split(/\s+/).includes("pane-column"));
   assert.equal(innerWrapper.children.filter((c) => c.className === "pane-divider").length, 1, "inner column keeps exactly one divider");
-  // A flip back reuses the surviving dividers by identity.
+  // Extending the row (a same-kind press on the row child) reuses the
+  // surviving dividers by identity and adds one divider for the newcomer.
   const keptDividers = dividerElements(nodes).slice();
   panes.splitPaneRightFor(encodeURIComponent(panes.paneLeaves(panes.paneRoot())[0].paneId));
   panes.renderWorkspacePanes();
-  assert.equal(rootWrapper.children.length, 3, "flip keeps the root at three nodes");
-  assert.ok(dividerElements(nodes).every((d) => keptDividers.includes(d)), "flip reuses dividers by identity");
+  assert.equal(rootWrapper.children.length, 5, "extend grows the root by leaf and divider");
+  assert.ok(keptDividers.every((d) => dividerElements(nodes).includes(d)), "extend reuses dividers by identity");
   let ariaOk = true;
   for (const d of dividerElements(nodes)) {
     const want = d.parentNode.className.split(/\s+/).includes("pane-row") ? "vertical" : "horizontal";
     if (d.getAttribute("aria-orientation") !== want) ariaOk = false;
   }
-  assert.ok(ariaOk, "every divider aria matches its split kind after the flip");
+  assert.ok(ariaOk, "every divider aria matches its split kind after the extend");
 });
 
 test("BUG A regression: containers inside a nested pane are never orphaned", () => {
@@ -521,7 +570,7 @@ test("BUG A regression: containers inside a nested pane are never orphaned", () 
   assert.ok(nodes.shell.parentNode !== null, "shell stays attached");
 });
 
-test("flip preserves pane and split element identity and refreshes divider orientation", () => {
+test("extend keeps pane and split element identity and divider orientation", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
@@ -529,14 +578,22 @@ test("flip preserves pane and split element identity and refreshes divider orien
   panes.splitPaneRight();
   const panesBefore = paneElements(nodes).slice();
   const splitsBefore = splitElements(nodes).slice();
+  const dividersBefore = dividerElements(nodes).slice();
   const firstPaneId = panes.paneRoot().children[0].paneId;
-  panes.splitPaneDownFor(firstPaneId);
-  assert.equal(panes.paneRoot().kind, "column", "row flipped to column");
-  assert.deepEqual(paneElements(nodes), panesBefore, "pane elements survive the flip");
-  assert.equal(splitElements(nodes)[0], splitsBefore[0], "split wrapper survives the flip (kind-free id)");
-  assert.equal(splitsBefore[0].className, "pane-column", "wrapper class follows the kind");
-  const divider = dividerElements(nodes)[0];
-  assert.equal(divider.attributes["aria-orientation"], "horizontal", "divider orientation follows the flip");
+  panes.splitPaneRightFor(firstPaneId);
+  const root = panes.paneRoot();
+  assert.equal(root.kind, "row", "same-kind press extends the row");
+  assert.equal(root.children.length, 3, "a third child joined the row");
+  assert.ok(panes.paneLeaves(root).every((leaf) => leaf.kind === "pane"), "row children stay leaves");
+  assert.deepEqual(paneElements(nodes).slice(0, 1), panesBefore.slice(0, 1), "first pane element survives the extend");
+  assert.ok(panesBefore.every((p) => paneElements(nodes).includes(p)), "every existing pane element survives the extend");
+  assert.equal(paneElements(nodes).length, 3, "one new pane element appeared");
+  assert.equal(splitElements(nodes)[0], splitsBefore[0], "split wrapper survives the extend");
+  assert.equal(splitsBefore[0].className, "pane-row", "wrapper class keeps the kind");
+  assert.ok(dividersBefore.every((d) => dividerElements(nodes).includes(d)), "old dividers reused by identity");
+  for (const d of dividerElements(nodes)) {
+    assert.equal(d.getAttribute("aria-orientation"), "vertical", "divider orientation follows the row");
+  }
 });
 
 test("cleanupAbandonedLayout drops removed splits and rescues surfaces", async () => {
@@ -776,32 +833,33 @@ test("immediate closes heal to a terminal tab and keep the strip consistent", ()
 
 // ---- 6. strip control gating ----------------------------------------------------
 
-test("strip control gating matrix across tree shapes", () => {
+test("split controls stay fully available across tree shapes", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "tab_2");
   const root = panes.paneRoot();
-  // Single leaf: both split buttons, no max/close.
+  // tmux model: both split buttons always render, at any depth, so a
+  // pane can always grow in both directions.
   let splitHtml = ctx.paneSplitControlsHtml(root);
   assert.ok(splitHtml.includes("splitPaneRightFor"), "flat: split right offered");
   assert.ok(splitHtml.includes("splitPaneDownFor"), "flat: split down offered");
   assert.equal(ctx.panePaneControlsHtml(root), "", "flat: no max/close");
-  // Row split: children hide the matching button, show the flip.
+  // Row children: both buttons still offered (extend), plus max/close.
   panes.splitPaneRight();
-  let leaves = panes.paneLeaves(panes.paneRoot());
-  for (const leaf of leaves) {
-    const html = ctx.paneSplitControlsHtml(leaf);
-    assert.ok(!html.includes("splitPaneRightFor"), "row child hides split right");
-    assert.ok(html.includes("splitPaneDownFor"), "row child offers flip");
-    assert.ok(ctx.panePaneControlsHtml(leaf).includes("maximizePaneFor"), "max offered");
-  }
-  // Column flip: the down button hides for children.
-  panes.splitPaneDownFor(leaves[0].paneId);
-  leaves = panes.paneLeaves(panes.paneRoot());
   for (const leaf of panes.paneLeaves(panes.paneRoot())) {
     const html = ctx.paneSplitControlsHtml(leaf);
-    assert.ok(!html.includes("splitPaneDownFor") || leaf.paneId === leaves[0].paneId, "column children gate split down");
+    assert.ok(html.includes("splitPaneRightFor"), "row child still offers split right (extend)");
+    assert.ok(html.includes("splitPaneDownFor"), "row child offers split down (nest)");
+    assert.ok(ctx.panePaneControlsHtml(leaf).includes("maximizePaneFor"), "max offered");
+  }
+  // Deep nesting: a column-inside-row leaf keeps both buttons too.
+  const firstId = panes.paneRoot().children[0].paneId;
+  panes.splitPaneDownFor(firstId);
+  for (const leaf of panes.paneLeaves(panes.paneRoot())) {
+    const html = ctx.paneSplitControlsHtml(leaf);
+    assert.ok(html.includes("splitPaneRightFor"), "nested child offers split right");
+    assert.ok(html.includes("splitPaneDownFor"), "nested child offers split down");
   }
 });
 
@@ -881,6 +939,124 @@ test("divider drag updates sizes live and persists on pointerup", () => {
   divider.listeners.pointerup[0]();
   const root = panes.paneRoot();
   assert.equal(root.sizes[0], after, "sizes persisted to the tree on pointerup");
+});
+
+// ---- 9. tmux-model depth and drag regressions ----------------------------------
+
+test("every split press grows the leaf count at any depth", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "tab_2");
+  // Monotonic growth: 8 presses, alternating kinds, always on the
+  // focused leaf (each press lands focus on the fresh pane). If any
+  // press flipped or no-oped, the leaf count would stall below 9.
+  for (let i = 0; i < 8; i++) {
+    const before = panes.paneLeaves(panes.paneRoot()).length;
+    const pressed = panes.activePane();
+    assert.ok(pressed, "a focused leaf always answers the press");
+    if (i % 2 === 0) panes.splitPaneRight();
+    else panes.splitPaneDown();
+    assert.equal(panes.paneLeaves(panes.paneRoot()).length, before + 1, `press ${i} added exactly one pane`);
+  }
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 9, "nine leaves after eight presses");
+});
+
+test("deep nesting composes row and column splits at depth", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "tab_2");
+  // Build row > column > row > column: each press lands on the focused
+  // fresh leaf (the second child of its split), and the next nest wraps
+  // that leaf, so the chain hangs off children[1] after the first level.
+  panes.splitPaneRight();
+  panes.splitPaneDown();
+  panes.splitPaneRight();
+  panes.splitPaneDown();
+  let node = panes.paneRoot();
+  const kinds = [];
+  while (node && node.kind !== "pane") {
+    kinds.push(node.kind);
+    node = node.children[node.children.length - 1];
+  }
+  assert.deepEqual(kinds, ["row", "column", "row", "column"], "four nested levels alternate kinds");
+  // Every level's wrapper element rendered, with matching classes.
+  const wrappers = splitElements(nodes);
+  assert.equal(wrappers.length, 4, "one wrapper per split node");
+  assert.equal(wrappers.filter((w) => w.className.includes("pane-row")).length, 2, "two row wrappers");
+  assert.equal(wrappers.filter((w) => w.className.includes("pane-column")).length, 2, "two column wrappers");
+  // The deepest leaf still gets both buttons: any pane can split again.
+  const deepLeaf = panes.activePane();
+  const html = ctx.paneSplitControlsHtml(deepLeaf);
+  assert.ok(html.includes("splitPaneRightFor"), "depth-4 leaf offers split right");
+  assert.ok(html.includes("splitPaneDownFor"), "depth-4 leaf offers split down");
+});
+
+test("divider drag resizes only the straddling pair in a 3-child split", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "tab_2");
+  panes.splitPaneRight();
+  const firstId = panes.paneRoot().children[0].paneId;
+  panes.splitPaneRightFor(firstId); // extend: 3 leaves in the root row
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  assert.equal(leaves.length, 3, "three leaves in the row");
+  panes.renderWorkspacePanes();
+  const rootWrapper = splitElements(nodes)[0];
+  const dividers = dividerElements(nodes);
+  assert.equal(dividers.length, 2, "two dividers in the row");
+  // Size the row thirds, then drag the SECOND divider (between
+  // children 2 and 3): only that pair moves, child 1 keeps its share.
+  const panesEls = paneElements(nodes);
+  panesEls.forEach((p) => { p.style.flexGrow = "1"; });
+  const divider = dividers[1];
+  rootWrapper.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 300, right: 300, bottom: 300 });
+  divider.setPointerCapture = () => {};
+  divider.listeners.pointerdown[0]({ button: 0, clientX: 200, clientY: 150, pointerId: 1, preventDefault() {} });
+  divider.listeners.pointermove[0]({ clientX: 250, clientY: 150 });
+  divider.listeners.pointerup[0]();
+  const sizes = panes.paneRoot().sizes;
+  assert.ok(sizes && sizes.length === 3, "full 3-slot sizes array persisted");
+  assert.equal(parseFloat(sizes[0]), 1, "child before the pair kept its share");
+  assert.ok(parseFloat(sizes[1]) > 1, "pair's left member grew");
+  assert.ok(parseFloat(sizes[2]) < 1, "pair's right member shrank");
+  const sum = sizes.reduce((acc, s) => acc + parseFloat(s), 0);
+  assert.ok(Math.abs(sum - 3) < 0.01, "shares still sum to the row total");
+});
+
+test("split wrapper ids stay stable across an extend mid-array", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "tab_2");
+  // Row with a column nested in the middle child, then extend the row:
+  // the inner split's id must not shift even though the leaf beside it
+  // moved one slot right in the children array.
+  panes.splitPaneRight();
+  panes.splitPaneDown();
+  const innerWrapperBefore = splitElements(nodes).find((w) => w.className.includes("pane-column"));
+  const innerIdBefore = innerWrapperBefore.dataset.splitId;
+  const leafId = panes.paneLeaves(panes.paneRoot())[0].paneId;
+  panes.splitPaneRightFor(encodeURIComponent(leafId));
+  panes.renderWorkspacePanes();
+  const innerWrapperAfter = splitElements(nodes).find((w) => w.className.includes("pane-column"));
+  assert.equal(innerWrapperAfter, innerWrapperBefore, "inner wrapper element reused by identity");
+  assert.equal(innerWrapperAfter.dataset.splitId, innerIdBefore, "inner split id survived the mid-array splice");
+  // The saved blob keeps the same split ids (reload must not mint
+  // duplicates), and the tree round-trips through localStorage. The
+  // inner column is the root's only split child after the extend, so
+  // the wrapper id must appear in the persisted root's child splitId.
+  const raw = ctx.window.localStorage.getItem("herdr-web-workspace-panes");
+  assert.ok(raw, "state persisted");
+  const savedEntry = JSON.parse(raw)["__session__"];
+  assert.ok(savedEntry && savedEntry.root, "saved blob holds the session root");
+  const savedInner = savedEntry.root.children.find((child) => child.kind === "column");
+  assert.ok(savedInner, "persisted tree keeps the inner column");
+  // The wrapper carries the id PATH (parent/child), the node its own
+  // id; compare against the path's last segment.
+  assert.equal(savedInner.splitId, innerIdBefore.split("/").pop(), "persisted inner splitId matches the wrapper id");
 });
 
 // ---- 9. mount ownership --------------------------------------------------------
