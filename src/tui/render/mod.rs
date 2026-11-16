@@ -300,7 +300,25 @@ pub(crate) fn workspace_branch_token(workspace: &TuiWorkspace) -> Option<String>
 }
 
 fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let line = if let Some(workspace) = app.selected_workspace() {
+    // Webui state.ws parity: the strip lists the workspace in view.
+    // Without a split that is the sidebar selection; on a mixed-
+    // workspace split it is the focused tile's workspace, so the ▸
+    // marker (view_pane's tab) always has a home in the listed tabs.
+    // Anchoring the list on the sidebar cursor left the strip
+    // markerless while the user acted on another workspace's tile.
+    let strip_workspace = if crate::tui::render::split_active(app) {
+        app.view_pane()
+            .and_then(|pane| {
+                app.snapshot
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.id == pane.workspace_id)
+            })
+            .or_else(|| app.selected_workspace())
+    } else {
+        app.selected_workspace()
+    };
+    let line = if let Some(workspace) = strip_workspace {
         let tabs = app.snapshot.workspace_tabs(&workspace.id);
         // The tab the TUI is actually viewing (the pane whose tail the
         // main pane shows, the one Enter attaches): the selection follows

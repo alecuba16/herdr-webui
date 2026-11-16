@@ -2955,6 +2955,17 @@ impl TuiApp {
                 .position(|agent| agent.pane_id == pane_id)
             {
                 self.selected_agent = agent_index;
+            } else {
+                // Shell panes have no agent row: park the agent cursor
+                // on the target workspace's first agent (or 0) so
+                // selected_pane's workspace guard cannot strand it on
+                // the old workspace's rows.
+                self.selected_agent = self
+                    .snapshot
+                    .agents
+                    .iter()
+                    .position(|agent| agent.workspace_id == workspace_id)
+                    .unwrap_or(0);
             }
         }
         let Some(workspace) = self
@@ -2964,9 +2975,16 @@ impl TuiApp {
             self.error = Some("no workspace selected".to_string());
             return;
         };
+        let workspace_label = self
+            .selected_workspace()
+            .map(|ws| ws.label.clone())
+            .unwrap_or_default();
         match self.client.create_tab(Some(&workspace), None) {
             Ok(_) => {
-                self.status = "tab created".to_string();
+                // Name the workspace: on a mixed split the chord also
+                // moves the sidebar cursor, and a bare "tab created"
+                // left that switch silent (ux review finding).
+                self.status = format!("tab created in {workspace_label}");
                 if let Err(err) = self.refresh() {
                     self.error = Some(err.to_string());
                 }
@@ -2976,35 +2994,52 @@ impl TuiApp {
     }
 
     fn close_selected_tab(&mut self) {
-        let Some(workspace) = self.selected_workspace() else {
+        // Webui closePanel parity: `state.tab` (the routed panel) closes,
+        // so the workspace the chord reads must be the view pane's own,
+        // not the sidebar cursor's. On a mixed-workspace split the two
+        // differ; anchoring on the sidebar made the view-pane filter
+        // reject and the chain fall through to the sidebar workspace's
+        // active/first tab, closing a panel the user was not looking
+        // at. The view pane's tab must also still sit in its own
+        // workspace's tab list, else it is stale snapshot data and
+        // the active/first-tab chain of that same workspace takes over.
+        let close_target = (|| {
+            let Some(pane) = self.view_pane() else {
+                return self
+                    .selected_workspace()
+                    .map(|workspace| (workspace.id.clone(), workspace));
+            };
+            let workspace = self
+                .snapshot
+                .workspaces
+                .iter()
+                .find(|ws| ws.id == pane.workspace_id);
+            match workspace {
+                Some(ws) => Some((ws.id.clone(), ws)),
+                // Pane whose workspace left the snapshot: stale data,
+                // fall back to the selected workspace's chain.
+                None => self
+                    .selected_workspace()
+                    .map(|workspace| (workspace.id.clone(), workspace)),
+            }
+        })();
+        let Some((workspace_id, workspace)) = close_target else {
             self.error = Some("no workspace selected".to_string());
             return;
         };
-        let workspace_id = workspace.id.clone();
-        // Webui closePanel parity: the tab in view closes, not the
-        // backend-active one. The pane strip marks the view pane's tab
-        // as active, so that is the tab the chord must close; on a
-        // split screen it is the focused tile's tab. A pane whose tab
-        // no longer sits in the workspace's tab list is stale snapshot
-        // data: fall through to the active/first-tab chain.
+        let active_tab_id = workspace.active_tab_id.clone();
+        let fallback_tabs = self.snapshot.workspace_tabs(&workspace_id);
+        // Stale-pane guard: the view pane's tab must still be listed;
+        // otherwise active/first of the same workspace.
         let tab_id = self
             .view_pane()
             .filter(|pane| {
                 pane.workspace_id == workspace_id
-                    && self
-                        .snapshot
-                        .workspace_tabs(&workspace_id)
-                        .iter()
-                        .any(|tab| tab.id == pane.tab_id)
+                    && fallback_tabs.iter().any(|tab| tab.id == pane.tab_id)
             })
             .map(|pane| pane.tab_id.clone())
-            .or_else(|| workspace.active_tab_id.clone())
-            .or_else(|| {
-                self.snapshot
-                    .workspace_tabs(&workspace.id)
-                    .first()
-                    .map(|tab| tab.id.clone())
-            });
+            .or_else(|| active_tab_id.clone())
+            .or_else(|| fallback_tabs.first().map(|tab| tab.id.clone()));
         let Some(tab_id) = tab_id else {
             self.error = Some("no tab to close".to_string());
             return;
@@ -3014,13 +3049,23 @@ impl TuiApp {
         // auto-closes emptied workspaces, but external backends may
         // keep them, so the TUI mirrors the webui and closes it
         // explicitly after the tab is gone.
-        let was_last_tab = self.snapshot.workspace_tabs(&workspace_id).len().max(1) == 1;
+        let was_last_tab = fallback_tabs.len().max(1) == 1;
+        let closed_tab_label = fallback_tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| tab.label.clone());
         match self
             .client
             .request("tab.close", serde_json::json!({ "tab_id": tab_id }))
         {
             Ok(_) => {
-                self.status = "tab closed".to_string();
+                // Name what closed: the fallback chain can act on the
+                // active/first tab, and the footer must distinguish
+                // that from closing the panel the user was viewing.
+                self.status = match closed_tab_label {
+                    Some(label) => format!("tab {label} closed"),
+                    None => "tab closed".to_string(),
+                };
                 if was_last_tab {
                     if let Err(err) = self.client.request(
                         "workspace.close",
@@ -3048,7 +3093,10 @@ impl TuiApp {
                     self.error = Some(err.to_string());
                     return;
                 }
-                self.status = "tab closed".to_string();
+                self.status = match &closed_tab_label {
+                    Some(label) => format!("tab {label} closed"),
+                    None => "tab closed".to_string(),
+                };
                 if was_last_tab {
                     if let Err(ws_err) = self.client.request(
                         "workspace.close",
@@ -7505,7 +7553,34 @@ mod batch11_coverage_tests {
         let candidate = app.search_palette.results[0].clone();
         assert!(app.run_search_candidate(&candidate).is_err());
         // ZoomPane shortcut on the terminal screen toggles the zoom.
+        // The tree here holds a single leaf, so the chord refuses
+        // (zooming one tile has nothing to hide and would desync the
+        // focus); a two-leaf tree toggles as before.
         app.screen = TuiScreen::Terminal;
+        app.run_shortcut(Shortcut::ZoomPane);
+        assert!(!app.split_zoomed);
+        assert_eq!(app.status, "nothing to zoom: single panel");
+        app.snapshot.panes.push(crate::tui::model::TuiPane {
+            id: "pane_2".to_string(),
+            terminal_id: "term_2".to_string(),
+            workspace_id: "ws_1".to_string(),
+            tab_id: "tab_1".to_string(),
+            label: None,
+            agent: Some("shell".to_string()),
+            display_agent: Some("shell".to_string()),
+            agent_status: "idle".to_string(),
+            cwd: "/repo".to_string(),
+            focused: false,
+            terminal_title: None,
+            agent_session: None,
+        });
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
         app.run_shortcut(Shortcut::ZoomPane);
         assert!(app.split_zoomed);
         app.run_shortcut(Shortcut::ZoomPane);
@@ -8670,7 +8745,7 @@ mod batch16_coverage_tests {
             agent_status: String::new(),
         });
         app.close_selected_tab();
-        assert_eq!(app.status, "tab closed");
+        assert_eq!(app.status, "tab Shell closed");
         assert!(
             app.error.as_deref().is_some_and(|e| !e.is_empty()),
             "refresh failure after the ok close surfaces"
@@ -8693,7 +8768,7 @@ mod batch16_coverage_tests {
         snapshot.tabs[0].workspace_id = "ws_real_err".to_string();
         app.snapshot = snapshot;
         app.close_selected_tab();
-        assert_eq!(app.status, "tab closed");
+        assert_eq!(app.status, "tab Shell closed");
         assert!(
             app.error.as_deref().is_some_and(|e| !e.is_empty()),
             "recovery arm surfaces the trailing refresh failure"
@@ -8714,7 +8789,7 @@ mod batch16_coverage_tests {
         snapshot.tabs[0].workspace_id = "ws_real_err".to_string();
         app.snapshot = snapshot;
         app.close_selected_tab();
-        assert_eq!(app.status, "tab closed");
+        assert_eq!(app.status, "tab Shell closed");
         assert!(
             app.error.as_deref().is_some_and(|e| !e.is_empty()),
             "ok arm surfaces the workspace-close failure"
@@ -8740,7 +8815,7 @@ mod batch16_coverage_tests {
         });
         app.snapshot = snapshot;
         app.close_selected_tab();
-        assert_eq!(app.status, "tab closed");
+        assert_eq!(app.status, "tab Shell closed");
         assert!(
             app.error.as_deref().is_some_and(|e| !e.is_empty()),
             "recovery arm skips the workspace close with a sibling tab"

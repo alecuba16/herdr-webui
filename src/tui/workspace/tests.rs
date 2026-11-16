@@ -598,6 +598,67 @@ fn new_tab_creates_in_the_focused_tiles_workspace_on_splits() {
 }
 
 #[test]
+fn close_tab_targets_the_focused_tiles_workspace_on_mixed_splits() {
+    // Mixed-workspace split: sidebar on ws_1, focused tile ws_2's
+    // pane_3 (tab_3). CloseTab must close tab_3, not ws_1's active
+    // tab_1 (webui closePanel never falls across workspaces).
+    let (mut app, rx, _stop) = recording_fake_backend();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.split_focus = Some("pane_3".to_string());
+    app.selected_workspace = 0;
+    app.selected_agent = 0;
+    app.last_refresh = Some(std::time::Instant::now());
+
+    app.run_shortcut(Shortcut::CloseTab);
+    assert!(app.error.is_none(), "close must succeed: {:?}", app.error);
+    let params = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("tab.close request recorded");
+    assert_eq!(
+        params["tab_id"], "tab_3",
+        "the focused tile's tab closes even when the sidebar sits on another workspace"
+    );
+}
+
+#[test]
+fn panel_walk_stays_in_the_focused_tiles_workspace_on_mixed_splits() {
+    // Mixed-workspace split: sidebar on ws_1, focused tile ws_2's
+    // pane_3. The panel walk must stay in ws_2 (the viewed tile's
+    // workspace) instead of evicting it for a ws_1 pane.
+    let (mut app, _rx, _stop) = recording_fake_backend();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.split_focus = Some("pane_3".to_string());
+    app.selected_workspace = 0;
+    app.selected_agent = 0;
+    app.last_refresh = Some(std::time::Instant::now());
+
+    // ws_2 holds one tab (tab_3), so the walk wraps back onto it.
+    let _ = app.move_panel(1);
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_3"),
+        "the walk keeps the viewed tile's workspace instead of evicting it"
+    );
+    assert_eq!(
+        app.selected_workspace, 1,
+        "the sidebar cursor follows the walk into ws_2"
+    );
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1", "pane_3"]);
+}
+
+#[test]
 fn confirm_close_workspace_requires_y() {
     let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
     let mut app = app_with_snapshot(workspace_snapshot());
@@ -912,9 +973,12 @@ fn workspace_backend_actions_succeed_against_fake_socket() {
         app.rename_workspace(" Docs ").unwrap(),
         "workspace renamed to Docs"
     );
+    // The create routed the view onto the fresh ws_2 (fake socket
+    // answers ws_2), whose panel is Notes: rename targets the panel
+    // in view, so the message names Notes, not the old ws_1 Shell.
     assert_eq!(
         app.rename_panel(" Build ").unwrap(),
-        "panel renamed to Build"
+        "panel Notes renamed to Build"
     );
     assert_eq!(
         app.worktree_list().unwrap(),

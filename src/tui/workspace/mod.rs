@@ -106,6 +106,49 @@ impl TuiApp {
     /// `split_focus` onto the next panel's pane, so the chord stays
     /// visible (it used to move only the hidden sidebar cursor).
     pub fn move_panel(&mut self, delta: isize) -> WorkspaceResult {
+        // Mixed-workspace splits: the walk owns the focused tile's
+        // workspace (webui selectRelativePanel walks state.ws's tabs
+        // while the routed panel anchors the index). Reading the
+        // sidebar workspace here made focused_pane_tab miss (the
+        // focused tile's tab is not in that list), so the chord
+        // silently scored from the sidebar cursor and replace_leaf
+        // evicted the viewed tile for a foreign pane. The view pane's
+        // workspace is the anchor; the sidebar cursor follows so the
+        // strip and the walk agree afterwards.
+        if crate::tui::render::split_active(self) {
+            if let Some((workspace_id, pane_id)) = self
+                .view_pane()
+                .map(|pane| (pane.workspace_id.clone(), pane.id.clone()))
+            {
+                if let Some(index) = self
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.id == workspace_id)
+                {
+                    self.selected_workspace = index;
+                }
+                if let Some(agent_index) = self
+                    .snapshot
+                    .agents
+                    .iter()
+                    .position(|agent| agent.pane_id == pane_id)
+                {
+                    self.selected_agent = agent_index;
+                } else {
+                    // Same park as create_tab: shell panes have no
+                    // agent row, so the cursor falls to the target
+                    // workspace's first agent instead of stranding on
+                    // the old workspace's rows.
+                    self.selected_agent = self
+                        .snapshot
+                        .agents
+                        .iter()
+                        .position(|agent| agent.workspace_id == workspace_id)
+                        .unwrap_or(0);
+                }
+            }
+        }
         let Some(workspace) = self
             .selected_workspace()
             .map(|ws| (ws.id.clone(), ws.active_tab_id.clone()))
@@ -340,7 +383,10 @@ impl TuiApp {
     /// Rename the panel in view through `tab.rename` (webui
     /// `startTabRename` targets the routed tab, not the backend-active
     /// one). Falls back to the selected workspace's active tab for
-    /// callers without a view pane.
+    /// callers without a view pane. The view tab must still sit in its
+    /// workspace's tab list: a stale pane (backend already dropped the
+    /// tab) must not submit a rename against a dead id, it errors
+    /// plainly instead of the backend's opaque refusal.
     pub fn rename_panel(&mut self, label: &str) -> WorkspaceResult {
         let label = label.trim();
         if label.is_empty() {
@@ -349,6 +395,25 @@ impl TuiApp {
         let Some(tab_id) = self.view_tab_id().or_else(|| self.active_tab_id()) else {
             return Err("no active panel".to_string());
         };
+        let stale_view_tab = self.view_pane().is_some_and(|pane| {
+            pane.tab_id == tab_id
+                && !self
+                    .snapshot
+                    .workspace_tabs(&pane.workspace_id)
+                    .iter()
+                    .any(|tab| tab.id == tab_id)
+        });
+        if stale_view_tab {
+            return Err("panel in view is gone, reopen it first".to_string());
+        }
+        let tab_label = self
+            .snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| tab.label.clone())
+            .unwrap_or_default();
+        let renamed_from_empty = tab_label.is_empty();
         self.client
             .request(
                 "tab.rename",
@@ -356,7 +421,14 @@ impl TuiApp {
             )
             .map_err(|err| err.to_string())?;
         self.refresh().map_err(|err| err.to_string())?;
-        Ok(format!("panel renamed to {label}"))
+        // Name the target: with the fallback chain a wrong-target
+        // rename must be distinguishable from the right one in the
+        // footer, so the message says which panel moved to what name.
+        if renamed_from_empty {
+            Ok(format!("panel renamed to {label}"))
+        } else {
+            Ok(format!("panel {tab_label} renamed to {label}"))
+        }
     }
 
     /// Webui `removeWorktree` (prefix Delete/Backspace): remove the linked

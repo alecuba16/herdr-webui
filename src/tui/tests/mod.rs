@@ -3595,7 +3595,7 @@ fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
     // follows hits the closed stream and its error surfaces.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
-    assert_eq!(app.status, "tab created", "create still succeeds");
+    assert_eq!(app.status, "tab created in Repo", "create still succeeds");
     assert!(
         app.error.as_deref().is_some_and(|e| !e.is_empty()),
         "refresh after create must surface the backend error"
@@ -3604,7 +3604,7 @@ fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
     // Same shape for close: the tab.close is served, the refresh fails.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
-    assert_eq!(app.status, "tab closed", "close still succeeds");
+    assert_eq!(app.status, "tab Shell closed", "close still succeeds");
     assert!(
         app.error.as_deref().is_some_and(|e| !e.is_empty()),
         "refresh after close must surface the backend error"
@@ -8738,6 +8738,20 @@ fn tab_marker_follows_the_focused_tile_on_splits() {
         rendered.contains("▸ Shell"),
         "the marker tracks the focused tile: {rendered}"
     );
+
+    // Mixed-workspace split: the strip follows the focused tile's
+    // workspace (webui state.ws parity), so ws_2's tab list renders
+    // with its own marker instead of going markerless.
+    app.split_focus = Some("pane_2".to_string());
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("▸ Server"),
+        "the strip lists the focused tile's workspace and marks its tab: {rendered}"
+    );
+    assert!(
+        rendered.contains("Docs") || rendered.contains("Other"),
+        "the strip names the focused workspace: {rendered}"
+    );
 }
 
 #[test]
@@ -11149,12 +11163,14 @@ fn tile_titles_carry_workspace_label_folder_and_chips() {
         "branch token renders"
     );
     // The main checkout shows its branch without the worktree chip
-    // (@ main renders once, no second [worktree]).
+    // (@ main renders once). The strip follows the focused tile's
+    // workspace (ws_2, the linked lane), so its [worktree] token
+    // rides next to the tile's own chip: two total, one per surface.
     assert!(drawn.contains("@ main"));
     assert_eq!(
         drawn.matches("[worktree]").count(),
-        1,
-        "only the linked lane carries the worktree chip"
+        2,
+        "tile chip plus the focused workspace's strip token"
     );
 }
 
