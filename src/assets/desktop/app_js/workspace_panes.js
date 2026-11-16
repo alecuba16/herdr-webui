@@ -858,12 +858,38 @@ function syncTerminalTabsIntoTree(root) {
   }
   lastSyncedRouteTab = routeTab;
   sawExplicitActive = false;
+  // Route focus-or-mint (collector): a ws-only route (sidebar click,
+  // workspace switch with no tab named) must land on a panel of that
+  // workspace. Focus its focused-or-first bound panel; when the ws has
+  // no panel at all, mint an empty one beside the current focus. This
+  // is the sidebar's focus-or-mint contract at the model layer. Skips
+  // when a tab route exists (the owner-leaf pass above owns that case)
+  // and when no tree is renderable yet (dashboard boot).
+  if (routeChanged && !routeTab && state.ws) {
+    const target = paneRootFor();
+    if (paneTreeRenderable(target)) {
+      const bound = leavesBoundTo(target, state.ws);
+      if (bound.length) {
+        if (!bound.some((leaf) => leaf === activeLeaf(target))) {
+          focusLeaf(target, bound[0]);
+          changed = true;
+        }
+      } else {
+        const fresh = mintPanelForWorkspace(state.ws, activeLeaf(target) || paneLeaves(target)[0]);
+        if (fresh) {
+          focusLeaf(paneRootFor(), fresh);
+          changed = true;
+        }
+      }
+    }
+  }
   // Stale-pointer heal for every leaf: the prune above may have dropped
   // the active id, and the owner-focused pointer must not outlive its
   // tab. Fallback order: a surviving editor/git/terminal tab first,
   // else the first remaining tab, else null when the leaf emptied out
-  // (an empty panel keeps active null by design).
-  for (const leaf of paneLeaves(liveRoot)) {
+  // (an empty panel keeps active null by design). Re-reads the root:
+  // the focus-or-mint above may have replaced it.
+  for (const leaf of paneLeaves(paneRootFor())) {
     if (!leaf.tabs.includes(leaf.active)) {
       const nextActive = leaf.tabs.find((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id)) || leaf.tabs[0] || null;
       if (leaf.active !== nextActive) {
@@ -1199,19 +1225,92 @@ function markCurrentWorkspacePane(pane, leaf) {
   if (!owns && pane.classList.contains("pane-owns-current")) pane.classList.remove("pane-owns-current");
 }
 
+// Panel chip (collector model): one chip per strip's leading edge, only
+// when the tree holds more than one panel. The chip names the panel's
+// workspace (worktree display name when it has one), click focuses the
+// panel, drag carries the whole panel (text/herdr-panel-chip payload,
+// chunk C wires the drop). Single-panel trees hide the chip: one panel
+// names itself through the location bar and sidebar already.
+function panePanelChipHtml(leaf) {
+  const root = paneRootFor();
+  if (!leaf || paneLeaves(root).length < 2) return "";
+  const wsId = leafWorkspaceId(leaf);
+  const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
+  const label = workspace
+    ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
+    : (wsId || "panel");
+  const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
+  return `<button class="pane-panel-chip" draggable="true" title="${escapeAttr(label)}" aria-label="Focus panel: ${escapeAttr(label)}" data-pane-id="${escapeAttr(leaf.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')" ondragstart="panePanelChipDragStart(event)" ondragend="panePanelChipDragEnd()">${escapeHtml(label)}</button>`;
+}
+
+// Route write from a panel (design: the location bar always mirrors the
+// focused panel). Shared by the chip click and pane_focus's
+// activatePane. Its active terminal tab navigates (ws+tab); an empty
+// or editor/git panel writes its wsId with tab null. Standalone-VM
+// stubs without go() stay no-ops.
+function writeRouteFromLeaf(leaf) {
+  if (!leaf) return false;
+  const activeTab = (leaf.tabs || []).includes(leaf.active) ? leaf.active : null;
+  if (activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab) && typeof go === "function") {
+    if (state.tab !== activeTab) {
+      go(workspaceIdForTab(activeTab), activeTab);
+      return true;
+    }
+    return false;
+  }
+  const wsId = leafWorkspaceId(leaf);
+  if (wsId && typeof go === "function" && state.ws !== wsId) {
+    go(wsId, null);
+    return true;
+  }
+  return false;
+}
+
+// Chip click: focus the panel and write the route from it.
+function focusPanelFor(encodedPaneId) {
+  const root = paneRootFor();
+  const paneId = decodeURIComponent(String(encodedPaneId || ""));
+  const leaf = paneId ? paneForPaneId(root, paneId) : activeLeaf(root);
+  if (!leaf) return false;
+  focusLeaf(root, leaf);
+  saveWorkspacePanesStates();
+  const hadRoute = writeRouteFromLeaf(leaf);
+  // go() owns the refresh; when no route write fired (same route, or a
+  // stub harness without go()) the render pass still applies the focus.
+  if (!hadRoute) renderWorkspacePanes();
+  return true;
+}
+
+// Chip drag payload (chunk C wires the drop edges): the panel identity,
+// not the workspace, so the drop re-docks THIS panel wherever it lands.
+function panePanelChipDragStart(event) {
+  if (!event || !event.dataTransfer) return;
+  const paneId = event.target && event.target.dataset ? event.target.dataset.paneId : "";
+  event.dataTransfer.setData("text/herdr-panel-chip", paneId || "");
+  event.dataTransfer.effectAllowed = "move";
+}
+
+function panePanelChipDragEnd() {
+  // Chunk C: clear the edge highlight state.
+}
+
 function renderLeafInto(pane, leaf) {
   const strip = pane.querySelector(".pane-tab-strip");
   if (!strip) return;
   wirePaneStripDrag(strip);
   markCurrentWorkspacePane(pane, leaf);
   const activeTab = paneActiveTab(leaf);
-  const stripHtml = paneTabsForTree(leaf)
+  // Chip on the leading edge, badge retired: the collector names each
+  // panel through its chip when more than one panel exists, and the
+  // D4 mixed-tree badge duplicated that job worse (per-tab rows, no
+  // focus affordance).
+  const stripHtml = panePanelChipHtml(leaf) + paneTabsForTree(leaf)
     .map((tabId) => {
       if (isEditorTab(tabId)) return paneEditorTabButtonHtml(tabId, tabId === activeTab);
       if (isGitTab(tabId)) return paneGitTabButtonHtml(tabId, tabId === activeTab);
       return paneTerminalTabButtonHtml(paneTerminalTabById(tabId), tabId === activeTab);
     })
-    .join("") + paneWorkspaceBadgeHtml(leaf);
+    .join("");
   if (strip.__herdrPaneSignature !== stripHtml) {
     strip.__herdrPaneSignature = stripHtml;
     strip.innerHTML = stripHtml;
@@ -1516,20 +1615,21 @@ function paneMenuControlHtml() {
 }
 
 function paneNewTabControlHtml(leaf) {
-  // The + creates the backend panel and routes it into the pane whose
-  // strip was clicked, not the active one. With no workspace open it
-  // falls through to the workspace/worktree flow (the same family as
-  // the dashboard's primary action), so the button is never dead.
+  // Collector model (locked decision): the + mints an EMPTY panel for
+  // the focused panel's workspace (auto-split beside it, focused, path
+  // + Enter hint inside). It does NOT create a backend terminal; Enter
+  // inside the fresh panel does. With no workspace open it falls
+  // through to the workspace/worktree flow (the same family as the
+  // dashboard's primary action), so the button is never dead.
   // With more than one workspace open the + opens the workspace picker
-  // (D3): the new terminal can start in ANY workspace and still land in
-  // this pane. One workspace keeps the direct create (no picker for a
-  // one-row list).
+  // (D3): the new panel can bind to ANY workspace. One workspace keeps
+  // the direct mint (no picker for a one-row list).
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
   const multi = (state.workspaces || []).length > 1;
   if (multi) {
     return `<button class="pane-strip-button pane-new-picker" title="New panel in a workspace" aria-label="New panel in a workspace" aria-haspopup="dialog" onclick="event.preventDefault();HerdrPaneWorkspacePicker.openPicker(this,'${escapeAttr(encoded)}','new-tab')">+</button>`;
   }
-  return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newTabForPane('${escapeAttr(encoded)}')">+</button>`;
+  return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newPanelForFocused()">+</button>`;
 }
 
 // The split pair is always fully offered (tmux model): any pane can grow
@@ -3360,6 +3460,8 @@ window.HerdrWorkspacePanes = {
   leafWorkspaceId,
   leavesBoundTo,
   focusedLeaf,
+  writeRouteFromLeaf,
+  focusPanelFor,
   // Drop the split leaf emptied by a closed terminal tab (that leaf only:
   // a blanket sweep would eat by-design empty split siblings).
   collapseLeafForClosedTab,

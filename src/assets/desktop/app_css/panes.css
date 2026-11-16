@@ -311,6 +311,43 @@
   align-self: center;
 }
 
+/* Panel chip (collector): strip leading edge, click focuses the panel,
+ drag re-docks it (chunk C). First child of the strip so it never
+ fights the tab order. Cursor grab, not pointer: the drag is the
+ primary affordance on multi-panel trees. */
+.pane-panel-chip {
+  appearance: none;
+  border: 0;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  cursor: grab;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  margin-right: 4px;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 4px;
+  align-self: center;
+  flex: none;
+}
+
+.pane-panel-chip:hover {
+  background: color-mix(in srgb, var(--accent), transparent 78%);
+}
+
+.pane-panel-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pane-panel-chip:active {
+  cursor: grabbing;
+}
+
 .pane-ws-badge:hover {
   background: color-mix(in srgb, var(--accent), transparent 78%);
 }

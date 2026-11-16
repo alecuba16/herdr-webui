@@ -58,6 +58,13 @@
     if (!leaves.some((leaf) => leaf.paneId === paneId)) return false;
     root.activePaneId = paneId;
     if (window.HerdrWorkspacePanes.saveWorkspacePanesStates) window.HerdrWorkspacePanes.saveWorkspacePanesStates();
+    // Collector model (design: the location bar always mirrors the
+    // focused panel): clicking into a panel writes the route from that
+    // panel through the pane module's shared helper. go() owns the
+    // refresh; this module still never re-renders by itself.
+    const leaf = leaves.find((candidate) => candidate.paneId === paneId);
+    if (window.HerdrWorkspacePanes.writeRouteFromLeaf)
+      window.HerdrWorkspacePanes.writeRouteFromLeaf(leaf);
     return true;
   }
 
