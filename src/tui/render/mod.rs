@@ -302,13 +302,15 @@ pub(crate) fn workspace_branch_token(workspace: &TuiWorkspace) -> Option<String>
 fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let line = if let Some(workspace) = app.selected_workspace() {
         let tabs = app.snapshot.workspace_tabs(&workspace.id);
-        // The tab the TUI has actually selected (the pane whose tail the
+        // The tab the TUI is actually viewing (the pane whose tail the
         // main pane shows, the one Enter attaches): the selection follows
-        // the agent cursor / move_panel, which does not always match the
-        // backend's active_tab_id. Marking only the backend-active tab
-        // left the user without any cue of which panel they were
-        // looking at after Ctrl+B ] / [ (ux fix).
-        let selected_tab_id = app.selected_pane().map(|pane| pane.tab_id.clone());
+        // the agent cursor / move_panel / the split focus, which does not
+        // always match the backend's active_tab_id. On a split screen the
+        // focused tile owns the view, so the marker must read view_pane
+        // (identical to the sidebar selection without a split). Marking
+        // only the backend-active tab left the user without any cue of
+        // which panel they were looking at after Ctrl+B ] / [ (ux fix).
+        let selected_tab_id = app.view_pane().map(|pane| pane.tab_id.clone());
         let mut spans = if tabs.is_empty() {
             vec![Span::styled(
                 format!(" {} ", workspace.label),

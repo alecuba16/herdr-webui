@@ -337,13 +337,16 @@ impl TuiApp {
         Ok(format!("workspace renamed to {label}"))
     }
 
-    /// Rename the active panel through `tab.rename`.
+    /// Rename the panel in view through `tab.rename` (webui
+    /// `startTabRename` targets the routed tab, not the backend-active
+    /// one). Falls back to the selected workspace's active tab for
+    /// callers without a view pane.
     pub fn rename_panel(&mut self, label: &str) -> WorkspaceResult {
         let label = label.trim();
         if label.is_empty() {
             return Err("type a panel name".to_string());
         }
-        let Some(tab_id) = self.active_tab_id() else {
+        let Some(tab_id) = self.view_tab_id().or_else(|| self.active_tab_id()) else {
             return Err("no active panel".to_string());
         };
         self.client
@@ -1075,17 +1078,6 @@ impl TuiApp {
                 .first()
                 .map(|tab| tab.id.clone())
         })
-    }
-
-    /// Label of the active panel (desktop `panelRenameInitialLabel`
-    /// source; used to prefill the rename prompt).
-    pub fn active_panel_label(&self) -> Option<String> {
-        let tab_id = self.active_tab_id()?;
-        self.snapshot
-            .tabs
-            .iter()
-            .find(|tab| tab.id == tab_id)
-            .map(|tab| tab.label.clone())
     }
 }
 

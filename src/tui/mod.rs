@@ -2379,12 +2379,21 @@ impl TuiApp {
             Shortcut::RenamePanel => {
                 // Desktop prefills the rename input with the current
                 // label unless it is a default title (shell/terminal/
-                // "tab N" stay empty, `panelRenameInitialLabel`).
+                // "tab N" stay empty, `panelRenameInitialLabel`). The
+                // panel in view owns the rename: its label prefills and
+                // its tab receives the submit.
+                let label = self
+                    .view_pane()
+                    .and_then(|pane| {
+                        self.snapshot
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.id == pane.tab_id)
+                            .map(|tab| tab.label.clone())
+                    })
+                    .filter(|label| !Self::is_default_panel_title(label));
                 let mut input = PromptInput::new(PromptKind::RenamePanel);
-                input.text = self
-                    .active_panel_label()
-                    .filter(|label| !Self::is_default_panel_title(label))
-                    .unwrap_or_default();
+                input.text = label.unwrap_or_default();
                 self.prompt_input = Some(input);
                 self.status = PromptKind::RenamePanel.title().to_string();
             }
@@ -2919,6 +2928,35 @@ impl TuiApp {
     }
 
     fn create_tab(&mut self) {
+        // Mixed-workspace splits: the strip shows the sidebar-selected
+        // workspace's tabs, so creating there while the user looks at
+        // another workspace's tile would surprise. Move the sidebar
+        // cursor to the focused tile's workspace first (webui state.ws
+        // parity: the workspace in view owns newTab), so the strip,
+        // the ▸ marker, and the creation target agree. No split: the
+        // view pane sits in the selected workspace already, so the
+        // cursor move is a no-op and behavior is unchanged.
+        if let Some((workspace_id, pane_id)) = self
+            .view_pane()
+            .map(|pane| (pane.workspace_id.clone(), pane.id.clone()))
+        {
+            if let Some(workspace_index) = self
+                .snapshot
+                .workspaces
+                .iter()
+                .position(|ws| ws.id == workspace_id)
+            {
+                self.selected_workspace = workspace_index;
+            }
+            if let Some(agent_index) = self
+                .snapshot
+                .agents
+                .iter()
+                .position(|agent| agent.pane_id == pane_id)
+            {
+                self.selected_agent = agent_index;
+            }
+        }
         let Some(workspace) = self
             .selected_workspace()
             .map(|workspace| workspace.id.clone())
@@ -2943,12 +2981,30 @@ impl TuiApp {
             return;
         };
         let workspace_id = workspace.id.clone();
-        let tab_id = workspace.active_tab_id.clone().or_else(|| {
-            self.snapshot
-                .workspace_tabs(&workspace.id)
-                .first()
-                .map(|tab| tab.id.clone())
-        });
+        // Webui closePanel parity: the tab in view closes, not the
+        // backend-active one. The pane strip marks the view pane's tab
+        // as active, so that is the tab the chord must close; on a
+        // split screen it is the focused tile's tab. A pane whose tab
+        // no longer sits in the workspace's tab list is stale snapshot
+        // data: fall through to the active/first-tab chain.
+        let tab_id = self
+            .view_pane()
+            .filter(|pane| {
+                pane.workspace_id == workspace_id
+                    && self
+                        .snapshot
+                        .workspace_tabs(&workspace_id)
+                        .iter()
+                        .any(|tab| tab.id == pane.tab_id)
+            })
+            .map(|pane| pane.tab_id.clone())
+            .or_else(|| workspace.active_tab_id.clone())
+            .or_else(|| {
+                self.snapshot
+                    .workspace_tabs(&workspace.id)
+                    .first()
+                    .map(|tab| tab.id.clone())
+            });
         let Some(tab_id) = tab_id else {
             self.error = Some("no tab to close".to_string());
             return;
@@ -4399,6 +4455,14 @@ impl TuiApp {
 
     pub fn view_pane_id(&self) -> Option<String> {
         self.view_pane().map(|pane| pane.id.clone())
+    }
+
+    /// Tab id of the panel in view (webui `state.tab` parity): the
+    /// focused tile's tab on a split screen, otherwise the
+    /// sidebar-selected pane's tab. The pane strip marks this tab
+    /// active, so close and rename target it.
+    pub fn view_tab_id(&self) -> Option<String> {
+        self.view_pane().map(|pane| pane.tab_id.clone())
     }
 
     pub fn view_terminal_id(&self) -> Option<&str> {

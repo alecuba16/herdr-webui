@@ -8703,6 +8703,44 @@ fn workspace_tabs_render_inactive_tab_style() {
 }
 
 #[test]
+fn tab_marker_follows_the_focused_tile_on_splits() {
+    // On a split screen the pane strip's ▸ marker must track the
+    // focused tile, not the sidebar selection: the marker is the cue
+    // telling the user which panel close/rename/compose targets.
+    let mut app = app_with_snapshot();
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(
+        &crate::tui::tests::fixture_snapshot_value_two_panes(),
+    );
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    // Sidebar cursor parked on pane_1's agent row: view_pane overrides.
+    app.selected_workspace = 0;
+    app.selected_agent = 0;
+
+    let rendered = draw(&app, 120, 30);
+    // The only "Shell" text is ws_1's tab_1 in the pane strip; with the
+    // focus on ws_2's pane_2 the marker must not sit on it.
+    assert!(
+        !rendered.contains("▸ Shell"),
+        "the marker must not sit on the sidebar pane's tab while the focus is elsewhere: {rendered}"
+    );
+
+    // Focus back on pane_1: the marker returns to Shell in the strip.
+    app.split_focus = Some("pane_1".to_string());
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("▸ Shell"),
+        "the marker tracks the focused tile: {rendered}"
+    );
+}
+
+#[test]
 fn git_log_title_shows_more_hint_and_file_scope() {
     // The log toolbar title arms: the +more hint when the log has more
     // pages, and the file name when the log is file-scoped.

@@ -8,6 +8,7 @@ use serde_json::json;
 
 use super::*;
 use crate::backend_client::BackendClient;
+use crate::tui::Shortcut;
 
 fn app_with_snapshot(snapshot: serde_json::Value) -> TuiApp {
     // Never wire the live built-in backend into tests: a mutating shortcut
@@ -502,6 +503,101 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
 }
 
 #[test]
+fn close_tab_targets_the_panel_in_view_on_splits() {
+    // Webui closePanel parity: `state.tab` (the routed panel) closes,
+    // so the TUI must close the view pane's tab, not the backend-active
+    // one. Split screen: the focused tile is pane_2 (tab_2) while the
+    // backend-active tab stays tab_1.
+    let (mut app, rx, _stop) = recording_fake_backend();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.selected_workspace = 0;
+
+    app.run_shortcut(Shortcut::CloseTab);
+    assert!(app.error.is_none(), "close must succeed: {:?}", app.error);
+    let params = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("tab.close request recorded");
+    assert_eq!(params["tab_id"], "tab_2", "the focused tile closes");
+}
+
+#[test]
+fn rename_panel_targets_the_panel_in_view_on_splits() {
+    // The rename prompt prefills from the focused tile and submits
+    // tab.rename against the same tab (webui startTabRename targets
+    // the routed tab).
+    let (mut app, rx, _stop) = recording_fake_backend();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.selected_workspace = 0;
+    app.snapshot.tabs[1].label = "Build".to_string();
+
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().text,
+        "Build",
+        "prefill reads the focused tile's label"
+    );
+    // Submit: type a new label and press Enter.
+    app.handle_key(KeyEvent::from(KeyCode::Char('X')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    let params = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("tab.rename request recorded");
+    assert_eq!(params["tab_id"], "tab_2", "rename hits the focused tile");
+    assert_eq!(params["label"], "BuildX");
+}
+
+#[test]
+fn new_tab_creates_in_the_focused_tiles_workspace_on_splits() {
+    // Mixed-workspace split: the sidebar sits on ws_1 while the
+    // focused tile is ws_2's pane_3. NewTab must move the sidebar
+    // cursor to ws_2 first (strip and ▸ marker follow) and then
+    // create there, mirroring webui newTab() targeting state.ws.
+    let (mut app, rx, _stop) = recording_fake_backend();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_3"),
+        ],
+    );
+    app.split_focus = Some("pane_3".to_string());
+    app.selected_workspace = 0;
+    app.selected_agent = 0;
+    // Steady state: past the first refresh the cursor moves are user
+    // property, so a post-create refresh must not snap them back
+    // (select_focused_items runs on the first refresh only).
+    app.last_refresh = Some(std::time::Instant::now());
+
+    app.run_shortcut(Shortcut::NewTab);
+    assert!(app.error.is_none(), "create must succeed: {:?}", app.error);
+    assert_eq!(
+        app.selected_workspace, 1,
+        "the sidebar cursor moves to the focused tile's workspace"
+    );
+    let params = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("tab.create request recorded");
+    assert_eq!(
+        params["workspace_id"], "ws_2",
+        "the tab lands in the focused tile's workspace"
+    );
+}
+
+#[test]
 fn confirm_close_workspace_requires_y() {
     let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
     let mut app = app_with_snapshot(workspace_snapshot());
@@ -648,7 +744,7 @@ fn workspace_fake_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) 
                 json!({"id": id, "result": {"workspace": {"workspace_id": "ws_2"}}})
             }
             "workspace.close" | "workspace.rename" | "tab.rename" | "worktree.remove"
-            | "worktree.create" | "worktree.open" | "tab.promote" => {
+            | "worktree.create" | "worktree.open" | "tab.promote" | "tab.close" => {
                 json!({"id": id, "result": {"ok": true}})
             }
             "worktree.list" => {
@@ -684,6 +780,66 @@ fn app_with_fake_backend() -> (TuiApp, std::sync::mpsc::Sender<()>) {
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&workspace_snapshot());
     (app, stop)
+}
+
+/// Fake backend that answers every request with ok and records the
+/// tab-scoped ones (tab.close / tab.rename) so tests can assert which
+/// panel a shortcut targeted.
+fn recording_fake_backend() -> (
+    TuiApp,
+    std::sync::mpsc::Receiver<serde_json::Value>,
+    std::sync::mpsc::Sender<()>,
+) {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use interprocess::TryClone as _;
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = crate::backend_client::unique_test_path("herdr-workspace-recording");
+    let _ = std::fs::remove_file(&path);
+    let listener = ListenerOptions::new()
+        .name(path.clone().to_fs_name::<GenericFilePath>().unwrap())
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+    let handle = std::thread::spawn(move || loop {
+        if stop_rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if request["method"].as_str().unwrap_or("") == "session.snapshot" {
+            let response = json!({"id": request["id"], "result": workspace_snapshot()});
+            stream
+                .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+            continue;
+        }
+        let _ = tx.send(request["params"].clone());
+        let response = json!({"id": request["id"], "result": {"ok": true}});
+        stream
+            .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+    });
+    std::mem::forget(handle);
+    let client = BackendClient::new(path.clone(), path);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&workspace_snapshot());
+    (app, rx, stop_tx)
 }
 
 /// Shared entry for sibling test modules: a client wired to the fake
