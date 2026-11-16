@@ -470,3 +470,28 @@ test("tab drop on a pane half creates a fresh panel holding the dragged tab", ()
   assert.notEqual(holder.paneId, leaves[1].paneId, "the tab moved to a NEW panel");
   assert.deepEqual([...leaves[1].tabs], [], "source leaf emptied");
 });
+test("abandoned tab drag clears the shared preview square on dragend", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const leaves = bootFlatThreePanels(ctx, 2);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, leaves[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_2" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerTabDragOver({
+    target: paneEl,
+    clientX: 200,
+    clientY: 40,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  const preview = document.getElementById("panelDropPreview");
+  assert.ok(preview, "preview exists during the tab drag");
+  assert.equal(preview.style.display, "block", "preview visible mid-drag");
+  // Abandon the drag (no drop): dragend must clear the square, else the
+  // dotted indicator sticks over the last hovered half.
+  ctx.paneTabDragEnd();
+  assert.equal(preview.style.display, "none", "dragend hides the preview square");
+});

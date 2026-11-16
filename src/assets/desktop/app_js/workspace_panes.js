@@ -2315,6 +2315,10 @@ function paneTabDragStart(event) {
 
 function paneTabDragEnd() {
   paneDragTabId = null;
+  // The tab drag shares the container-level preview square with panel
+  // drags (v3): abandoning a tab drag mid-flight must clear it too, or
+  // the dotted square sticks on the last hovered half.
+  clearPanelDropPreview();
   clearPaneDropCaret();
   clearPaneWorkspaceDropHint();
   document.querySelectorAll(".pane-tab-dragging").forEach((node) => {
