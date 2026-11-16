@@ -442,7 +442,10 @@ pub fn prefix_legend(screen: TuiScreen, mode: TuiMode) -> &'static str {
     } else if split_s {
         "g git · f files · t terminal · w worktrees · n new · s split · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m move · Z resize · z zoom · u unstage · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · ? help"
     } else {
-        "g git · f files · t terminal · w worktrees · n new · s settings · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m move · Z resize · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · z stash · u unstage · ? help"
+        // Non-Navigate Terminal (attach, overlays): the split move/
+        // zoom modes only open in Navigate, so m falls through to the
+        // git blame arm here, not move tile.
+        "g git · f files · t terminal · w worktrees · n new · s settings · / search · j/k workspace · a/A agent · ]/[ panel · p tab · x close tab · q quit · B sidebar · C compose · L lens · r refresh · m blame · Z resize · S rename · R rename panel · X close · Del rm wt · T wt · e edit · E settings · I cwd · G stage all · P sessions · , . focus · v branch pick · z stash · u unstage · ? help"
     }
 }
 
@@ -465,6 +468,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B a/A", "next/prev agent"),
         ("Ctrl+B p/x", "new/close tab"),
         ("Ctrl+B ]/[", "next/prev panel in workspace"),
+        ("Ctrl+B v", "branch picker (git screen)"),
         ("Ctrl+B n", "new workspace (browse folders, Enter picks)"),
         ("Ctrl+B Shift+S", "rename workspace"),
         ("Ctrl+B Shift+R", "rename panel"),
@@ -504,9 +508,11 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "git: s/d/G",
             "stage / discard / toggle stage all (in-screen)",
         ),
-        ("git: u", "unstage file (also Ctrl+B u from anywhere)"),
-        ("git: m", "toggle blame (also Ctrl+B m from anywhere)"),
-        ("git: z", "stash changes (also Ctrl+B z from anywhere)"),
+        ("git: u", "unstage file (Ctrl+B u)"),
+        // Terminal-Navigate keeps m/z for the split move/zoom modes,
+        // so these two are git-screen-only, not "from anywhere".
+        ("git: m", "toggle blame (git screen)"),
+        ("git: z", "stash changes (git screen)"),
         ("git: P", "push (in-screen on the Git screen)"),
         ("", ""),
         (
@@ -587,7 +593,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B m", "git blame toggle · terminal: move tile mode"),
         ("Ctrl+B z", "git stash changes · terminal: zoom tile"),
         (
-            "Shift+Z (terminal)",
+            "Ctrl+B Shift+Z",
             "resize mode: h/l narrower/wider, j/k shorter/taller, Enter/Esc done",
         ),
         (
@@ -818,7 +824,7 @@ mod tests {
         let dispatchable: Vec<(char, Shortcut)> = [
             '?', '/', 'f', 'g', 't', 'r', 'R', 'j', 'k', 'a', 'A', 'p', 'n', 'x', 'X', 'q', 's',
             'B', '.', ',', 'C', 'L', 'z', 'Z', 'v', 'e', 'E', 'm', ']', '[', 'w', 'T', 'S', 'G',
-            'I', 'P',
+            'I', 'P', 'u',
         ]
         .into_iter()
         .filter_map(|ch| shortcut_for_key(key(ch)).map(|shortcut| (ch, shortcut)))
@@ -829,6 +835,13 @@ mod tests {
         );
         let terminal_legend = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
         let git_legend = prefix_legend(TuiScreen::Git, TuiMode::Navigate);
+        // The non-split branch (attach/overlay Terminal) must also name
+        // every chord; its m meaning differs (blame, not move tile).
+        let attach_legend = prefix_legend(TuiScreen::Terminal, TuiMode::Attach);
+        assert!(
+            attach_legend.contains("m blame") && !attach_legend.contains("m move"),
+            "attach legend m must say blame: {attach_legend}"
+        );
         for (ch, shortcut) in dispatchable {
             // Keys that share one legend segment (j/k, a/A, ]/[) are
             // named by the pair token, not a lone-char token.
@@ -880,10 +893,19 @@ mod tests {
         }
         assert!(terminal.contains("m move"), "terminal legend: {terminal}");
         assert!(!terminal.contains("z stash"), "terminal legend: {terminal}");
-        // The non-split Terminal variant keeps z for tile zoom only on
-        // the split legend; the plain variant drops it (no split tree).
-        let split = prefix_legend(TuiScreen::Terminal, TuiMode::Navigate);
-        assert!(split.contains("z zoom"), "split legend: {split}");
+        assert!(terminal.contains("z zoom"), "split legend: {terminal}");
+    }
+
+    #[test]
+    fn delete_and_backspace_chords_remove_worktrees() {
+        // The chord map treats Delete and Backspace as the same
+        // remove-worktree key; pin both so the legend row ("Del rm wt")
+        // cannot drift from a dead key.
+        for code in [KeyCode::Delete, KeyCode::Backspace] {
+            let shortcut =
+                shortcut_for_key(KeyEvent::from(code)).expect("Delete/Backspace must dispatch");
+            assert_eq!(shortcut, Shortcut::RemoveWorktree);
+        }
     }
 
     #[test]

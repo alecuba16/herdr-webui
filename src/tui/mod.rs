@@ -2983,8 +2983,10 @@ impl TuiApp {
             Ok(_) => {
                 // Name the workspace: on a mixed split the chord also
                 // moves the sidebar cursor, and a bare "tab created"
-                // left that switch silent (ux review finding).
-                self.status = format!("tab created in {workspace_label}");
+                // left that switch silent (ux review finding). The
+                // notice (not a bare status write) survives the
+                // refresh below: apply_refresh overwrites unheld text.
+                self.set_status_notice(format!("tab created in {workspace_label}"));
                 if let Err(err) = self.refresh() {
                     self.error = Some(err.to_string());
                 }
@@ -3062,10 +3064,13 @@ impl TuiApp {
                 // Name what closed: the fallback chain can act on the
                 // active/first tab, and the footer must distinguish
                 // that from closing the panel the user was viewing.
-                self.status = match closed_tab_label {
+                // The notice arms the hold so the refresh below cannot
+                // swap it for the idle backend line before a render.
+                let closed_status = match closed_tab_label {
                     Some(label) => format!("tab {label} closed"),
                     None => "tab closed".to_string(),
                 };
+                self.set_status_notice(closed_status);
                 if was_last_tab {
                     if let Err(err) = self.client.request(
                         "workspace.close",
@@ -3093,10 +3098,11 @@ impl TuiApp {
                     self.error = Some(err.to_string());
                     return;
                 }
-                self.status = match &closed_tab_label {
+                let closed_status = match &closed_tab_label {
                     Some(label) => format!("tab {label} closed"),
                     None => "tab closed".to_string(),
                 };
+                self.set_status_notice(closed_status);
                 if was_last_tab {
                     if let Err(ws_err) = self.client.request(
                         "workspace.close",
@@ -3157,7 +3163,14 @@ impl TuiApp {
             TuiScreen::Terminal => {
                 if let Err(err) = self.refresh() {
                     self.error = Some(err.to_string());
+                    return;
                 }
+                // refresh() rewrites an unheld status to the idle
+                // backend summary, so the refresh chord with no other
+                // outcome would leave the line byte-identical and look
+                // like a dead key. Report through the hold convention
+                // (webui diff view spins its refresh button).
+                self.set_status_notice("refreshed".to_string());
             }
             TuiScreen::Files => {
                 if let Err(err) = self.file_explorer.refresh(&self.web_api) {

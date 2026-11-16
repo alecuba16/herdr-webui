@@ -2767,23 +2767,26 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
     app.snapshot = fixture_snapshot();
     let ctrl_b = ctrl('b');
 
-    // NewTab creates a tab, then refresh() replaces the status with the
-    // backend summary (proof the refresh after create succeeded).
+    // NewTab creates a tab, then refresh() runs; the held notice
+    // (create/close report through set_status_notice) owns the line
+    // past the refresh, proving both the action and the hold.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(
-        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
-        "create tab must refresh against the fake backend"
+        app.status, "tab created in Repo",
+        "create tab keeps its notice past the refresh"
     );
+    assert!(app.status_hold_until.is_some(), "notice must arm the hold");
     assert!(app.error.is_none(), "create tab error: {:?}", app.error);
 
-    // CloseTab closes the active tab and refreshes.
+    // CloseTab closes the active tab and refreshes the same way.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(
-        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
-        "close tab must refresh against the fake backend"
+        app.status, "tab Shell closed",
+        "close tab keeps its notice past the refresh"
     );
+    assert!(app.status_hold_until.is_some(), "notice must arm the hold");
     assert!(app.error.is_none(), "close tab error: {:?}", app.error);
 
     // --- Error arms against a dead backend: create/close hit connection
@@ -2867,7 +2870,7 @@ fn close_last_tab_also_closes_the_workspace() {
     // Gap 7: webui closeTab closes the workspace explicitly when the
     // tab was the last one in it. The single-tab fixture exercises the
     // workspace.close arm: the fake backend answers both requests and
-    // the refreshed status proves the full round trip.
+    // the held close notice survives the refresh round trip.
     let (api_socket, _stop) = fake_backend_socket();
     let client = BackendClient::new(api_socket.clone(), api_socket.clone());
     let mut app = TuiApp::new(client, Duration::from_secs(1));
@@ -2875,8 +2878,8 @@ fn close_last_tab_also_closes_the_workspace() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(
-        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
-        "closing the last tab must refresh against the fake backend"
+        app.status, "tab Shell closed",
+        "closing the last tab keeps its notice past the refresh"
     );
     assert!(app.error.is_none(), "last-tab close error: {:?}", app.error);
     let _ = std::fs::remove_file(&api_socket);
@@ -2896,12 +2899,9 @@ fn close_last_tab_ignores_workspace_not_found() {
     app.snapshot = snapshot;
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
-    // Refresh succeeds against the fake backend, so the status is the
-    // backend summary; the point is that the not-found error is gone.
-    assert_eq!(
-        app.status,
-        "backend test · protocol 1 · 1 workspaces · 1 agents"
-    );
+    // Refresh succeeds against the fake backend; the held notice stays
+    // and the point is that the not-found error is gone.
+    assert_eq!(app.status, "tab Shell closed");
     assert!(
         !app.error
             .as_deref()
@@ -2928,12 +2928,9 @@ fn close_tab_ignores_tab_not_found() {
     app.snapshot = snapshot;
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
-    // Refresh succeeds against the fake backend, so the status is the
-    // backend summary: the full success flow ran despite the not-found.
-    assert_eq!(
-        app.status,
-        "backend test \u{b7} protocol 1 \u{b7} 1 workspaces \u{b7} 1 agents"
-    );
+    // Refresh succeeds against the fake backend; the held notice stays:
+    // the full success flow ran despite the not-found.
+    assert_eq!(app.status, "tab Shell closed");
     assert!(
         !app.error
             .as_deref()
