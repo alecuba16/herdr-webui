@@ -4818,9 +4818,10 @@ function forgetClosedSelection(kind, data) {
     // aux surface (D8 cache parks on hide, nothing else frees it).
     if (closedLastPaneInTab && window.HerdrPaneTerminals)
       window.HerdrPaneTerminals.releaseForTab(closedPane.tab_id);
-    // Last pane of a tab emptied a split leaf: same collapse as tab.closed.
-    if (closedLastPaneInTab && window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
-      window.HerdrWorkspacePanes.collapseLeafForClosedTab(closedPane.tab_id);
+    // Last pane of a tab emptied a split leaf: same close aftermath
+    // (prune + v3.2 sweep + paint) through the pane module's facade.
+    if (closedLastPaneInTab && window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.onTerminalTabClosed)
+      window.HerdrWorkspacePanes.onTerminalTabClosed(closedPane.tab_id);
     if (closedPane && closedPane.workspace_id)
       maybeAutoCloseWorkspace(closedPane.workspace_id);
     if (data && data.pane_id && data.pane_id === state.pane) {
@@ -4850,10 +4851,11 @@ function forgetClosedSelection(kind, data) {
     // and wterm instance this tab owned.
     if (window.HerdrPaneTerminals && data && data.tab_id)
       window.HerdrPaneTerminals.releaseForTab(data.tab_id);
-    // A closed terminal tab can leave its split leaf empty: collapse
-    // the tree to the survivor now (render picks it up next pass).
-    if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
-      window.HerdrWorkspacePanes.collapseLeafForClosedTab(data.tab_id);
+    // A closed terminal tab can leave its split leaf empty: the pane
+    // module's close-aftermath facade prunes the id, folds armed+empty
+    // leaves, and paints once (v3.2 auto-close).
+    if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.onTerminalTabClosed)
+      window.HerdrWorkspacePanes.onTerminalTabClosed(data.tab_id);
     if (data && data.tab_id && data.tab_id === state.tab) {
       resetTerminalConnection(true);
       selectFallbackTabAfterClosed(data.tab_id);

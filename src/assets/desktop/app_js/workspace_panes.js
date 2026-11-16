@@ -727,6 +727,10 @@ function terminalHomeLeafFor(wsId) {
       // fresh panel empty forever. Unbound = adoptable for any ws,
       // same as the ladder's adoption step below.
       if (leafWorkspaceId(pending) === null) pending.wsId = wsId;
+      // Consuming the placement is the acceptance: shed any marker a
+      // gesture minted on this pane since the + press, the incoming id
+      // refills it either way.
+      disarmLeafAutoClose(pending);
       pendingTabPlacements.delete("__next__");
       return pending;
     }
@@ -739,6 +743,11 @@ function terminalHomeLeafFor(wsId) {
   const available = leaves.find((leaf) => leafWorkspaceId(leaf) === null);
   if (available) {
     available.wsId = wsId;
+    // v3.2: adoption is a role change, not an abandonment. A stale arm
+    // from an earlier gesture (the leaf sat empty before this ws picked
+    // it up) must not fold the workspace's new anchor panel the moment
+    // focus moves on; the ws binding IS the refill.
+    disarmLeafAutoClose(available);
     return available;
   }
   return mintPanelForWorkspace(wsId, focused || leaves[0]);
@@ -868,8 +877,10 @@ function syncTerminalTabsIntoTree(root) {
         // the first sync resolves; pruning it is bookkeeping, not an
         // abandonment, and arming on it would sweep away seed leaves and
         // fresh splits the moment their placeholder resolves. A real
-        // backend id leaving the leaf empty is a genuine close.
-        if (!kept.length && was.some((id) => id !== TERMINAL_TAB_PLACEHOLDER))
+        // backend id leaving the leaf empty is a genuine close. The
+        // emptiness half of the rule lives in armLeafAutoClose's guard
+        // (one owner); only the real-id predicate is local to the prune.
+        if (was.some((id) => id !== TERMINAL_TAB_PLACEHOLDER))
           armLeafAutoClose(leaf);
         changed = true;
       }
@@ -919,6 +930,11 @@ function syncTerminalTabsIntoTree(root) {
             : paneLeaves(target).find((leaf) => !leafWorkspaceId(leaf)) || null;
         if (unbound) {
           unbound.wsId = state.ws;
+          // v3.2: same disarm as the tab-adoption ladder. The unbound
+          // leaf may carry a stale arm from a pre-adoption gesture;
+          // the ws binding refills its role, so the sweep must not fold
+          // the newly anchored panel on a later focus move.
+          disarmLeafAutoClose(unbound);
           focusLeaf(target, unbound);
           changed = true;
         } else {
@@ -2527,14 +2543,19 @@ function paneContainerTabDrop(event) {
   if (!splitLeafWith(targetLeaf, fresh, target)) return;
   // The fresh leaf owns the moved tab: same placement contract as a
   // + mint, so the sync never re-homes the id on the next snapshot.
-  // An own-pane half drop is a SPLIT gesture (both halves are the
-  // product, like a Split press), so the move keeps the emptied
-  // remainder standing; a cross-pane move arms its emptied source and
-  // folds it on this render.
-  if (movePaneTabTo(tabId, fresh.paneId, null, { splitGesture: source === targetLeaf })) {
+  // v3.2 marker ownership: the drop gesture decides. An own-pane half
+  // drop is a SPLIT gesture (both halves are the product, like a Split
+  // press), so the emptied remainder stays disarmed and standing; a
+  // cross-pane move arms its emptied source and the sweep below folds
+  // it. The move itself is pure tree surgery (movePaneTabTo touches no
+  // marker), and skipRender hands this handler the single paint.
+  const splitGesture = source === targetLeaf;
+  if (movePaneTabTo(tabId, fresh.paneId, null, { skipRender: true })) {
     focusLeaf(paneRootFor(), fresh);
+    if (splitGesture) disarmLeafAutoClose(source);
+    else armLeafAutoClose(source);
   }
-  // v3.2: the source emptied by the move auto-closes through the render
+  // The emptied source (armed cross-pane) folds through the render
   // below; the focused fresh leaf survives by the sweep's own guard.
   saveWorkspacePanesStates();
   renderWorkspacePanes();
@@ -2618,7 +2639,21 @@ function paneStripDrop(event) {
   if (event.preventDefault) event.preventDefault();
   const paneId = pane.dataset ? pane.dataset.paneId : null;
   const index = strip && strip.dataset ? Number(strip.dataset.dropIndex) : NaN;
-  movePaneTabTo(tabId, paneId, Number.isFinite(index) ? index : null);
+  // v3.2 marker ownership: the emptying gesture decides, the move is
+  // pure tree surgery. A same-pane drop is a reorder (renders itself);
+  // a cross-pane strip drop arms its emptied source BEFORE the single
+  // render so the sweep folds it in this same paint, not the next one.
+  const rootBeforeMove = paneRootFor();
+  const source = tabId ? paneForTab(rootBeforeMove, tabId) : null;
+  const dropIndex = Number.isFinite(index) ? index : null;
+  if (!source || source.paneId === paneId) {
+    movePaneTabTo(tabId, paneId, dropIndex);
+    return;
+  }
+  if (movePaneTabTo(tabId, paneId, dropIndex, { skipRender: true })) {
+    armLeafAutoClose(source);
+    renderWorkspacePanes();
+  }
 }
 
 // The actual move: splice from the source leaf, insert into the target
@@ -2630,6 +2665,13 @@ function paneStripDrop(event) {
 // by its per-tab key on the next render), and the route moves with the
 // tab when the dragged id was the route tab (workspaceIdForTab keeps
 // the route's workspace row-true, D7.3).
+// v3.2 contract: the move never decides the SOURCE's fate; whether an
+// emptied source auto-closes belongs to the GESTURE that moved the tab
+// (the emptying site owns the marker), so composite callers keep full
+// control. The TARGET always disarms: receiving a tab is a refill, and
+// a refill cancels any stale gesture marker on the target. opts.skipRender
+// lets a caller that renders immediately after (the half-drop path)
+// avoid the double paint; the marker writes still persist before it.
 function movePaneTabTo(tabId, targetPaneId, index, opts) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
@@ -2656,22 +2698,13 @@ function movePaneTabTo(tabId, targetPaneId, index, opts) {
   if (!target.tabs.includes(tabId)) target.tabs.splice(insertAt, 0, tabId);
   target.active = tabId;
   source.active = source.tabs[0] || null;
-  // v3.2: the last tab leaving the source arms it for auto-close. Fresh
-  // splits stay standing; only gesture-emptied panels sweep away. A
-  // split-gesture move (the own-pane half drop) inverts the arm: the
-  // emptied remainder is the split's other half and keeps standing,
-  // same rule as a Split press minting a fresh empty panel.
-  if (opts && opts.splitGesture) disarmLeafAutoClose(source);
-  else armLeafAutoClose(source);
+  // Refill protocol: the pane receiving the tab sheds any stale arm.
   disarmLeafAutoClose(target);
   // Keep the active pointer on the pane receiving the tab: the next
   // sidebar open lands there, matching a click on the moved tab.
   focusLeaf(root, target);
-  // v3.2: a source emptied by the drag auto-closes through the render
-  // below (the sweep runs at render top); the focused target never
-  // hits the focused-leaf exception on the emptied source's behalf.
   saveWorkspacePanesStates();
-  renderWorkspacePanes();
+  if (!(opts && opts.skipRender)) renderWorkspacePanes();
   if (isEditorTab(tabId)) void activateEditorTab(editorTabPath(tabId));
   else if (isGitTab(tabId)) void openGitTab(gitTabViewKey(tabId));
   else if (isTerm) {
@@ -2925,6 +2958,13 @@ function requestTabPlacement(paneId) {
   if (!paneId) return;
   pendingTabPlacements = pendingTabPlacements || new Map();
   pendingTabPlacements.set("__next__", paneId);
+  // The user picked this pane as the new terminal's home: that intent
+  // outlives any stale gesture marker on the pane. Disarm now, while
+  // the POST is in flight, so a poll render's sweep cannot fold the
+  // placement's target leaf out from under the incoming id (the
+  // folded paneId would strand the placement and the terminal would
+  // land in whatever leaf holds focus instead).
+  disarmLeafAutoClose(paneForPaneId(paneRootFor(), paneId));
 }
 
 // Create a panel in ANY workspace and land it in a specific pane (D3):
@@ -3181,8 +3221,12 @@ function sweepAbandonedEmptyLeaves() {
   // abandon the originally focused armed leaf and the next iteration
   // would eat it, cascading a split tree down to one panel. The
   // gesture's focus (user click, split command, tab move) is the intent
-  // signal; the sweep must never generate its own.
-  const protectedId = (paneRootFor() || {}).activePaneId || null;
+  // signal; the sweep must never generate its own. Resolve through
+  // activeLeaf (same accessor every consumer uses) so a stale/null
+  // activePaneId heals to the effective focused leaf instead of
+  // protecting nobody.
+  const protectedLeaf = activeLeaf(paneRootFor());
+  const protectedId = (protectedLeaf || {}).paneId || null;
   let guard = 16;
   let changed = false;
   while (guard-- > 0) {
@@ -3206,6 +3250,24 @@ function sweepAbandonedEmptyLeaves() {
   return changed;
 }
 
+// v3.2 choke point for single-tab removals from a leaf: splice the id
+// out, heal the active pointer, and arm the leaf when the removal
+// emptied it (the arm helper owns the emptiness guard). Every close
+// path routes through here, so a future emptying site cannot forget
+// the marker: a missing arm is the bug class v3.2 fixes (empty panels
+// standing forever). neighborHeal picks the close-style pointer heal
+// (the tab beside the closed one takes over); the terminal close and
+// the strip paths use the simpler first-tab heal.
+function removeTabFromLeaf(leaf, tabId, neighborHeal) {
+  const at = leaf.tabs.indexOf(tabId);
+  if (at < 0) return false;
+  leaf.tabs.splice(at, 1);
+  if (neighborHeal) leaf.active = leaf.tabs[at] || leaf.tabs[at - 1] || leaf.tabs[0] || null;
+  else if (leaf.active === tabId) leaf.active = leaf.tabs[0] || null;
+  armLeafAutoClose(leaf);
+  return true;
+}
+
 // Sweep helper for the close flows: drop the id from its leaf's tabs,
 // but ONLY the id. A blanket empty-leaf sweep would also swallow a
 // split-created sibling that is empty by design (its strip still
@@ -3213,21 +3275,28 @@ function sweepAbandonedEmptyLeaves() {
 // an empty panel (path + Enter hint); no collapse fires here. The
 // explicit panel close (closeActivePane) and the workspace cascade
 // own panel removal.
-function collapseLeafForClosedTab(tabId) {
+function pruneClosedTabFromLeaf(tabId) {
   if (!tabId) return false;
   const root = paneRootFor();
   const id = String(tabId);
   const leaf = paneForTab(root, id);
   if (!leaf) return false;
-  const at = leaf.tabs.indexOf(id);
-  if (at >= 0) leaf.tabs.splice(at, 1);
-  if (leaf.active === id) leaf.active = leaf.tabs[0] || null;
-  if (at < 0) return false;
-  // v3.2: a closed tab leaving the leaf empty arms it for auto-close
-  // on the next render sweep. Fresh splits stay standing.
-  armLeafAutoClose(leaf);
+  if (!removeTabFromLeaf(leaf, id, false)) return false;
   saveWorkspacePanesStates();
   return true;
+}
+
+// Facade for cross-module terminal-tab closes (worktrees.js closeTab,
+// core.js pane/tab.closed handlers): one call owns the whole close
+// aftermath inside this module (prune the id, sweep armed+empty
+// leaves, paint once). Callers used to reach for the internal sweep
+// directly; the sweep's guards (focus capture, last-panel, focus
+// restore) are module invariants and must not leak to other modules,
+// and the tree/DOM pair must never diverge between the two calls.
+function onTerminalTabClosed(tabId) {
+  const pruned = pruneClosedTabFromLeaf(tabId);
+  if (sweepAbandonedEmptyLeaves()) renderWorkspacePanes();
+  return pruned;
 }
 
 // Moves the active tab to the next leaf in tree order (wraps). Terminal
@@ -3245,24 +3314,14 @@ function moveActiveTabToNextPane() {
   if (!isEditorTab(tabId) && !isGitTab(tabId)) return false;
   const index = leaves.indexOf(leaf);
   const target = leaves[(index + 1) % leaves.length];
-  if (!target) return false;
-  if (target === leaf) return false;
-  const at = leaf.tabs.indexOf(tabId);
-  if (at >= 0) leaf.tabs.splice(at, 1);
-  if (!target.tabs.includes(tabId)) target.tabs.push(tabId);
-  target.active = tabId;
-  leaf.active = leaf.tabs[0] || null;
+  if (!target || target === leaf) return false;
+  // Delegate to the shared move primitive (splice, activate, focus,
+  // persist, module re-mount all live there; the v3.2 marker stays
+  // with this gesture): the chord empties the source, so the source
+  // arms here and the single render folds it.
+  if (!movePaneTabTo(tabId, target.paneId, null, { skipRender: true })) return false;
   armLeafAutoClose(leaf);
-  disarmLeafAutoClose(target);
-  focusLeaf(root, target);
-  // v3.2: the chord's emptied source auto-closes through the render
-  // below (sweep at render top); focus already moved to the target.
-  saveWorkspacePanesStates();
   renderWorkspacePanes();
-  // The moved tab's module mounts its container into the new leaf's
-  // content slot: re-run the module's mount for the active tab.
-  if (isEditorTab(tabId)) void activateEditorTab(editorTabPath(tabId));
-  else if (isGitTab(tabId)) void openGitTab(gitTabViewKey(tabId));
   return true;
 }
 
@@ -3427,20 +3486,19 @@ function closeEditorTabImmediate(encodedPath) {
   const tabId = editorTabId(path);
   const leaf = paneForTab(root, tabId);
   if (!leaf) return;
-  const index = leaf.tabs.indexOf(tabId);
-  if (index >= 0) leaf.tabs.splice(index, 1);
-  if (leaf.active === tabId) {
-    leaf.active = leaf.tabs[index] || leaf.tabs[index - 1] || leaf.tabs[0] || null;
+  // v3.2: removal runs through the choke point (splice + neighbor
+  // heal + arm-if-empty); the arm fires on the render below (sweep at
+  // render top). The focused-leaf exception spares the emptied leaf
+  // until focus moves elsewhere; fresh splits (never armed) stay
+  // standing; single-leaf trees keep their last panel by the sweep
+  // guard.
+  const wasActive = leaf.active === tabId;
+  if (!removeTabFromLeaf(leaf, tabId, true)) return;
+  if (wasActive) {
     if (isEditorTab(leaf.active)) void activateEditorTab(editorTabPath(leaf.active));
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
     else if (leaf.active && typeof go === "function") go(workspaceIdForTab(leaf.active), leaf.active);
   }
-  // v3.2: a leaf emptied by the close arms for auto-close on the render
-  // below (sweep at render top). The focused-leaf exception spares the
-  // emptied leaf until focus moves elsewhere; fresh splits (never armed)
-  // stay standing; single-leaf trees keep their last panel by the sweep
-  // guard.
-  armLeafAutoClose(leaf);
   saveWorkspacePanesStates();
   renderWorkspacePanes();
   if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
@@ -3542,18 +3600,16 @@ function closeGitTabImmediate(viewKey) {
   const tabId = gitTabId(viewKey);
   const leaf = paneForTab(root, tabId);
   if (!leaf) return;
-  const index = leaf.tabs.indexOf(tabId);
-  if (index >= 0) leaf.tabs.splice(index, 1);
-  if (leaf.active === tabId) {
-    leaf.active = leaf.tabs[index] || leaf.tabs[index - 1] || leaf.tabs[0] || null;
+  // v3.2: same removal choke point and auto-close semantics as the
+  // editor close above; the sweep's own guards (focused leaf, last
+  // panel) carry the invariants.
+  const wasActive = leaf.active === tabId;
+  if (!removeTabFromLeaf(leaf, tabId, true)) return;
+  if (wasActive) {
     if (isEditorTab(leaf.active)) void activateEditorTab(editorTabPath(leaf.active));
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
     else if (leaf.active && typeof go === "function") go(workspaceIdForTab(leaf.active), leaf.active);
   }
-  // v3.2: same auto-close as the editor close above, through the render
-  // below (sweep at render top); the sweep's own guards (focused leaf,
-  // last panel) carry the invariants.
-  armLeafAutoClose(leaf);
   saveWorkspacePanesStates();
   renderWorkspacePanes();
   if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
@@ -4270,10 +4326,8 @@ window.HerdrWorkspacePanes = {
   focusedLeaf,
   writeRouteFromLeaf,
   focusPanelFor,
-  // Drop the split leaf emptied by a closed terminal tab (that leaf only:
-  // a blanket sweep would eat by-design empty split siblings).
-  collapseLeafForClosedTab,
-  // v3.2 auto-close: worktrees.js runs it after a terminal close to
-  // close abandoned empty panels before its refresh render.
-  sweepAbandonedEmptyLeaves,
+  // Close-aftermath facade for cross-module terminal closes: prunes
+  // the id from its leaf, sweeps armed+empty leaves, paints once.
+  // The sweep and its guards stay inside this module.
+  onTerminalTabClosed,
 };

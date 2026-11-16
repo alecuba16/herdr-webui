@@ -1264,14 +1264,12 @@ async function closeTab(id) {
       // The D8 cache parks surfaces on hide, so nothing else frees the
       // socket and wterm instance this tab owned.
       if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseForTab(id);
-      // The closed terminal may have been a split leaf's last tab: drop
-      // the empty pane so the survivor takes the layout back (v3.2
-      // auto-close; the focused-leaf and last-panel invariants live in
-      // the pane module's sweep).
-      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
-        window.HerdrWorkspacePanes.collapseLeafForClosedTab(id);
-      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.sweepAbandonedEmptyLeaves)
-        window.HerdrWorkspacePanes.sweepAbandonedEmptyLeaves();
+      // The closed terminal may have been a split leaf's last tab: the
+      // pane module's close-aftermath facade prunes the id, folds any
+      // armed+empty leaf, and paints once (v3.2 auto-close; the sweep's
+      // focused-leaf and last-panel guards live inside that module).
+      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.onTerminalTabClosed)
+        window.HerdrWorkspacePanes.onTerminalTabClosed(id);
       if (closingWorkspaceId && typeof maybeAutoCloseWorkspace === "function")
         maybeAutoCloseWorkspace(closingWorkspaceId);
       if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {

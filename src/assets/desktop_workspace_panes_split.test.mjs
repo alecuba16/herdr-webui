@@ -1251,7 +1251,7 @@ test("registry exports the split surface completely", () => {
 // the tree collapses to the survivor, the survivor takes focus, and a
 // single-leaf workspace keeps its empty leaf for the New terminal card.
 
-test("collapseLeafForClosedTab prunes the closed tab and the emptied split leaf folds once focus leaves", () => {
+test("onTerminalTabClosed prunes the closed tab and the emptied split leaf folds once focus leaves", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-40");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1266,15 +1266,16 @@ test("collapseLeafForClosedTab prunes the closed tab and the emptied split leaf 
   ctx.state.tab = "t2";
   panes.renderWorkspacePanes();
 
-  // t2 closes (the route was on it): the helper drops the dead id and
-  // arms the emptied leaf. The route falls back to t1, but the route
-  // sync writes no focus move (the survivor already points at t1), so
-  // the emptied leaf keeps focus and stands: Enter can still spawn a
-  // terminal there. Only a real focus gesture onto the survivor lets
-  // the render-top sweep fold the split.
+  // t2 closes (the route was on it): the facade prunes the dead id,
+  // sweeps (the emptied leaf still holds focus, so it stands), and
+  // paints once. The route falls back to t1, but the route sync writes
+  // no focus move (the survivor already points at t1), so the emptied
+  // leaf keeps focus and stands: Enter can still spawn a terminal
+  // there. Only a real focus gesture onto the survivor lets the
+  // render-top sweep fold the split.
   ctx.state.tabs = [{ tab_id: "t1", workspace_id: "ws-40" }];
   ctx.state.tab = "t1";
-  assert.equal(panes.collapseLeafForClosedTab("t2"), true, "prune reported");
+  assert.equal(panes.onTerminalTabClosed("t2"), true, "prune reported");
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "emptied leaf holds focus and stands");
   panes.renderWorkspacePanes();
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "route fallback alone moves no focus");
@@ -1287,14 +1288,14 @@ test("collapseLeafForClosedTab prunes the closed tab and the emptied split leaf 
   assert.equal(survivor.active, "t1", "survivor pointer intact");
 });
 
-test("collapseLeafForClosedTab prunes unknown ids only and keeps every split leaf", () => {
+test("onTerminalTabClosed prunes unknown ids only and keeps every split leaf", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-41");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "t1");
   // Single leaf: an unknown id is a no-op (the tree never drops its
   // last panel on its own).
-  assert.equal(panes.collapseLeafForClosedTab("missing"), false, "unknown id is a no-op");
+  assert.equal(panes.onTerminalTabClosed("missing"), false, "unknown id is a no-op");
   // Split created by the strip: the fresh sibling is empty BY DESIGN,
   // and closing the terminal leaf's tab empties it too without any
   // collapse sweep ever targeting a panel.
@@ -1304,13 +1305,20 @@ test("collapseLeafForClosedTab prunes unknown ids only and keeps every split lea
   leaves[0].active = "t1";
   ctx.state.tabs = [{ tab_id: "t1", workspace_id: "ws-41" }];
   panes.renderWorkspacePanes();
-  assert.equal(panes.collapseLeafForClosedTab("missing"), false, "unknown id is a no-op");
+  // Focus the leaf holding t1: splitPaneRight left focus on the fresh
+  // sibling, and the facade's synchronous sweep folds an unfocused
+  // emptied leaf immediately (that IS the v3.2 rule). With focus on the
+  // soon-emptied leaf the sweep must protect it: the panel stands for
+  // Enter, and only a real focus move folds it.
+  panes.focusPanelFor(encodeURIComponent(leaves[0].paneId));
+  assert.equal(panes.onTerminalTabClosed("missing"), false, "unknown id is a no-op");
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "split intact");
-  assert.equal(panes.collapseLeafForClosedTab("t1"), true, "live tab prunes from its leaf");
+  assert.equal(panes.onTerminalTabClosed("t1"), true, "live tab prunes from its leaf");
   assert.deepEqual([...leaves[0].tabs], [], "terminal id dropped");
-  // v3.2: the closed leaf keeps focus (the tree pointer did not move),
-  // so both panels stand empty until focus leaves the closed one; the
-  // render-top sweep then folds the split.
+  // v3.2: the closed leaf keeps focus through the facade's own sweep
+  // (the tree pointer did not move), so both panels stand empty until
+  // focus leaves the closed one; the render-top sweep then folds the
+  // split.
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "both panels stand while the emptied one holds focus");
   panes.focusPanelFor(encodeURIComponent(leaves[1].paneId));
   panes.renderWorkspacePanes();
@@ -1353,20 +1361,28 @@ test("closing an editor tab empties a split leaf and it auto-closes once unfocus
   assert.equal(after[0].paneId, leaves[0].paneId, "survivor promoted");
 });
 
-test("cross-leaf drag move that empties the source auto-closes it", () => {
+test("cross-leaf strip drag move that empties the source auto-closes it", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-43");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "t1");
   panes.splitPaneRight();
   const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["t1"];
+  leaves[0].active = "t1";
   leaves[1].tabs = ["editor:src/move.py"];
   leaves[1].active = "editor:src/move.py";
   panes.renderWorkspacePanes();
-  assert.equal(panes.movePaneTabTo("editor:src/move.py", leaves[0].paneId, null), true,
-    "move accepted");
+  // Drive the real gesture: the strip drop owns the v3.2 marker now
+  // (the move primitive is pure tree surgery), so the emptied source
+  // arms at the gesture site and folds on the drop's own render.
+  const paneEls = document.querySelectorAll(".workspace-pane");
+  const targetEl = paneEls.find((node) => node.dataset.paneId === leaves[0].paneId);
+  assert.ok(targetEl, "target pane rendered");
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "editor:src/move.py" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneStripDrop({ target: targetEl, clientX: 28, clientY: 28, preventDefault() {} });
   // v3.2: a source emptied by the drag auto-closes (focus moved to the
-  // target with the tab), the sweep folds the split on the move's own
+  // target with the tab), the sweep folds the split on the drop's own
   // render pass.
   const after = panes.paneLeaves(panes.paneRoot());
   assert.equal(after.length, 1, "emptied source auto-closed");
@@ -1508,9 +1524,15 @@ test("v3.2: a move-emptied source folds and a refilled panel never folds", () =>
   ctx.state.tabs = [];
   ctx.state.tab = null;
   panes.renderWorkspacePanes();
-  // Move the editor tab to the sibling: the source empties and arms,
-  // focus lands on the target, the render-top sweep folds the source.
-  assert.equal(panes.movePaneTabTo("editor:src/a.py", leaves[1].paneId, null), true, "move accepted");
+  // Drive the real gesture (the strip drop owns the v3.2 marker; the
+  // move primitive is pure tree surgery): the editor tab moves to the
+  // sibling, the source empties and arms at the gesture site, focus
+  // lands on the target, and the drop's own render folds the source.
+  const paneEls = document.querySelectorAll(".workspace-pane");
+  const targetEl = paneEls.find((node) => node.dataset.paneId === leaves[1].paneId);
+  assert.ok(targetEl, "target pane rendered");
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "editor:src/a.py" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneStripDrop({ target: targetEl, clientX: 28, clientY: 28, preventDefault() {} });
   let after = panes.paneLeaves(panes.paneRoot());
   assert.equal(after.length, 1, "armed emptied source folded");
   assert.equal(after[0].tabs.length, 2, "survivor holds both tabs");
