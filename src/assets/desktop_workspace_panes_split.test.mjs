@@ -263,6 +263,16 @@ function loadPanesModuleWithStorage(document, stateWs, stored, saved) {
   ctx.globalThis = ctx;
   workspacePanesScript.runInContext(vm.createContext(ctx));
   ctx.__storage = storage;
+  // Collector model: the boot seed leaf starts unbound. A harness ws
+  // with no terminal rows yet would leave it unbound, and the sync's
+  // focus-or-mint pass (state.ws set, no tab) would mint a SECOND panel
+  // on the first render. Production rows arrive with the first snapshot;
+  // tests that do not seed tabs bind the seed panel to the harness ws up
+  // front so the one-panel boot contract holds.
+  if (stateWs) {
+    const seed = ctx.HerdrWorkspacePanes.paneRoot();
+    if (seed && seed.kind === "pane" && !seed.wsId) seed.wsId = stateWs;
+  }
   return ctx;
 }
 
@@ -271,7 +281,10 @@ function loadPanesModule(document, stateWs) {
 }
 
 function bootstrapPanes(ctx, tabId) {
-  ctx.state.tabs = [{ tab_id: tabId }];
+  // Collector model: rows without a workspace_id read as a snapshot
+  // race and the sync leaves their ids homeless, so stub rows always
+  // name the harness workspace.
+  ctx.state.tabs = [{ tab_id: tabId, workspace_id: ctx.state.ws }];
   ctx.state.tab = tabId;
   ctx.HerdrWorkspacePanes.renderWorkspacePanes();
 }
@@ -402,19 +415,20 @@ test("forgetWorkspacePanes keeps the session tree and only sweeps the closed wor
 
 // ---- 2. sync ---------------------------------------------------------------
 
-test("sync seeds the placeholder, appends unknown ids, prunes dead ids", () => {
+test("sync homes backend ids into the bound seed panel and prunes dead ids", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   const root = panes.paneRoot();
   assert.ok(root.tabs.includes("terminal"), "fresh tree seeds the placeholder");
-  // First backend list: placeholder replaced in place.
-  ctx.state.tabs = [{ tab_id: "tab_2" }, { tab_id: "tab_3" }];
-  assert.equal(panes.syncTerminalTabsIntoTree(root), true, "seed replaced");
+  // First backend list: the placeholder drops and the real ids home
+  // into the seed panel (bound to ws-1 by the harness).
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
+  assert.equal(panes.syncTerminalTabsIntoTree(root), true, "ids homed");
   assert.deepEqual([...root.tabs], ["tab_2", "tab_3"], "placeholder swapped for real ids");
   assert.equal(root.active, "tab_2", "active follows the seed");
   // New panel lands: append.
-  ctx.state.tabs.push({ tab_id: "tab_4" });
+  ctx.state.tabs.push({ tab_id: "tab_4", workspace_id: "ws-1" });
   assert.equal(panes.syncTerminalTabsIntoTree(root), true, "new id appended");
   assert.ok(root.tabs.includes("tab_4"), "append keeps earlier ids");
   // Closed panel: prune, active heals to a kept id.
@@ -432,21 +446,20 @@ test("sync keeps a moved tab's home and honors pending placements once", () => {
   bootstrapPanes(ctx, "tab_2");
   panes.splitPaneRight();
   const leaves = panes.paneLeaves(panes.paneRoot());
+  // Both panels belong to ws-1 (the split's fresh leaf binds before the
+  // placement is consumed).
+  leaves[1].wsId = "ws-1";
   // Simulate a tab that migrated to the second leaf.
   leaves[0].tabs = ["editor:src/a.py"];
   leaves[0].active = "editor:src/a.py";
   leaves[1].tabs.push("tab_2");
-  ctx.state.tabs.push({ tab_id: "tab_9" });
-  // A pending + placement targets the first leaf; both leaves are
-  // homes, so the missing id lands in the pressed leaf.
-  ctx.window.newTab = async () => {};
-  // Manually park the placement the way newTabForPane does.
-  const placementMapKey = "__next__";
-  // Direct sync: the moved tab_2 keeps its home, tab_9 lands per the
-  // pending placement the sync consults.
+  ctx.state.tabs.push({ tab_id: "tab_9", workspace_id: "ws-1" });
+  // A pending + placement targets the first leaf: the sync consumes it
+  // once, homing the missing id in the pressed panel.
+  panes.requestTabPlacement(leaves[0].paneId);
   panes.syncTerminalTabsIntoTree(panes.paneRoot());
   assert.ok(leaves[1].tabs.includes("tab_2"), "moved terminal keeps its home");
-  assert.ok(leaves[0].tabs.includes("tab_9") || leaves[1].tabs.includes("tab_9"), "new id landed");
+  assert.ok(leaves[0].tabs.includes("tab_9"), "new id landed in the pressed panel");
 });
 
 test("route shadow: an editor pointer survives renders until the route moves", () => {
@@ -463,9 +476,11 @@ test("route shadow: an editor pointer survives renders until the route moves", (
   assert.equal(root.active, "editor:src/demo.py", "same route keeps the editor pointer");
   // Route moves to another panel: pointer follows the route owner.
   ctx.state.tab = "tab_3";
-  ctx.state.tabs.push({ tab_id: "tab_3" });
+  ctx.state.tabs.push({ tab_id: "tab_3", workspace_id: "ws-1" });
   panes.renderWorkspacePanes();
+  // The sync homed tab_3 into the ws-1 seed panel (one panel tree).
   const owner = panes.paneLeaves(panes.paneRoot()).find((leaf) => leaf.tabs.includes("tab_3"));
+  assert.ok(owner, "route tab homed in the tree");
   assert.equal(owner.active, "tab_3", "route change takes the pointer for its owner leaf");
 });
 
@@ -607,6 +622,9 @@ test("cleanupAbandonedLayout drops removed splits and rescues surfaces", async (
   // migration hands tabs to the survivor and the collapse sweep parks
   // the container (hidden) instead of dropping it.
   const closing = leaves[1];
+  // Same-ws second panel: the close migration only hands tabs to a
+  // panel of the closing panel's own workspace.
+  closing.wsId = "ws-1";
   closing.tabs.push("editor:src/rescued.py");
   closing.active = "editor:src/rescued.py";
   const paneEl = paneElements(nodes).find((p) => p.dataset.paneId === closing.paneId);
@@ -716,6 +734,7 @@ test("closeActivePane collapse matrix: sibling promote, wide-parent splice, nest
   ctx.window.HerdrFileBrowser = {
     async openEditorTab(path) { panes.setActivePaneTab("editor:" + path); },
   };
+  leaves[1].wsId = "ws-1";
   leaves[1].tabs.push("editor:src/gone.py");
   leaves[1].active = "editor:src/gone.py";
   assert.equal(await panes.closeActivePane(), true, "binary close accepted");
@@ -1065,13 +1084,14 @@ test("terminalShellOwnerLeaf: route leaf, first terminal-active, seeded, rendere
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
-  ctx.state.tabs = [{ tab_id: "tab_2" }, { tab_id: "tab_3" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
   ctx.state.tab = "tab_3";
   panes.renderWorkspacePanes();
   panes.splitPaneRight();
   const leaves = panes.paneLeaves(panes.paneRoot());
   // The route owns (tab_3 lives wherever the sync put it).
   const routeLeaf = panes.paneLeaves(panes.paneRoot()).find((l) => l.tabs.includes("tab_3"));
+  assert.ok(routeLeaf, "route tab homed");
   assert.equal(panes.terminalShellOwnerLeaf(panes.paneRoot()), routeLeaf, "route tab's leaf owns the shell");
   // A first-terminal-active leaf wins over the seeded fallback.
   ctx.state.tab = null;
@@ -1230,7 +1250,7 @@ test("registry exports the split surface completely", () => {
 // the tree collapses to the survivor, the survivor takes focus, and a
 // single-leaf workspace keeps its empty leaf for the New terminal card.
 
-test("collapseLeafForClosedTab collapses the closed tab's emptied split leaf", () => {
+test("collapseLeafForClosedTab prunes the closed tab and keeps the emptied split leaf standing", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-40");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1241,41 +1261,48 @@ test("collapseLeafForClosedTab collapses the closed tab's emptied split leaf", (
   leaves[0].active = "t1";
   leaves[1].tabs = ["t2"];
   leaves[1].active = "t2";
-  ctx.state.tabs = [{ tab_id: "t1" }, { tab_id: "t2" }];
+  ctx.state.tabs = [{ tab_id: "t1", workspace_id: "ws-40" }, { tab_id: "t2", workspace_id: "ws-40" }];
   panes.renderWorkspacePanes();
 
-  // t2 closes: the helper drops the dead id and collapses the emptied
-  // leaf, exactly what the close flows hand it.
-  ctx.state.tabs = [{ tab_id: "t1" }];
-  assert.equal(panes.collapseLeafForClosedTab("t2"), true, "collapse reported");
+  // t2 closes: the helper drops the dead id. Collector model: the
+  // emptied split leaf STANDS as an empty panel (path + Enter hint);
+  // only an explicit close or the ws cascade removes a panel.
+  ctx.state.tabs = [{ tab_id: "t1", workspace_id: "ws-40" }];
+  assert.equal(panes.collapseLeafForClosedTab("t2"), true, "prune reported");
   const after = panes.paneLeaves(panes.paneRoot());
-  assert.equal(after.length, 1, "tree collapsed to one leaf");
-  assert.equal(after[0].paneId, leaves[0].paneId, "survivor is the leaf with the live tab");
-  assert.equal(panes.paneRoot().kind, "pane", "split root promoted the survivor");
-  assert.equal(after[0].active, "t1", "survivor pointer intact");
+  assert.equal(after.length, 2, "emptied leaf stands as an empty panel");
+  const emptied = after.find((leaf) => leaf.paneId === leaves[1].paneId);
+  assert.deepEqual([...emptied.tabs], [], "dead id dropped");
+  assert.equal(emptied.active, null, "empty panel keeps a null pointer");
+  const survivor = after.find((leaf) => leaf.paneId === leaves[0].paneId);
+  assert.equal(survivor.active, "t1", "survivor pointer intact");
 });
 
-test("collapseLeafForClosedTab keeps by-design empty split leaves and single-leaf trees", () => {
+test("collapseLeafForClosedTab prunes unknown ids only and keeps every split leaf", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-41");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "t1");
-  // Single leaf, no split: nothing to collapse.
-  assert.equal(panes.collapseLeafForClosedTab("t1"), false, "single-leaf tree untouched");
-  // Split created by the strip: the fresh sibling is empty BY DESIGN.
-  // Closing the terminal leaf's tab (the only non-empty pane) may
-  // collapse the tree, but the empty sibling itself must never be the
-  // target of a sweep.
+  // Single leaf: an unknown id is a no-op (the tree never drops its
+  // last panel on its own).
+  assert.equal(panes.collapseLeafForClosedTab("missing"), false, "unknown id is a no-op");
+  // Split created by the strip: the fresh sibling is empty BY DESIGN,
+  // and closing the terminal leaf's tab empties it too without any
+  // collapse sweep ever targeting a panel.
   panes.splitPaneRight();
   const leaves = panes.paneLeaves(panes.paneRoot());
   leaves[0].tabs = ["t1"];
   leaves[0].active = "t1";
+  ctx.state.tabs = [{ tab_id: "t1", workspace_id: "ws-41" }];
   panes.renderWorkspacePanes();
   assert.equal(panes.collapseLeafForClosedTab("missing"), false, "unknown id is a no-op");
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "split intact");
+  assert.equal(panes.collapseLeafForClosedTab("t1"), true, "live tab prunes from its leaf");
+  assert.deepEqual([...leaves[0].tabs], [], "terminal id dropped");
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "both panels stand empty");
 });
 
-test("closing an editor tab empties a split leaf and collapses it", () => {
+test("closing an editor tab empties a split leaf that stands as an empty panel", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-42");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1294,13 +1321,16 @@ test("closing an editor tab empties a split leaf and collapses it", () => {
   panes.renderWorkspacePanes();
   panes.closeEditorTabImmediate(encodeURIComponent("src/only.py"));
   const after = panes.paneLeaves(panes.paneRoot());
-  assert.equal(after.length, 1, "emptied leaf collapsed after editor close");
-  assert.equal(after[0].paneId, leaves[0].paneId, "survivor keeps the terminal");
-  // The editor-active leaf had the pane focus; the survivor takes it back.
-  assert.equal(panes.activePane().paneId, leaves[0].paneId, "focus moved to the survivor");
+  assert.equal(after.length, 2, "emptied leaf stands as an empty panel");
+  const emptied = after.find((leaf) => leaf.paneId === leaves[1].paneId);
+  assert.deepEqual([...emptied.tabs], [], "editor id dropped");
+  assert.equal(emptied.active, null, "empty panel keeps a null pointer");
+  // The editor-active leaf had the pane focus; it keeps it (an empty
+  // panel is a valid focus target, Enter opens a terminal there).
+  assert.equal(panes.activePane().paneId, leaves[1].paneId, "focus stays on the emptied panel");
 });
 
-test("cross-leaf drag move that empties the source collapses the blank pane", () => {
+test("cross-leaf drag move that empties the source leaves it standing as an empty panel", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-43");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1312,32 +1342,40 @@ test("cross-leaf drag move that empties the source collapses the blank pane", ()
   panes.renderWorkspacePanes();
   assert.equal(panes.movePaneTabTo("editor:src/move.py", leaves[0].paneId, null), true,
     "move accepted");
+  // Collector model: a source emptied by the drag STANDS as an empty
+  // panel (path + Enter hint), no collapse.
   const after = panes.paneLeaves(panes.paneRoot());
-  assert.equal(after.length, 1, "emptied source leaf collapsed after the move");
+  assert.equal(after.length, 2, "emptied source leaf stands");
   assert.ok(after[0].tabs.includes("editor:src/move.py"), "moved tab landed in the survivor");
+  const emptied = after.find((leaf) => leaf.paneId === leaves[1].paneId);
+  assert.deepEqual([...emptied.tabs], [], "source holds nothing");
+  assert.equal(emptied.active, null, "empty panel keeps a null pointer");
 });
 
-test("rescue parks the empty-leaf card before a collapsed pane subtree is dropped", () => {
+test("rescue parks the empty-leaf card before a collapsed pane subtree is dropped", async () => {
   const { document, nodes } = buildDom();
   const ctx = loadPanesModule(document, "ws-44");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "t1");
-  // Mount the card into the split leaf's pane content, then close that
-  // leaf's only editor tab so the collapse path drops the pane subtree
-  // with the card inside: rescue must park it home first.
+  // Mount the singleton card into the split leaf's pane content, then
+  // close that leaf explicitly (the collapse drops its pane subtree with
+  // the card inside): rescue must park it home first.
+  // NOTE: the emptied-leaf collapse path no longer fires on editor close
+  // (leaf-standing model), so the closePaneFor command is the collapse
+  // trigger that still exercises the rescue.
   const container = nodes.workspacePanes;
   const card = ctx.document.createElement("div");
   card.id = "workspaceEmptyLeaf";
   panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[1].wsId = "ws-44";
+  leaves[1].tabs = ["editor:src/only.py"];
+  leaves[1].active = "editor:src/only.py";
   panes.renderWorkspacePanes();
   const splitLeaves = document.querySelectorAll(".workspace-pane");
   const dropLeaf = splitLeaves[1].querySelector(".pane-content");
   dropLeaf.appendChild(card);
-  const leaves = panes.paneLeaves(panes.paneRoot());
-  leaves[1].tabs = ["editor:src/only.py"];
-  leaves[1].active = "editor:src/only.py";
-  panes.renderWorkspacePanes();
-  panes.closeEditorTabImmediate(encodeURIComponent("src/only.py"));
+  await panes.closePaneFor(leaves[1].paneId);
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, 1, "split collapsed to one leaf");
   assert.equal(document.getElementById("workspaceEmptyLeaf"), card,
     "card survives the collapse reachable by id");
@@ -1370,7 +1408,7 @@ test("bar controls render once, act on the focused leaf, and tracks focus", () =
   const strip = nodes.container.querySelector(".pane-tab-strip");
   const controls = panes.paneBarControlsHtml();
   assert.ok(!strip.__innerHTML.includes("splitPaneDownFor"), "strip carries no split command");
-  assert.ok(controls.includes("pane-new-picker") || controls.includes("newTabForPane"), "bar carries the + control");
+  assert.ok(controls.includes("pane-new-picker") || controls.includes("newPanelForFocused"), "bar carries the + control");
   assert.ok(controls.includes("splitPaneDownFor"), "bar carries split down");
   assert.ok(controls.includes("togglePaneMenu"), "bar carries the pane menu");
 
