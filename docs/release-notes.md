@@ -1,6 +1,15 @@
 # Release notes
 
-## Unreleased
+## 0.7.54 Release Notes
+- The terminal hub join race is closed: `start_attach` spawns the
+  connect task before the joiner registers its queue, so a fast attach
+  failure used to publish `herdr_error` to zero clients and leave the
+  joiner on a queue nobody feeds or closes. `fail()` now records the
+  error before flipping closed and `join()` delivers it to every late
+  joiner (or closes immediately when the stream died without one),
+  with two deterministic tests pinning both windows. A real browser
+  tab could hit the same hang on a dead backend, so this was not just
+  a CI flake fix.
 - `Ctrl+P` inside the chat composer (desktop and mobile with a hardware
   keyboard) enqueues the message, the same submit as the 600ms Send
   hold: `POST /submit {enqueue:true}` writes kitty CSI-u Ctrl+Enter
@@ -889,6 +898,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.54 | 2026-11-16 | [v0.7.54](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.54) |
 | 0.7.53 | 2026-11-15 | [v0.7.53](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.53) |
 | 0.7.52 | 2026-11-15 | [v0.7.52](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.52) |
 | 0.7.51 | 2026-11-15 | [v0.7.51](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.51) |
