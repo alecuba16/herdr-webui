@@ -1098,11 +1098,22 @@ function wirePanelChipDrag(container) {
   if (!container || container.__herdrPanelDragWired) return;
   if (typeof container.addEventListener !== "function") return;
   container.__herdrPanelDragWired = true;
+  container.addEventListener("dragenter", (event) => {
+    // Chrome only fires drop when the current target's last dragenter or
+    // dragover was canceled. A fast release right after crossing an element
+    // boundary can arrive with no dragover yet; cancel dragenter too or
+    // those releases drop into the void.
+    paneContainerPanelDragOver(event);
+  });
   container.addEventListener("dragover", paneContainerPanelDragOver);
   container.addEventListener("drop", paneContainerPanelDrop);
   // Tab drags share the container wiring (v3): the chip handlers no-op
   // while paneDragPanelId is null and the tab handlers no-op while no
-  // tab drag is active, so one wiring serves both payloads.
+  // tab drag is active, so one wiring runs both payloads.
+  container.addEventListener("dragenter", (event) => {
+    // Same dragenter cancel as the chip drag, same spec rule.
+    paneContainerTabDragOver(event);
+  });
   container.addEventListener("dragover", paneContainerTabDragOver);
   container.addEventListener("drop", paneContainerTabDrop);
   // dragleave fires on every child boundary crossing; the preview only
@@ -2419,9 +2430,11 @@ function paneContainerTabDragOver(event) {
   if (!target) return;
   const owner = target.paneId ? paneForTab(paneRootFor(), drag.tabId) : null;
   const targetLeaf = target.paneId ? paneForPaneId(paneRootFor(), target.paneId) : null;
-  // No-op drops do not paint a square: a single-panel tree has nothing
-  // to split beside, and a tab dropped on its own pane just reorders.
-  if (!targetLeaf || (owner && owner === targetLeaf && paneLeaves(paneRootFor()).length < 2)) return;
+  // The preview square paints whenever the drop would act: a fresh tree
+  // splits its only pane (v3), and an own-pane half split is a real move.
+  // The strip keeps its caret hover; this guard only refuses drops that
+  // cannot change the tree.
+  if (!targetLeaf) return;
   if (event.preventDefault) event.preventDefault();
   if (event.dataTransfer && "dropEffect" in event.dataTransfer)
     event.dataTransfer.dropEffect = "move";
@@ -2452,9 +2465,11 @@ function paneContainerTabDrop(event) {
   const source = paneForTab(root, tabId);
   const targetLeaf = paneForPaneId(root, target.paneId);
   if (!source || !targetLeaf) return;
-  if (targetLeaf === source) return;
-  if (paneLeaves(root).length < 2) return;
   if (event.preventDefault) event.preventDefault();
+  // A tab dropped on a half of its OWN pane splits that pane and moves
+  // into the new half: single-panel trees are the most common first
+  // gesture, so they split too instead of refusing. Cross-pane and
+  // same-pane share one path; only the source lookup differs.
   const fresh = newEmptyLeaf();
   fresh.wsId = leafWorkspaceId(targetLeaf) || leafWorkspaceId(source);
   if (!splitLeafWith(targetLeaf, fresh, target)) return;
@@ -2462,9 +2477,9 @@ function paneContainerTabDrop(event) {
   // + mint, so the sync never re-homes the id on the next snapshot.
   if (movePaneTabTo(tabId, fresh.paneId, null)) {
     focusLeaf(paneRootFor(), fresh);
-    saveWorkspacePanesStates();
-    renderWorkspacePanes();
   }
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
 }
 
 // Split the TARGET leaf at the drop half with a GIVEN fresh leaf (the

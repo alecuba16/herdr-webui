@@ -470,6 +470,108 @@ test("tab drop on a pane half creates a fresh panel holding the dragged tab", ()
   assert.notEqual(holder.paneId, leaves[1].paneId, "the tab moved to a NEW panel");
   assert.deepEqual([...leaves[1].tabs], [], "source leaf emptied");
 });
+
+test("tab drop on its own pane half splits that pane instead of refusing", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  bootFlatThreePanels(ctx, 2);
+  const panes = ctx.HerdrWorkspacePanes;
+  const rootBefore = panes.paneRoot();
+  const source = panes.paneLeaves(rootBefore)[0];
+  const paneEl = findPaneEl(document, source.paneId);
+  assert.ok(paneEl, "source pane rendered");
+  // Drop tab_1 on the right half of ITS OWN pane: previously a hard refusal
+  // (targetLeaf === source return), now the pane splits and the tab moves.
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerTabDrop({
+    target: paneEl,
+    clientX: 18,
+    clientY: 12,
+    preventDefault() {},
+  });
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  assert.equal(leavesAfter.length, 3, "own-pane drop minted a fresh panel");
+  const holder = leavesAfter.find((leaf) => leaf.tabs.includes("tab_1"));
+  assert.ok(holder, "dragged tab lives in the tree");
+  assert.notEqual(holder.paneId, source.paneId, "the tab moved to the new half panel");
+  assert.deepEqual([...source.tabs], [], "source leaf released the tab");
+});
+
+test("tab drop on a single-panel tree splits that panel instead of refusing", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const leaf = panes.paneLeaves(panes.paneRoot())[0];
+  ctx.state.tabs = [{ tab_id: "tab_1", workspace_id: ctx.state.ws }];
+  leaf.tabs = ["tab_1"];
+  leaf.active = "tab_1";
+  leaf.wsId = ctx.state.ws;
+  panes.renderWorkspacePanes();
+  const paneEl = findPaneEl(document, leaf.paneId);
+  assert.ok(paneEl, "single pane rendered");
+  // The most common first gesture on a fresh tree: drag the only tab to a
+  // half. Previously paneLeaves < 2 returned; now it splits.
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  // Chrome only fires drop when the last dragenter/dragover canceled, so
+  // the dragover guard must accept the single-panel own-pane hover too
+  // or the browser never delivers the drop that would split.
+  let canceled = false;
+  ctx.paneContainerTabDragOver({
+    target: paneEl,
+    clientX: 18,
+    clientY: 12,
+    preventDefault() { canceled = true; },
+    dataTransfer: { dropEffect: null },
+  });
+  assert.ok(canceled, "dragover cancels on the single-panel own-pane hover");
+  ctx.paneContainerTabDrop({
+    target: paneEl,
+    clientX: 18,
+    clientY: 12,
+    preventDefault() {},
+  });
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  assert.equal(leavesAfter.length, 2, "single-panel drop split the tree");
+  const holder = leavesAfter.find((l) => l.tabs.includes("tab_1"));
+  assert.ok(holder, "dragged tab lives in the fresh half");
+  assert.notEqual(holder.paneId, leaf.paneId, "the tab moved to the new half panel");
+});
+
+test("dragenter positions the preview square so fast releases still drop", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  bootFlatThreePanels(ctx, 2);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, panes.paneLeaves(panes.paneRoot())[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  // Chrome fires drop only when the current target's last dragenter or
+  // dragover was canceled. A quick release after crossing an element
+  // boundary sees dragenter with NO dragover yet; the dragenter path must
+  // cancel too or those drops vanish. Drive the wiring's dragenter
+  // handlers directly: the vm stub has no event dispatch.
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  const dragenterHandlers = container.listeners.dragenter || [];
+  assert.ok(dragenterHandlers.length >= 2, "container wired dragenter handlers");
+  for (const handler of dragenterHandlers) {
+    handler({
+      target: paneEl,
+      clientX: 200,
+      clientY: 40,
+      preventDefault() {},
+      dataTransfer: { dropEffect: null },
+    });
+  }
+  const preview = document.getElementById("panelDropPreview");
+  assert.ok(preview, "preview exists during the tab drag");
+  assert.equal(preview.style.display, "block", "dragenter alone positions the preview square");
+  // And the chip-drag dragenter handler accepts the payload too.
+  ctx.paneTabDragEnd();
+  assert.equal(preview.style.display, "none", "dragend still clears");
+});
+
 test("abandoned tab drag clears the shared preview square on dragend", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
