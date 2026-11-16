@@ -1658,6 +1658,7 @@ describe("app bundle load", () => {
       "Open the session manager.",
       "Jump the terminal back to the latest output",
       "Toggle the chat/terminal lens",
+      "In the chat composer, send the message queued",
       "Cycle the right rail through Files, Git, Search, and Notes",
       "Switch a markdown editor tab between rendered preview, source, and edit",
       "Create a new note; opens the Notes rail first when it is closed.",

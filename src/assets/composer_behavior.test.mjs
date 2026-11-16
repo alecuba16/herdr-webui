@@ -775,4 +775,11 @@ describe("composer ctrl+p enqueue", () => {
     await timers.settle();
     equal(result.apiCalls.length, 0, "nothing to enqueue");
   });
+
+  it("send button title names the hold and the ctrl+p chord", () => {
+    const result = loadComposer();
+    result.ctx.HerdrComposer.overlay();
+    const send = sendOf(result);
+    equal(send.title, "Send\nHold or Ctrl+P to queue while the agent is busy");
+  });
 });
