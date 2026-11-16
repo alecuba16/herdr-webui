@@ -46,6 +46,11 @@ async function main() {
 
   await reload();
 
+  // The onboarding tour autostarts on a fresh profile and its full-screen
+  // overlay swallows trusted clicks (the rail tab click landed on the
+  // tour card, not the tab). Mark the tour done before the checks run.
+  await evalExpr(`localStorage.setItem("herdr-web-tour-done", "skipped")`);
+
   const made = await evalExpr(`fetch("/api/workspaces", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({cwd: ${JSON.stringify(REPO)}, label: "rail-e2e"})}).then((r) => r.json()).catch((e) => "err:" + e)`);
   const wsId = made && made.result && made.result.workspace ? made.result.workspace.workspace_id : null;
   if (!wsId) throw new Error("no workspace_id in create response: " + JSON.stringify(made).slice(0, 300));
