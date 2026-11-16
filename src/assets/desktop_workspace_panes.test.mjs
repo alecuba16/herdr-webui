@@ -1839,11 +1839,11 @@ test("maximized mode never parks the shell in a hidden leaf", () => {
   assert.equal(owner, freshLeaf, "owner resolves among rendered leaves only");
   panes.renderWorkspacePanes();
   assert.equal(nodes.shell.parentNode, nodes.container, "shell parked at the persistent home");
-  // Suspected regression (reported, not patched): parkTerminalShellForEmptyLeaf
-  // early-returns when the shell is not inside THIS leaf's content, so a
-  // shell already parked at home from the previous maximize keeps
-  // display "" instead of none. The model guarantees below hold: the
-  // card owns the maximized slot and the shell never sits inside it.
+  // The empty owner-of-record hides a shell parked at the home too: the
+  // drop rescue moves it there without touching display, so without the
+  // park-side hide a shown shell paints as a phantom pane under the
+  // card for as long as this leaf stays empty.
+  assert.equal(nodes.shell.style.display, "none", "shell parked home stays hidden behind the empty card");
   const maxContent = findPaneContentForLeaf(nodes, freshLeaf);
   assert.ok(maxContent, "maximized pane rendered");
   assert.ok(!maxContent.contains(nodes.shell), "shell never parks inside the empty maximized pane's slot");

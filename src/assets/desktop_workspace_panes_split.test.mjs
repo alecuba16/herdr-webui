@@ -986,9 +986,10 @@ test("deep nesting composes row and column splits at depth", () => {
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "tab_2");
-  // Build row > column > row > column: each press lands on the focused
-  // fresh leaf (the second child of its split), and the next nest wraps
-  // that leaf, so the chain hangs off children[1] after the first level.
+  // Build row > column > row > column: the chord splits anchor on the
+  // ROUTE terminal's leaf (tab_2 in the seed panel), so every nest wraps
+  // that leaf deeper and the chain hangs off children[0]; each fresh
+  // sibling lands as the second child at the new level.
   panes.splitPaneRight();
   panes.splitPaneDown();
   panes.splitPaneRight();
@@ -997,7 +998,7 @@ test("deep nesting composes row and column splits at depth", () => {
   const kinds = [];
   while (node && node.kind !== "pane") {
     kinds.push(node.kind);
-    node = node.children[node.children.length - 1];
+    node = node.children[0];
   }
   assert.deepEqual(kinds, ["row", "column", "row", "column"], "four nested levels alternate kinds");
   // Every level's wrapper element rendered, with matching classes.

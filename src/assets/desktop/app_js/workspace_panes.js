@@ -417,8 +417,15 @@ function normalizePaneTree(root) {
     if (!root.paneId) {
       do root.paneId = `p${++paneIdCounter}`;
       while (usedPaneIds.has(root.paneId));
-      usedPaneIds.add(root.paneId);
     }
+    // Restored ids must REGISTER like minted ones: the counter starts at
+    // 0 in a fresh bundle, so an unregistered p1 from storage lets the
+    // next split mint a SECOND p1. paneForPaneId/activeLeaf then resolve
+    // whichever duplicate comes first in tree order, and focus, Enter
+    // minting, and the DOM reconcile (panes keyed by id) all act on the
+    // wrong leaf. Duplicates in a corrupt blob keep the first: the
+    // second registration is idempotent on a Set.
+    usedPaneIds.add(root.paneId);
     // wsId healing (collector migration): legacy blobs carry no wsId.
     // Bind from the first terminal row that resolves, so the sync's
     // home ladder and the ws sweep see a real binding. Leaves with only
@@ -1656,19 +1663,42 @@ function paneTabAuxClick(event, kind, rawId) {
 // the panes acting on the focused leaf. Strips carry only tabs and the
 // workspace badge. Same builders, same handlers, one subject: the active
 // leaf resolves here instead of coming from the pressed pane's strip.
+// Split placement anchor: the leaf holding the ACTIVE TERMINAL (route
+// tab) decides where a split lands, not the focused leaf. Focus follows
+// clicks on empty space and chips, so the bar's Split could otherwise
+// grow a panel the user is not looking at. Editor/git route tabs and
+// no-route states keep the focused leaf: those tabs own their own
+// surfaces, and minting beside the surface in view matches the drag
+// contract.
+function splitAnchorLeaf(root) {
+  const routeTab = state.tab != null ? String(state.tab) : null;
+  if (routeTab && !isEditorTab(routeTab) && !isGitTab(routeTab) && terminalTabKnown(routeTab)) {
+    const owner = paneForTab(root, routeTab);
+    if (owner) return owner;
+  }
+  return activeLeaf(root);
+}
+
 function paneBarControlsHtml() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return "";
+  // The bar's Split pair anchors on the active terminal's leaf; the
+  // rest of the bar (maximize, close, find, menu) keeps the focused
+  // leaf: those act on the panel in view, the split anchors on the
+  // terminal the route names.
   const leaf = activeLeaf(root);
-  if (!leaf) return "";
+  const anchor = splitAnchorLeaf(root);
+  if (!leaf || !anchor) return "";
   // The dashboard owns the pane area in the empty state: pane controls
   // would target dead chrome, the bar renders none.
   if (dashboardOwnsPaneArea()) return "";
-  return `<span class="pane-strip-controls pane-bar-controls">${paneNewTabControlHtml(leaf)}${paneSplitControlsHtml(leaf)}${panePaneControlsHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
+  return `<span class="pane-strip-controls pane-bar-controls">${paneNewTabControlHtml(leaf)}${paneSplitControlsHtml(anchor)}${panePaneControlsHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
 }
 
 // Signature for the bar's render loop: every input that changes the
 // controls' markup or state, so the bar repaints only on real change.
+// The split anchor rides along: a route move between panels must repaint
+// the Split pair's target even when the focused leaf did not change.
 function paneBarControlsSignature() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root) || dashboardOwnsPaneArea()) return "none";
@@ -1678,8 +1708,10 @@ function paneBarControlsSignature() {
   const maximized = maximizedLeaf(root) === leaf;
   const activeTab = leaf.active || (leaf.tabs || [])[0] || null;
   const tabKind = isEditorTab(activeTab) ? "editor" : isGitTab(activeTab) ? "git" : activeTab ? "term" : "none";
+  const anchor = splitAnchorLeaf(root);
   return [
     leaf.paneId,
+    anchor ? anchor.paneId : "",
     parent ? parent.kind : "",
     paneLeaves(root).length,
     maximized ? "max" : "",
@@ -2331,11 +2363,32 @@ function findLeafSlot(root, leaf) {
   return walk(root);
 }
 
+// Chord splits (Ctrl+B then D / Shift+D) anchor on the active
+// terminal's leaf too, same rule as the bar's Split pair: the route
+// names the terminal the user is working in, and a split that grows a
+// different panel loses them. Editor/git and no-route states keep the
+// focused leaf.
 function splitPaneRight() {
+  const root = paneRootFor();
+  if (paneTreeRenderable(root)) {
+    const anchor = splitAnchorLeaf(root);
+    if (anchor) {
+      focusLeaf(root, anchor);
+      return splitActivePane("row");
+    }
+  }
   return splitActivePane("row");
 }
 
 function splitPaneDown() {
+  const root = paneRootFor();
+  if (paneTreeRenderable(root)) {
+    const anchor = splitAnchorLeaf(root);
+    if (anchor) {
+      focusLeaf(root, anchor);
+      return splitActivePane("column");
+    }
+  }
   return splitActivePane("column");
 }
 
@@ -3235,12 +3288,23 @@ function removeEmptyPanelCard(content) {
 // slot (this leaf owned it before its last tab closed) does it move
 // back to the #workspacePanes home, hidden, same as the editor/git
 // owner branch.
+// A shell already PARKED at the home container hides too: the drop
+// rescue moves it there without touching display, and this empty leaf
+// is the owner-of-record the render resolved (the card branch returns
+// before any owner-branch display write). Left shown, a phantom pane
+// paints under the card for as long as this leaf stays empty. The home
+// container hosts no live surface, so the hide is safe whatever owned
+// the shell before; the next owner branch is the only thing that can
+// lift it again.
 function parkTerminalShellForEmptyLeaf(content) {
   if (!content) return;
   const terminalShell = el("terminalShell");
-  if (!terminalShell || terminalShell.parentElement !== content) return;
+  if (!terminalShell) return;
   const panesContainer = el("workspacePanes");
-  if (panesContainer) {
+  const shellInThisSlot = terminalShell.parentElement === content;
+  const shellParkedHome = panesContainer && terminalShell.parentElement === panesContainer;
+  if (!shellInThisSlot && !shellParkedHome) return;
+  if (shellInThisSlot && panesContainer) {
     if (terminalShell.parentElement) terminalShell.parentElement.removeChild(terminalShell);
     panesContainer.appendChild(terminalShell);
   }
