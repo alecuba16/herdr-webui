@@ -222,48 +222,17 @@ function chipHtmlFor(ctx, leaf) {
   return html;
 }
 
-test("flat root split renders one group chip counting every panel", () => {
+test("flat multi-panel tree renders one standalone chip per strip, no group chip", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const leaves = bootFlatThreePanels(ctx, 3);
   assert.equal(leaves.length, 3, "three panels stand");
-  const panes = ctx.HerdrWorkspacePanes;
-  panes.focusPanelFor(leaves[2].paneId);
-  panes.renderWorkspacePanes();
-  const activeHtml = chipHtmlFor(ctx, leaves[2]);
-  assert.ok(activeHtml.includes("pane-panel-group-chip"), "focused leaf carries the root group chip");
-  assert.ok(activeHtml.includes("\u25A3 3"), "group chip counts every root panel");
-  assert.ok(activeHtml.includes(`data-pane-id="${leaves[2].paneId}"`), "chip names the focused panel");
-  for (const leaf of [leaves[0], leaves[1]]) {
+  for (const leaf of leaves) {
     const html = chipHtmlFor(ctx, leaf);
     assert.ok(html.includes("pane-panel-chip"), "chip renders");
-    assert.ok(!html.includes("pane-panel-group-chip"), "non-focused leaves keep standalone chips");
+    assert.ok(!html.includes("pane-panel-group-chip"), "flat tree has no group chip");
     assert.ok(html.includes(`data-pane-id="${leaf.paneId}"`), "chip names its own panel");
   }
-});
-
-test("root group chip drag reorders the member within the flat root", () => {
-  const { document } = buildDom();
-  const ctx = loadPanes(document, "ws-1");
-  const leaves = bootFlatThreePanels(ctx, 3);
-  const panes = ctx.HerdrWorkspacePanes;
-  panes.focusPanelFor(leaves[2].paneId);
-  panes.renderWorkspacePanes();
-  // Group chip drag from the focused member: the whole root is the
-  // group, so no outside exists and the drop must reorder the member.
-  ctx.paneGroupChipDragStart({ target: { dataset: { paneId: leaves[2].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
-  const paneEl = findPaneEl(document, leaves[0].paneId);
-  assert.ok(paneEl, "target pane rendered");
-  ctx.paneContainerPanelDrop({
-    target: paneEl,
-    clientX: 21,
-    clientY: 20,
-    preventDefault() {},
-  });
-  const root = panes.paneRoot();
-  assert.equal(root.kind, "row", "root stays a flat row");
-  assert.deepEqual(flatChildrenOrder(root, panes), [leaves[0].paneId, leaves[2].paneId, leaves[1].paneId],
-    "root group drag reorders the member beside the target");
 });
 
 test("single-panel tree renders no chip", () => {
