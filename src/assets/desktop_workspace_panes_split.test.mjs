@@ -1219,7 +1219,7 @@ test("registry exports the split surface completely", () => {
     "movePaneTabTo", "paneDropIndexAt",
     "splitPaneRightFor", "splitPaneDownFor", "closePaneFor", "maximizePaneFor", "newTabForPane",
     "paneMenuItemsFor", "syncTerminalTabsIntoTree", "terminalShellOwnerLeaf",
-    // PAIINF-1243: the location bar unsplit pair (the bar module owns
+    // The location bar unsplit pair (the bar module owns
     // the DOM listeners, this module owns qualification + surgery).
     "paneTabUnsplitHover", "paneTabUnsplitDrop",
   ];

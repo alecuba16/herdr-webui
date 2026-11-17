@@ -25,7 +25,7 @@
   display: none;
 }
 
-/* PAIINF-1243 unsplit affordance: while a pane tab drag hovers the bar
+/* Unsplit affordance: while a pane tab drag hovers the bar
    with a single-label view that qualifies, the whole bar paints as the
    remove target. The dashed accent border reads as a drop zone without
    resizing the bar (outline, not border), and the same rule keeps the

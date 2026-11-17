@@ -886,7 +886,7 @@
         if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
       });
     }
-    // Pane-tab unsplit drop target (PAIINF-1243): the bar itself is the
+    // Pane-tab unsplit drop target: the bar itself is the
     // remove affordance while a herdr-pane-tab drag is in flight. The
     // drag handlers live in workspace_panes.js (paneTabUnsplitHover/
     // paneTabUnsplitDrop own the qualification and the tree surgery);

@@ -2846,7 +2846,7 @@ describe("location bar discovery popover", () => {
 });
 
 describe("location bar pane unsplit wiring", () => {
-  // PAIINF-1243: the bar is the remove affordance for a herdr-pane-tab
+  // The bar is the remove affordance for a herdr-pane-tab
   // drag. The bar module owns the DOM listeners only; the panes module
   // owns qualification and tree surgery, stubbed here to observe the
   // handoff.

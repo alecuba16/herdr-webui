@@ -360,7 +360,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* PAIINF-1243 rename input: the editing state swaps the group chip
+/* Rename input: the editing state swaps the group chip
  button for a plain input. Same metrics as the chip so the strip does
  not reflow on the swap; the input keeps its own border language
  (bordered control, not accent slab) so the edit reads as a field. */
@@ -385,7 +385,7 @@
   background: var(--panel, #fff);
 }
 
-/* PAIINF-1243 marked slot: an empty pane waiting for a group label
+/* Marked slot: an empty pane waiting for a group label
  drop keeps the dashed accent language of the drop previews so the
  empty space reads as part of the group affordance, not a dead panel. */
 .workspace-pane[data-group-slot="true"] .pane-content {

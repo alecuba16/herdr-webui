@@ -1020,7 +1020,7 @@ test("quick corner drop without dwell keeps the extend landing", () => {
   assert.notEqual(holder.paneId, leaves[2].paneId, "the tab left its original panel");
 });
 
-// ---- PAIINF-1243 redo: slot populate, unified collapse, bar unsplit ----
+// ---- redo: slot populate, unified collapse, bar unsplit ----
 
 // First drop outside any group mints view + slot; a SECOND drop straight
 // onto the slot populates it: the tab lands in the slot leaf, the mark

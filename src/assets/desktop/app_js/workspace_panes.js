@@ -1417,7 +1417,7 @@ function paneWorkspaceBadgeHtml(leaf) {
 // locates it). Single-workspace trees skip the class: every pane would
 // wear it, no information.
 function markCurrentWorkspacePane(pane, leaf) {
-  // Marked slot (PAIINF-1243): the pane element carries the mark so the
+  // Marked slot: the pane element carries the mark so the
   // slot's dashed affordance styles off a data attribute. Stamped
   // before the classList guard: stub DOMs without classList still get
   // the attribute (the real DOM has both).
