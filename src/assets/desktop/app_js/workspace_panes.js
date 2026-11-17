@@ -1641,7 +1641,12 @@ function cleanupAbandonedSubjectDom(container, subject, renderLeaves) {
       rescueLiveSurfaces(container, child);
       detachDomNode(child);
     } else if (hasClass(child, "workspace-pane")) {
-      if (keepIds.has(child.dataset ? child.dataset.paneId : null)) return;
+      // A GROUP subject renders its members inside the layout wrapper
+      // ONLY: a flat pane left over from a previous panel render keeps
+      // the same paneId, so the keep-set alone would hold it and both
+      // copies would paint. When the subject is a group, the wrapper is
+      // the only home and every direct flat pane goes.
+      if (!layoutRoot && keepIds.has(child.dataset ? child.dataset.paneId : null)) return;
       rescueLiveSurfaces(container, child);
       detachDomNode(child);
     } else if (hasClass(child, "pane-strip-rail")) {
@@ -1654,7 +1659,15 @@ function paneLeafElement(container, root, leaf) {
   // Group subjects render through the split reconcile: the pane sits
   // somewhere in the layout wrapper, keyed by paneId. Single-panel
   // subjects keep the flat contract (first .workspace-pane child).
-  if (root && root.kind === "group") {
+  // root is the VISIBLE SUBJECT for the render pass (kind: panel|group)
+  // and the session entry everywhere else: accept both by testing the
+  // subject shape (kind) and falling back to the entry's visible
+  // subject when the caller passed the entry.
+  const subject = root && root.kind ? root : null;
+  const isGroup = subject
+    ? subject.kind === "group"
+    : !!(root && (visibleSubject(root) || {}).kind === "group");
+  if (isGroup) {
     return findPaneElementById(container, leaf.paneId) || null;
   }
   const first = [...container.children].find((child) => hasClass(child, "workspace-pane"));
