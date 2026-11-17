@@ -375,6 +375,19 @@
   display: none;
 }
 
+/* Spring-loaded dwell outline (v4): the full-pane ring that appears
+ once a dragged label hovers one pane past the dwell window. It marks
+ the pane the drop will split INSIDE, replacing the half preview. */
+.pane-dwell-outline {
+  position: absolute;
+  inset: 0;
+  z-index: 29;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius, 6px);
+  background: color-mix(in srgb, var(--accent), transparent 92%);
+  pointer-events: none;
+}
+
 .pane-ws-badge:hover {
   background: color-mix(in srgb, var(--accent), transparent 78%);
 }

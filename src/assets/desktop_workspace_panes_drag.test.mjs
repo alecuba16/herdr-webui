@@ -1,12 +1,12 @@
-// v3 drag mechanics coverage: half-region chip drops with the dotted
-// preview square, group chips (icon + member count) on split subtrees,
-// group drags moving the whole subtree, member drag-out ungrouping, and
-// tab drags creating a panel at the hovered half. The vm DOM stub has
-// no event dispatch, so the tests drive the module-level drag entry
-// points directly (same contract as paneStripDragOver in the main
-// suite: the inline attributes resolve to these exact functions in a
-// classic-script bundle, and the vm context exposes top-level function
-// declarations as properties).
+// v4 drag mechanics coverage: half-region label drops with the dotted
+// preview square, the spring-loaded dwell (arm, outline, forced nest),
+// group chips (icon + member count) on split subtrees and flat roots,
+// label strip-drop ungrouping, and tab drags creating a panel at the
+// hovered half. The vm DOM stub has no event dispatch, so the tests
+// drive the module-level drag entry points directly (same contract as
+// paneStripDragOver in the main suite: the inline attributes resolve to
+// these exact functions in a classic-script bundle, and the vm context
+// exposes top-level function declarations as properties).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -149,7 +149,7 @@ function buildDom() {
   return { container, shell, document };
 }
 
-function loadPanes(document, stateWs) {
+function loadPanes(document, stateWs, timers) {
   const ctx = {
     document,
     localStorage: { getItem: () => null, setItem() {} },
@@ -167,6 +167,11 @@ function loadPanes(document, stateWs) {
     selectedOrDefaultWorkspace: () => ({ workspace_id: "ws-1" }),
     panesByTabIndex: () => new Map(),
     go: () => {},
+    // v4 dwell clock: dragovers arm it in every test, so the default is
+    // a never-firing stub (no stray host timers, the dwell stays inert);
+    // the dwell tests inject dwellTimers() for a deterministic fire.
+    setTimeout: (timers && timers.setTimeout) || (() => 0),
+    clearTimeout: (timers && timers.clearTimeout) || (() => {}),
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
@@ -196,25 +201,18 @@ function bootFlatThreePanels(ctx, count) {
   return leaves;
 }
 
-// A grouped tree: root row [G, S] where G is a column split of two
-// leaves (the group) and S is a standalone leaf. Built by hand so the
-// membership is unambiguous.
-function bootGroupedTree(ctx) {
-  const panes = ctx.HerdrWorkspacePanes;
-  panes.renderWorkspacePanes();
-  panes.splitPaneRight();
-  const leaves = panes.paneLeaves(panes.paneRoot());
-  ctx.state.tabs = [];
-  for (const [i, leaf] of leaves.entries()) {
-    const tabId = `tab_${i + 1}`;
-    ctx.state.tabs.push({ tab_id: tabId, workspace_id: ctx.state.ws });
-    leaf.tabs = [tabId];
-    leaf.active = tabId;
-    leaf.wsId = ctx.state.ws;
-  }
-  ctx.state.tab = "tab_1";
-  panes.renderWorkspacePanes();
-  return leaves;
+// Controllable dwell clock for the vm realm: loadPanes injects these
+// into the context, and the dwell tests fire the window on demand
+// instead of sleeping the 2s window per case.
+function dwellTimers() {
+  let pending = null;
+  return {
+    setTimeout(fn, ms) { pending = { fn, ms }; return 1; },
+    clearTimeout() { pending = null; },
+    armed: () => !!pending,
+    windowMs: () => (pending ? pending.ms : null),
+    fire() { if (!pending) return; const fn = pending.fn; pending = null; fn(); },
+  };
 }
 
 function chipHtmlFor(ctx, leaf) {
@@ -222,15 +220,22 @@ function chipHtmlFor(ctx, leaf) {
   return html;
 }
 
-test("flat multi-panel tree renders one standalone chip per strip, no group chip", () => {
+test("flat root split renders one group chip counting every panel", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const leaves = bootFlatThreePanels(ctx, 3);
   assert.equal(leaves.length, 3, "three panels stand");
-  for (const leaf of leaves) {
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.focusPanelFor(leaves[2].paneId);
+  panes.renderWorkspacePanes();
+  const activeHtml = chipHtmlFor(ctx, leaves[2]);
+  assert.ok(activeHtml.includes("pane-panel-group-chip"), "focused leaf carries the root group chip");
+  assert.ok(activeHtml.includes("\u25A3 3"), "group chip counts every root panel");
+  assert.ok(activeHtml.includes(`data-pane-id="${leaves[2].paneId}"`), "chip names the focused panel");
+  for (const leaf of [leaves[0], leaves[1]]) {
     const html = chipHtmlFor(ctx, leaf);
     assert.ok(html.includes("pane-panel-chip"), "chip renders");
-    assert.ok(!html.includes("pane-panel-group-chip"), "flat tree has no group chip");
+    assert.ok(!html.includes("pane-panel-group-chip"), "non-focused leaves keep standalone chips");
     assert.ok(html.includes(`data-pane-id="${leaf.paneId}"`), "chip names its own panel");
   }
 });
@@ -329,32 +334,56 @@ function findPaneEl(document, paneId) {
   return walk(container);
 }
 
-test("chip drop on a pane half re-docks the dragged leaf beside the target", () => {
+// Strip-drop ungroup drive: the drag stub's makeNode has no closest(),
+// so paneStripDrop cannot resolve its strip from a bare target. The
+// split suite patches closest onto the nodes; here the group-membership
+// contract is the point, so the drive stays on the real move primitive
+// with the strip's pane id, which is exactly what paneStripDrop calls.
+test("label strip-drop out of a group ungroups it beside the group", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
-  const leaves = bootFlatThreePanels(ctx, 3);
   const panes = ctx.HerdrWorkspacePanes;
-  const dragged = leaves[2];
-  const target = leaves[0];
-  ctx.panePanelChipDragStart({ target: { dataset: { paneId: dragged.paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
-  // paneDragPanelId is a let binding in the module scope: vm exposes only
-  // var/function on the context, so the drop's behavior is the assertable
-  // contract (the drag state itself is not reachable from outside).
-  // The pane elements sit inside .pane-row wrappers; walk the tree.
-  const paneEl = findPaneEl(document, target.paneId);
-  assert.ok(paneEl, "target pane rendered");
-  ctx.paneContainerPanelDrop({
-    target: paneEl,
-    clientX: 21,
-    clientY: 20,
-    preventDefault() {},
-  });
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const memberA = { kind: "pane", paneId: "ga", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1" };
+  const memberB = { kind: "pane", paneId: "gb", tabs: ["tab_2"], active: "tab_2", wsId: "ws-1" };
+  const standalone = { kind: "pane", paneId: "sx", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const group = { kind: "column", sizes: [1, 1], children: [memberA, memberB] };
+  entry.root = { kind: "row", sizes: [1, 1], children: [group, standalone] };
+  ctx.state.tabs = [
+    { tab_id: "tab_1", workspace_id: "ws-1" },
+    { tab_id: "tab_2", workspace_id: "ws-1" },
+    { tab_id: "tab_3", workspace_id: "ws-1" },
+  ];
+  ctx.state.tab = "tab_3";
+  panes.renderWorkspacePanes();
+  // Drag gb's label onto the standalone's strip: a cross-pane strip
+  // drop arms the emptied source, then the sweep folds it on the next
+  // render. movePaneTabTo(skipRender) + the arm + the render is the
+  // exact paneStripDrop sequence, driven directly because the drag
+  // stub has no closest() for strip resolution.
+  assert.ok(panes.movePaneTabTo("tab_2", "sx", null, { skipRender: true }));
+  const source = panes.paneLeaves(panes.paneRoot()).find((leaf) => leaf.paneId === "gb");
+  assert.ok(source, "group member stood before the move");
+  assert.equal(source.tabs.length, 0, "the strip move emptied the source member");
+  source.autoCloseArmed = true;
+  panes.renderWorkspacePanes();
   const root = panes.paneRoot();
-  // The dragged leaf now sits directly right of the target inside the
-  // same row split (extend path: target's parent runs the drop axis).
-  assert.ok(panes.paneLeaves(root).includes(dragged), "dragged leaf survived");
-  assert.deepEqual(flatChildrenOrder(root, panes), [target.paneId, dragged.paneId, leaves[1].paneId],
-    "dragged leaf lands between target and the old middle leaf");
+  const leavesAfter = panes.paneLeaves(root);
+  const holder = leavesAfter.find((leaf) => leaf.tabs.includes("tab_2"));
+  assert.ok(holder, "dragged label lives in the tree");
+  assert.equal(holder.paneId, "sx", "label landed in the standalone panel");
+  assert.ok(!leavesAfter.some((leaf) => leaf.paneId === "gb"), "emptied group member folded");
+  // The group split died with its last member: the tree is a flat row
+  // again, the root group re-counts every panel.
+  assert.equal(root.kind, "row", "root stays a row");
+  const order = flatChildrenOrder(root, panes);
+  assert.deepEqual(order, ["ga", "sx"], "survivors stand as flat root panels");
+  const survivorChip = chipHtmlFor(ctx, leavesAfter.find((leaf) => leaf.paneId === "ga"));
+  assert.ok(!survivorChip.includes("pane-panel-group-chip"), "non-focused survivor keeps a standalone chip");
+  const focusedChip = chipHtmlFor(ctx, leavesAfter.find((leaf) => leaf.paneId === "sx"));
+  assert.ok(focusedChip.includes("pane-panel-group-chip"), "focused survivor carries the flat root group chip");
+  assert.ok(focusedChip.includes("\u25A3 2"), "group chip counts the reshaped root's panels");
 });
 
 function flatChildrenOrder(root, panes) {
@@ -378,8 +407,8 @@ test("dragover positions the dotted preview square and dragend clears it", () =>
   container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
   const paneEl = findPaneEl(document, leaves[0].paneId);
   paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
-  ctx.panePanelChipDragStart({ target: { dataset: { paneId: leaves[1].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
-  ctx.paneContainerPanelDragOver({
+  ctx.paneTabDragStart({ target: { dataset: { tabId: leaves[1].tabs[0] } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerTabDragOver({
     target: paneEl,
     clientX: 290,
     clientY: 15,
@@ -392,86 +421,8 @@ test("dragover positions the dotted preview square and dragend clears it", () =>
   assert.equal(preview.style.display, "block", "preview visible during dragover");
   assert.equal(preview.style.left, "150px", "right half of the pane");
   assert.equal(preview.style.width, "150px", "half the pane width");
-  ctx.panePanelChipDragEnd();
+  ctx.paneTabDragEnd();
   assert.equal(preview.style.display, "none", "dragend hides the preview");
-});
-
-test("group chip drag with an outside drop moves the whole group subtree", () => {
-  const { document } = buildDom();
-  const ctx = loadPanes(document, "ws-1");
-  const panes = ctx.HerdrWorkspacePanes;
-  panes.renderWorkspacePanes();
-  const entry = panes.panesStateFor();
-  const memberA = { kind: "pane", paneId: "ga", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1" };
-  const memberB = { kind: "pane", paneId: "gb", tabs: ["tab_2"], active: "tab_2", wsId: "ws-1" };
-  const standalone = { kind: "pane", paneId: "sx", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
-  const group = { kind: "column", sizes: [1, 1], children: [memberA, memberB], activePaneId: "ga" };
-  entry.root = { kind: "row", sizes: [1, 1], children: [group, standalone] };
-  ctx.state.tabs = [
-    { tab_id: "tab_1", workspace_id: "ws-1" },
-    { tab_id: "tab_2", workspace_id: "ws-1" },
-    { tab_id: "tab_3", workspace_id: "ws-1" },
-  ];
-  ctx.state.tab = "tab_1";
-  panes.renderWorkspacePanes();
-  // Group chip drag: the chip's data-pane-id is the focused member.
-  ctx.paneGroupChipDragStart({ target: { dataset: { paneId: "ga" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
-  const paneEl = findPaneEl(document, "sx");
-  assert.ok(paneEl, "standalone pane rendered");
-  // Drop on the standalone's right half: the group moves beside it.
-  ctx.paneContainerPanelDrop({
-    target: paneEl,
-    clientX: 21,
-    clientY: 20,
-    preventDefault() {},
-  });
-  const root = panes.paneRoot();
-  assert.equal(root.kind, "row", "root stays a row");
-  const ids = hostArray(root.children.map((c) => (c.kind === "pane" ? c.paneId : `split(${panes.paneLeaves(c).length})`)));
-  assert.deepEqual(ids, ["sx", "split(2)"], "whole group re-docked after the standalone");
-  const groupNode = root.children[1];
-  assert.deepEqual(hostArray(panes.paneLeaves(groupNode).map((l) => l.paneId)), ["ga", "gb"], "group membership intact");
-});
-
-test("member chip drag-out of the group ungroups it beside the group", () => {
-  const { document } = buildDom();
-  const ctx = loadPanes(document, "ws-1");
-  const panes = ctx.HerdrWorkspacePanes;
-  panes.renderWorkspacePanes();
-  const entry = panes.panesStateFor();
-  const memberA = { kind: "pane", paneId: "ga", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1" };
-  const memberB = { kind: "pane", paneId: "gb", tabs: ["tab_2"], active: "tab_2", wsId: "ws-1" };
-  const standalone = { kind: "pane", paneId: "sx", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
-  const group = { kind: "column", sizes: [1, 1], children: [memberA, memberB] };
-  entry.root = { kind: "row", sizes: [1, 1], children: [group, standalone] };
-  ctx.state.tabs = [
-    { tab_id: "tab_1", workspace_id: "ws-1" },
-    { tab_id: "tab_2", workspace_id: "ws-1" },
-    { tab_id: "tab_3", workspace_id: "ws-1" },
-  ];
-  ctx.state.tab = "tab_3";
-  panes.renderWorkspacePanes();
-  const paneEl = findPaneEl(document, "sx");
-  // Member drag (no group flag): the member alone re-docks.
-  ctx.panePanelChipDragStart({ target: { dataset: { paneId: "gb" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
-  ctx.paneContainerPanelDrop({
-    target: paneEl,
-    clientX: 21,
-    clientY: 20,
-    preventDefault() {},
-  });
-  const root = panes.paneRoot();
-  const flatOrder = flatChildrenOrder(root, panes);
-  assert.ok(flatOrder.includes("gb"), "ungrouped member survived");
-  assert.ok(!flatOrder.includes(undefined), "tree healthy");
-  // The group shrank: ga and gb no longer share one split parent.
-  const leaves = panes.paneLeaves(root);
-  assert.equal(leaves.length, 3, "all three panels still stand");
-  const parentIds = leaves.map((leaf) => root.children.indexOf(
-    root.children.find((c) => c === leaf || (c.kind !== "pane" && panes.paneLeaves(c).includes(leaf))),
-  ));
-  const distinct = new Set(parentIds);
-  assert.equal(distinct.size, 3, "no two leaves share a split parent anymore");
 });
 
 test("tab drop on a pane half creates a fresh panel holding the dragged tab", () => {
@@ -590,7 +541,9 @@ test("dragenter positions the preview square so fast releases still drop", () =>
   // handlers directly: the vm stub has no event dispatch.
   ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
   const dragenterHandlers = container.listeners.dragenter || [];
-  assert.ok(dragenterHandlers.length >= 2, "container wired dragenter handlers");
+  // v4: one dragenter handler (the tab drag owns the whole payload; the
+  // chip-drag handler is gone).
+  assert.equal(dragenterHandlers.length, 1, "container wired one dragenter handler");
   for (const handler of dragenterHandlers) {
     handler({
       target: paneEl,
@@ -603,7 +556,6 @@ test("dragenter positions the preview square so fast releases still drop", () =>
   const preview = document.getElementById("panelDropPreview");
   assert.ok(preview, "preview exists during the tab drag");
   assert.equal(preview.style.display, "block", "dragenter alone positions the preview square");
-  // And the chip-drag dragenter handler accepts the payload too.
   ctx.paneTabDragEnd();
   assert.equal(preview.style.display, "none", "dragend still clears");
 });
@@ -611,17 +563,17 @@ test("dragenter positions the preview square so fast releases still drop", () =>
 test("dead-center cross refuses: no preview, no drop, nothing moves", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
-  bootFlatThreePanels(ctx, 3);
+  const leaves = bootFlatThreePanels(ctx, 3);
   const panes = ctx.HerdrWorkspacePanes;
   const container = document.getElementById("workspacePanes");
   container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
   const paneEl = findPaneEl(document, panes.paneLeaves(panes.paneRoot())[0].paneId);
   paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
   const leavesBefore = panes.paneLeaves(panes.paneRoot()).length;
-  ctx.panePanelChipDragStart({ target: { dataset: { paneId: panes.paneLeaves(panes.paneRoot())[2].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneTabDragStart({ target: { dataset: { tabId: leaves[2].tabs[0] } }, dataTransfer: { setData() {}, effectAllowed: "" } });
   // (150,50) is the middle cross of the 300x100 pane: inside every third,
   // so no corner owns it and nothing must accept.
-  ctx.paneContainerPanelDragOver({
+  ctx.paneContainerTabDragOver({
     target: paneEl,
     clientX: 150,
     clientY: 50,
@@ -630,7 +582,7 @@ test("dead-center cross refuses: no preview, no drop, nothing moves", () => {
   });
   const preview = document.getElementById("panelDropPreview");
   assert.equal(preview ? preview.style.display : undefined, undefined, "no preview paints in the dead cross");
-  ctx.paneContainerPanelDrop({
+  ctx.paneContainerTabDrop({
     target: paneEl,
     clientX: 150,
     clientY: 50,
@@ -639,13 +591,14 @@ test("dead-center cross refuses: no preview, no drop, nothing moves", () => {
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, leavesBefore, "dead-center drop moved nothing");
   // A mid-edge point (150,10) is in the top third vertically but the
   // middle third horizontally: still no corner, still dead.
-  ctx.paneContainerPanelDrop({
+  ctx.paneContainerTabDrop({
     target: paneEl,
     clientX: 150,
     clientY: 10,
     preventDefault() {},
   });
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, leavesBefore, "mid-edge drop moved nothing");
+  ctx.paneTabDragEnd();
 });
 
 test("corner proximity picks the axis by the nearer border", () => {
@@ -740,7 +693,7 @@ test("leaving a corner into the dead cross clears the painted preview", () => {
     preventDefault() {},
     dataTransfer: { dropEffect: null },
   });
-  let preview = document.getElementById("panelDropPreview");
+  const preview = document.getElementById("panelDropPreview");
   assert.equal(preview.style.display, "block", "corner pass paints the square");
   ctx.paneContainerTabDragOver({
     target: paneEl,
@@ -751,24 +704,145 @@ test("leaving a corner into the dead cross clears the painted preview", () => {
   });
   assert.equal(preview.style.display, "none", "dead-cross dragover clears the stale square");
   ctx.paneTabDragEnd();
-  // Same contract on the chip drag path.
-  ctx.panePanelChipDragStart({ target: { dataset: { paneId: panes.paneLeaves(panes.paneRoot())[1].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
-  ctx.paneContainerPanelDragOver({
+});
+
+test("dwell arms on corner hover and locks after the window", () => {
+  const { document } = buildDom();
+  const timers = dwellTimers();
+  const ctx = loadPanes(document, "ws-1", timers);
+  const leaves = bootFlatThreePanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, leaves[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  ctx.paneTabDragStart({ target: { dataset: { tabId: leaves[2].tabs[0] } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  const dragEvent = (x, y) => ({
+    target: paneEl,
+    clientX: x,
+    clientY: y,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  // Corner hover arms the clock; the outline waits for the window.
+  ctx.paneContainerTabDragOver(dragEvent(15, 10));
+  assert.ok(timers.armed(), "corner hover arms the dwell clock");
+  assert.ok(timers.windowMs() > 0, "the clock runs a real window");
+  assert.equal(document.getElementById("paneDwellOutline"), null, "no outline before the window passes");
+  const preview = document.getElementById("panelDropPreview");
+  assert.equal(preview.style.display, "block", "unlocked hover still paints the half preview");
+  // Crossing the dead cross mid-pane keeps the same pane armed: the
+  // pointer never left the pane, the clock must not restart.
+  ctx.paneContainerTabDragOver(dragEvent(150, 50));
+  assert.ok(timers.armed(), "dead-cross hover keeps the clock armed");
+  // Re-hovering the same pane is a no-op: the window keeps running.
+  ctx.paneContainerTabDragOver(dragEvent(15, 10));
+  assert.ok(timers.armed(), "re-hover does not restart the clock");
+  assert.equal(document.getElementById("paneDwellOutline"), null, "still no outline mid-window");
+  timers.fire();
+  ctx.paneContainerTabDragOver(dragEvent(15, 10));
+  const outline = document.getElementById("paneDwellOutline");
+  assert.ok(outline, "outline paints once the dwell locks");
+  assert.equal(outline.className, "pane-dwell-outline", "outline carries the dwell class");
+  assert.equal(outline.parentNode, paneEl, "outline lives inside the locked pane");
+  // Locked: the half preview yields so the two indicators never stack.
+  assert.equal(preview.style.display, "none", "half preview hidden while locked");
+  ctx.paneTabDragEnd();
+  assert.equal(document.getElementById("paneDwellOutline"), null, "dragend clears the outline");
+});
+
+test("dwell lock forces the nest landing in the would-extend case", () => {
+  const { document } = buildDom();
+  const timers = dwellTimers();
+  const ctx = loadPanes(document, "ws-1", timers);
+  const leaves = bootFlatThreePanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, leaves[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  ctx.paneTabDragStart({ target: { dataset: { tabId: leaves[2].tabs[0] } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  const dragEvent = (x, y) => ({
+    target: paneEl,
+    clientX: x,
+    clientY: y,
+    preventDefault() {},
+    dataTransfer: { dropEffect: null },
+  });
+  // Capture the dragged id before the move: the source leaf's tabs
+  // splice empties during the drop, and re-reading leaves[2].tabs[0]
+  // after it would look up undefined.
+  const draggedTab = leaves[2].tabs[0];
+  // (15,10) hugs the LEFT border: row axis, first half. On the flat
+  // root the parent row runs the drop axis, so without the dwell the
+  // extend path would mint a flat sibling; locked, the target pane
+  // splits INSIDE itself.
+  ctx.paneContainerTabDragOver(dragEvent(15, 10));
+  timers.fire();
+  ctx.paneContainerTabDragOver(dragEvent(15, 10));
+  assert.ok(document.getElementById("paneDwellOutline"), "dwell locked the target pane");
+  ctx.paneContainerTabDrop({
+    target: paneEl,
+    clientX: 15,
+    clientY: 10,
+    preventDefault() {},
+  });
+  assert.equal(document.getElementById("paneDwellOutline"), null, "drop clears the outline");
+  const root = panes.paneRoot();
+  const targetSlot = root.children.find((child) => child && child.kind !== "pane"
+    && panes.paneLeaves(child).some((l) => l.paneId === leaves[0].paneId));
+  assert.ok(targetSlot, "target pane nested in its own split");
+  assert.equal(targetSlot.kind, "row", "left corner nests a row split inside the target");
+  const nested = panes.paneLeaves(targetSlot);
+  assert.equal(nested.length, 2, "nested split pairs the target with the fresh half");
+  assert.equal(nested[1].paneId, leaves[0].paneId, "original target keeps its slot inside the nest");
+  assert.equal(root.children.length, 2, "root keeps the untouched sibling beside the nested split");
+  const allLeaves = panes.paneLeaves(root);
+  const holder = allLeaves.find((leaf) => leaf.tabs.includes(draggedTab));
+  assert.ok(holder, "dragged tab lives in the tree");
+  assert.ok(nested.some((leaf) => leaf.paneId === holder.paneId), "dragged tab moved into the fresh half");
+  assert.notEqual(holder.paneId, leaves[2].paneId, "the tab left its original panel");
+  assert.ok(!allLeaves.some((leaf) => leaf.paneId === leaves[2].paneId), "emptied source folded");
+});
+
+test("quick corner drop without dwell keeps the extend landing", () => {
+  const { document } = buildDom();
+  const timers = dwellTimers();
+  const ctx = loadPanes(document, "ws-1", timers);
+  const leaves = bootFlatThreePanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  const container = document.getElementById("workspacePanes");
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  const paneEl = findPaneEl(document, leaves[0].paneId);
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  // Capture before the move: the source leaf's tabs splice empties
+  // during the drop.
+  const draggedTab = leaves[2].tabs[0];
+  ctx.paneTabDragStart({ target: { dataset: { tabId: draggedTab } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerTabDragOver({
     target: paneEl,
     clientX: 15,
     clientY: 10,
     preventDefault() {},
     dataTransfer: { dropEffect: null },
   });
-  preview = document.getElementById("panelDropPreview");
-  assert.equal(preview.style.display, "block", "corner pass paints the square (chip)");
-  ctx.paneContainerPanelDragOver({
+  assert.ok(timers.armed(), "the clock runs but its window has not passed");
+  ctx.paneContainerTabDrop({
     target: paneEl,
-    clientX: 150,
-    clientY: 50,
+    clientX: 15,
+    clientY: 10,
     preventDefault() {},
-    dataTransfer: { dropEffect: null },
   });
-  assert.equal(preview.style.display, "none", "dead-cross dragover clears the stale square (chip)");
-  ctx.panePanelChipDragEnd();
+  const root = panes.paneRoot();
+  // No dwell: the flat row extends, the fresh panel lands as a direct
+  // root child beside the target; the armed emptied source folds.
+  assert.equal(root.kind, "row", "root stays a row");
+  assert.equal(root.children[0].kind, "pane", "no nested split: plain extend");
+  const order = flatChildrenOrder(root, panes);
+  assert.equal(order.length, 3, "fresh panel in, emptied source out");
+  assert.deepEqual(order.slice(1), [leaves[0].paneId, leaves[1].paneId], "target and middle keep their root slots");
+  const holder = panes.paneLeaves(root).find((leaf) => leaf.tabs.includes(draggedTab));
+  assert.ok(holder, "dragged tab lives in the tree");
+  assert.equal(order[0], holder.paneId, "the fresh panel took the leading root slot");
+  assert.notEqual(holder.paneId, leaves[2].paneId, "the tab left its original panel");
 });
