@@ -1286,11 +1286,17 @@ function renderCollapsedGroupInto(container, split) {
 // dock's folded panels. Click expands; double-click renames, same trio
 // contract as the live group chip.
 function collapsedGroupChipHtml(split, dock) {
-  // The dock holds EVERY label of the collapsed group: its own plus
-  // the ones the fold parked home, so its count alone names the whole
-  // group ("Group 4 panels", matching the expanded chip's count).
-  const foldedCount = leafTerminalLabelCount(dock);
-  const name = split.groupName || `Group ${foldedCount} panels`;
+  // The chip keeps the group's EXPANDED name: it counts the member
+  // views (the foldedHome records, one entry per view), never the
+  // dock's label stack (the dock's own labels rode the collector and
+  // never counted as members before the collapse either). A view whose
+  // labels all closed while collapsed drops out of the count. Legacy
+  // stamps without the records fall back to the dock's label count.
+  const foldedHome = (split.groupCollapsed && split.groupCollapsed.foldedHome) || null;
+  const viewCount = foldedHome
+    ? Object.values(foldedHome).filter((ids) => (ids || []).some((id) => terminalTabKnown(id))).length
+    : leafTerminalLabelCount(dock);
+  const name = split.groupName || `Group ${viewCount} panels`;
   const title = `${name} (double-click to rename, click to expand)`;
   const encodedSplit = encodeURIComponent(splitNodeId(split));
   if (state.editingPaneGroup === splitNodeId(split)) {

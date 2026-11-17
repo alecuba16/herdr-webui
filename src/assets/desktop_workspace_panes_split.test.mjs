@@ -1695,7 +1695,7 @@ test("dock label press collapses the group; chip press re-expands it", () => {
   // raw strip markup like the rail/chip tests do.
   const chipHtml = collapsedStrip.__innerHTML;
   assert.ok(chipHtml.includes("pane-panel-group-collapsed"), "collapsed strip shows the group chip");
-  assert.ok(chipHtml.includes("Group 4 panels"), "chip names the folded count");
+  assert.ok(chipHtml.includes("Group 2 panels"), "chip names the member view count");
   assert.ok(!chipHtml.includes("data-tab-id"), "member labels hidden while collapsed");
   assert.ok(chipHtml.includes("expandCollapsedGroup"), "chip click expands");
   assert.deepEqual([...dock.tabs].sort().map(String), ["tab_1", "tab_2", "tab_3", "tab_4"], "dock holds every folded label");
