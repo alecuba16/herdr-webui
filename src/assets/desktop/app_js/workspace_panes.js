@@ -1414,15 +1414,28 @@ function markCurrentWorkspacePane(pane, leaf) {
 // Panel chip (collector model): one chip per strip's leading edge, only
 // when the tree holds more than one panel. Standalone panels name their
 // workspace (worktree display name when it has one). Panels inside a
-// GROUP (a top-level split subtree with 2+ leaves, v3) share ONE group
-// chip instead: the icon marks the group, the number is the member
-// count, click focuses the group's last-focused leaf, and the drag
-// carries the whole GROUP (paneGroupDragStart). Dragging a MEMBER out
+// GROUP share ONE group chip instead: the icon marks the group, the
+// number is the visible member count, click focuses the group's
+// last-focused leaf, and the drag carries the whole GROUP
+// (paneGroupDragStart). A group is the split whose view area holds the
+// panel: a top-level subtree (v3), or the flat root itself when every
+// root child is a leaf (v3.2). Dragging a MEMBER out
 // (dropping beside the group, not inside it) ungroups it. Single-panel
 // trees hide the chip: one panel names itself through the location bar
 // and sidebar already.
-function paneGroupChipHtml(root, group) {
+
+// Group members actually in the view area. Maximize mode parks every
+// sibling behind rail stubs, so the visible set collapses to the
+// maximized member (v3.2): hidden panels stay outside the group.
+function paneGroupVisibleMembers(group) {
   const members = group ? paneLeaves(group) : [];
+  const entry = panesStateFor();
+  if (!entry || !entry.maximizedPaneId) return members;
+  return members.filter((leaf) => leaf.paneId === entry.maximizedPaneId);
+}
+
+function paneGroupChipHtml(root, group) {
+  const members = paneGroupVisibleMembers(group);
   const focusedMember = (group && group.kind !== "pane" && group.activePaneId
     && paneForPaneId(root, group.activePaneId)) || (members.find((leaf) => leaf === activeLeaf(root)) || members[0]);
   if (!focusedMember) return "";
@@ -1432,15 +1445,20 @@ function paneGroupChipHtml(root, group) {
   return `<button class="pane-panel-chip pane-panel-group-chip" draggable="true" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-pane-id="${escapeAttr(focusedMember.paneId || "")}" data-group-chip="1" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedFocus)}')" ondragstart="paneGroupChipDragStart(event)" ondragend="panePanelChipDragEnd()">${escapeHtml(label)}</button>`;
 }
 
-// The top-level subtree owning a leaf: a group when it is a split with
-// 2+ leaves, else null (the leaf is standalone). Derived, never stored:
-// the tree already expresses membership and a stored flag would drift
-// on every reshape.
+// The split whose view area groups a leaf: the top-level subtree
+// holding it when that subtree is a split with 2+ leaves, the FLAT
+// root itself (v3.2: every root child a leaf, so the root split's view
+// area is one group counting every panel), else null. Mixed roots keep
+// the doc model: direct leaves stay standalone, subtree members group
+// as before. Derived, never stored: the tree already expresses
+// membership and a stored flag would drift on every reshape.
 function paneGroupForLeaf(root, leaf) {
   if (!root || !leaf || !isPaneSplit(root)) return null;
-  const holder = root.children.find((child) => child === leaf
-    || (isPaneSplit(child) && paneLeaves(child).includes(leaf)));
-  return holder && isPaneSplit(holder) && paneLeaves(holder).length >= 2 ? holder : null;
+  if (root.children.every((child) => child && child.kind === "pane")) {
+    return root.children.includes(leaf) ? root : null;
+  }
+  const holder = root.children.find((child) => isPaneSplit(child) && paneLeaves(child).includes(leaf));
+  return holder && paneLeaves(holder).length >= 2 ? holder : null;
 }
 
 function panePanelChipHtml(leaf) {
@@ -1449,13 +1467,17 @@ function panePanelChipHtml(leaf) {
   // Group chips render on the group's FOCUSED member strip only; the
   // other members keep standalone chips. Every member stays draggable
   // (the drag-out ungroup needs a per-member handle), and one group
-  // chip names the group instead of every strip repeating it.
+  // chip names the group instead of every strip repeating it. Below
+  // 2+ visible members (maximize mode) the focused member falls back
+  // to its standalone chip (v3.2).
   const group = paneGroupForLeaf(root, leaf);
   const active = activeLeaf(root);
-  if (group && group !== root && leaf === active) return paneGroupChipHtml(root, group);
-  // Non-focused members fall through: their workspace-name chip doubles
-  // as the drag-out handle (a drop beside the group re-parents this
-  // member alone, ungrouping it).
+  if (group && leaf === active && paneGroupVisibleMembers(group).length >= 2) {
+    return paneGroupChipHtml(root, group);
+  }
+  // Non-focused members and single-visible-member groups fall through:
+  // the workspace-name chip doubles as the drag-out handle (a drop
+  // beside the group re-parents this member alone, ungrouping it).
   const wsId = leafWorkspaceId(leaf);
   const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
   const label = workspace
@@ -1663,7 +1685,9 @@ function clearPanelDropPreview() {
 // OUTSIDE the dragged group moves the WHOLE GROUP (the subtree re-docks
 // beside the target, splitting at the hovered half); a drop INSIDE the
 // group reorders the member within it (the member leaf alone moves,
-// same as a standalone chip drop). MEMBER drags without the group flag
+// same as a standalone chip drop). Root-group drags (v3.2 flat trees)
+// have no outside: every drop reorders the member within the root.
+// MEMBER drags without the group flag
 // stay single-panel moves, which is the drag-out ungroup: the member
 // re-parents beside the group and the group keeps 1 fewer member.
 function paneContainerPanelDrop(event) {
@@ -1693,9 +1717,9 @@ function paneContainerPanelDrop(event) {
       reDockGroupSubtree(group, target);
       return;
     }
-    // Inside-group drops and degenerate groups (the whole tree) fall
-    // through to the member re-dock: the member moves within its group
-    // exactly like a standalone panel drop beside a sibling.
+    // Inside-group drops and the root group (no outside exists) fall
+    // through to the member re-dock: the member moves within its
+    // group exactly like a standalone panel drop beside a sibling.
   }
   reDockPanelLeaf(draggedId, target);
 }

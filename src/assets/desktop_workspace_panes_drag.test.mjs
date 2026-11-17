@@ -222,17 +222,48 @@ function chipHtmlFor(ctx, leaf) {
   return html;
 }
 
-test("flat multi-panel tree renders one standalone chip per strip, no group chip", () => {
+test("flat root split renders one group chip counting every panel", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const leaves = bootFlatThreePanels(ctx, 3);
   assert.equal(leaves.length, 3, "three panels stand");
-  for (const leaf of leaves) {
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.focusPanelFor(leaves[2].paneId);
+  panes.renderWorkspacePanes();
+  const activeHtml = chipHtmlFor(ctx, leaves[2]);
+  assert.ok(activeHtml.includes("pane-panel-group-chip"), "focused leaf carries the root group chip");
+  assert.ok(activeHtml.includes("\u25A3 3"), "group chip counts every root panel");
+  assert.ok(activeHtml.includes(`data-pane-id="${leaves[2].paneId}"`), "chip names the focused panel");
+  for (const leaf of [leaves[0], leaves[1]]) {
     const html = chipHtmlFor(ctx, leaf);
     assert.ok(html.includes("pane-panel-chip"), "chip renders");
-    assert.ok(!html.includes("pane-panel-group-chip"), "flat tree has no group chip");
+    assert.ok(!html.includes("pane-panel-group-chip"), "non-focused leaves keep standalone chips");
     assert.ok(html.includes(`data-pane-id="${leaf.paneId}"`), "chip names its own panel");
   }
+});
+
+test("root group chip drag reorders the member within the flat root", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const leaves = bootFlatThreePanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.focusPanelFor(leaves[2].paneId);
+  panes.renderWorkspacePanes();
+  // Group chip drag from the focused member: the whole root is the
+  // group, so no outside exists and the drop must reorder the member.
+  ctx.paneGroupChipDragStart({ target: { dataset: { paneId: leaves[2].paneId } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  const paneEl = findPaneEl(document, leaves[0].paneId);
+  assert.ok(paneEl, "target pane rendered");
+  ctx.paneContainerPanelDrop({
+    target: paneEl,
+    clientX: 21,
+    clientY: 20,
+    preventDefault() {},
+  });
+  const root = panes.paneRoot();
+  assert.equal(root.kind, "row", "root stays a flat row");
+  assert.deepEqual(flatChildrenOrder(root, panes), [leaves[0].paneId, leaves[2].paneId, leaves[1].paneId],
+    "root group drag reorders the member beside the target");
 });
 
 test("single-panel tree renders no chip", () => {
@@ -286,6 +317,34 @@ test("group subtree renders the group chip on the focused member and member chip
   assert.ok(memberHtml.includes("pane-panel-chip"), "member chip renders for drag-out");
   const standaloneHtml = chipHtmlFor(ctx, leaves[2]);
   assert.ok(!standaloneHtml.includes("pane-panel-group-chip"), "standalone panel never group-chipped");
+});
+
+test("maximize mode parks the group chip and the maximized member goes standalone", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const memberA = { kind: "pane", paneId: "ga", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1" };
+  const memberB = { kind: "pane", paneId: "gb", tabs: ["tab_2"], active: "tab_2", wsId: "ws-1" };
+  const standalone = { kind: "pane", paneId: "sx", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const group = { kind: "column", sizes: [1, 1], children: [memberA, memberB], activePaneId: "ga" };
+  entry.root = { kind: "row", sizes: [1, 1], children: [group, standalone] };
+  ctx.state.tabs = [
+    { tab_id: "tab_1", workspace_id: "ws-1" },
+    { tab_id: "tab_2", workspace_id: "ws-1" },
+    { tab_id: "tab_3", workspace_id: "ws-1" },
+  ];
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  panes.focusPanelFor("ga");
+  panes.renderWorkspacePanes();
+  assert.ok(chipHtmlFor(ctx, memberA).includes("pane-panel-group-chip"), "visible group carries its chip");
+  panes.maximizeActivePane();
+  const html = chipHtmlFor(ctx, memberA);
+  assert.ok(!html.includes("pane-panel-group-chip"), "maximized member falls back to a standalone chip");
+  assert.ok(html.includes("pane-panel-chip"), "standalone chip renders on the maximized member");
+  assert.ok(html.includes(`data-pane-id="ga"`), "chip names the maximized panel");
 });
 
 function findPaneEl(document, paneId) {
