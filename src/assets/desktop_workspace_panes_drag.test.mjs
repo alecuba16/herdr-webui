@@ -1053,6 +1053,42 @@ test("second drop onto the minted slot populates it instead of splitting", () =>
   assert.ok(!leavesAfter.some((l) => l.groupSlot === true), "no marked slot remains");
 });
 
+// Inside an existing group the drop is plain growth: a second label
+// dropped on a member's half mints the view ONLY ("the 3 and so
+// forth"), never a second fan-out slot. The shadowing v1 group rule
+// used to read the 1-view fan-out as "no group" and re-minted, so the
+// second drop left TWO slots and one stuck empty.
+test("second fan-out drop inside the live group grows it plainly: view, no extra slot", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  // The live fan-out: marked dock with two labels left, one view, one slot.
+  const dock = { kind: "pane", paneId: "da", tabs: ["tab_1", "tab_4"], active: "tab_1", wsId: "ws-1", groupCollector: true };
+  const viewA = { kind: "pane", paneId: "db", tabs: ["tab_2"], active: "tab_2", wsId: "ws-1" };
+  const slot = { kind: "pane", paneId: "dc", tabs: [], active: null, wsId: "ws-1", groupSlot: true };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [dock, viewA, slot] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_4"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  const paneEl = findPaneEl(document, "db");
+  assert.ok(paneEl, "view pane rendered");
+  paneEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+  // Drop the dock's other label on the view's half: growth, not mint.
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_4" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerTabDrop({ target: paneEl, clientX: 21, clientY: 20, preventDefault() {} });
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  const views = leavesAfter.filter((l) => l.paneId !== "da" && (l.tabs || []).length === 1 && !l.groupSlot);
+  assert.equal(views.length, 2, "the drop grew the group by one view, no more");
+  const slots = leavesAfter.filter((l) => l.groupSlot === true);
+  assert.equal(slots.length, 1, "no second slot was minted");
+  assert.equal(slots[0].paneId, "dc", "the original slot is the one that stands");
+  const dockAfter = leavesAfter.find((l) => l.paneId === "da");
+  assert.ok(dockAfter.groupCollector === true, "the dock keeps its mark");
+  assert.equal((dockAfter.tabs || []).length, 1, "the dock lost exactly the dragged label");
+});
+
 // The unified collapse: dropping a group's last REAL view away (armed
 // move) dissolves the fan-out, the slot drops, the collector keeps the
 // labels. Below-2-members groups never survive a render.

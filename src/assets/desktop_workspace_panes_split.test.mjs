@@ -1607,3 +1607,56 @@ test("v3.2: the persisted blob never carries the arm marker", () => {
   const stored = Object.values(ctx.__storage)[0] || "";
   assert.ok(stored && !stored.includes("autoCloseArmed"), "blob strips the marker");
 });
+
+// Dock labels only (redo): the marked collector inside a live group is
+// the label dock, not a viewing pane. Unfocused, it mounts NO surface:
+// no aux terminal (ensureForLeaf never fires for it), and a shell left
+// in its slot from an earlier stint parks home hidden. Focused, the dock
+// is the panel being viewed and mounts like any pane.
+test("unfocused group dock mounts no terminal surface; focused dock mounts normally", () => {
+  const { document, nodes } = buildDom();
+  const ctx = loadPanesModule(document, "ws-70");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const dock = { kind: "pane", paneId: "da", tabs: ["tab_1", "tab_3"], active: "tab_1", wsId: "ws-70", groupCollector: true };
+  const view = { kind: "pane", paneId: "db", tabs: ["tab_2"], active: "tab_2", wsId: "ws-70" };
+  const slot = { kind: "pane", paneId: "dc", tabs: [], active: null, wsId: "ws-70", groupSlot: true };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [dock, view, slot] };
+  entry.root.activePaneId = "db";
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3"].map((id) => ({ tab_id: id, workspace_id: "ws-70" }));
+  ctx.state.tab = "tab_2";
+  // Aux stub records ensureForLeaf calls per pane; the shell node rides
+  // the harness DOM like the real one.
+  const ensured = [];
+  ctx.window.HerdrPaneTerminals = {
+    ensureForLeaf(pane, leaf) { ensured.push(leaf.paneId); return null; },
+    parkForTab() {},
+    releaseStale() {},
+  };
+  // Phase 1: the dock is focused and owns the route, so the shell mounts
+  // in its slot like any pane (the user pressed a dock label).
+  entry.root.activePaneId = "da";
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  const dockViewingPane = paneElements(nodes).find((p) => p.dataset.paneId === "da");
+  assert.equal(nodes.shell.parentNode, contentOf(dockViewingPane), "focused dock hosts the shell");
+  assert.notEqual(nodes.shell.style.display, "none", "focused dock shows the shell");
+  // Phase 2: focus moves to a VIEW leaf with an editor active and a
+  // ws-only route. The editor container claims the view slot, so the
+  // view leaf is not a shell owner: no later pass re-hosts or re-shows
+  // the shell in this render. The dock's gate must be the pass that
+  // pulls the shell out of its slot and parks it home hidden, and no
+  // aux surface may mount in the dock: labels only.
+  view.tabs = ["editor:src/demo.py"];
+  view.active = "editor:src/demo.py";
+  entry.root.activePaneId = "db";
+  ctx.state.tab = null;
+  ctx.state.ws = "ws-70";
+  panes.renderWorkspacePanes();
+  const dockPane = paneElements(nodes).find((p) => p.dataset.paneId === "da");
+  assert.ok(dockPane, "dock pane renders");
+  assert.ok(!ensured.includes("da"), "unfocused dock mounts no aux surface");
+  assert.notEqual(nodes.shell.parentNode, contentOf(dockPane), "shell left the dock slot");
+  assert.equal(nodes.shell.style.display, "none", "shell from the dock's stint parks home hidden");
+});

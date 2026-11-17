@@ -1627,16 +1627,6 @@ function leafTerminalLabelCount(leaf) {
   return (leaf.tabs || []).filter((id) => !isEditorTab(id) && !isGitTab(id) && id !== TERMINAL_TAB_PLACEHOLDER).length;
 }
 
-// A split is a group only while the fan-out is real: 2+ split-out
-// views (single-label leaves) and at most ONE member stacking labels,
-// the collector the views came from. Two stacks are collectors side
-// by side, and a lone view is the collector back together: neither
-// fans anything out, every panel renders standalone instead.
-function paneSplitIsGroup(split) {
-  if (paneGroupVisibleViews(split).length < 2) return false;
-  return paneLeaves(split).filter((leaf) => leafTerminalLabelCount(leaf) > 1).length <= 1;
-}
-
 // The group shape a view leaves behind, stamped BEFORE the gesture
 // empties or drops it: the collector's id plus the view's workspace,
 // or null when the leaf is not a single-label view inside a valid
@@ -4260,6 +4250,35 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
   const leaf = leafArg || activeLeaf(root);
   if (!leaf) return;
   const activeTab = leaf.active;
+  // Dock labels only: the marked collector inside a live group is the
+  // label dock, not a viewing pane. The base rule is one visible panel
+  // at a time, so a dock never selected for viewing mounts no surface:
+  // its strip keeps the docked labels accessible, and pressing one
+  // focuses the dock pane and the view follows the focus (the spec's
+  // "once pressed it will switch fully to that panel view"). The dock
+  // still mounts normally while focused: the user just chose it, and
+  // the focused dock is the one panel being viewed. Editor/git actives
+  // ride unchanged: they are client-owned views, not docked panels.
+  if (leaf.groupCollector === true && activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab)) {
+    const dockGroup = paneGroupForLeaf(root, leaf);
+    const dockFocused = activeLeaf(root) === leaf;
+    if (dockGroup && !dockFocused) {
+      removeEmptyPanelCard(content);
+      hideStalePaneContainers(content);
+      // The dock's parked terminal must not paint under the labels:
+      // a dock whose shell landed here in an earlier focused stint
+      // (drop rescue, reshape) sends it home hidden, same as the
+      // editor/git owner branch below.
+      const shellNow = el("terminalShell");
+      const panesHome = el("workspacePanes");
+      if (shellNow && shellNow.parentElement === content && panesHome) {
+        if (shellNow.parentElement) shellNow.parentElement.removeChild(shellNow);
+        panesHome.appendChild(shellNow);
+      }
+      if (shellNow && shellNow.style) shellNow.style.display = "none";
+      return;
+    }
+  }
   // Empty panel card (collector): a tabs-empty leaf is a valid standing
   // state, and its content slot carries the affordance instead of a
   // blank hole. The card names the bound workspace and routes Enter
