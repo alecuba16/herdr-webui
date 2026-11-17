@@ -324,6 +324,12 @@ window.addEventListener("unhandledrejection", () => resetBlocking());
 // after render() restores the correct surface for the newly selected workspace.
 // Set to null to force a shell sync on the next refreshOnline.
 let lastShellWorkspace = null;
+// Pane repaint signature for the refresh tail. render() paints the panes
+// once per tick already; the calls between it and the tail (shell surface
+// swap, connectTerminal) can only move the terminal grid or the workspace,
+// so these two values decide whether the tail needs a second paint.
+let lastPanePaintWs = null;
+let lastPanePaintGrid = null;
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 let noSleepPollTimer = null;
 let noSleepRequestSeq = 0;
@@ -4731,7 +4737,22 @@ async function finishRefreshOnline(seq, routeWs, routeTab, routePane) {
     // owns the screen. Any workspace with panes connects as before.
     if (state.pane) connectTerminal();
     else setTerminalLoading(false);
-    if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+    // render() at the top of this tail already painted the panes with the
+    // current state, so the unconditional repaint here was always a second
+    // pass over the same tree. The only pane-visible state the intervening
+    // calls can move is the terminal grid (connectTerminal's fit rewrites
+    // termCols/termRows, and the active tab's hover title carries them) or
+    // the workspace (shell surface swap). Quiet polls now skip the repaint;
+    // a moved grid or workspace still gets one.
+    const paneGrid = `${state.termCols || 0}x${state.termRows || 0}`;
+    if (
+      window.HerdrWorkspacePanes &&
+      (state.ws !== lastPanePaintWs || paneGrid !== lastPanePaintGrid)
+    ) {
+      window.HerdrWorkspacePanes.renderWorkspacePanes();
+      lastPanePaintWs = state.ws;
+      lastPanePaintGrid = paneGrid;
+    }
     syncRightSidebarRail();
   }
 }

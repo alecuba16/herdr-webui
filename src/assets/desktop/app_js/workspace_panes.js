@@ -195,6 +195,45 @@ function paneEditorTabButtonHtml(tabId, isActive) {
 // ids from THIS tree.
 const SESSION_PANES_KEY = "__session__";
 
+// Per-render-pass lookup memo. renderWorkspacePanes installs it once the
+// sweep and the terminal sync settle the tree, and the finally clears it,
+// so per-strip reads during the paint (row resolution, known-id prune,
+// mixed-tree flag, hover pane map) hit maps built once per pass instead of
+// re-scanning state.tabs/allTabs/panes per tab. Guards inside the four
+// readers keep out-of-pass callers (render.js top bar, VM harnesses, the
+// sync internals before install) computing fresh, exactly as before.
+// Never carried across renders: rows mutate between ticks, so a stale
+// memo would answer the previous snapshot.
+// Declaration must precede loadWorkspacePanesStates(): the load path's
+// wsId healing reaches paneTerminalTabById's guard while a later let
+// would sit in its temporal dead zone and the swallowed ReferenceError
+// would skip the stored-tree import.
+let panePassLookups = null;
+
+// rows: the first state.tabs row per id, then tabsById rows fill the
+// misses (the precedence paneTerminalTabById applies). known: every id
+// any of the four sources carries (tabs, tabsById, panesById, allTabs).
+// treeMixed: precomputed here against the settled root so badge and
+// prefix reads never re-walk the tree. panesByTab: built lazily on the
+// first hover-title read of the pass, mirroring panesByTabIndex.
+function buildPanePassLookups(root) {
+  const rows = new Map();
+  for (const tab of state.tabs || []) {
+    if (tab && !rows.has(tab.tab_id)) rows.set(tab.tab_id, tab);
+  }
+  if (state.tabsById) {
+    for (const [id, row] of Object.entries(state.tabsById)) {
+      if (row && typeof row === "object" && !rows.has(id)) rows.set(id, row);
+    }
+  }
+  const known = new Set();
+  for (const tab of state.tabs || []) if (tab) known.add(tab.tab_id);
+  if (state.tabsById) for (const id of Object.keys(state.tabsById)) known.add(id);
+  if (state.panesById) for (const id of Object.keys(state.panesById)) known.add(id);
+  for (const tab of state.allTabs || []) if (tab) known.add(tab.tab_id);
+  return { rows, known, panesByTab: null, treeMixed: treeIsMixedFor(root) };
+}
+
 function panesStateFor() {
   if (!state.workspacePanes[SESSION_PANES_KEY]) {
     state.workspacePanes[SESSION_PANES_KEY] = {
@@ -600,6 +639,13 @@ function paneTabsForTree(leaf) {
 }
 
 function paneTerminalTabById(tabId) {
+  // Pass memo: rows already merge the tabs list and the unfiltered map in
+  // the same first-wins precedence, so one Map hit replaces the list scan
+  // plus the tabsById probe for every strip tab of a paint.
+  if (panePassLookups) {
+    const row = panePassLookups.rows.get(tabId);
+    return row && typeof row === "object" ? row : null;
+  }
   const local = (state.tabs || []).find((tab) => tab.tab_id === tabId);
   if (local) return local;
   // The unfiltered map covers rows the workspace filter dropped: the
@@ -628,6 +674,10 @@ function workspaceIdForTab(tabId) {
 // drop a live id, and a genuinely closed id must drop from every leaf.
 function terminalTabKnown(tabId) {
   if (!tabId) return false;
+  // Pass memo: the known set folds all four sources (tabs, tabsById,
+  // panesById, allTabs) with the same key coverage hasOwnProperty gives,
+  // so the per-tab prune drops to one Set hit during a paint.
+  if (panePassLookups) return panePassLookups.known.has(tabId);
   if ((state.tabs || []).some((tab) => tab.tab_id === tabId)) return true;
   if (state.tabsById && Object.prototype.hasOwnProperty.call(state.tabsById, tabId)) return true;
   if (state.panesById && Object.prototype.hasOwnProperty.call(state.panesById, tabId)) return true;
@@ -1190,89 +1240,99 @@ function renderWorkspacePanes() {
   // target the live tree, not the pre-sweep snapshot.
   const settledRoot = paneRoot();
   syncTerminalTabsIntoTree(settledRoot);
-  // A maximized leaf renders alone: the tree is untouched and the next
-  // toggle restores the full layout. The flat single-pane path also keeps
-  // every existing caller that assumes one .workspace-pane working.
-  const maxLeaf = maximizedLeaf(settledRoot);
-  const root = maxLeaf || settledRoot;
-  // The rail only exists in maximize mode; a stale one from the last
-  // toggle must go before the split rebuilds the container.
-  if (!maxLeaf) {
-    [...container.children].forEach((child) => {
-      if (hasClass(child, "pane-strip-rail")) detachDomNode(child);
+  // Per-pass lookups (see panePassLookups above) exist only for the paint
+  // below: installed after the sweep and the sync settled the tree, and
+  // restored in the finally even when a mount call throws, so no caller
+  // outside this pass can read a stale memo.
+  const savedPassLookups = panePassLookups;
+  panePassLookups = buildPanePassLookups(settledRoot);
+  try {
+    // A maximized leaf renders alone: the tree is untouched and the next
+    // toggle restores the full layout. The flat single-pane path also keeps
+    // every existing caller that assumes one .workspace-pane working.
+    const maxLeaf = maximizedLeaf(settledRoot);
+    const root = maxLeaf || settledRoot;
+    // The rail only exists in maximize mode; a stale one from the last
+    // toggle must go before the split rebuilds the container.
+    if (!maxLeaf) {
+      [...container.children].forEach((child) => {
+        if (hasClass(child, "pane-strip-rail")) detachDomNode(child);
+      });
+    }
+    // Never innerHTML this container: #terminalShell (and the #tabs /
+    // #projectDashboard siblings app.html parks here) are live nodes the
+    // whole app resolves by id. Build the layout with createElement so those
+    // nodes stay attached, then move #terminalShell into its leaf below.
+    if (!maxLeaf && isPaneSplit(settledRoot)) {
+      reconcileSplitNode(container, settledRoot, splitNodeId(settledRoot));
+    } else {
+      // Single leaf: keep the Phase 3 flat contract (no wrapper element),
+      // so existing callers and probes that query .workspace-pane directly
+      // stay valid.
+      let pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
+      if (!pane) {
+        pane = document.createElement("div");
+        pane.className = "workspace-pane";
+        pane.dataset.paneId = root.paneId || "root";
+        const strip = document.createElement("div");
+        strip.className = "pane-tab-strip";
+        strip.setAttribute("role", "tablist");
+        strip.setAttribute("aria-label", "Pane tabs");
+        pane.appendChild(strip);
+        const content = document.createElement("div");
+        content.className = "pane-content";
+        pane.appendChild(content);
+        container.appendChild(pane);
+      }
+      renderLeafInto(pane, root);
+    }
+    // Splits removed from the tree (close promoting a sibling) leave stale
+    // layout nodes behind; drop them once the reconcile owns the container.
+    // Maximize uses the same sweep against the effective root: the parked
+    // split DOM goes (live surfaces rescue out first) and the next toggle
+    // rebuilds it from the tree, same as close-promote does.
+    cleanupAbandonedLayout(container, root);
+    // Maximize keeps the hidden siblings' strips reachable: one stub pane
+    // per non-maximized leaf under a rail, strips only. No content mount:
+    // the loop below runs on the effective root, so sibling surfaces keep
+    // their dispose-on-hide lifecycle until a rail click restores.
+    if (maxLeaf) renderPaneStripRail(container, settledRoot, maxLeaf);
+    // Every leaf mounts its active tab: strips render everywhere, and the
+    // terminal leaf mounts/parks the one #terminalShell surface. A leaf
+    // whose active tab is editor/git keeps its own module container (the
+    // owning module mounts it); mountPaneTabContent only decides where the
+    // terminal shell lives and which stale containers hide.
+    const auxTabs = [];
+    paneLeaves(root).forEach((leaf) => {
+      const pane = paneLeafElement(container, root, leaf);
+      if (pane) {
+        renderLeafInto(pane, leaf);
+        mountPaneTabContent(pane, leaf, auxTabs);
+      }
     });
+    // Non-owner terminal leaves own aux surfaces; a tab not still on
+    // screen (closed or promoted leaf, tab moved to the owner) parks its
+    // surface in the D8 cache (releaseStale also runs the cap eviction).
+    if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseStale(auxTabs);
+    // A reshape can drop the leaf hosting the empty-leaf card (split
+    // collapse, close-promote, maximize): rescue parks it home hidden, and
+    // only this sync decides whether the zero-tab state still warrants it.
+    // Without the call here a quiet zero-tab workspace has no event-driven
+    // refresh coming, so the card stayed parked and gone until some other
+    // action rendered. Same bare-function guard style as the callers in
+    // this file: standalone VM harnesses load this module without render.js.
+    if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
+    // Mirror the tree's active pointer onto the pane elements (focus ring).
+    if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.applyFocusClasses === "function")
+      window.HerdrPaneFocus.applyFocusClasses();
+    // The bar's pane controls act on the focused leaf, so every reshape
+    // (split, close, maximize, focus follow) must repaint them. The bar
+    // sync is signature-gated: a no-change reshape costs one string compare.
+    if (window.HerdrLocationBar && typeof window.HerdrLocationBar.sync === "function")
+      window.HerdrLocationBar.sync();
+  } finally {
+    panePassLookups = savedPassLookups;
   }
-  // Never innerHTML this container: #terminalShell (and the #tabs /
-  // #projectDashboard siblings app.html parks here) are live nodes the
-  // whole app resolves by id. Build the layout with createElement so those
-  // nodes stay attached, then move #terminalShell into its leaf below.
-  if (!maxLeaf && isPaneSplit(settledRoot)) {
-    reconcileSplitNode(container, settledRoot, splitNodeId(settledRoot));
-  } else {
-    // Single leaf: keep the Phase 3 flat contract (no wrapper element),
-    // so existing callers and probes that query .workspace-pane directly
-    // stay valid.
-    let pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
-    if (!pane) {
-      pane = document.createElement("div");
-      pane.className = "workspace-pane";
-      pane.dataset.paneId = root.paneId || "root";
-      const strip = document.createElement("div");
-      strip.className = "pane-tab-strip";
-      strip.setAttribute("role", "tablist");
-      strip.setAttribute("aria-label", "Pane tabs");
-      pane.appendChild(strip);
-      const content = document.createElement("div");
-      content.className = "pane-content";
-      pane.appendChild(content);
-      container.appendChild(pane);
-    }
-    renderLeafInto(pane, root);
-  }
-  // Splits removed from the tree (close promoting a sibling) leave stale
-  // layout nodes behind; drop them once the reconcile owns the container.
-  // Maximize uses the same sweep against the effective root: the parked
-  // split DOM goes (live surfaces rescue out first) and the next toggle
-  // rebuilds it from the tree, same as close-promote does.
-  cleanupAbandonedLayout(container, root);
-  // Maximize keeps the hidden siblings' strips reachable: one stub pane
-  // per non-maximized leaf under a rail, strips only. No content mount:
-  // the loop below runs on the effective root, so sibling surfaces keep
-  // their dispose-on-hide lifecycle until a rail click restores.
-  if (maxLeaf) renderPaneStripRail(container, settledRoot, maxLeaf);
-  // Every leaf mounts its active tab: strips render everywhere, and the
-  // terminal leaf mounts/parks the one #terminalShell surface. A leaf
-  // whose active tab is editor/git keeps its own module container (the
-  // owning module mounts it); mountPaneTabContent only decides where the
-  // terminal shell lives and which stale containers hide.
-  const auxTabs = [];
-  paneLeaves(root).forEach((leaf) => {
-    const pane = paneLeafElement(container, root, leaf);
-    if (pane) {
-      renderLeafInto(pane, leaf);
-      mountPaneTabContent(pane, leaf, auxTabs);
-    }
-  });
-  // Non-owner terminal leaves own aux surfaces; a tab not still on
-  // screen (closed or promoted leaf, tab moved to the owner) parks its
-  // surface in the D8 cache (releaseStale also runs the cap eviction).
-  if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseStale(auxTabs);
-  // A reshape can drop the leaf hosting the empty-leaf card (split
-  // collapse, close-promote, maximize): rescue parks it home hidden, and
-  // only this sync decides whether the zero-tab state still warrants it.
-  // Without the call here a quiet zero-tab workspace has no event-driven
-  // refresh coming, so the card stayed parked and gone until some other
-  // action rendered. Same bare-function guard style as the callers in
-  // this file: standalone VM harnesses load this module without render.js.
-  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
-  // Mirror the tree's active pointer onto the pane elements (focus ring).
-  if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.applyFocusClasses === "function")
-    window.HerdrPaneFocus.applyFocusClasses();
-  // The bar's pane controls act on the focused leaf, so every reshape
-  // (split, close, maximize, focus follow) must repaint them. The bar
-  // sync is signature-gated: a no-change reshape costs one string compare.
-  if (window.HerdrLocationBar && typeof window.HerdrLocationBar.sync === "function")
-    window.HerdrLocationBar.sync();
 }
 
 function paneLeafElement(container, root, leaf) {
@@ -1301,8 +1361,16 @@ function leafWorkspaceIds(leaf) {
 // workspace id (D4: the badge hides entirely on single-workspace trees,
 // including empty ones).
 function treeIsMixed() {
+  // Pass memo: precomputed at install time against the settled root (the
+  // paint never mutates the tree between settle and finish), so badge and
+  // prefix reads skip the leaf walk per strip tab.
+  if (panePassLookups) return panePassLookups.treeMixed;
+  return treeIsMixedFor(paneRootFor());
+}
+
+function treeIsMixedFor(root) {
   const seen = new Set();
-  for (const leaf of paneLeaves(paneRootFor())) {
+  for (const leaf of paneLeaves(root)) {
     for (const id of leafWorkspaceIds(leaf)) {
       seen.add(id);
       if (seen.size > 1) return true;
@@ -3396,6 +3464,13 @@ function paneTabStatusHtml(tab) {
 
 function tabHoverTitle(tab) {
   try {
+    // Pass memo: the pane map builds once per paint on the first hover
+    // read (strip tabs each carry a title attribute), and out-of-pass
+    // callers keep computing it fresh exactly as before.
+    if (panePassLookups) {
+      if (!panePassLookups.panesByTab) panePassLookups.panesByTab = panesByTabIndex();
+      return tabHoverInfo(tab, panePassLookups.panesByTab);
+    }
     return tabHoverInfo(tab, panesByTabIndex());
   } catch (_) {
     return tabTitle(tab);

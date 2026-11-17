@@ -19,7 +19,6 @@ function render() {
       if (row && typeof row === "object" && !tabById[id]) tabById[id] = row;
     }
   }
-  const panesByTab = panesByTabIndex();
   let tabCountsByWorkspace = null;
   if (state.workspaceCounts) {
     tabCountsByWorkspace = new Map(
