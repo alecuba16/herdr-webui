@@ -273,14 +273,18 @@ function groupForLeaf(root, leaf) {
 
 // Members resolve through ids, never stored refs: persistence hands
 // back JSON twins and a dissolved group must answer empty.
-function groupMembers(group) {
-  const entry = panesStateFor();
+function groupMembers(group, entry) {
+  // The entry is EXPLICIT on the load path: during loadWorkspacePanesStates
+  // the loaded entry is not yet installed, so the panesStateFor() default
+  // would lazily mint the boot entry and every group would resolve 0
+  // members (the visible group pointer would heal to a panel).
+  const resolved = entry || panesStateFor();
   const ids = (group && Array.isArray(group.memberIds) ? group.memberIds : []).slice();
-  return ids.map((id) => entry.panels.find((p) => p.paneId === id)).filter(Boolean);
+  return ids.map((id) => resolved.panels.find((p) => p.paneId === id)).filter(Boolean);
 }
 
-function groupMemberCount(group) {
-  return groupMembers(group).length;
+function groupMemberCount(group, entry) {
+  return groupMembers(group, entry).length;
 }
 
 function groupDefaultName(group) {
@@ -294,8 +298,8 @@ function groupVisibleName(group) {
 // The leaf holding a paneId inside a group layout tree (children are
 // paneIds or nested nodes).
 function layoutHoldsPaneId(node, paneId) {
+  if (typeof node === "string") return node === paneId;
   if (!node || typeof node !== "object") return false;
-  if (node === paneId) return true;
   if (Array.isArray(node.children)) return node.children.some((c) => layoutHoldsPaneId(c, paneId));
   return false;
 }
@@ -307,8 +311,10 @@ function visibleSubject(entry) {
   if (!entry || !Array.isArray(entry.panels) || !entry.panels.length) return null;
   const vis = entry.visible;
   if (vis && vis.type === "group") {
+    // Pass THIS entry: the member count must resolve against the entry
+    // being read, not the lazily-minted store default (load path).
     const group = groupById(entry, vis.id);
-    if (group && groupMemberCount(group) >= 2) return { kind: "group", group };
+    if (group && groupMemberCount(group, entry) >= 2) return { kind: "group", group };
   }
   const panel = (vis && vis.type === "panel" && entry.panels.find((p) => p.paneId === vis.id)) || entry.panels.find((p) => !p.groupId) || entry.panels[0];
   return { kind: "panel", leaf: panel };
@@ -523,8 +529,11 @@ function normalizePanelLeaf(leaf) {
 // children count, split ids re-registered, paneId children kept as
 // strings, nested nodes recursed. Returns the node or null.
 function normalizeLayoutNode(node) {
-  if (!node || typeof node !== "object") return null;
+  // paneId strings are layout leaves: the string branch MUST precede
+  // the object guard, or every stored leaf child drops out of the tree
+  // on load and the layout collapses to a flat member array.
   if (typeof node === "string") return node;
+  if (!node || typeof node !== "object") return null;
   if (!Array.isArray(node.children)) return null;
   node.children = node.children.map(normalizeLayoutNode).filter(Boolean);
   if (node.children.length < 2) return node.children[0] || null;
@@ -558,7 +567,10 @@ function normalizeGroupRecord(group, entry) {
   group.memberIds = memberIds;
   if (group.name != null && typeof group.name !== "string") group.name = null;
   group.layout = normalizeLayoutNode(group.layout);
-  if (!group.layout || typeof group.layout === "string") group.layout = memberIds.slice(0, 2);
+  // A degraded layout rebuilds FLAT from all memberIds (never the
+  // first two: a 3+ member group would lose members from the layout
+  // and render misses them).
+  if (!group.layout || typeof group.layout === "string") group.layout = memberIds.slice();
   // Every member must appear in the layout; a stale layout rebuilds
   // flat from memberIds (geometry is cheap, membership is not).
   const missing = memberIds.filter((id) => !layoutHoldsPaneId(group.layout, id));
