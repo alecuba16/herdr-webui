@@ -580,6 +580,9 @@ function pruneWorkspaceTabsFromPanes(workspaceId) {
         leaf.tabs = [];
         leaf.active = null;
         leaf.wsId = null;
+        // Wipe any decay stamp with the tabs: a pre from before the close
+        // must not fire on whatever the adoption pass lands next.
+        leaf.autoClosePre = null;
         armLeafAutoClose(leaf);
       }
       changed = true;
@@ -921,6 +924,8 @@ function syncTerminalTabsIntoTree(root) {
       const was = leaf.tabs;
       const kept = was.filter((id) => isEditorTab(id) || isGitTab(id) || terminalTabKnown(id));
       if (kept.length !== was.length) {
+        // Decay fold stamp before the prune rewrites the leaf's labels.
+        leaf.autoClosePre = autoClosePreStateFor(liveRoot, leaf);
         leaf.tabs = kept;
         // v3.2: arm only when a REAL id dropped. The terminal
         // placeholder is the strip binding every minted leaf carries and
@@ -1431,32 +1436,48 @@ function paneGroupVisibleMembers(group) {
   return members.filter((leaf) => leaf.paneId === entry.maximizedPaneId);
 }
 
+// Split-out views inside a split: leaves holding exactly ONE terminal
+// label. The collector itself (multiple labels) is not a view; the
+// group chip counts these, and the group rule turns on them.
+function paneGroupVisibleViews(group) {
+  return paneLeaves(group).filter((leaf) => leafTerminalLabelCount(leaf) === 1);
+}
+
 function paneGroupChipHtml(root, group) {
   const members = paneGroupVisibleMembers(group);
+  const views = paneGroupVisibleViews(group);
   const focusedMember = (group && group.kind !== "pane" && group.activePaneId
     && paneForPaneId(root, group.activePaneId)) || (members.find((leaf) => leaf === activeLeaf(root)) || members[0]);
   if (!focusedMember) return "";
-  const label = `▣ ${members.length}`;
-  const title = `Panel group (${members.length} panels)`;
+  const label = `▣ ${views.length}`;
+  const title = `Panel group (${views.length} views)`;
   const encodedFocus = focusedMember.paneId ? encodeURIComponent(focusedMember.paneId) : "";
   return `<button class="pane-panel-chip pane-panel-group-chip" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-pane-id="${escapeAttr(focusedMember.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedFocus)}')">${escapeHtml(label)}</button>`;
 }
 
-// The split whose view area groups a leaf: the top-level subtree
-// holding it when that subtree is a split with 2+ leaves, the FLAT
-// root itself (every root child a leaf, so the root split's view area
-// is one group counting every panel), else null. Both paths demand a
-// real fan-out: paneSplitIsGroup below. Mixed roots keep
-// the doc model: direct leaves stay standalone, subtree members group
-// as before. Derived, never stored: the tree already expresses
-// membership and a stored flag would drift on every reshape.
-function paneGroupForLeaf(root, leaf) {
+// The STRUCTURAL split whose view area holds a leaf, with no group
+// validity check: the flat root when every root child is a leaf (and
+// the leaf is one of them), else the top-level split child containing
+// the leaf, else null. The decay fold reasons about this split after a
+// move emptied the fan-out (the group checks would reject it by
+// then); paneGroupForLeaf layers the validity on top for renders.
+function paneGroupSplitForLeaf(root, leaf) {
   if (!root || !leaf || !isPaneSplit(root)) return null;
   if (root.children.every((child) => child && child.kind === "pane")) {
-    return root.children.includes(leaf) && paneSplitIsGroup(root) ? root : null;
+    return root.children.includes(leaf) ? root : null;
   }
-  const holder = root.children.find((child) => isPaneSplit(child) && paneLeaves(child).includes(leaf));
-  return holder && paneLeaves(holder).length >= 2 && paneSplitIsGroup(holder) ? holder : null;
+  return root.children.find((child) => isPaneSplit(child) && paneLeaves(child).includes(leaf)) || null;
+}
+
+// The split whose view area groups a leaf: the structural split from
+// paneGroupSplitForLeaf, kept only while it is a real group
+// (paneSplitIsGroup below: 2+ views, at most one label stack). Mixed
+// roots keep the doc model: direct leaves stay standalone, subtree
+// members group as before. Derived, never stored: the tree already
+// expresses membership and a stored flag would drift on every reshape.
+function paneGroupForLeaf(root, leaf) {
+  const split = paneGroupSplitForLeaf(root, leaf);
+  return split && paneSplitIsGroup(split) ? split : null;
 }
 
 // Terminal labels stacked in one strip. Editor and git tabs ride on
@@ -1466,12 +1487,31 @@ function leafTerminalLabelCount(leaf) {
   return (leaf.tabs || []).filter((id) => !isEditorTab(id) && !isGitTab(id) && id !== TERMINAL_TAB_PLACEHOLDER).length;
 }
 
-// A split is a group only while the fan-out is real: at most ONE leaf
-// stacks labels, the collector the split views came from. Two stacks
-// are collectors side by side, nothing is visibly fanned out, every
-// panel renders standalone instead.
+// A split is a group only while the fan-out is real: 2+ split-out
+// views (single-label leaves) and at most ONE member stacking labels,
+// the collector the views came from. Two stacks are collectors side
+// by side, and a lone view is the collector back together: neither
+// fans anything out, every panel renders standalone instead.
 function paneSplitIsGroup(split) {
+  if (paneGroupVisibleViews(split).length < 2) return false;
   return paneLeaves(split).filter((leaf) => leafTerminalLabelCount(leaf) > 1).length <= 1;
+}
+
+// The group shape a view leaves behind, stamped BEFORE the gesture
+// empties or drops it: the collector's id plus the view's workspace,
+// or null when the leaf is not a single-label view inside a valid
+// group (collector sources and standalone panels never fold). The
+// decay fold reads this after the mutation: the source is empty or
+// gone by then, and re-resolving its split post-reshape could name a
+// region the leaf already left. Ids, not leaf refs: the stamp rides
+// the leaf through saveWorkspacePanesStates, and a persisted ref
+// would come back a stale JSON twin.
+function autoClosePreStateFor(root, leaf) {
+  if (!leaf) return null;
+  const split = paneGroupSplitForLeaf(root, leaf);
+  if (!split || !paneSplitIsGroup(split) || !paneGroupVisibleViews(split).includes(leaf)) return null;
+  const collector = paneLeaves(split).find((l) => leafTerminalLabelCount(l) > 1) || null;
+  return collector ? { collectorId: collector.paneId || null, wsId: leafWorkspaceId(leaf) || null } : null;
 }
 
 function panePanelChipHtml(leaf) {
@@ -2477,6 +2517,9 @@ function paneContainerTabDrop(event) {
   // it. The move itself is pure tree surgery (movePaneTabTo touches no
   // marker), and skipRender hands this handler the single paint.
   const splitGesture = source === targetLeaf;
+  // Decay fold stamp, cross-pane moves only: an own-pane drop disarms
+  // below and never folds.
+  if (!splitGesture) source.autoClosePre = autoClosePreStateFor(paneRootFor(), source);
   if (movePaneTabTo(tabId, fresh.paneId, null, { skipRender: true })) {
     focusLeaf(paneRootFor(), fresh);
     if (splitGesture) disarmLeafAutoClose(source);
@@ -2581,6 +2624,9 @@ function paneStripDrop(event) {
     movePaneTabTo(tabId, paneId, dropIndex);
     return;
   }
+  // Decay fold stamp: the group shape before the move empties the
+  // view; the sweep's fold reads it in the render below.
+  source.autoClosePre = autoClosePreStateFor(rootBeforeMove, source);
   if (movePaneTabTo(tabId, paneId, dropIndex, { skipRender: true })) {
     armLeafAutoClose(source);
     renderWorkspacePanes();
@@ -2952,7 +2998,17 @@ async function closeActivePane() {
   // Migration only inside the same workspace: a panel's tabs must not
   // leak into another workspace's panel. The nearest same-ws leaf in
   // tree order takes them; cross-ws neighbors are skipped.
-  const migration = paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId) || null;
+  // Decay fold stamp: the group shape this panel leaves behind. The
+  // leaf drops out of the tree below, so its split cannot be resolved
+  // after the drop; the fold reads the stamp instead.
+  const pre = autoClosePreStateFor(root, leaf);
+  let migration = paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId) || null;
+  // A view closing out of a group hands its labels to the collector,
+  // not to whatever same-ws leaf tree order found first; the fold below
+  // then merges the last view the same way.
+  if (pre && pre.collectorId
+    && leafWorkspaceId(paneForPaneId(root, pre.collectorId)) === wsId)
+    migration = paneForPaneId(root, pre.collectorId);
   const liveRouteTab = state.tab != null ? String(state.tab) : null;
   if (migration) {
     for (const tabId of [...leaf.tabs])
@@ -2972,6 +3028,9 @@ async function closeActivePane() {
   // survivor focused and renders.
   const lastOfWs = !!wsId && !paneLeaves(root).some((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId);
   if (!dropLeafFromTree(leaf)) return false;
+  // Decay fold: closing a view may drop its group to one view; fold
+  // that survivor home before the single paint below covers both.
+  foldLoneViewIntoCollector(pre);
   // dropLeafFromTree never renders (the sync's ws sweep calls it
   // mid-pass; a render there would re-enter renderWorkspacePanes ->
   // sync). The explicit close owns the render + remount of the healed
@@ -3145,6 +3204,49 @@ function disarmLeafAutoClose(leaf) {
   if (leaf) leaf.autoCloseArmed = false;
 }
 
+// Fold mechanics: the lone view's tabs append into the collector
+// (deduped, same contract as a close migration), its panel drops, and
+// focus lands on the collector. The collector's active tab keeps
+// priority; a folded label rides as a strip tab, not the shown one.
+// Save sits after the drop: a failed drop must not persist the merged
+// tabs while the panel still stands.
+function foldLeafIntoCollector(view, collector) {
+  for (const tabId of [...view.tabs])
+    if (!collector.tabs.includes(tabId)) collector.tabs.push(tabId);
+  disarmLeafAutoClose(collector);
+  if (!collector.active) collector.active = view.active || collector.tabs[0] || null;
+  const dropped = dropLeafFromTree(view);
+  if (!dropped) return false;
+  saveWorkspacePanesStates();
+  focusLeaf(paneRootFor(), collector);
+  return true;
+}
+
+// The decay fold: a group down to its last view folds that view back
+// into the collector, so the fan-out never strands one split view
+// beside the stack it came from. The stamped pre tells who left (a
+// view, out of a group, with a same-ws collector); the CURRENT split
+// around that collector decides whether the fold fires now, so two
+// views emptied by one batch gesture stay (the surviving collector
+// split still counts 2 views) and a stale pre cannot fire on a
+// freshly placed view.
+function foldLoneViewIntoCollector(pre) {
+  if (!pre || !pre.collectorId) return false;
+  const root = paneRootFor();
+  const collector = paneForPaneId(root, pre.collectorId);
+  if (!collector || leafTerminalLabelCount(collector) <= 1) return false;
+  if (leafWorkspaceId(collector) !== (pre.wsId || null)) return false;
+  const split = paneGroupSplitForLeaf(root, collector);
+  if (!split) return false;
+  const views = paneGroupVisibleViews(split);
+  if (views.length !== 1) return false;
+  const loneView = views[0];
+  if (loneView === collector) return false;
+  if (leafTerminalLabelCount(loneView) !== 1) return false;
+  if (leafWorkspaceId(loneView) !== leafWorkspaceId(collector)) return false;
+  return foldLeafIntoCollector(loneView, collector);
+}
+
 function sweepAbandonedEmptyLeaves() {
   // Focus capture: the tree's focused leaf at sweep entry keeps immunity
   // for the WHOLE loop. collapseEmptyLeafInTree reassigns focus to the
@@ -3160,6 +3262,17 @@ function sweepAbandonedEmptyLeaves() {
   const protectedId = (protectedLeaf || {}).paneId || null;
   let guard = 16;
   let changed = false;
+  // Decay fold first: an armed empty view took its label out of a
+  // group; when exactly one view survives there, it folds home and
+  // its panel drops in this same sweep, before the armed source
+  // itself collapses below. Each stamp is one-shot: consumed here, or
+  // the pre stays stale for the next sweep to misfire on.
+  for (const leaf of paneLeaves(paneRootFor())) {
+    if (!leaf.autoCloseArmed || leaf.tabs.length || !leaf.autoClosePre) continue;
+    const pre = leaf.autoClosePre;
+    leaf.autoClosePre = null;
+    if (foldLoneViewIntoCollector(pre)) changed = true;
+  }
   while (guard-- > 0) {
     const root = paneRootFor();
     if (!isPaneSplit(root)) break;
@@ -3192,6 +3305,8 @@ function sweepAbandonedEmptyLeaves() {
 function removeTabFromLeaf(leaf, tabId, neighborHeal) {
   const at = leaf.tabs.indexOf(tabId);
   if (at < 0) return false;
+  // Decay fold stamp before the splice changes the leaf's label count.
+  leaf.autoClosePre = autoClosePreStateFor(paneRootFor(), leaf);
   leaf.tabs.splice(at, 1);
   if (neighborHeal) leaf.active = leaf.tabs[at] || leaf.tabs[at - 1] || leaf.tabs[0] || null;
   else if (leaf.active === tabId) leaf.active = leaf.tabs[0] || null;

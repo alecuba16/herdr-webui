@@ -242,8 +242,9 @@ test("flat root split renders one group chip counting every panel", () => {
 });
 
 // Fan-out rule fixtures: flat roots whose panels stack the given
-// terminal-label counts. [3, 1] is a collector plus one split view,
-// [2, 2] is two collectors side by side.
+// terminal-label counts. [3, 1] is a collector plus one split view (no
+// group: one view is the collector back together), [3, 1, 1] adds the
+// second view a group needs, [2, 2] is two collectors side by side.
 function bootFlatLeavesWithCounts(ctx, counts) {
   const panes = ctx.HerdrWorkspacePanes;
   const entry = panes.panesStateFor();
@@ -271,19 +272,35 @@ function bootFlatLeavesWithCounts(ctx, counts) {
   return leaves;
 }
 
-test("collector plus one split view stays grouped", () => {
+test("collector plus one split view renders ungrouped: no fan-out to count", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const leaves = bootFlatLeavesWithCounts(ctx, [3, 1]);
   const panes = ctx.HerdrWorkspacePanes;
   panes.focusPanelFor(leaves[1].paneId);
   panes.renderWorkspacePanes();
+  for (const leaf of leaves) {
+    const html = chipHtmlFor(ctx, leaf);
+    assert.ok(html.includes("pane-panel-chip"), "standalone chip renders");
+    assert.ok(!html.includes("pane-panel-group-chip"), "a lone view beside its collector is not a group");
+  }
+});
+
+test("collector plus two split views stays grouped, chip counts the views", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const leaves = bootFlatLeavesWithCounts(ctx, [3, 1, 1]);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.focusPanelFor(leaves[1].paneId);
+  panes.renderWorkspacePanes();
   const viewHtml = chipHtmlFor(ctx, leaves[1]);
   assert.ok(viewHtml.includes("pane-panel-group-chip"), "focused split view carries the group chip");
-  assert.ok(viewHtml.includes("\u25A3 2"), "group counts the collector and the view");
+  assert.ok(viewHtml.includes("\u25A3 2"), "chip counts the two views, not the collector");
   const collectorHtml = chipHtmlFor(ctx, leaves[0]);
   assert.ok(collectorHtml.includes("pane-panel-chip"), "collector chip renders");
   assert.ok(!collectorHtml.includes("pane-panel-group-chip"), "non-focused collector keeps a standalone chip");
+  const otherViewHtml = chipHtmlFor(ctx, leaves[2]);
+  assert.ok(!otherViewHtml.includes("pane-panel-group-chip"), "non-focused view keeps a standalone chip");
 });
 
 test("two label stacks render ungrouped, no group chip anywhere", () => {
@@ -457,15 +474,79 @@ test("label strip-drop out of a group ungroups it beside the group", () => {
   assert.equal(holder.paneId, "sx", "label landed in the standalone panel");
   assert.ok(!leavesAfter.some((leaf) => leaf.paneId === "gb"), "emptied group member folded");
   // The group split died with its last member: the tree is a flat row
-  // again, the root group re-counts every panel.
+  // again. The drop stacked the target to 2 labels, so the root holds
+  // one view beside one stack: no group, every chip standalone.
   assert.equal(root.kind, "row", "root stays a row");
   const order = flatChildrenOrder(root, panes);
   assert.deepEqual(order, ["ga", "sx"], "survivors stand as flat root panels");
-  const survivorChip = chipHtmlFor(ctx, leavesAfter.find((leaf) => leaf.paneId === "ga"));
-  assert.ok(!survivorChip.includes("pane-panel-group-chip"), "non-focused survivor keeps a standalone chip");
-  const focusedChip = chipHtmlFor(ctx, leavesAfter.find((leaf) => leaf.paneId === "sx"));
-  assert.ok(focusedChip.includes("pane-panel-group-chip"), "focused survivor carries the flat root group chip");
-  assert.ok(focusedChip.includes("\u25A3 2"), "group chip counts the reshaped root's panels");
+  for (const paneId of ["ga", "sx"]) {
+    const html = chipHtmlFor(ctx, leavesAfter.find((leaf) => leaf.paneId === paneId));
+    assert.ok(html.includes("pane-panel-chip"), "standalone chip renders");
+    assert.ok(!html.includes("pane-panel-group-chip"), "one view beside one stack is not a group");
+  }
+});
+
+test("dragging a view's label home folds the last view into the collector", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const collector = { kind: "pane", paneId: "ga", tabs: ["tab_1", "tab_2"], active: "tab_1", wsId: "ws-1" };
+  const viewA = { kind: "pane", paneId: "gb", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const viewB = { kind: "pane", paneId: "gc", tabs: ["tab_4"], active: "tab_4", wsId: "ws-1" };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [collector, viewA, viewB] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_4"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  panes.focusPanelFor("gb");
+  panes.renderWorkspacePanes();
+  assert.ok(chipHtmlFor(ctx, viewA).includes("\u25A3 2"), "group chip counts both views before the decay");
+  // Drag gc's label onto the collector's strip: the real gesture stamps
+  // the pre-state, and the drop's own render folds the last view home.
+  const paneEl = findPaneEl(document, "ga");
+  assert.ok(paneEl, "collector pane rendered");
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_4" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneStripDrop({ target: { closest: (selector) => (selector === ".workspace-pane" ? paneEl : null) }, preventDefault() {} });
+  const root = panes.paneRoot();
+  const leavesAfter = panes.paneLeaves(root);
+  assert.equal(leavesAfter.length, 1, "decayed group collapsed to the collector panel");
+  assert.equal(root.kind, "pane", "single-panel tree keeps the flat leaf contract");
+  assert.equal(leavesAfter[0].paneId, "ga", "the collector survives");
+  const tabs = [...leavesAfter[0].tabs];
+  assert.ok(tabs.includes("tab_3"), "the last view's label folded into the collector");
+  assert.ok(tabs.includes("tab_4"), "the dragged label landed in the collector");
+  assert.equal(panes.activePane().paneId, "ga", "focus lands on the collector");
+});
+
+test("closing a view out of a decaying group folds the last view into the collector", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  // Tree order puts the surviving view FIRST: without the close-path
+  // redirect the closed view's label would migrate to that sibling,
+  // stacking it to a second collector, and the group would die with
+  // zero views (no fold, tree stays two collectors). The redirect
+  // hands the label to the collector, so the fold collapses all the
+  // way to one panel here.
+  const viewA = { kind: "pane", paneId: "gb", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const collector = { kind: "pane", paneId: "ga", tabs: ["tab_1", "tab_2"], active: "tab_1", wsId: "ws-1" };
+  const viewB = { kind: "pane", paneId: "gc", tabs: ["tab_4"], active: "tab_4", wsId: "ws-1" };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [viewA, collector, viewB] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_4"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  assert.equal(await panes.closePaneFor("gc"), true, "close accepted");
+  const root = panes.paneRoot();
+  const leavesAfter = panes.paneLeaves(root);
+  assert.equal(leavesAfter.length, 1, "the group folded into a single collector panel");
+  assert.equal(root.kind, "pane", "single-panel tree keeps the flat leaf contract");
+  assert.equal(leavesAfter[0].paneId, "ga", "the collector survives");
+  const tabs = [...leavesAfter[0].tabs];
+  assert.ok(tabs.includes("tab_3") && tabs.includes("tab_4"), "both views' labels folded into the collector");
+  assert.equal(panes.activePane().paneId, "ga", "focus lands on the collector");
 });
 
 function flatChildrenOrder(root, panes) {
