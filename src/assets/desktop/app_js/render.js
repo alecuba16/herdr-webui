@@ -114,6 +114,14 @@ function render() {
     if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   }
   if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+  // A group chip rename in flight must survive this repaint: the panes
+  // container rebuilds below, and an unguarded repaint would drop the
+  // focused input mid-keystroke. The guard mirrors the workspace/tab
+  // rename family above (editing state + live input check).
+  if (document.querySelector(".pane-group-rename-input")) {
+    const input = document.querySelector(".pane-group-rename-input");
+    if (input && document.activeElement !== input) input.focus();
+  }
   // Click-to-focus wiring is idempotent; the render pass is the reliable
   // first moment #workspacePanes exists with panes inside.
   if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.wire === "function")

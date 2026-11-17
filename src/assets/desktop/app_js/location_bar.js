@@ -886,6 +886,42 @@
         if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
       });
     }
+    // Pane-tab unsplit drop target (PAIINF-1243): the bar itself is the
+    // remove affordance while a herdr-pane-tab drag is in flight. The
+    // drag handlers live in workspace_panes.js (paneTabUnsplitHover/
+    // paneTabUnsplitDrop own the qualification and the tree surgery);
+    // this wiring only paints/clears the bar indicator class and hands
+    // the drop over. dragleave clears only when the pointer truly left
+    // the bar (child-to-child hops inside the bar fire dragleave too).
+    // barEl, NOT bar: the closure's `bar` is the popover state object
+    // the keydown handler reads above.
+    const barEl = barNode();
+    if (barEl && barEl.addEventListener) {
+      barEl.addEventListener("dragover", (event) => {
+        const panes = window.HerdrWorkspacePanes;
+        if (!panes || typeof panes.paneTabUnsplitHover !== "function") return;
+        if (!panes.paneTabUnsplitHover(event)) return;
+        if (event.preventDefault) event.preventDefault();
+        if (event.dataTransfer && "dropEffect" in event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        if (barEl.classList && barEl.classList.add) barEl.classList.add("location-bar-pane-remove");
+      });
+      barEl.addEventListener("dragleave", (event) => {
+        const related = event.relatedTarget;
+        if (related && barEl.contains && barEl.contains(related)) return;
+        if (barEl.classList && barEl.classList.remove) barEl.classList.remove("location-bar-pane-remove");
+      });
+      barEl.addEventListener("drop", (event) => {
+        const panes = window.HerdrWorkspacePanes;
+        if (!panes || typeof panes.paneTabUnsplitDrop !== "function") {
+          if (barEl.classList && barEl.classList.remove) barEl.classList.remove("location-bar-pane-remove");
+          return;
+        }
+        if (panes.paneTabUnsplitDrop(event)) {
+          if (event.preventDefault) event.preventDefault();
+        }
+        if (barEl.classList && barEl.classList.remove) barEl.classList.remove("location-bar-pane-remove");
+      });
+    }
   }
 
   // The bar reuses the drawer's chip classes, but git-ui.css lazy-loads

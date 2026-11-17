@@ -231,7 +231,7 @@ test("flat root split renders one group chip counting every panel", () => {
   panes.renderWorkspacePanes();
   const activeHtml = chipHtmlFor(ctx, leaves[2]);
   assert.ok(activeHtml.includes("pane-panel-group-chip"), "focused leaf carries the root group chip");
-  assert.ok(activeHtml.includes("\u25A3 3"), "group chip counts every root panel");
+  assert.ok(activeHtml.includes("Group 3 panels"), "group chip counts every root panel");
   assert.ok(activeHtml.includes(`data-pane-id="${leaves[2].paneId}"`), "chip names the focused panel");
   for (const leaf of [leaves[0], leaves[1]]) {
     const html = chipHtmlFor(ctx, leaf);
@@ -295,7 +295,7 @@ test("collector plus two split views stays grouped, chip counts the views", () =
   panes.renderWorkspacePanes();
   const viewHtml = chipHtmlFor(ctx, leaves[1]);
   assert.ok(viewHtml.includes("pane-panel-group-chip"), "focused split view carries the group chip");
-  assert.ok(viewHtml.includes("\u25A3 2"), "chip counts the two views, not the collector");
+  assert.ok(viewHtml.includes("Group 2 panels"), "chip counts the two views, not the collector");
   const collectorHtml = chipHtmlFor(ctx, leaves[0]);
   assert.ok(collectorHtml.includes("pane-panel-chip"), "collector chip renders");
   assert.ok(!collectorHtml.includes("pane-panel-group-chip"), "non-focused collector keeps a standalone chip");
@@ -384,7 +384,7 @@ test("group subtree renders the group chip on the focused member and member chip
   panes2.renderWorkspacePanes();
   const focusedHtml = chipHtmlFor(ctx, leaves[0]);
   assert.ok(focusedHtml.includes("pane-panel-group-chip"), "focused member shows the group chip");
-  assert.ok(focusedHtml.includes("▣ 2"), "group chip counts its members");
+  assert.ok(focusedHtml.includes("Group 2 panels"), "group chip counts its members");
   const memberHtml = chipHtmlFor(ctx, leaves[1]);
   assert.ok(!memberHtml.includes("pane-panel-group-chip"), "other member keeps a standalone chip");
   assert.ok(memberHtml.includes("pane-panel-chip"), "member chip renders for drag-out");
@@ -501,7 +501,7 @@ test("dragging a view's label home folds the last view into the collector", () =
   panes.renderWorkspacePanes();
   panes.focusPanelFor("gb");
   panes.renderWorkspacePanes();
-  assert.ok(chipHtmlFor(ctx, viewA).includes("\u25A3 2"), "group chip counts both views before the decay");
+  assert.ok(chipHtmlFor(ctx, viewA).includes("Group 2 panels"), "group chip counts both views before the decay");
   // Drag gc's label onto the collector's strip: the real gesture stamps
   // the pre-state, and the drop's own render folds the last view home.
   const paneEl = findPaneEl(document, "ga");
@@ -680,12 +680,17 @@ test("tab drop on a single-panel tree splits that panel instead of refusing", ()
     preventDefault() {},
   });
   const leavesAfter = panes.paneLeaves(panes.paneRoot());
-  // v3.2: single-panel own-pane drop is the split gesture too: the
-  // fresh half holds the tab and the emptied original half stands.
-  assert.equal(leavesAfter.length, 2, "single-panel drop split the tree");
+  // Redo fan-out contract: the first tab drop outside any group mints
+  // the dragged view PLUS one marked empty slot, and the emptied source
+  // takes the collector mark (a 1-label dock never miscounts as a view).
+  assert.equal(leavesAfter.length, 3, "single-panel drop split the tree into view + slot + collector");
   const holder = leavesAfter.find((l) => l.tabs.includes("tab_1"));
   assert.ok(holder, "dragged tab lives in the fresh half");
   assert.notEqual(holder.paneId, leaf.paneId, "the tab moved to the new half panel");
+  const slot = leavesAfter.find((l) => l !== holder && l !== leaf);
+  assert.ok(slot, "the minted slot stands beside the fresh view");
+  assert.equal(slot.groupSlot, true, "slot carries the groupSlot mark");
+  assert.equal(leaf.groupCollector, true, "emptied source is the marked collector");
 });
 
 test("dragenter positions the preview square so fast releases still drop", () => {
@@ -957,8 +962,13 @@ test("dwell lock forces the nest landing in the would-extend case", () => {
   assert.ok(targetSlot, "target pane nested in its own split");
   assert.equal(targetSlot.kind, "row", "left corner nests a row split inside the target");
   const nested = panes.paneLeaves(targetSlot);
-  assert.equal(nested.length, 2, "nested split pairs the target with the fresh half");
-  assert.equal(nested[1].paneId, leaves[0].paneId, "original target keeps its slot inside the nest");
+  // Redo fan-out contract: the nest landing outside any existing group
+  // mints the fresh view plus one marked slot inside the same nest,
+  // both ahead of the original target (first:true, then the extend).
+  assert.equal(nested.length, 3, "nested split holds target, fresh view, and the minted slot");
+  assert.equal(nested[2].paneId, leaves[0].paneId, "original target keeps its slot inside the nest");
+  const slotLeaf = nested.find((l) => l.groupSlot === true);
+  assert.ok(slotLeaf, "the minted slot stands beside the fresh view");
   assert.equal(root.children.length, 2, "root keeps the untouched sibling beside the nested split");
   const allLeaves = panes.paneLeaves(root);
   const holder = allLeaves.find((leaf) => leaf.tabs.includes(draggedTab));
@@ -1008,4 +1018,216 @@ test("quick corner drop without dwell keeps the extend landing", () => {
   assert.ok(holder, "dragged tab lives in the tree");
   assert.equal(order[0], holder.paneId, "the fresh panel took the leading root slot");
   assert.notEqual(holder.paneId, leaves[2].paneId, "the tab left its original panel");
+});
+
+// ---- PAIINF-1243 redo: slot populate, unified collapse, bar unsplit ----
+
+// First drop outside any group mints view + slot; a SECOND drop straight
+// onto the slot populates it: the tab lands in the slot leaf, the mark
+// clears, no extra split happens.
+test("second drop onto the minted slot populates it instead of splitting", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  // Collector with two labels plus the minted fan-out beside it.
+  const collector = { kind: "pane", paneId: "ca", tabs: ["tab_1", "tab_2", "tab_5"], active: "tab_1", wsId: "ws-1", groupCollector: true };
+  const viewA = { kind: "pane", paneId: "cb", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const slot = { kind: "pane", paneId: "cs", tabs: [], active: null, wsId: "ws-1", groupSlot: true };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [collector, viewA, slot] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_5"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  const paneEl = findPaneEl(document, "cs");
+  assert.ok(paneEl, "slot pane rendered");
+  // Drop the collector's third label straight onto the slot pane.
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_5" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneContainerTabDrop({ target: paneEl, clientX: 5, clientY: 5, preventDefault() {} });
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  assert.equal(leavesAfter.length, 3, "populate never adds a panel");
+  const filled = leavesAfter.find((l) => l.paneId === "cs");
+  assert.ok(filled, "the slot leaf stands");
+  assert.ok(filled.tabs.includes("tab_5") && filled.tabs.length === 1, "the dropped label fills the slot");
+  assert.notEqual(filled.groupSlot, true, "the mark cleared on arrival");
+  assert.ok(!leavesAfter.some((l) => l.groupSlot === true), "no marked slot remains");
+});
+
+// The unified collapse: dropping a group's last REAL view away (armed
+// move) dissolves the fan-out, the slot drops, the collector keeps the
+// labels. Below-2-members groups never survive a render.
+test("armed move of the last view drops the slot and folds the group", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const collector = { kind: "pane", paneId: "da", tabs: ["tab_1", "tab_2"], active: "tab_1", wsId: "ws-1", groupCollector: true };
+  const view = { kind: "pane", paneId: "db", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const slot = { kind: "pane", paneId: "ds", tabs: [], active: null, wsId: "ws-1", groupSlot: true };
+  const outsider = { kind: "pane", paneId: "dz", tabs: ["tab_9"], active: "tab_9", wsId: "ws-1" };
+  entry.root = { kind: "row", sizes: [1, 1, 1, 1], children: [collector, view, slot, outsider] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_9"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  // Real gesture path: drag the view's label onto the outsider's
+  // strip (paneStripDrop stamps the pre and arms the emptied view),
+  // then the drop's own render collapses the group.
+  const paneEl = findPaneEl(document, "dz");
+  assert.ok(paneEl, "outsider pane rendered");
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_3" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.paneStripDrop({ target: { closest: (selector) => (selector === ".workspace-pane" ? paneEl : null) }, preventDefault() {} });
+  const root = panes.paneRoot();
+  const leavesAfter = panes.paneLeaves(root);
+  assert.equal(leavesAfter.length, 2, "group dissolved: collector and outsider stand");
+  assert.ok(!leavesAfter.some((l) => l.groupSlot === true), "the slot dropped with the group");
+  assert.ok(leavesAfter.some((l) => l.paneId === "da"), "the collector survives");
+  assert.ok(leavesAfter.some((l) => l.paneId === "dz"), "the outsider survives");
+});
+
+// The bar unsplit drop: a single-label view inside a valid group drops
+// onto the location bar; the label lands in the marked dock and the
+// armed empty view folds home through the render.
+test("bar unsplit drop hands the label to the dock and folds the view", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const collector = { kind: "pane", paneId: "ea", tabs: ["tab_1", "tab_2"], active: "tab_1", wsId: "ws-1", groupCollector: true };
+  const viewA = { kind: "pane", paneId: "eb", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const viewB = { kind: "pane", paneId: "ec", tabs: ["tab_4"], active: "tab_4", wsId: "ws-1" };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [collector, viewA, viewB] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_4"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  // Qualification: the view's label drag qualifies for the bar drop.
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_3" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  assert.ok(panes.paneTabUnsplitHover({ dataTransfer: { getData: () => "tab_3" } }), "hover qualifies the group view");
+  assert.ok(panes.paneTabUnsplitDrop({ dataTransfer: { getData: () => "tab_3" } }), "drop accepted");
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  const dock = leavesAfter.find((l) => l.paneId === "ea");
+  assert.ok(dock, "the dock survived");
+  assert.ok(dock.tabs.includes("tab_3"), "the label landed in the dock");
+  assert.equal(dock.groupCollector, true, "the dock keeps its mark");
+  // Unified collapse: after the drop the group held one view (viewB)
+  // and zero slots, below the 2-member line, so the collapse folds
+  // viewB home too and the tree settles on the dock alone.
+  assert.ok(!leavesAfter.some((l) => l.paneId === "eb"), "the emptied view folded home");
+  assert.ok(dock.tabs.includes("tab_4"), "the sibling view folded into the dock under 2 members");
+  assert.equal(leavesAfter.length, 1, "the tree settled on the dock alone");
+  // Drag state settled: paneTabDragEnd cleared the in-flight id, so a
+  // fresh hover probe without a live drag finds nothing to qualify.
+  assert.equal(panes.paneTabUnsplitHover({ dataTransfer: { getData: () => "tab_4" } }), false,
+    "no in-flight drag id survived the drop");
+});
+
+// The dock-less group case: no groupCollector mark anywhere, the bar
+// drop mints a marked dock INSIDE the group area before the move.
+test("bar unsplit drop mints a dock for a dock-less group", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  // Two single-label views, no collector mark: paneSplitIsGroup counts
+  // them as views, no stacks, so the group is real but dock-less.
+  const viewA = { kind: "pane", paneId: "fa", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1" };
+  const viewB = { kind: "pane", paneId: "fb", tabs: ["tab_2"], active: "tab_2", wsId: "ws-1" };
+  entry.root = { kind: "row", sizes: [1, 1], children: [viewA, viewB] };
+  ctx.state.tabs = ["tab_1", "tab_2"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  assert.ok(panes.paneTabUnsplitHover({ dataTransfer: { getData: () => "tab_1" } }), "dock-less group view qualifies");
+  assert.ok(panes.paneTabUnsplitDrop({ dataTransfer: { getData: () => "tab_1" } }), "drop accepted");
+  const root = panes.paneRoot();
+  const leavesAfter = panes.paneLeaves(root);
+  const dock = leavesAfter.find((l) => l.groupCollector === true);
+  assert.ok(dock, "a marked dock was minted");
+  assert.ok(dock.tabs.includes("tab_1"), "the dropped label lives in the minted dock");
+  // The minted dock landed INSIDE the group area and the collapse
+  // settled the tree: the dock may now BE the whole tree (flat pane
+  // root) or live under the remaining split.
+  assert.ok(!leavesAfter.some((l) => l.paneId === "fa"), "the emptied view folded home");
+  assert.ok(dock.tabs.includes("tab_2"), "the sibling label folded into the dock");
+  assert.equal(panes.paneLeaves(root).length, 1, "the tree settled on the dock alone");
+  assert.ok(root === dock || (root.children || []).some((child) => child === dock
+    || (child && child.kind !== "pane" && panes.paneLeaves(child).some((l) => l.paneId === dock.paneId))),
+    "the dock lives inside the group area");
+});
+
+// Group chip rename: double-click starts the edit, Enter commits the
+// custom name onto the split node, Escape cancels back to the default.
+test("group chip renames through the editing input and commits on Enter", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const collector = { kind: "pane", paneId: "ga", tabs: ["tab_1", "tab_2"], active: "tab_1", wsId: "ws-1", groupCollector: true };
+  const viewA = { kind: "pane", paneId: "gb", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const viewB = { kind: "pane", paneId: "gc", tabs: ["tab_4"], active: "tab_4", wsId: "ws-1" };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [collector, viewA, viewB] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_4"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  panes.focusPanelFor("gb");
+  panes.renderWorkspacePanes();
+  // The editing input needs inputAttrs; the harness realm has no
+  // HerdrAppHelpers, so define the one helper the markup reads.
+  if (typeof ctx.inputAttrs !== "function") {
+    ctx.inputAttrs = () => "";
+  }
+  ctx.startPaneGroupRename(encodeURIComponent("gb"));
+  let html = chipHtmlFor(ctx, viewA);
+  assert.ok(html.includes("pane-group-rename-input"), "editing state swaps in the input");
+  assert.ok(html.includes('value=""'), "the draft starts empty");
+  // Type a name and commit through the key handler.
+  ctx.state.editingPaneGroupValue = "Build squad";
+  ctx.paneGroupRenameKey({ key: "Enter", preventDefault() {} }, encodeURIComponent("gb"));
+  html = chipHtmlFor(ctx, viewA);
+  assert.ok(html.includes("pane-panel-group-chip"), "the chip renders again after commit");
+  assert.ok(html.includes("Build squad"), "the custom name rides the chip");
+  assert.equal(entry.root.groupName, "Build squad", "the name persisted on the split node");
+  // Escape during a second edit cancels without writing.
+  ctx.startPaneGroupRename(encodeURIComponent("gb"));
+  ctx.state.editingPaneGroupValue = "Discard me";
+  ctx.paneGroupRenameKey({ key: "Escape", preventDefault() {} }, encodeURIComponent("gb"));
+  html = chipHtmlFor(ctx, viewA);
+  assert.ok(html.includes("Build squad"), "Escape kept the committed name");
+  assert.equal(entry.root.groupName, "Build squad", "no overwrite on cancel");
+  // An empty commit reverts to the default count name.
+  ctx.startPaneGroupRename(encodeURIComponent("gb"));
+  ctx.state.editingPaneGroupValue = "   ";
+  ctx.commitPaneGroupRename(encodeURIComponent("gb"));
+  html = chipHtmlFor(ctx, viewA);
+  assert.ok(html.includes("Group 2 panels"), "empty commit falls back to the count name");
+  assert.equal(entry.root.groupName, undefined, "the custom name cleared");
+});
+
+// The slot placeholder card: a marked empty leaf renders the drag-hint
+// card, a plain empty leaf keeps the new-terminal card.
+test("marked slot renders the drag-hint placeholder card", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const collector = { kind: "pane", paneId: "ha", tabs: ["tab_1", "tab_2"], active: "tab_1", wsId: "ws-1", groupCollector: true };
+  const viewA = { kind: "pane", paneId: "hb", tabs: ["tab_3"], active: "tab_3", wsId: "ws-1" };
+  const slot = { kind: "pane", paneId: "hs", tabs: [], active: null, wsId: "ws-1", groupSlot: true };
+  entry.root = { kind: "row", sizes: [1, 1, 1], children: [collector, viewA, slot] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  const slotPane = findPaneEl(document, "hs");
+  assert.ok(slotPane, "slot pane rendered");
+  assert.equal(slotPane.getAttribute("data-group-slot"), "true", "the pane carries the slot mark attribute");
+  const card = slotPane.querySelector(".workspace-empty-leaf-card");
+  assert.ok(card, "the card mounted in the slot pane");
+  assert.ok(card.innerHTML.includes("Drag a tab here"), "the slot card shows the drop hint");
+  const plainPane = findPaneEl(document, "hb");
+  const plainCard = plainPane.querySelector(".workspace-empty-leaf-card");
+  assert.ok(!plainCard || !plainCard.innerHTML.includes("Drag a tab here"), "a live view never shows the slot hint");
 });

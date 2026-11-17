@@ -360,6 +360,44 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* PAIINF-1243 rename input: the editing state swaps the group chip
+ button for a plain input. Same metrics as the chip so the strip does
+ not reflow on the swap; the input keeps its own border language
+ (bordered control, not accent slab) so the edit reads as a field. */
+.pane-group-rename-input {
+  appearance: none;
+  background: var(--panel, #fff);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  margin-right: 4px;
+  width: 110px;
+  align-self: center;
+  flex: none;
+}
+
+.pane-group-rename-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--panel, #fff);
+}
+
+/* PAIINF-1243 marked slot: an empty pane waiting for a group label
+ drop keeps the dashed accent language of the drop previews so the
+ empty space reads as part of the group affordance, not a dead panel. */
+.workspace-pane[data-group-slot="true"] .pane-content {
+  position: relative;
+}
+
+.workspace-pane[data-group-slot="true"] .workspace-empty-leaf-card {
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius, 6px);
+  background: color-mix(in srgb, var(--accent), transparent 94%);
+}
+
 /* Half-region drop preview (v3): a dotted, shaded square over the
  hovered half of the target pane while a chip or tab drag is in flight.
  Absolute against the collector (JS positions it per dragover);

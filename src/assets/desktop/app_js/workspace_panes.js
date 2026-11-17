@@ -342,6 +342,17 @@ function newEmptyLeaf() {
   return leaf;
 }
 
+// The fan-out's empty space: a marked slot leaf waiting for a label
+// drop. The mark rides saveWorkspacePanesStates and isGroupSlot keys on
+// BOTH the flag and emptiness, so a populated slot self-unmarks even
+// if a stale flag survived a blob.
+function newGroupSlotLeaf(wsId) {
+  const leaf = newEmptyLeaf();
+  leaf.groupSlot = true;
+  if (wsId) leaf.wsId = wsId;
+  return leaf;
+}
+
 // Panel leaves bind one workspace (collector model): wsId rides the
 // leaf so tabs, focus, and the location bar all resolve through the
 // panel instead of the global selection. Old blobs without wsId heal in
@@ -857,6 +868,8 @@ function syncTerminalTabsIntoTree(root) {
       // v3.2: an adopted id refills the panel; an armed auto-close from
       // an earlier emptying gesture must not fire on the refill.
       disarmLeafAutoClose(home);
+      // Refill clears the slot mark: a spawned/adopted panel is a view.
+      delete home.groupSlot;
       changed = true;
     }
     if (!home.active) home.active = id;
@@ -1404,6 +1417,18 @@ function paneWorkspaceBadgeHtml(leaf) {
 // locates it). Single-workspace trees skip the class: every pane would
 // wear it, no information.
 function markCurrentWorkspacePane(pane, leaf) {
+  // Marked slot (PAIINF-1243): the pane element carries the mark so the
+  // slot's dashed affordance styles off a data attribute. Stamped
+  // before the classList guard: stub DOMs without classList still get
+  // the attribute (the real DOM has both).
+  if (pane && leaf) {
+    if (leaf.groupSlot === true && pane.getAttribute && pane.getAttribute("data-group-slot") !== "true") {
+      pane.setAttribute("data-group-slot", "true");
+    }
+    if (leaf.groupSlot !== true && pane.hasAttribute && pane.hasAttribute("data-group-slot")) {
+      pane.removeAttribute("data-group-slot");
+    }
+  }
   if (!pane || !pane.classList) return;
   const ids = leafWorkspaceIds(leaf);
   const owns = treeIsMixed() && ids.length === 1 && ids[0] === state.ws;
@@ -1436,23 +1461,138 @@ function paneGroupVisibleMembers(group) {
   return members.filter((leaf) => leaf.paneId === entry.maximizedPaneId);
 }
 
+// Group slots and docks (redo model): the fan-out half-drop mints the
+// dragged view PLUS one marked empty leaf (groupSlot), the drop target
+// other labels fill; the source leaf keeps a groupCollector mark so a
+// 1-label dock never miscounts as a view (the "delta with 1 labels has
+// 2" bug class). Both marks persist through saveWorkspacePanesStates
+// (the replacer only strips autoCloseArmed).
+function isGroupSlot(leaf) {
+  return !!(leaf && leaf.groupSlot === true && !(leaf.tabs || []).length);
+}
+
+function isGroupView(leaf) {
+  return !!(leaf && leafTerminalLabelCount(leaf) === 1 && !leaf.groupCollector && !isGroupSlot(leaf));
+}
+
+// The group's dock: the marked collector when it still lives in the
+// split, else the single label stack there. null for dock-less groups
+// (the bar drop mints one rather than fold into a foreign stack).
+function resolveGroupDock(split) {
+  if (!split) return null;
+  const leaves = paneLeaves(split);
+  const marked = leaves.find((leaf) => leaf.groupCollector === true) || null;
+  if (marked) return marked;
+  return leaves.find((leaf) => leafTerminalLabelCount(leaf) > 1) || null;
+}
+
 // Split-out views inside a split: leaves holding exactly ONE terminal
-// label. The collector itself (multiple labels) is not a view; the
-// group chip counts these, and the group rule turns on them.
+// label and no dock/slot mark. The collector itself (multiple labels
+// or marked) is not a view; empty slots hold zero labels and never
+// count.
 function paneGroupVisibleViews(group) {
-  return paneLeaves(group).filter((leaf) => leafTerminalLabelCount(leaf) === 1);
+  return paneLeaves(group).filter(isGroupView);
+}
+
+// Marked empty slots waiting for a label drop.
+function paneGroupSlots(group) {
+  return paneLeaves(group).filter(isGroupSlot);
+}
+
+// A split is a group only while the fan-out is real: at least one real
+// view, at least two fan-out members (views + marked slots), and at
+// most ONE label stack (the collector the views came from). Two stacks
+// are collectors side by side and never group.
+function paneSplitIsGroup(split) {
+  const views = paneGroupVisibleViews(split);
+  if (!views.length) return false;
+  if (views.length + paneGroupSlots(split).length < 2) return false;
+  const stacks = paneLeaves(split).filter(
+    (leaf) => leafTerminalLabelCount(leaf) > 1 || leaf.groupCollector === true
+  );
+  return stacks.length <= 1;
 }
 
 function paneGroupChipHtml(root, group) {
   const members = paneGroupVisibleMembers(group);
   const views = paneGroupVisibleViews(group);
+  // The chip counts REAL views only: a slot never inflates the number
+  // (a 1-view fan-out with its slot shows no chip, not "Group 2").
+  if (views.length < 2) return "";
   const focusedMember = (group && group.kind !== "pane" && group.activePaneId
     && paneForPaneId(root, group.activePaneId)) || (members.find((leaf) => leaf === activeLeaf(root)) || members[0]);
   if (!focusedMember) return "";
-  const label = `▣ ${views.length}`;
-  const title = `Panel group (${views.length} views)`;
+  const splitId = splitNodeId(group);
+  const name = group.groupName || `Group ${views.length} panels`;
+  const title = `${name} (double-click to rename)`;
   const encodedFocus = focusedMember.paneId ? encodeURIComponent(focusedMember.paneId) : "";
-  return `<button class="pane-panel-chip pane-panel-group-chip" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-pane-id="${escapeAttr(focusedMember.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedFocus)}')">${escapeHtml(label)}</button>`;
+  if (state.editingPaneGroup === splitId) {
+    // inputAttrs is a bundle-scope helper (core.js destructures it from
+    // HerdrAppHelpers); standalone-VM realms boot without it, same
+    // guard pattern as mountEmptyPanelCard's titleWithWebuiShortcut.
+    // The interpolation stays INLINE: the keyboard-guard scan keys on
+    // ${inputAttrs(} inside the tag open itself.
+    return `<input class="pane-group-rename-input" aria-label="Rename panel group" value="${escapeAttr(state.editingPaneGroupValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPaneGroupRename('${escapeAttr(encodedFocus)}')" oninput="state.editingPaneGroupValue=this.value" onkeydown="paneGroupRenameKey(event,'${escapeAttr(encodedFocus)}')">`;
+  }
+  return `<button class="pane-panel-chip pane-panel-group-chip" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-pane-id="${escapeAttr(focusedMember.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedFocus)}')" ondblclick="startPaneGroupRename('${escapeAttr(encodedFocus)}')">${escapeHtml(name)}</button>`;
+}
+
+// Group rename mirrors the tab rename trio (worktrees.js) but stays
+// client-only: the name rides the split node (split.groupName) and
+// persists through saveWorkspacePanesStates. The focused member's
+// paneId keys the session; commitPaneGroupRename resolves the split
+// through it, so a reshape mid-edit ends the session naturally.
+function startPaneGroupRename(encodedFocus) {
+  const root = paneRootFor();
+  const leaf = encodedFocus ? paneForPaneId(root, decodeURIComponent(encodedFocus)) : null;
+  const group = leaf ? paneGroupForLeaf(root, leaf) : null;
+  if (!group) return;
+  const splitId = splitNodeId(group);
+  state.editingPaneGroup = splitId;
+  state.editingPaneGroupValue = group.groupName || "";
+  renderWorkspacePanes();
+  setTimeout(() => {
+    if (state.editingPaneGroup !== splitId) return;
+    const input = document.querySelector(".pane-group-rename-input");
+    if (input && input.select) input.select();
+  }, 0);
+}
+
+function paneGroupRenameKey(e, encodedFocus) {
+  if (e.key === "Enter") {
+    if (e.preventDefault) e.preventDefault();
+    commitPaneGroupRename(encodedFocus);
+  } else if (e.key === "Escape") {
+    state.editingPaneGroup = null;
+    state.editingPaneGroupValue = "";
+    renderWorkspacePanes();
+  }
+}
+
+function commitPaneGroupRename(encodedFocus) {
+  const root = paneRootFor();
+  const leaf = encodedFocus ? paneForPaneId(root, decodeURIComponent(encodedFocus)) : null;
+  const group = leaf ? paneGroupForLeaf(root, leaf) : null;
+  const splitId = state.editingPaneGroup;
+  // Capture the draft BEFORE the editing state resets: the reads below
+  // would see "" and every commit would land as an empty rename.
+  const draft = String(state.editingPaneGroupValue || "").trim();
+  state.editingPaneGroup = null;
+  state.editingPaneGroupValue = "";
+  if (!group) {
+    renderWorkspacePanes();
+    return;
+  }
+  if (splitId && splitNodeId(group) !== splitId) {
+    renderWorkspacePanes();
+    return;
+  }
+  // Empty reverts to the default "Group N panels" (a stale custom name
+  // must not outlive the views it counted).
+  if (draft) group.groupName = draft;
+  else delete group.groupName;
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
 }
 
 // The STRUCTURAL split whose view area holds a leaf, with no group
@@ -1471,10 +1611,10 @@ function paneGroupSplitForLeaf(root, leaf) {
 
 // The split whose view area groups a leaf: the structural split from
 // paneGroupSplitForLeaf, kept only while it is a real group
-// (paneSplitIsGroup below: 2+ views, at most one label stack). Mixed
-// roots keep the doc model: direct leaves stay standalone, subtree
-// members group as before. Derived, never stored: the tree already
-// expresses membership and a stored flag would drift on every reshape.
+// (paneSplitIsGroup above). Mixed roots keep the doc model: direct
+// leaves stay standalone, subtree members group as before. Derived,
+// never stored: the tree already expresses membership and a stored
+// flag would drift on every reshape.
 function paneGroupForLeaf(root, leaf) {
   const split = paneGroupSplitForLeaf(root, leaf);
   return split && paneSplitIsGroup(split) ? split : null;
@@ -1510,7 +1650,11 @@ function autoClosePreStateFor(root, leaf) {
   if (!leaf) return null;
   const split = paneGroupSplitForLeaf(root, leaf);
   if (!split || !paneSplitIsGroup(split) || !paneGroupVisibleViews(split).includes(leaf)) return null;
-  const collector = paneLeaves(split).find((l) => leafTerminalLabelCount(l) > 1) || null;
+  // v2: the dock resolves through the marks first (a 1-label dock is
+  // still a dock), falling back to the label stack. Dock-less groups
+  // stamp null: their strip/close removals dissolve through the v3.2
+  // armed collapse alone, only the bar drop mints a dock.
+  const collector = resolveGroupDock(split);
   return collector ? { collectorId: collector.paneId || null, wsId: leafWorkspaceId(leaf) || null } : null;
 }
 
@@ -1524,7 +1668,13 @@ function panePanelChipHtml(leaf) {
   // to its standalone chip (v3.2).
   const group = paneGroupForLeaf(root, leaf);
   const active = activeLeaf(root);
-  if (group && leaf === active && paneGroupVisibleMembers(group).length >= 2) {
+  // The group chip needs 2+ REAL views (the fan-out's 1 view + slot
+  // state falls through to the standalone chip: the number appears
+  // only once the second view lands) and 2+ visible members (the
+  // v3.2 maximize guard). paneGroupChipHtml returning "" would strip
+  // the chip entirely, so the fallback must live HERE.
+  if (group && leaf === active && paneGroupVisibleMembers(group).length >= 2
+    && paneGroupVisibleViews(group).length >= 2) {
     return paneGroupChipHtml(root, group);
   }
   // Non-focused members and single-visible-member groups fall through
@@ -2329,15 +2479,84 @@ function paneTabDragEnd() {
   // spring-loaded dwell chrome (v4): abandoning a tab drag mid-flight
   // must clear both, or the dotted square sticks on the last hovered
   // half and the dwell outline keeps painting over a pane nobody
-  // hovers anymore.
+  // hovers anymore. The location bar's remove indicator clears here
+  // too: the drag may end on the bar's drop, in which case the bar's
+  // own drop handler already ran; anywhere else the class would stick.
   clearPanelDropPreview();
   clearPaneDragDwell();
   clearPaneDwellOutline();
   clearPaneDropCaret();
   clearPaneWorkspaceDropHint();
+  clearLocationBarPaneRemove();
   document.querySelectorAll(".pane-tab-dragging").forEach((node) => {
     if (node.classList && node.classList.remove) node.classList.remove("pane-tab-dragging");
   });
+}
+
+// The location bar's unsplit affordance: a herdr-pane-tab drag hovering
+// the bar with a single-label view inside a valid group qualifies (the
+// remove indicator paints); the drop converts that view back to a
+// collector label. Dock-less groups mint a marked dock at the head of
+// the group area first, so the label always has a strip to land in
+// (the 2-view special case dissolves into the minted dock through the
+// unified collapse on the very same render).
+function clearLocationBarPaneRemove() {
+  const bar = el("locationBar");
+  if (bar && bar.classList && bar.classList.remove) bar.classList.remove("location-bar-pane-remove");
+}
+
+function paneTabUnsplitTarget(tabId) {
+  if (!tabId) return null;
+  const root = paneRootFor();
+  if (!paneTreeRenderable(root)) return null;
+  const leaf = paneForTab(root, tabId);
+  if (!leaf || !isGroupView(leaf)) return null;
+  const group = paneGroupForLeaf(root, leaf);
+  if (!group) return null;
+  return { leaf, group };
+}
+
+function paneTabUnsplitHover(event) {
+  const drag = activeDragKind()
+    || (event && event.dataTransfer && event.dataTransfer.getData
+      ? { kind: "tab", tabId: event.dataTransfer.getData("text/herdr-pane-tab") }
+      : null);
+  if (!drag || drag.kind !== "tab") return false;
+  if (!paneTabUnsplitTarget(drag.tabId)) return false;
+  return true;
+}
+
+function paneTabUnsplitDrop(event) {
+  const drag = activeDragKind()
+    || (event && event.dataTransfer && event.dataTransfer.getData
+      ? { kind: "tab", tabId: event.dataTransfer.getData("text/herdr-pane-tab") }
+      : null);
+  if (!drag || drag.kind !== "tab") return false;
+  const target = paneTabUnsplitTarget(drag.tabId);
+  if (!target) return false;
+  const { leaf, group } = target;
+  const tabId = drag.tabId;
+  // Resolve or mint the landing dock BEFORE the move empties the view:
+  // the stamp needs a live dock id, and a minted dock must land inside
+  // the group area so the collapse finds it structurally. The mint
+  // anchors on the view leaf (same splice the bar's split pair uses):
+  // the dock becomes the view's first neighbor INSIDE the group
+  // split, never a sibling of the group area itself.
+  let dock = resolveGroupDock(group);
+  if (!dock) {
+    dock = newEmptyLeaf();
+    dock.wsId = leafWorkspaceId(leaf) || undefined;
+    dock.groupCollector = true;
+    if (!splitLeafWith(leaf, dock, { axis: group.kind === "column" ? "column" : "row", first: true })) return false;
+  }
+  paneTabDragEnd();
+  leaf.autoClosePre = { collectorId: dock.paneId || null, wsId: leafWorkspaceId(leaf) || null };
+  if (movePaneTabTo(tabId, dock.paneId, null, { skipRender: true })) {
+    armLeafAutoClose(leaf);
+  }
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+  return true;
 }
 
 // Which slot does the pointer sit at? Compare the pointer x against each
@@ -2500,6 +2719,22 @@ function paneContainerTabDrop(event) {
   const targetLeaf = paneForPaneId(root, target.paneId);
   if (!source || !targetLeaf) return;
   if (event.preventDefault) event.preventDefault();
+  // The empty slot POPULATES instead of splitting: dropping a label on
+  // the group's marked empty space fills it (the spec's "drag any other
+  // panel label indicator to the empty space"), whatever the dwell
+  // lock says. The stamp/arm protocol below is the standard cross-pane
+  // move, minus the split.
+  if (isGroupSlot(targetLeaf)) {
+    source.autoClosePre = autoClosePreStateFor(paneRootFor(), source);
+    if (movePaneTabTo(tabId, targetLeaf.paneId, null, { skipRender: true })) {
+      disarmLeafAutoClose(targetLeaf);
+      focusLeaf(paneRootFor(), targetLeaf);
+      armLeafAutoClose(source);
+    }
+    saveWorkspacePanesStates();
+    renderWorkspacePanes();
+    return;
+  }
   // A tab dropped on a half of its OWN pane splits that pane and moves
   // into the new half: single-panel trees are the most common first
   // gesture, so they split too instead of refusing. Cross-pane and
@@ -2508,6 +2743,21 @@ function paneContainerTabDrop(event) {
   fresh.wsId = leafWorkspaceId(targetLeaf) || leafWorkspaceId(source);
   const landed = splitLeafWith(targetLeaf, fresh, target, { forceNest: !!lockedPaneId });
   if (!landed) return;
+  // Redo fan-out mint: when the target area holds NO valid group yet,
+  // the drop that creates the group mints the dragged view PLUS one
+  // marked empty slot beside it ("the new dragged one forms a view
+  // group with one empty space"), and the SOURCE leaf takes the
+  // groupCollector mark so a 1-label dock never miscounts as a view.
+  // Inside an existing group the drop is plain growth ("the 3 and so
+  // forth"): no slot, no mark. The slot lands through the same
+  // splitLeafWith extend mechanics on the fresh view (same axis, after
+  // it), so every drop geometry keeps the group area flat and the
+  // dock inside it.
+  if (paneGroupForLeaf(paneRootFor(), targetLeaf) === null) {
+    const slot = newGroupSlotLeaf(leafWorkspaceId(targetLeaf) || leafWorkspaceId(source));
+    splitLeafWith(fresh, slot, { axis: target.axis, first: false });
+    source.groupCollector = true;
+  }
   // The fresh leaf owns the moved tab: same placement contract as a
   // + mint, so the sync never re-homes the id on the next snapshot.
   // v3.2 marker ownership: the drop gesture decides. An own-pane half
@@ -2674,6 +2924,10 @@ function movePaneTabTo(tabId, targetPaneId, index, opts) {
   const insertAt = index == null ? target.tabs.length : Math.min(index, target.tabs.length);
   if (!target.tabs.includes(tabId)) target.tabs.splice(insertAt, 0, tabId);
   target.active = tabId;
+  // Slot arrival clears the mark: a populated slot is a plain view now
+  // (isGroupSlot also keys on emptiness, but a stale flag must never
+  // survive in the persisted blob either).
+  delete target.groupSlot;
   source.active = source.tabs[0] || null;
   // Refill protocol: the pane receiving the tab sheds any stale arm.
   disarmLeafAutoClose(target);
@@ -3028,9 +3282,10 @@ async function closeActivePane() {
   // survivor focused and renders.
   const lastOfWs = !!wsId && !paneLeaves(root).some((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId);
   if (!dropLeafFromTree(leaf)) return false;
-  // Decay fold: closing a view may drop its group to one view; fold
-  // that survivor home before the single paint below covers both.
-  foldLoneViewIntoCollector(pre);
+  // Unified collapse: closing a view may drop its group below two
+  // members; fold the survivors home before the single paint below
+  // covers both.
+  collapseUnderMemberedGroup(pre);
   // dropLeafFromTree never renders (the sync's ws sweep calls it
   // mid-pass; a render there would re-enter renderWorkspacePanes ->
   // sync). The explicit close owns the render + remount of the healed
@@ -3230,21 +3485,86 @@ function foldLeafIntoCollector(view, collector) {
 // views emptied by one batch gesture stay (the surviving collector
 // split still counts 2 views) and a stale pre cannot fire on a
 // freshly placed view.
-function foldLoneViewIntoCollector(pre) {
+// Unified collapse (redo): a group whose fan-out dropped below TWO
+// members (views + marked slots) dissolves back into its dock: every
+// remaining same-ws view folds its labels in, every marked slot drops.
+// The dock itself stays (it is the collector the labels return to);
+// the wrappers flatten through the sibling-promotion the folds trigger.
+// Called (1) per consumed pre stamp (gesture-driven removals: bar drop,
+// strip drop, close) and (2) from the sweep's marker pass (closes that
+// leave no stamp, like the slot's own ✕). Cross-ws views never fold
+// into a foreign dock; they stand and the group dies around them.
+function collapseGroupArea(split, dock) {
+  if (!isPaneSplit(split) || !dock) return false;
+  let changed = false;
+  let guard = 6;
+  while (guard-- > 0) {
+    const liveRoot = paneRootFor();
+    if (!paneLeaves(liveRoot).includes(dock)) break;
+    if (paneGroupSplitForLeaf(liveRoot, dock) !== split) break;
+    const views = paneGroupVisibleViews(split).filter((leaf) => leaf !== dock);
+    const slots = paneGroupSlots(split);
+    if (views.length + slots.length >= 2) break;
+    if (views.length === 1) {
+      const view = views[0];
+      if (leafWorkspaceId(view) !== leafWorkspaceId(dock)) break;
+      if (!foldLeafIntoCollector(view, dock)) break;
+      changed = true;
+      continue;
+    }
+    if (slots.length === 1) {
+      if (!dropLeafFromTree(slots[0])) break;
+      changed = true;
+      continue;
+    }
+    break;
+  }
+  return changed;
+}
+
+// Pre-driven entry: the consumed stamp names the dock the removed view
+// left; the dock's CURRENT structural area decides the fold.
+function collapseUnderMemberedGroup(pre) {
   if (!pre || !pre.collectorId) return false;
   const root = paneRootFor();
   const collector = paneForPaneId(root, pre.collectorId);
-  if (!collector || leafTerminalLabelCount(collector) <= 1) return false;
+  if (!collector || !paneLeaves(root).includes(collector)) return false;
   if (leafWorkspaceId(collector) !== (pre.wsId || null)) return false;
   const split = paneGroupSplitForLeaf(root, collector);
   if (!split) return false;
-  const views = paneGroupVisibleViews(split);
-  if (views.length !== 1) return false;
-  const loneView = views[0];
-  if (loneView === collector) return false;
-  if (leafTerminalLabelCount(loneView) !== 1) return false;
-  if (leafWorkspaceId(loneView) !== leafWorkspaceId(collector)) return false;
-  return foldLeafIntoCollector(loneView, collector);
+  return collapseGroupArea(split, collector);
+}
+
+// Marker pass: closes that produce no pre stamp (the slot's own ✕)
+// still owe the group a collapse when the marked dock stands with a
+// lone view. Fires only on the strict shape: a marked dock, exactly
+// one view, no slots, no neutral empty leaf, and no second stack
+// (manual split arrangements and dock-less pairs never fold).
+function collapseMarkedGroupAreas() {
+  const root = paneRootFor();
+  if (!isPaneSplit(root)) return false;
+  const areas = root.children.every((child) => child && child.kind === "pane")
+    ? [root]
+    : root.children.filter((child) => isPaneSplit(child));
+  let changed = false;
+  for (const area of areas) {
+    const leaves = paneLeaves(area);
+    const dock = leaves.find((leaf) => leaf.groupCollector === true);
+    if (!dock) continue;
+    if (paneGroupVisibleViews(area).length !== 1) continue;
+    if (paneGroupSlots(area).length) continue;
+    const stacks = leaves.filter(
+      (leaf) => leafTerminalLabelCount(leaf) > 1 || leaf.groupCollector === true
+    );
+    if (stacks.length > 1) continue;
+    const neutral = leaves.filter(
+      (leaf) => leaf !== dock && !isGroupView(leaf) && !isGroupSlot(leaf)
+        && leafTerminalLabelCount(leaf) === 0 && !leaf.tabs.length
+    );
+    if (neutral.length) continue;
+    if (collapseGroupArea(area, dock)) changed = true;
+  }
+  return changed;
 }
 
 function sweepAbandonedEmptyLeaves() {
@@ -3263,15 +3583,15 @@ function sweepAbandonedEmptyLeaves() {
   let guard = 16;
   let changed = false;
   // Decay fold first: an armed empty view took its label out of a
-  // group; when exactly one view survives there, it folds home and
-  // its panel drops in this same sweep, before the armed source
-  // itself collapses below. Each stamp is one-shot: consumed here, or
-  // the pre stays stale for the next sweep to misfire on.
+  // group; when the group drops below two members the survivors fold
+  // home and their panels drop in this same sweep, before the armed
+  // source itself collapses below. Each stamp is one-shot: consumed
+  // here, or the pre stays stale for the next sweep to misfire on.
   for (const leaf of paneLeaves(paneRootFor())) {
     if (!leaf.autoCloseArmed || leaf.tabs.length || !leaf.autoClosePre) continue;
     const pre = leaf.autoClosePre;
     leaf.autoClosePre = null;
-    if (foldLoneViewIntoCollector(pre)) changed = true;
+    if (collapseUnderMemberedGroup(pre)) changed = true;
   }
   while (guard-- > 0) {
     const root = paneRootFor();
@@ -3283,6 +3603,10 @@ function sweepAbandonedEmptyLeaves() {
     if (!collapseEmptyLeafInTree(paneRootFor(), victim)) break;
     changed = true;
   }
+  // Marker pass AFTER the armed loop (phantom slots are gone by now):
+  // unstamped closes (the slot's own ✕) still owe a marked group its
+  // collapse when the strict under-membered shape stands.
+  if (collapseMarkedGroupAreas()) changed = true;
   // Restore: a collapse may have moved focus to a survivor; put it back
   // on the captured leaf when it still lives, so the focused empty panel
   // (fresh split, Enter target) keeps its focus through the sweep.
@@ -3502,6 +3826,8 @@ function paneEnsureEditorTab(path) {
     // render path is gated on its drawer being open, so a render here is
     // the only guarantee when the open comes from a menu or shortcut.
     disarmLeafAutoClose(leaf);
+    // Refill clears the slot mark: a pane hosting an editor tab is a view.
+    delete leaf.groupSlot;
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
@@ -3617,6 +3943,8 @@ function paneEnsureGitTab(viewKey) {
     // Same immediate-render contract as editor tabs: the git drawer's
     // render path is gated on the drawer being open.
     disarmLeafAutoClose(leaf);
+    // Refill clears the slot mark: a pane hosting a git tab is a view.
+    delete leaf.groupSlot;
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
@@ -3847,6 +4175,20 @@ function mountEmptyPanelCard(content, leaf) {
   const newTitle = typeof titleWithWebuiShortcut === "function"
     ? titleWithWebuiShortcut("New terminal", "newPanel")
     : "New terminal";
+  // Marked slots render a placeholder card instead of the empty hint:
+  // the drop target needs a visible surface to hit, and the card text
+  // tells the drag owner what the drop does (populate this group slot).
+  if (leaf.groupSlot === true) {
+    const slotHtml = `<h1>${escapeHtml(name || wsId || "Group slot")}</h1>`
+      + `<p>Drag a tab here to add it to the group.</p>`;
+    if (card.__herdrEmptySignature !== slotHtml) {
+      card.__herdrEmptySignature = slotHtml;
+      const inner = card.querySelector(".workspace-empty-leaf-card");
+      if (inner) inner.innerHTML = slotHtml;
+    }
+    if (card.hidden) card.hidden = false;
+    return;
+  }
   const html = `<h1>${escapeHtml(name || wsId || "Empty panel")}</h1>`
     + `<p>No terminal in this panel yet.</p>`
     + `<p class="workspace-empty-leaf-hint">Press <kbd>Enter</kbd> to open a terminal.</p>`
@@ -4379,6 +4721,10 @@ window.HerdrWorkspacePanes = {
   focusedLeaf,
   writeRouteFromLeaf,
   focusPanelFor,
+  // Location bar unsplit wiring: the bar module owns the DOM, this
+  // module owns the tree surgery the bar drop triggers.
+  paneTabUnsplitHover,
+  paneTabUnsplitDrop,
   // Close-aftermath facade for cross-module terminal closes: prunes
   // the id from its leaf, sweeps armed+empty leaves, paints once.
   // The sweep and its guards stay inside this module.

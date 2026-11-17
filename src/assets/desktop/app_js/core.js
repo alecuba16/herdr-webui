@@ -87,6 +87,8 @@ let state = {
   fitDefault: false,
   editingTab: null,
   editingTabValue: "",
+  editingPaneGroup: null,
+  editingPaneGroupValue: "",
   editingWorkspace: null,
   editingWorkspaceValue: "",
   workspaceCreateSuggestedLabel: "",
