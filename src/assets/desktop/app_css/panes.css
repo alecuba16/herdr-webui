@@ -348,10 +348,9 @@
   cursor: grabbing;
 }
 
-/* Group chip (v3): same hit area and grab cursor as the member chip,
- the double-border accent distinguishes the group from a lone panel
- without adding a color the theme does not define. Count text inherits
- the chip font; the ▣ glyph already carries the icon. */
+/* Group chip (rail): the accent slab distinguishes the group chip
+ from a plain panel label in the rail. Count text inherits the chip
+ font. */
 .pane-panel-group-chip {
   border: 1px solid var(--accent);
   border-left-width: 2px;
@@ -360,17 +359,8 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Collapsed group chip: the group folds back to this one label. The
- dashed border signals the folded state (panels hide behind it, one
- press restores them); the rest inherits the group chip so both
- states read as the same control. */
-.pane-panel-group-collapsed {
-  border-style: dashed;
-  cursor: pointer;
-}
-
 /* Rename input: the editing state swaps the group chip
- button for a plain input. Same metrics as the chip so the strip does
+ button for a plain input. Same metrics as the chip so the rail does
  not reflow on the swap; the input keeps its own border language
  (bordered control, not accent slab) so the edit reads as a field. */
 .pane-group-rename-input {
@@ -394,19 +384,6 @@
   background: var(--panel, #fff);
 }
 
-/* Marked slot: an empty pane waiting for a group label
- drop keeps the dashed accent language of the drop previews so the
- empty space reads as part of the group affordance, not a dead panel. */
-.workspace-pane[data-group-slot="true"] .pane-content {
-  position: relative;
-}
-
-.workspace-pane[data-group-slot="true"] .workspace-empty-leaf-card {
-  border: 2px dashed var(--accent);
-  border-radius: var(--radius, 6px);
-  background: color-mix(in srgb, var(--accent), transparent 94%);
-}
-
 /* Half-region drop preview (v3): a dotted, shaded square over the
  hovered half of the target pane while a chip or tab drag is in flight.
  Absolute against the collector (JS positions it per dragover);
@@ -420,19 +397,6 @@
   background: color-mix(in srgb, var(--accent), transparent 84%);
   pointer-events: none;
   display: none;
-}
-
-/* Spring-loaded dwell outline (v4): the full-pane ring that appears
- once a dragged label hovers one pane past the dwell window. It marks
- the pane the drop will split INSIDE, replacing the half preview. */
-.pane-dwell-outline {
-  position: absolute;
-  inset: 0;
-  z-index: 29;
-  border: 2px solid var(--accent);
-  border-radius: var(--radius, 6px);
-  background: color-mix(in srgb, var(--accent), transparent 92%);
-  pointer-events: none;
 }
 
 .pane-ws-badge:hover {
@@ -525,28 +489,64 @@
   padding: 1px 4px;
 }
 
-/* ---- maximize rail ----
- * While a leaf is maximized, the hidden siblings' tab strips stack in
- * this rail under the flat pane. Stub panes carry no content slot, so
- * the strip is their only child; clicks restore the layout. */
-.pane-strip-rail {
+/* ---- label rail (one-visible-view model) ----
+ * A horizontal row of chips above the visible subject: one per
+ * ungrouped panel plus one per group ("Group N views"). Pressing a
+ * chip switches the subject; dragging a panel chip into the view
+ * forms or grows a group. The rail renders only when more than one
+ * subject choice exists. */
+.pane-label-rail {
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
   background: var(--panel2, var(--panel));
-  max-height: 35%;
-  overflow-y: auto;
+  overflow-x: auto;
 }
 
-.pane-strip-rail .workspace-pane {
+.pane-label-chip {
   flex: 0 0 auto;
-  overflow: visible;
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text, inherit);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.pane-strip-rail .workspace-pane .pane-tab-strip {
-  border-bottom: 0;
-  background: transparent;
+.pane-label-chip:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 92%);
+}
+
+.pane-label-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pane-label-chip.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 86%);
+}
+
+.pane-label-chip.pane-label-dragging {
+  opacity: 0.5;
+}
+
+.pane-label-chip.pane-panel-group-chip {
+  border-style: solid;
+  font-weight: 600;
 }
 
 /* ---- pane actions menu (Phase 5) ----

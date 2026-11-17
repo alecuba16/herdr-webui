@@ -1,20 +1,19 @@
-// Center pane tree for the desktop shell. Phase 4: the tree is a real
-// binary layout ({kind:"pane"} leaves, {kind:"row"|"column", sizes,
-// children} split nodes) rendered recursively with resizable dividers.
-// Phase 3b/3c tab identity is unchanged: terminal tabs use backend
+// Center pane model for the desktop shell (one-visible-view redo).
+// Panels are a FLAT list: every panel is a leaf ({paneId, tabs, active,
+// wsId, groupId}) and only ONE subject renders at a time, either a
+// single panel or one group's split layout ({kind:"row"|"column",
+// sizes, children} trees INSIDE a group record). Dragging a panel label
+// onto the view with a half-target preview forms groups; groups are
+// the only other visible subject and fold to renameable chips when
+// not selected. Tab identity is unchanged: terminal tabs use backend
 // tab ids, editor tabs are editor:<path> (one per file), git tabs are
 // git:<view-key> (one per view).
 //
 // Exactly one live terminal surface exists (#terminalShell, one wterm
-// instance), so the tree enforces a terminal singleton at command
+// instance), so the model enforces a terminal singleton at command
 // time: only the leaf holding the route terminal tab ever holds
-// terminal tabs, splits never clone it, and the move command refuses
+// terminal tabs, groups never clone it, and the move command refuses
 // it. Editor and git tabs can land in any leaf.
-//
-// The pane tree is client-owned and exists only while its workspace is open,
-// mirroring the backend's client-owned
-// pane/tab surface model: terminal tabs bind 1:1 to backend tabs exactly
-// like the single-terminal shell and temp terminals do today.
 //
 // Tab identity lives here so strips render editor tabs even while the
 // lazily-loaded file browser module is still being fetched: labels come
@@ -237,63 +236,105 @@ function buildPanePassLookups(root) {
 function panesStateFor() {
   if (!state.workspacePanes[SESSION_PANES_KEY]) {
     state.workspacePanes[SESSION_PANES_KEY] = {
-      root: newLeaf("p1"),
+      v: 2,
+      panels: [newLeaf("p1")],
+      groups: [],
+      visible: { type: "panel", id: "p1" },
       at: Date.now(),
     };
   }
   return state.workspacePanes[SESSION_PANES_KEY];
 }
 
-// ---- maximize (Phase 5) ---------------------------------------------
-// The tree stays intact while a leaf is maximized: renderWorkspacePanes
-// swaps the effective root for the maximized leaf only, so the strip, the
-// active pointer, and the stored sizes survive the toggle. Persistence is
-// deliberate: a reload keeps the maximized view (the same call heals a
-// stale id on boot by dropping it).
-function maximizedLeaf(root) {
-  const entry = panesStateFor();
-  if (!entry.maximizedPaneId) return null;
-  if (!paneTreeRenderable(root)) return null;
-  const leaf = paneLeaves(root).find((l) => l.paneId === entry.maximizedPaneId);
-  if (!leaf) {
-    entry.maximizedPaneId = null;
-    saveWorkspacePanesStates();
-    return null;
-  }
-  return leaf;
+// ---- group records (one-visible-view model) -------------------------
+// A group is an explicit record: ordered member paneIds, a layout tree
+// of the same row/column shape the old renderer walked (children are
+// paneIds or nested layout nodes), and a renameable name. Exactly one
+// group renders at a time (entry.visible), same as a single panel.
+let groupIdCounter = 0;
+const usedGroupIds = new Set();
+
+function newGroupId() {
+  let id;
+  do id = `g${++groupIdCounter}`;
+  while (usedGroupIds.has(id));
+  usedGroupIds.add(id);
+  return id;
 }
 
-function maximizeActivePane() {
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return false;
-  if (paneLeaves(root).length < 2) return false;
-  const leaf = activeLeaf(root);
-  if (!leaf) return false;
+function groupById(root, groupId) {
+  return (root && Array.isArray(root.groups) ? root.groups : []).find((g) => g && g.groupId === groupId) || null;
+}
+
+function groupForLeaf(root, leaf) {
+  const groupId = leaf && leaf.groupId;
+  return groupId ? groupById(root, groupId) : null;
+}
+
+// Members resolve through ids, never stored refs: persistence hands
+// back JSON twins and a dissolved group must answer empty.
+function groupMembers(group) {
   const entry = panesStateFor();
-  if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
-  else entry.maximizedPaneId = leaf.paneId;
-  // The maximized leaf is the one on screen; keep the active pointer
-  // with it so split/close/move commands act on the visible pane.
-  root.activePaneId = leaf.paneId;
+  const ids = (group && Array.isArray(group.memberIds) ? group.memberIds : []).slice();
+  return ids.map((id) => entry.panels.find((p) => p.paneId === id)).filter(Boolean);
+}
+
+function groupMemberCount(group) {
+  return groupMembers(group).length;
+}
+
+function groupDefaultName(group) {
+  return `Group ${groupMemberCount(group)} views`;
+}
+
+function groupVisibleName(group) {
+  return (group && group.name) || groupDefaultName(group);
+}
+
+// The leaf holding a paneId inside a group layout tree (children are
+// paneIds or nested nodes).
+function layoutHoldsPaneId(node, paneId) {
+  if (!node || typeof node !== "object") return false;
+  if (node === paneId) return true;
+  if (Array.isArray(node.children)) return node.children.some((c) => layoutHoldsPaneId(c, paneId));
+  return false;
+}
+
+// The visible subject record: {kind:"panel", leaf} or {kind:"group",
+// group}. A stale visible pointer (closed panel, dissolved group)
+// heals to the first panel; an all-empty store has no subject.
+function visibleSubject(entry) {
+  if (!entry || !Array.isArray(entry.panels) || !entry.panels.length) return null;
+  const vis = entry.visible;
+  if (vis && vis.type === "group") {
+    const group = groupById(entry, vis.id);
+    if (group && groupMemberCount(group) >= 2) return { kind: "group", group };
+  }
+  const panel = (vis && vis.type === "panel" && entry.panels.find((p) => p.paneId === vis.id)) || entry.panels.find((p) => !p.groupId) || entry.panels[0];
+  return { kind: "panel", leaf: panel };
+}
+
+// Switch the visible subject. Any subject change renders once; the
+// caller owns the route write (go() refreshes on its own).
+function setVisibleSubject(type, id) {
+  const entry = panesStateFor();
+  const subject = type === "group" ? { type: "group", id } : { type: "panel", id };
+  const prev = visibleSubject(entry);
+  entry.visible = subject;
   entry.at = Date.now();
   saveWorkspacePanesStates();
   renderWorkspacePanes();
-  // Cross-module guard: standalone harnesses load this file alone, and
-  // fitTerminalSurface lives in terminal.js.
-  if (typeof fitTerminalSurface === "function") fitTerminalSurface();
-  return true;
+  return prev;
 }
 
-function paneIsMaximized() {
-  return !!maximizedLeaf(paneRootFor());
-}
-
-// ---- tree model (Phase 4) ----------------------------------------------
-// Leaves carry a stable paneId used by the DOM reconcile and the active
-// pane pointer; split nodes carry flex-grow sizes. The walk helpers below
-// are the only sanctioned access: everything that used to assume
-// "the pane" goes through paneForTab/paneForPaneId/paneLeaves so a tab in
-// any leaf resolves, not just the first one.
+// ---- panel model (one-visible-view redo) ----------------------------
+// Panels carry a stable paneId used by the DOM reconcile and the focus
+// pointer. The list helpers below are the only sanctioned access:
+// everything that used to assume "the pane" goes through
+// paneForTab/paneForPaneId/paneLeaves so a tab in any panel resolves,
+// not just the first one. paneLeaves/paneRootFor keep their names for
+// the consumers (pane_focus.js, tests): the "root" is the session entry
+// and "leaves" are the flat panels list.
 
 // Class test that works on real DOM elements and the minimal fakes the
 // node harnesses use (className string, no classList/nodeType).
@@ -316,12 +357,13 @@ function findPaneElementById(element, paneId) {
 }
 
 let paneIdCounter = 0;
-// Every workspace's tree shares this id set: duplicates would break the
-// DOM reconcile (two panes keyed by one id) and paneForPaneId lookups.
+// Every panel shares this id set: duplicates would break the DOM
+// reconcile (two panes keyed by one id) and paneForPaneId lookups.
 const usedPaneIds = new Set();
 
-// Split ids share the counter pattern: one session tree, one namespace,
-// persistence keeps the minted ids stable across reloads.
+// Layout node ids (group split trees) share the counter pattern: one
+// session, one namespace, persistence keeps minted ids stable across
+// reloads.
 let splitIdCounter = 0;
 const usedSplitIds = new Set();
 
@@ -332,7 +374,7 @@ function newLeaf(paneId) {
     while (usedPaneIds.has(id));
   }
   usedPaneIds.add(id);
-  return { kind: "pane", paneId: id, tabs: [TERMINAL_TAB_PLACEHOLDER], active: TERMINAL_TAB_PLACEHOLDER };
+  return { kind: "pane", paneId: id, tabs: [TERMINAL_TAB_PLACEHOLDER], active: TERMINAL_TAB_PLACEHOLDER, groupId: null };
 }
 
 function newEmptyLeaf() {
@@ -342,22 +384,11 @@ function newEmptyLeaf() {
   return leaf;
 }
 
-// The fan-out's empty space: a marked slot leaf waiting for a label
-// drop. The mark rides saveWorkspacePanesStates and isGroupSlot keys on
-// BOTH the flag and emptiness, so a populated slot self-unmarks even
-// if a stale flag survived a blob.
-function newGroupSlotLeaf(wsId) {
-  const leaf = newEmptyLeaf();
-  leaf.groupSlot = true;
-  if (wsId) leaf.wsId = wsId;
-  return leaf;
-}
-
 // Panel leaves bind one workspace (collector model): wsId rides the
 // leaf so tabs, focus, and the location bar all resolve through the
-// panel instead of the global selection. Old blobs without wsId heal in
-// normalizePaneTree. null wsId means unbound (fresh session leaf, no
-// workspace opened yet).
+// panel instead of the global selection. Old blobs without wsId heal
+// in normalizePanelEntry. null wsId means unbound (fresh session
+// panel, no workspace opened yet).
 function newPanelLeaf(wsId) {
   const leaf = newEmptyLeaf();
   leaf.wsId = wsId || null;
@@ -368,10 +399,10 @@ function leafWsId(leaf) {
   return (leaf && leaf.wsId) || null;
 }
 
-// Which workspace a leaf's content belongs to. Bound leaves answer
+// Which workspace a panel's content belongs to. Bound panels answer
 // their wsId; a blob healed without rows (offline boot, stub tests)
-// falls back to the first terminal tab row, else the selected ws. This
-// is the routing truth for focus, close, and sidebar resolution.
+// falls back to the first terminal tab row. This is the routing truth
+// for focus, close, and sidebar resolution.
 function leafWorkspaceId(leaf) {
   const bound = leafWsId(leaf);
   if (bound) return bound;
@@ -384,16 +415,17 @@ function leafWorkspaceId(leaf) {
   return null;
 }
 
-function leavesBoundTo(root, wsId) {
+function leavesBoundTo(entry, wsId) {
   if (!wsId) return [];
-  return paneLeaves(root).filter((leaf) => leafWorkspaceId(leaf) === wsId);
+  return paneLeaves(entry).filter((leaf) => leafWorkspaceId(leaf) === wsId);
 }
 
-// The leaf the location bar describes and commands act on. Pane focus
-// writes this pointer; a missing pointer heals to the first leaf.
-function focusedLeaf(root = paneRootFor()) {
-  if (!paneTreeRenderable(root)) return null;
-  return activeLeaf(root);
+// The panel the location bar describes and commands act on. Focus
+// writes entry.activePaneId; a missing pointer heals to the visible
+// subject's panel (or the first panel).
+function focusedLeaf(entry = paneRootFor()) {
+  if (!paneTreeRenderable(entry)) return null;
+  return activeLeaf(entry);
 }
 
 function isPaneLeaf(node) {
@@ -405,108 +437,164 @@ function isPaneSplit(node) {
     && Array.isArray(node.children) && node.children.length >= 2);
 }
 
-function paneLeaves(root) {
-  const out = [];
-  const walk = (node) => {
-    if (isPaneSplit(node)) node.children.forEach(walk);
-    else if (isPaneLeaf(node)) out.push(node);
-  };
-  walk(root);
-  return out.length ? out : [];
+// Every panel in the session, in list order. Consumers keep the
+// paneLeaves(root) call shape; the "root" is the session entry.
+function paneLeaves(entry) {
+  if (!entry || !Array.isArray(entry.panels)) return [];
+  return entry.panels.filter(isPaneLeaf);
 }
 
-// The leaf that renders: the active leaf when the pointer names a live
-// leaf, else the first leaf. Single-leaf trees (Phase 3b/3c sessions,
-// standalone harnesses) resolve to the root, which is what the old
-// helpers returned.
-function activeLeaf(root) {
-  const leaves = paneLeaves(root);
-  if (!leaves.length) return null;
-  const byId = root.activePaneId && leaves.find((l) => l.paneId === root.activePaneId);
-  return byId || leaves[0];
+// The panel that acts: the focus pointer's panel when it names a live
+// panel, else the visible subject's panel, else the first. Standalone
+// harnesses that hand a raw leaf resolve it directly.
+function activeLeaf(entry) {
+  const leaves = paneLeaves(entry);
+  if (!leaves.length) {
+    if (isPaneLeaf(entry)) return entry;
+    return null;
+  }
+  const byId = entry.activePaneId && leaves.find((l) => l.paneId === entry.activePaneId);
+  if (byId) return byId;
+  const subject = visibleSubject(entry);
+  if (subject && subject.kind === "panel") return subject.leaf;
+  if (subject && subject.kind === "group") {
+    const members = groupMembers(subject.group);
+    if (members.length) return members.find((l) => l.paneId === entry.activePaneId) || members[0];
+  }
+  return leaves[0];
 }
 
-function paneForPaneId(root, paneId) {
-  return paneLeaves(root).find((l) => l.paneId === paneId) || null;
+function paneForPaneId(entry, paneId) {
+  return paneLeaves(entry).find((l) => l.paneId === paneId) || null;
 }
 
-// Which leaf owns a tab id. Editor/git tabs can sit in any leaf; terminal
-// ids resolve to the terminal leaf (or null while only the placeholder
-// exists and no backend panels have loaded yet).
-function paneForTab(root, tabId) {
-  return paneLeaves(root).find((l) => l.tabs.includes(tabId)) || null;
+// Which panel owns a tab id. Editor/git tabs can sit in any panel;
+// terminal ids resolve to their owner panel (or null while only the
+// placeholder exists and no backend panels have loaded yet).
+function paneForTab(entry, tabId) {
+  return paneLeaves(entry).find((l) => l.tabs.includes(tabId)) || null;
 }
 
-function focusLeaf(root, leaf) {
+function focusLeaf(entry, leaf) {
   if (!leaf) return;
-  root.activePaneId = leaf.paneId;
+  entry.activePaneId = leaf.paneId;
 }
 
-// Recursively repairs trees loaded from storage: missing paneIds, sizes
-// that drifted from the children count, a stale activePaneId. Old blobs
-// (flat leaves from Phase 1-3c) load as single-leaf trees untouched.
-function normalizePaneTree(root) {
-  if (!root || typeof root !== "object") return null;
-  // A split that lost children down to one collapses to its survivor
-  // before the isPaneSplit check: the check requires two children, and a
-  // single-child split is indistinguishable from "not a split" to the
-  // renderer. Same for empty splits: the tree never renders those.
-  if (root && (root.kind === "row" || root.kind === "column") && Array.isArray(root.children)) {
-    root.children = root.children.filter(Boolean).map(normalizePaneTree).filter(Boolean);
-    if (root.children.length < 2) return root.children[0] || newLeaf();
+// Repairs one panel leaf loaded from storage: missing paneId, missing
+// groupId, wsId healing. Returns the leaf or null for garbage.
+function normalizePanelLeaf(leaf) {
+  if (!isPaneLeaf(leaf)) return null;
+  if (!leaf.paneId) {
+    do leaf.paneId = `p${++paneIdCounter}`;
+    while (usedPaneIds.has(leaf.paneId));
   }
-  if (isPaneSplit(root)) {
-    if (!Array.isArray(root.sizes)) root.sizes = [];
-    // Loaded splits keep their minted id: re-register it so newSplitId
-    // never mints a duplicate across reloads.
-    if (root.splitId) usedSplitIds.add(root.splitId);
-    root.sizes = root.children.map((_, i) => (Number.isFinite(root.sizes[i]) && root.sizes[i] > 0 ? root.sizes[i] : 1));
-    return root;
-  }
-  if (isPaneLeaf(root)) {
-    if (!root.paneId) {
-      do root.paneId = `p${++paneIdCounter}`;
-      while (usedPaneIds.has(root.paneId));
-    }
-    // Restored ids must REGISTER like minted ones: the counter starts at
-    // 0 in a fresh bundle, so an unregistered p1 from storage lets the
-    // next split mint a SECOND p1. paneForPaneId/activeLeaf then resolve
-    // whichever duplicate comes first in tree order, and focus, Enter
-    // minting, and the DOM reconcile (panes keyed by id) all act on the
-    // wrong leaf. Duplicates in a corrupt blob keep the first: the
-    // second registration is idempotent on a Set.
-    usedPaneIds.add(root.paneId);
-    // wsId healing (collector migration): legacy blobs carry no wsId.
-    // Bind from the first terminal row that resolves, so the sync's
-    // home ladder and the ws sweep see a real binding. Leaves with only
-    // editor/git ids or empty leaves stay null (adoption binds them
-    // later). state.tabs may be empty at load (offline boot, stub
-    // tests): leafWorkspaceId re-derives from rows each call, so a
-    // later snapshot still heals via the sync's adoption pass.
-    if (!root.wsId) {
-      for (const tabId of root.tabs || []) {
-        if (isEditorTab(tabId) || isGitTab(tabId)) continue;
-        const row = paneTerminalTabById(tabId);
-        const ws = row && row.workspace_id;
-        if (ws) {
-          root.wsId = ws;
-          break;
-        }
+  // Restored ids must REGISTER like minted ones: the counter starts at
+  // 0 in a fresh bundle, so an unregistered p1 from storage lets the
+  // next mint produce a SECOND p1. paneForPaneId/activeLeaf then resolve
+  // whichever duplicate comes first, and focus, Enter minting, and the
+  // DOM reconcile (panes keyed by id) all act on the wrong panel.
+  // Duplicates in a corrupt blob keep the first: the second
+  // registration is idempotent on a Set.
+  usedPaneIds.add(leaf.paneId);
+  if (!Array.isArray(leaf.tabs)) leaf.tabs = [];
+  if (leaf.groupId != null && typeof leaf.groupId !== "string") leaf.groupId = null;
+  // wsId healing (collector migration): legacy blobs carry no wsId.
+  // Bind from the first terminal row that resolves, so the sync's
+  // home ladder and the ws sweep see a real binding. Panels with only
+  // editor/git ids or empty panels stay null (adoption binds them
+  // later). state.tabs may be empty at load (offline boot, stub
+  // tests): leafWorkspaceId re-derives from rows each call, so a
+  // later snapshot still heals via the sync's adoption pass.
+  if (!leaf.wsId) {
+    for (const tabId of leaf.tabs) {
+      if (isEditorTab(tabId) || isGitTab(tabId)) continue;
+      const row = paneTerminalTabById(tabId);
+      const ws = row && row.workspace_id;
+      if (ws) {
+        leaf.wsId = ws;
+        break;
       }
     }
-    return root;
   }
-  return null;
+  return leaf;
+}
+
+// Repairs a group layout tree loaded from storage: sizes rebuilt to the
+// children count, split ids re-registered, paneId children kept as
+// strings, nested nodes recursed. Returns the node or null.
+function normalizeLayoutNode(node) {
+  if (!node || typeof node !== "object") return null;
+  if (typeof node === "string") return node;
+  if (!Array.isArray(node.children)) return null;
+  node.children = node.children.map(normalizeLayoutNode).filter(Boolean);
+  if (node.children.length < 2) return node.children[0] || null;
+  if (!Array.isArray(node.sizes)) node.sizes = [];
+  if (node.splitId) usedSplitIds.add(node.splitId);
+  node.sizes = node.children.map((_, i) => (Number.isFinite(node.sizes[i]) && node.sizes[i] > 0 ? node.sizes[i] : 1));
+  return node;
+}
+
+// Repairs a group record: re-registered id, members deduped against the
+// panel list, layout healed, memberIds pruned to live panels. A group
+// under two members dissolves (its members ungroup).
+function normalizeGroupRecord(group, entry) {
+  if (!group || typeof group !== "object") return null;
+  if (!group.groupId || typeof group.groupId !== "string") return null;
+  usedGroupIds.add(group.groupId);
+  const live = new Set(entry.panels.map((p) => p.paneId));
+  const seen = new Set();
+  const memberIds = (Array.isArray(group.memberIds) ? group.memberIds : []).filter((id) => {
+    if (!live.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  if (memberIds.length < 2) {
+    for (const id of memberIds) {
+      const leaf = entry.panels.find((p) => p.paneId === id);
+      if (leaf) leaf.groupId = null;
+    }
+    return null;
+  }
+  group.memberIds = memberIds;
+  if (group.name != null && typeof group.name !== "string") group.name = null;
+  group.layout = normalizeLayoutNode(group.layout);
+  if (!group.layout || typeof group.layout === "string") group.layout = memberIds.slice(0, 2);
+  // Every member must appear in the layout; a stale layout rebuilds
+  // flat from memberIds (geometry is cheap, membership is not).
+  const missing = memberIds.filter((id) => !layoutHoldsPaneId(group.layout, id));
+  if (missing.length) group.layout = memberIds.slice();
+  for (const id of memberIds) {
+    const leaf = entry.panels.find((p) => p.paneId === id);
+    if (leaf) leaf.groupId = group.groupId;
+  }
+  return group;
+}
+
+// Repairs the whole session entry: panels healed, groups healed and
+// dissolved-away, visible pointer validated. Returns the entry or null.
+function normalizePanelEntry(entry) {
+  if (!entry || typeof entry !== "object" || !Array.isArray(entry.panels)) return null;
+  entry.panels = entry.panels.map(normalizePanelLeaf).filter(Boolean);
+  if (!entry.panels.length) return null;
+  if (!Array.isArray(entry.groups)) entry.groups = [];
+  entry.groups = entry.groups.map((g) => normalizeGroupRecord(g, entry)).filter(Boolean);
+  // The visible pointer survives only when it names a live subject;
+  // anything else heals to the first ungrouped panel (or first panel).
+  const subject = visibleSubject(entry);
+  entry.visible = subject && subject.kind === "group"
+    ? { type: "group", id: subject.group.groupId }
+    : { type: "panel", id: subject.leaf.paneId };
+  return entry;
 }
 
 function loadWorkspacePanesStates() {
   try {
-    // The store holds ONE session tree now (previously one entry per
-    // workspace). Old multi-entry blobs load the FIRST entry as the
-    // session tree (the boot workspace's layout, D1 migration: pane
-    // layouts are cheap to rebuild, other stored trees drop) and the
-    // sync's terminalTabKnown prune sweeps stale ids on the first
-    // snapshot.
+    // The store holds ONE session entry. v2 (one-visible-view redo)
+    // carries {v, panels, groups, visible}. Legacy blobs (tree roots,
+    // groupCollapsed stamps, per-workspace entries) MIGRATE: every leaf
+    // in the old tree becomes a flat ungrouped panel, in tree order; the
+    // old split/group semantics do not map 1:1 to groups, so panels
+    // survive and geometry resets.
     const raw = localStorage.getItem(WORKSPACE_PANES_STORAGE_KEY);
     if (!raw) {
       localStorage.removeItem(WORKSPACE_PANES_STORAGE_KEY);
@@ -514,20 +602,48 @@ function loadWorkspacePanesStates() {
     }
     const parsed = JSON.parse(raw);
     const entry = parsed && typeof parsed === "object" ? parsed[SESSION_PANES_KEY] || Object.values(parsed)[0] : null;
-    if (entry && entry.root) {
-      const root = normalizePaneTree(entry.root);
-      if (root) {
-        // D13 reset, collector refinement: an all-empty tree whose
-        // leaves carry NO workspace binding is a ghost (every id closed
+    if (entry && Array.isArray(entry.panels)) {
+      const healed = normalizePanelEntry(entry);
+      if (healed) {
+        // D13 reset, collector refinement: an all-empty entry whose
+        // panels carry NO workspace binding is a ghost (every id closed
         // in a previous session, nothing adopted since) and resets to
-        // the single default pane. Empty panels with a live binding are
+        // the single default panel. Empty panels with a live binding are
         // real panels the user left and restore as-is.
-        const leaves = paneLeaves(root);
-        const restorable = leaves.some((leaf) => (leaf.tabs && leaf.tabs.length) || leafWsId(leaf));
+        const restorable = healed.panels.some((leaf) => (leaf.tabs && leaf.tabs.length) || leafWsId(leaf));
+        state.workspacePanes[SESSION_PANES_KEY] = restorable ? healed : {
+          v: 2,
+          panels: [newLeaf("p1")],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+          at: Date.now(),
+        };
+      }
+    } else if (entry && entry.root) {
+      // Legacy tree blob: flatten every leaf into panels. Old marks
+      // (groupCollector, groupSlot, groupCollapsed stamps) drop: the
+      // new model re-groups through the drag gesture.
+      const flat = [];
+      const walk = (node) => {
+        if (!node || typeof node !== "object") return;
+        if (Array.isArray(node.children)) { node.children.forEach(walk); return; }
+        if (node.kind === "pane" && Array.isArray(node.tabs)) flat.push(node);
+      };
+      walk(entry.root);
+      const panels = flat.map((leaf) => normalizePanelLeaf(leaf)).filter(Boolean);
+      if (panels.length) {
+        for (const leaf of panels) {
+          delete leaf.groupCollector;
+          delete leaf.groupSlot;
+          delete leaf.autoCloseArmed;
+          delete leaf.autoClosePre;
+        }
         state.workspacePanes[SESSION_PANES_KEY] = {
-          root: restorable ? root : newLeaf("p1"),
+          v: 2,
+          panels,
+          groups: [],
+          visible: { type: "panel", id: panels[0].paneId },
           at: entry.at || Date.now(),
-          maximizedPaneId: null,
         };
       }
     }
@@ -537,29 +653,25 @@ function loadWorkspacePanesStates() {
 
 function saveWorkspacePanesStates() {
   try {
-    // The session tree is the only entry now. It persists whenever it
-    // exists, no open-workspace gate: the tree survives the last
-    // workspace closing (an empty tree resets itself on load) and a
-    // dashboard boot (tree simply not created yet).
-    // v3.2: the auto-close arming is gesture-scoped runtime state, not
-    // layout. A persisted marker would auto-close a panel at the NEXT
-    // boot's first render (no gesture behind it). It drops out of the
-    // BLOB only (replacer below), never off the live tree: every arm
-    // path saves before rendering, and the render-top sweep still needs
-    // the marker to find its victim.
-    const stripArmed = (key, value) => (key === "autoCloseArmed" ? undefined : value);
+    // The session entry persists whenever it exists, no open-workspace
+    // gate: panels survive the last workspace closing (an empty entry
+    // resets itself on load) and a dashboard boot (entry simply not
+    // created yet). Runtime-only fields drop out of the BLOB (replacer
+    // below), never off the live entry: the render-top sweep still
+    // needs the marker to find its victim.
+    const stripRuntime = (key, value) => (key === "autoCloseArmed" || key === "autoClosePre" ? undefined : value);
     const live = {};
     if (state.workspacePanes[SESSION_PANES_KEY])
       live[SESSION_PANES_KEY] = state.workspacePanes[SESSION_PANES_KEY];
-    if (Object.keys(live).length) localStorage.setItem(WORKSPACE_PANES_STORAGE_KEY, JSON.stringify(live, stripArmed));
+    if (Object.keys(live).length) localStorage.setItem(WORKSPACE_PANES_STORAGE_KEY, JSON.stringify(live, stripRuntime));
     else localStorage.removeItem(WORKSPACE_PANES_STORAGE_KEY);
   } catch (_) {}
 }
 
-// A closed workspace no longer deletes a tree (there is only the one
-// session tree): its ids leave through pruneWorkspaceTabsFromPanes, and
-// the tree itself survives to host the remaining workspaces' panels.
-// Legacy per-workspace entries from older sessions are dropped here.
+// A closed workspace never deletes the session entry: its ids leave
+// through pruneWorkspaceTabsFromPanes, and the entry survives to host
+// the remaining workspaces' panels. Legacy per-workspace entries from
+// older sessions are dropped here.
 function forgetWorkspacePanes(id) {
   for (const key of Object.keys(state.workspacePanes || {})) {
     if (key !== SESSION_PANES_KEY) delete state.workspacePanes[key];
@@ -568,25 +680,24 @@ function forgetWorkspacePanes(id) {
 }
 
 // Eager teardown for a closing workspace (D10): its bound panels leave
-// the tree NOW, not on the next refresh tick. Between close and tick
+// the list NOW, not on the next refresh tick. Between close and tick
 // the strips would render dead ids with close buttons that POST against
-// vanished panels. Editor/git ids ride the dropped leaf (client-owned,
-// no re-home target once the ws is gone). Single-leaf-tree guard: the
-// collector keeps one panel to render; the sync's adoption pass rebinds
-// it to the next workspace that opens.
+// vanished panels. Editor/git ids ride the dropped panel (client-owned,
+// no re-home target once the ws is gone). All-panels guard: the last
+// panel keeps its slot emptied, ready for adoption by the next
+// workspace; anything else drops through the group-aware removal.
 function pruneWorkspaceTabsFromPanes(workspaceId) {
   if (!workspaceId) return false;
   let changed = false;
   for (const key of Object.keys(state.workspacePanes || {})) {
     const entry = state.workspacePanes[key];
-    const root = entry && entry.root;
-    if (!root) continue;
-    const doomed = paneLeaves(root).filter((leaf) => leafWorkspaceId(leaf) === workspaceId);
+    if (!entry || !Array.isArray(entry.panels)) continue;
+    const doomed = paneLeaves(entry).filter((leaf) => leafWorkspaceId(leaf) === workspaceId);
     if (!doomed.length) continue;
-    if (paneLeaves(root).length === doomed.length) {
-      // Every panel belonged to the closing ws: keep the tree but empty
-      // it, so the collector renders one panel ready for adoption. The
-      // sweep collapses the armed empties down to that one survivor.
+    if (entry.panels.length === doomed.length) {
+      // Every panel belonged to the closing ws: keep the list but empty
+      // it, so one panel stays ready for adoption. The sweep collapses
+      // the armed empties down to that one survivor.
       for (const leaf of doomed) {
         leaf.tabs = [];
         leaf.active = null;
@@ -609,27 +720,27 @@ function pruneWorkspaceTabsFromPanes(workspaceId) {
 
 loadWorkspacePanesStates();
 
+// The session entry itself. Consumers that used to walk a tree root
+// keep the paneRootFor()/paneRoot() call shape.
 function paneRoot() {
-  return panesStateFor().root;
+  return panesStateFor();
 }
 
-// A tree renders when it resolves to at least one leaf. Single-leaf trees
-// keep the old flat contract (root is the leaf), so Phase 3b/3c callers
-// and standalone harnesses are unaffected.
-function paneTreeRenderable(root) {
-  return paneLeaves(root).length > 0;
+// An entry renders when it holds at least one panel.
+function paneTreeRenderable(entry) {
+  return paneLeaves(entry).length > 0;
 }
 
-// Leaf-level accessors default to the active leaf. paneTabs/paneActiveTab
+// Leaf-level accessors default to the acting panel. paneTabs/paneActiveTab
 // keep their 3b/3c signatures: existing callers ask about the strip they
 // are looking at.
-function paneTabs(root = paneRoot()) {
-  const leaf = isPaneLeaf(root) ? root : activeLeaf(root);
+function paneTabs(entry = paneRoot()) {
+  const leaf = isPaneLeaf(entry) ? entry : activeLeaf(entry);
   return leaf ? leaf.tabs : [];
 }
 
-function paneActiveTab(root = paneRoot()) {
-  const leaf = isPaneLeaf(root) ? root : activeLeaf(root);
+function paneActiveTab(entry = paneRoot()) {
+  const leaf = isPaneLeaf(entry) ? entry : activeLeaf(entry);
   return leaf && leaf.active ? leaf.active : null;
 }
 
@@ -722,12 +833,17 @@ function terminalTabKnown(tabId) {
 // Per-leaf render pass: only the single shell owner below may host
 // #terminalShell. Resolved once per render so every leaf's mount call
 // sees the same decision even when several leaves show terminal tabs.
-// The cascade only considers leaves that actually render this pass: in
-// maximize mode the hidden sibling must never own the shell, or the
-// maximized pane parks it and shows a blank slot.
+// The cascade only considers leaves that actually render this pass
+// (the visible subject's members); hidden panels must never own the
+// shell, or the visible pane parks it and shows a blank slot.
+function renderedLeavesForSubject(subject) {
+  if (!subject) return [];
+  if (subject.kind === "group") return groupMembers(subject.group);
+  return [subject.leaf];
+}
+
 function terminalShellOwnerLeaf(root) {
-  const maxLeaf = maximizedLeaf(root);
-  const rendered = maxLeaf ? [maxLeaf] : paneLeaves(root);
+  const rendered = renderedLeavesForSubject(visibleSubject(root));
   if (!rendered.length) return null;
   const routeTab = state.tab != null ? String(state.tab) : null;
   const routeLeaf = routeTab && !isEditorTab(routeTab) && !isGitTab(routeTab) ? paneForTab(root, routeTab) : null;
@@ -817,24 +933,15 @@ function terminalHomeLeafFor(wsId) {
   return mintPanelForWorkspace(wsId, focused || leaves[0]);
 }
 
-// Structural mint: the fresh panel wraps beside the anchor leaf (nest
-// semantics, row by default) so the reshape is one node deep, same as
-// the explicit split commands. Returns the minted leaf; caller lands
-// the ids and the route sync moves focus when the route points here.
-// A mint can REPLACE the root object (anchor was the root leaf), so the
-// sync loop re-reads paneRootFor() every iteration after this runs.
+// Structural mint: the fresh panel appends to the flat list. Returns
+// the minted leaf; the caller lands the ids and the route sync moves
+// focus when the route points here. The anchor argument stays for the
+// call shape (focus keeps meaning), geometry no longer applies.
 function mintPanelForWorkspace(wsId, anchor) {
   const fresh = newPanelLeaf(wsId);
   const entry = panesStateFor();
-  if (!anchor) {
-    entry.root = fresh;
-    return fresh;
-  }
-  const slot = findLeafSlot(entry.root, anchor);
-  if (!slot) return fresh;
-  const nested = { kind: "row", sizes: [1, 1], children: [anchor, fresh] };
-  if (slot.holder === "root") entry.root = nested;
-  else slot.holder[slot.index] = nested;
+  entry.panels.push(fresh);
+  if (anchor) fresh.wsId = wsId || leafWsId(anchor) || null;
   return fresh;
 }
 
@@ -850,8 +957,9 @@ function syncTerminalTabsIntoTree(root) {
   const routeTab = state.tab != null ? String(state.tab) : null;
   let changed = false;
   for (const id of allBackendIds) {
-    // paneRootFor() per iteration: a mint can replace the root object
-    // mid-pass, and the next id must resolve against the live tree.
+    // paneRootFor() per iteration: the mint can append a panel mid-pass
+    // (the entry object stays), but re-reading keeps the lookup honest
+    // against any future entry swap.
     const root = paneRootFor();
     const owner = paneForTab(root, id);
     if (owner) continue;
@@ -868,8 +976,6 @@ function syncTerminalTabsIntoTree(root) {
       // v3.2: an adopted id refills the panel; an armed auto-close from
       // an earlier emptying gesture must not fire on the refill.
       disarmLeafAutoClose(home);
-      // Refill clears the slot mark: a spawned/adopted panel is a view.
-      delete home.groupSlot;
       changed = true;
     }
     if (!home.active) home.active = id;
@@ -894,10 +1000,9 @@ function syncTerminalTabsIntoTree(root) {
       if (dropLeafFromTree(deadLeaf)) changed = true;
     }
   }
-  // Tail passes re-read the root: the placement loop above may have
-  // minted a panel and REPLACED the root object mid-pass, and the ws
-  // sweep may have collapsed wrappers. Every read below names the live
-  // tree.
+  // Tail passes re-read the entry: the placement loop above may have
+  // minted a panel mid-pass, and the ws sweep may have dropped panels.
+  // Every read below names the live entry.
   const liveRoot = paneRootFor();
   if (allBackendIds.length) {
     // D7.1 repair rule: exactly one owner leaf per terminal id. A mid-drag
@@ -1060,7 +1165,15 @@ function splitNodeId(node) {
   return node.splitId;
 }
 
-function reconcileSplitNode(container, node, idPath) {
+function reconcileSplitNode(container, node, idPath, resolveLeaf) {
+  // Group layout children are paneId strings; resolveLeaf maps them to
+  // the live panel leaves (paneLeaves walks, never stored refs). Nested
+  // split nodes pass the resolver down unchanged.
+  const leafOf = (child) => {
+    if (isPaneSplit(child)) return null;
+    if (typeof child === "string") return resolveLeaf ? resolveLeaf(child) : null;
+    return child;
+  };
   // The caller pre-creates the wrapper for a nested split and passes it as
   // the container: use it directly instead of searching its children for
   // the same idPath (that would nest a duplicate wrapper inside it).
@@ -1081,7 +1194,7 @@ function reconcileSplitNode(container, node, idPath) {
   // Child split ids extend the parent path so two same-index splits in
   // different parents never collide.
   const childIds = node.children.map((child, i) =>
-    isPaneSplit(child) ? `${idPath}/${splitNodeId(child)}` : (child.paneId || `p?${i}`));
+    isPaneSplit(child) ? `${idPath}/${splitNodeId(child)}` : ((leafOf(child) && leafOf(child).paneId) || `p?${i}`));
   [...element.children].forEach((child) => {
     const isDivider = hasClass(child, "pane-divider");
     // Split wrappers carry data-split-id, leaves carry data-pane-id. Keying
@@ -1120,9 +1233,11 @@ function reconcileSplitNode(container, node, idPath) {
         mount.className = child.kind === "row" ? "pane-row" : "pane-column";
         mount.dataset.splitId = childId;
       } else {
+        const leaf = leafOf(child);
+        if (!leaf) return;
         mount = document.createElement("div");
         mount.className = "workspace-pane";
-        mount.dataset.paneId = child.paneId;
+        mount.dataset.paneId = leaf.paneId;
         const strip = document.createElement("div");
         strip.className = "pane-tab-strip";
         strip.setAttribute("role", "tablist");
@@ -1138,7 +1253,7 @@ function reconcileSplitNode(container, node, idPath) {
     if (isPaneSplit(child)) {
       // Nested split: recurse so its panes materialize; the id path is
       // the unique key the divider drag walks back on resize.
-      reconcileSplitNode(mount, child, childId);
+      reconcileSplitNode(mount, child, childId, resolveLeaf);
     }
     if (i < node.children.length - 1) {
       const dividerFor = childIds[i + 1];
@@ -1219,131 +1334,168 @@ function wirePanelChipDrag(container) {
     const related = event.relatedTarget;
     if (!related || (typeof related.closest === "function" && !related.closest("#workspacePanes"))) {
       clearPanelDropPreview();
-      armPaneDragDwell(null);
-      syncPaneDwellOutline(container, null);
     }
   });
 }
 
-// The collapsed group split inside a tree: the render walk checks the
-// root's flat children and every nested split, one stamp at most (the
-// collapse writes it on a single split).
-function findCollapsedGroupSplit(node) {
-  if (!node || !isPaneSplit(node)) return null;
-  if (isCollapsedGroup(node)) return node;
-  for (const child of node.children || []) {
-    const found = findCollapsedGroupSplit(child);
-    if (found) return found;
+// ---- label rail (one-visible-view model) ------------------------------
+// The rail sits at the top of #workspacePanes: one chip per ungrouped
+// panel (press switches the visible subject, drag enters the split
+// preview) plus one chip per group ("Group N views", press shows the
+// group, double-click renames). Grouped panels fold behind their
+// group's chip while the group is not the visible subject.
+function railEntryLabelForPanel(leaf) {
+  const activeTab = paneActiveTabOf(leaf);
+  if (activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab)) {
+    const row = paneTerminalTabById(activeTab);
+    const visible = row && panelVisibleLabel(row, row.number || 1);
+    if (visible) return visible;
   }
-  return null;
+  const wsId = leafWorkspaceId(leaf);
+  const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
+  return workspace
+    ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
+    : (wsId || "panel");
 }
 
-// Collapsed paint: one flat pane for the dock, strip carrying ONLY the
-// group chip (the member labels stay hidden until the chip's press
-// re-expands them), content mounting the dock's active view like any
-// focused pane. The pane keeps the dock's real paneId so strip
-// commands and focus resolve to the live leaf.
-function renderCollapsedGroupInto(container, split) {
-  const root = paneRoot();
-  const dock = collapsedGroupDock(root, split);
-  if (!dock) return;
-  // Stale split chrome from the expanded paint must go: the rescue pass
-  // parks live surfaces (#terminalShell, editor/git containers) before
-  // the drop, the same cleanup close-promote relies on.
-  [...container.children].forEach((child) => {
-    if (hasClass(child, "pane-row") || hasClass(child, "pane-column") || hasClass(child, "pane-strip-rail")) {
-      rescueLiveSurfaces(container, child);
-      detachDomNode(child);
-    }
-  });
-  let pane = findPaneElementById(container, dock.paneId);
-  if (!pane) {
-    pane = document.createElement("div");
-    pane.className = "workspace-pane";
-    pane.dataset.paneId = dock.paneId;
-    const strip = document.createElement("div");
-    strip.className = "pane-tab-strip";
-    strip.setAttribute("role", "tablist");
-    strip.setAttribute("aria-label", "Pane tabs");
-    pane.appendChild(strip);
-    const content = document.createElement("div");
-    content.className = "pane-content";
-    pane.appendChild(content);
-    container.appendChild(pane);
-  }
-  pane.dataset.paneId = dock.paneId;
-  const stripHtml = collapsedGroupChipHtml(split, dock);
-  const strip = pane.querySelector(".pane-tab-strip");
-  if (strip && strip.__herdrPaneSignature !== stripHtml) {
-    strip.__herdrPaneSignature = stripHtml;
-    strip.innerHTML = stripHtml;
-  }
-  markCurrentWorkspacePane(pane, dock);
-  if (typeof wirePaneStripDrag === "function") wirePaneStripDrag(strip);
+function paneActiveTabOf(leaf) {
+  return leaf && leaf.active && (leaf.tabs || []).includes(leaf.active) ? leaf.active : (leaf.tabs || [])[0] || null;
 }
 
-// The collapsed group chip: the group's name (renameable), counting the
-// dock's folded panels. Click expands; double-click renames, same trio
-// contract as the live group chip.
-function collapsedGroupChipHtml(split, dock) {
-  // The chip keeps the group's EXPANDED name: it counts the member
-  // views (the foldedHome records, one entry per view), never the
-  // dock's label stack (the dock's own labels rode the collector and
-  // never counted as members before the collapse either). A view whose
-  // labels all closed while collapsed drops out of the count. Legacy
-  // stamps without the records fall back to the dock's label count.
-  const foldedHome = (split.groupCollapsed && split.groupCollapsed.foldedHome) || null;
-  const viewCount = foldedHome
-    ? Object.values(foldedHome).filter((ids) => (ids || []).some((id) => terminalTabKnown(id))).length
-    : leafTerminalLabelCount(dock);
-  const name = split.groupName || `Group ${viewCount} panels`;
-  const title = `${name} (double-click to rename, click to expand)`;
-  const encodedSplit = encodeURIComponent(splitNodeId(split));
-  if (state.editingPaneGroup === splitNodeId(split)) {
-    return `<input class="pane-group-rename-input" aria-label="Rename panel group" value="${escapeAttr(state.editingPaneGroupValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitCollapsedGroupRename('${escapeAttr(encodedSplit)}')" oninput="state.editingPaneGroupValue=this.value" onkeydown="collapsedGroupRenameKey(event,'${escapeAttr(encodedSplit)}')">`;
-  }
-  return `<button class="pane-panel-chip pane-panel-group-chip pane-panel-group-collapsed" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-split-id="${escapeAttr(splitNodeId(split))}" onclick="event.preventDefault();expandCollapsedGroup('${escapeAttr(encodedSplit)}')" ondblclick="startCollapsedGroupRename('${escapeAttr(encodedSplit)}')">${escapeHtml(name)}</button>`;
+function railPanelChipHtml(leaf, isActive) {
+  const label = railEntryLabelForPanel(leaf);
+  const encoded = encodeURIComponent(leaf.paneId);
+  const title = `Show panel ${label}`;
+  return `<button class="pane-label-chip${isActive ? " active" : ""}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" aria-pressed="${isActive ? "true" : "false"}" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()">${escapeHtml(label)}</button>`;
 }
 
-// Rename trio for the collapsed chip, mirroring startPaneGroupRename
-// but keying the split directly: the dock paneId routes strip
-// commands, the splitId routes the collapsed rename.
-function startCollapsedGroupRename(encodedSplit) {
-  const splitId = decodeURIComponent(String(encodedSplit || ""));
-  const split = findSplitById(paneRootFor(), splitId);
-  if (!split || !isCollapsedGroup(split)) return;
-  state.editingPaneGroup = splitId;
-  state.editingPaneGroupValue = split.groupName || "";
+function railGroupChipHtml(group, isActive) {
+  const name = groupVisibleName(group);
+  const title = `${name} (double-click to rename)`;
+  const encoded = encodeURIComponent(group.groupId);
+  if (state.editingPaneGroup === group.groupId) {
+    return `<input class="pane-group-rename-input" aria-label="Rename panel group" value="${escapeAttr(state.editingPaneGroupValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPaneGroupRename('${escapeAttr(encoded)}')" oninput="state.editingPaneGroupValue=this.value" onkeydown="paneGroupRenameKey(event,'${escapeAttr(encoded)}')">`;
+  }
+  return `<button class="pane-label-chip pane-panel-group-chip${isActive ? " active" : ""}" draggable="false" data-group-id="${escapeAttr(group.groupId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" aria-pressed="${isActive ? "true" : "false"}" onclick="event.preventDefault();showGroupFromRail('${escapeAttr(encoded)}')" ondblclick="startPaneGroupRename('${escapeAttr(encoded)}')">${escapeHtml(name)}</button>`;
+}
+
+// Group rename (rail chip double-click): the name rides the group
+// record and persists through saveWorkspacePanesStates. The groupId
+// keys the edit session, so a dissolve mid-edit ends it naturally.
+function startPaneGroupRename(encodedGroupId) {
+  const groupId = decodeURIComponent(String(encodedGroupId || ""));
+  const group = groupById(paneRootFor(), groupId);
+  if (!group) return;
+  state.editingPaneGroup = groupId;
+  state.editingPaneGroupValue = group.name || "";
   renderWorkspacePanes();
   setTimeout(() => {
-    if (state.editingPaneGroup !== splitId) return;
+    if (state.editingPaneGroup !== groupId) return;
     const input = document.querySelector(".pane-group-rename-input");
     if (input && input.select) input.select();
   }, 0);
 }
 
-function commitCollapsedGroupRename(encodedSplit) {
-  const splitId = decodeURIComponent(String(encodedSplit || ""));
-  const split = findSplitById(paneRootFor(), splitId);
-  const value = (state.editingPaneGroupValue || "").trim();
-  if (split) {
-    if (value) split.groupName = value;
-    else delete split.groupName;
-    saveWorkspacePanesStates();
-  }
-  state.editingPaneGroup = null;
-  state.editingPaneGroupValue = "";
-  renderWorkspacePanes();
-}
-
-function collapsedGroupRenameKey(event, encodedSplit) {
-  if (!event) return;
-  if (event.key === "Enter") commitCollapsedGroupRename(encodedSplit);
-  else if (event.key === "Escape") {
+function paneGroupRenameKey(e, encodedGroupId) {
+  if (e.key === "Enter") {
+    if (e.preventDefault) e.preventDefault();
+    commitPaneGroupRename(encodedGroupId);
+  } else if (e.key === "Escape") {
     state.editingPaneGroup = null;
     state.editingPaneGroupValue = "";
     renderWorkspacePanes();
   }
+}
+
+function commitPaneGroupRename(encodedGroupId) {
+  const groupId = decodeURIComponent(String(encodedGroupId || ""));
+  const group = groupById(paneRootFor(), groupId);
+  const editingId = state.editingPaneGroup;
+  // Capture the draft BEFORE the editing state resets: the reads below
+  // would see "" and every commit would land as an empty rename.
+  const draft = String(state.editingPaneGroupValue || "").trim();
+  state.editingPaneGroup = null;
+  state.editingPaneGroupValue = "";
+  if (!group || editingId !== groupId) {
+    renderWorkspacePanes();
+    return;
+  }
+  // Empty reverts to the default "Group N views" (a stale custom name
+  // must not outlive the panels it counted).
+  if (draft) group.name = draft;
+  else group.name = null;
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+}
+
+// The rail paints when more than one subject choice exists: a single
+// ungrouped panel session renders nothing (the strip carries the
+// identity already). Groups always render a chip when not visible.
+function renderLabelRail(container, entry, subject) {
+  let rail = [...(container.children || [])].find((child) => hasClass(child, "pane-label-rail")) || null;
+  const ungrouped = paneLeaves(entry).filter((leaf) => !leaf.groupId);
+  const groups = (entry.groups || []).filter((g) => groupMemberCount(g) >= 2);
+  const needRail = ungrouped.length + groups.length > 1;
+  if (!needRail) {
+    if (rail) detachDomNode(rail);
+    return;
+  }
+  if (!rail) {
+    rail = document.createElement("div");
+    rail.className = "pane-label-rail";
+    rail.setAttribute("role", "tablist");
+    rail.setAttribute("aria-label", "Panels and groups");
+    // The rail sits ABOVE the subject: the container is a column flex,
+    // so the rail must precede the layout nodes in DOM order.
+    const firstPane = [...(container.children || [])].find((child) =>
+      hasClass(child, "workspace-pane") || hasClass(child, "pane-row") || hasClass(child, "pane-column"));
+    if (firstPane && container.insertBefore) container.insertBefore(rail, firstPane);
+    else container.appendChild(rail);
+  }
+  let html = "";
+  for (const leaf of ungrouped) {
+    const active = subject && subject.kind === "panel" && subject.leaf === leaf;
+    html += railPanelChipHtml(leaf, active);
+  }
+  for (const group of groups) {
+    const active = subject && subject.kind === "group" && subject.group === group;
+    html += railGroupChipHtml(group, active);
+  }
+  if (rail.__herdrRailSignature !== html) {
+    rail.__herdrRailSignature = html;
+    rail.innerHTML = html;
+  }
+}
+
+// Subject switch from a rail chip: panel press hides any visible group
+// (it folds back to its chip) and shows the panel alone.
+function showPanelFromRail(encodedPaneId) {
+  const entry = paneRootFor();
+  const paneId = decodeURIComponent(String(encodedPaneId || ""));
+  const leaf = paneId ? paneForPaneId(entry, paneId) : null;
+  if (!leaf) return false;
+  setVisibleSubject("panel", leaf.paneId);
+  focusLeaf(entry, leaf);
+  saveWorkspacePanesStates();
+  if (!writeRouteFromLeaf(leaf) || typeof go !== "function") renderWorkspacePanes();
+  return true;
+}
+
+function showGroupFromRail(encodedGroupId) {
+  const entry = paneRootFor();
+  const groupId = decodeURIComponent(String(encodedGroupId || ""));
+  const group = groupById(entry, groupId);
+  if (!group || groupMemberCount(group) < 2) return false;
+  const members = groupMembers(group);
+  const prev = setVisibleSubject("group", group.groupId);
+  // The first member carries the subject unless the previous subject's
+  // focus already names one of the members.
+  const focused = entry.activePaneId && members.find((l) => l.paneId === entry.activePaneId);
+  const target = focused || members[0];
+  focusLeaf(entry, target);
+  saveWorkspacePanesStates();
+  if (!writeRouteFromLeaf(target) || typeof go !== "function") renderWorkspacePanes();
+  return prev;
 }
 
 function renderWorkspacePanes() {
@@ -1354,69 +1506,58 @@ function renderWorkspacePanes() {
   // renders until a workspace opens, or the takeover would rebuild
   // dead chrome right after the dashboard mount pass detached it.
   if (dashboardOwnsPaneArea()) return;
-  const treeRoot = paneRoot();
-  if (!paneTreeRenderable(treeRoot)) return;
-  // v3.2 auto-close runs BEFORE the tree read: the sweep collapses
-  // panels EMPTIED by a gesture (armed at the emptying site: moves,
-  // drops, closes, backend prunes), and the render below must paint the
-  // settled tree, never a tree mid-collapse. Every emptying path
+  const entry = paneRoot();
+  if (!paneTreeRenderable(entry)) return;
+  // Auto-close runs BEFORE the subject read: the sweep drops panels
+  // EMPTIED by a gesture (armed at the emptying site: moves, drops,
+  // closes, backend prunes), and the paint below must show the
+  // settled entry, never an entry mid-drop. Every emptying path
   // renders (poll ticks, focus gestures, moves, closes), so this one
-  // hook covers them all; the focused leaf and the tree's last panel
-  // survive by the sweep's own guards, and fresh splits (never armed)
-  // stay standing.
+  // hook covers them all; the focused panel and the entry's last
+  // panel survive by the sweep's own guards.
   if (sweepAbandonedEmptyLeaves()) {
     if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
     if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.applyFocusClasses === "function")
       window.HerdrPaneFocus.applyFocusClasses();
   }
-  // Re-read after the sweep: a collapse can replace the root object
-  // (sibling promoted, wrappers flattened), and the paint below must
-  // target the live tree, not the pre-sweep snapshot.
-  const settledRoot = paneRoot();
-  syncTerminalTabsIntoTree(settledRoot);
+  // Re-read after the sweep: a drop can remove panels and dissolve
+  // groups, and the paint below must target the live entry, not the
+  // pre-sweep snapshot.
+  const settled = paneRoot();
+  syncTerminalTabsIntoTree(settled);
+  const subject = visibleSubject(settled);
+  if (!subject) return;
   // Per-pass lookups (see panePassLookups above) exist only for the paint
-  // below: installed after the sweep and the sync settled the tree, and
+  // below: installed after the sweep and the sync settled the entry, and
   // restored in the finally even when a mount call throws, so no caller
   // outside this pass can read a stale memo.
   const savedPassLookups = panePassLookups;
-  panePassLookups = buildPanePassLookups(settledRoot);
+  panePassLookups = buildPanePassLookups(settled);
   try {
-    // A maximized leaf renders alone: the tree is untouched and the next
-    // toggle restores the full layout. The flat single-pane path also keeps
-    // every existing caller that assumes one .workspace-pane working.
-    const maxLeaf = maximizedLeaf(settledRoot);
-    const root = maxLeaf || settledRoot;
-    // The rail only exists in maximize mode; a stale one from the last
-    // toggle must go before the split rebuilds the container.
-    if (!maxLeaf) {
-      [...container.children].forEach((child) => {
-        if (hasClass(child, "pane-strip-rail")) detachDomNode(child);
-      });
-    }
     // Never innerHTML this container: #terminalShell (and the #tabs /
     // #projectDashboard siblings app.html parks here) are live nodes the
     // whole app resolves by id. Build the layout with createElement so those
-    // nodes stay attached, then move #terminalShell into its leaf below.
-    // A collapsed group paints its dock pane ALONE: the member views and
-    // slots stand in the tree (one press on the group chip restores
-    // them), but the base rule is one visualised panel, so the split
-    // chrome stays hidden while collapsed. The dock keeps its strip
-    // labels folded away: only the group chip renders, pressing it
-    // re-expands the group (renderCollapsedGroupInto).
-    const collapsedSplit = !maxLeaf && isPaneSplit(settledRoot) ? findCollapsedGroupSplit(settledRoot) : null;
-    if (collapsedSplit) {
-      renderCollapsedGroupInto(container, collapsedSplit);
-    } else if (!maxLeaf && isPaneSplit(settledRoot)) {
-      reconcileSplitNode(container, settledRoot, splitNodeId(settledRoot));
+    // nodes stay attached, then move #terminalShell into its pane below.
+    const renderLeaves = [];
+    if (subject.kind === "group" && isPaneSplit(subject.group.layout)) {
+      reconcileSplitNode(container, subject.group.layout, splitNodeId(subject.group.layout), (id) => paneForPaneId(settled, id));
+      renderLeaves.push(...groupMembers(subject.group));
+    } else if (subject.kind === "group") {
+      // Degraded layout (flat array): fall back to a flat pair render.
+      const members = groupMembers(subject.group);
+      const layout = { kind: "row", sizes: members.map(() => 1), children: members.map((m) => m.paneId) };
+      subject.group.layout = layout;
+      reconcileSplitNode(container, layout, splitNodeId(layout), (id) => paneForPaneId(settled, id));
+      renderLeaves.push(...members);
     } else {
-      // Single leaf: keep the Phase 3 flat contract (no wrapper element),
-      // so existing callers and probes that query .workspace-pane directly
-      // stay valid.
+      // Single panel subject: keep the Phase 3 flat contract (no wrapper
+      // element), so existing callers and probes that query
+      // .workspace-pane directly stay valid.
       let pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
       if (!pane) {
         pane = document.createElement("div");
         pane.className = "workspace-pane";
-        pane.dataset.paneId = root.paneId || "root";
+        pane.dataset.paneId = subject.leaf.paneId || "root";
         const strip = document.createElement("div");
         strip.className = "pane-tab-strip";
         strip.setAttribute("role", "tablist");
@@ -1427,56 +1568,45 @@ function renderWorkspacePanes() {
         pane.appendChild(content);
         container.appendChild(pane);
       }
-      renderLeafInto(pane, root);
+      renderLeaves.push(subject.leaf);
     }
-    // Splits removed from the tree (close promoting a sibling) leave stale
-    // layout nodes behind; drop them once the reconcile owns the container.
-    // Maximize uses the same sweep against the effective root: the parked
-    // split DOM goes (live surfaces rescue out first) and the next toggle
-    // rebuilds it from the tree, same as close-promote does.
-    cleanupAbandonedLayout(container, root, collapsedSplit ? [collapsedGroupDock(root, collapsedSplit)].filter(Boolean) : null);
-    // Maximize keeps the hidden siblings' strips reachable: one stub pane
-    // per non-maximized leaf under a rail, strips only. No content mount:
-    // the loop below runs on the effective root, so sibling surfaces keep
-    // their dispose-on-hide lifecycle until a rail click restores.
-    if (maxLeaf) renderPaneStripRail(container, settledRoot, maxLeaf);
-    // Every leaf mounts its active tab: strips render everywhere, and the
-    // terminal leaf mounts/parks the one #terminalShell surface. A leaf
-    // whose active tab is editor/git keeps its own module container (the
-    // owning module mounts it); mountPaneTabContent only decides where the
-    // terminal shell lives and which stale containers hide.
+    // Stale layout nodes from a previous subject (split chrome from the
+    // group paint, or extra flat panes from the single paint) go once the
+    // current subject owns the container. Live surfaces rescue out
+    // first; the rail is chrome and rebuilds below.
+    cleanupAbandonedSubjectDom(container, subject, renderLeaves);
+    renderLabelRail(container, settled, subject);
+    // Every rendered leaf mounts its strip and active tab: strips render
+    // everywhere, and the terminal leaf mounts/parks the one
+    // #terminalShell surface. A leaf whose active tab is editor/git keeps
+    // its own module container (the owning module mounts it);
+    // mountPaneTabContent only decides where the terminal shell lives and
+    // which stale containers hide.
     const auxTabs = [];
-    // A collapsed group mounts its dock only: the member views hold no
-    // surface while collapsed (their ids sit in the dock's strip), so
-    // the walk covers the painted panes, never the hidden tree.
-    const mountLeaves = collapsedSplit ? [collapsedGroupDock(settledRoot, collapsedSplit)].filter(Boolean) : paneLeaves(root);
-    mountLeaves.forEach((leaf) => {
-      const pane = paneLeafElement(container, root, leaf);
+    renderLeaves.forEach((leaf) => {
+      const pane = paneLeafElement(container, subject, leaf);
       if (pane) {
-        // renderCollapsedGroupInto already painted this strip (group
-        // chip only); renderLeafInto would overwrite it with the folded
-        // member labels and break the hidden-while-collapsed contract.
-        if (!collapsedSplit) renderLeafInto(pane, leaf);
+        renderLeafInto(pane, leaf);
         mountPaneTabContent(pane, leaf, auxTabs);
       }
     });
     // Non-owner terminal leaves own aux surfaces; a tab not still on
-    // screen (closed or promoted leaf, tab moved to the owner) parks its
+    // screen (closed or dropped panel, tab moved to the owner) parks its
     // surface in the D8 cache (releaseStale also runs the cap eviction).
     if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseStale(auxTabs);
-    // A reshape can drop the leaf hosting the empty-leaf card (split
-    // collapse, close-promote, maximize): rescue parks it home hidden, and
+    // A reshape can drop the leaf hosting the empty-leaf card (group
+    // dissolve, close, subject switch): rescue parks it home hidden, and
     // only this sync decides whether the zero-tab state still warrants it.
     // Without the call here a quiet zero-tab workspace has no event-driven
     // refresh coming, so the card stayed parked and gone until some other
     // action rendered. Same bare-function guard style as the callers in
     // this file: standalone VM harnesses load this module without render.js.
     if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
-    // Mirror the tree's active pointer onto the pane elements (focus ring).
+    // Mirror the entry's active pointer onto the pane elements (focus ring).
     if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.applyFocusClasses === "function")
       window.HerdrPaneFocus.applyFocusClasses();
     // The bar's pane controls act on the focused leaf, so every reshape
-    // (split, close, maximize, focus follow) must repaint them. The bar
+    // (group change, close, focus follow) must repaint them. The bar
     // sync is signature-gated: a no-change reshape costs one string compare.
     if (window.HerdrLocationBar && typeof window.HerdrLocationBar.sync === "function")
       window.HerdrLocationBar.sync();
@@ -1485,8 +1615,34 @@ function renderWorkspacePanes() {
   }
 }
 
+// Subject-scoped DOM cleanup: keeps the panes the current subject
+// renders (keyed by paneId), drops every other layout node and stray
+// flat pane; the label rail survives as chrome. Live surfaces rescue
+// out before any drop.
+function cleanupAbandonedSubjectDom(container, subject, renderLeaves) {
+  const keepIds = new Set(renderLeaves.map((leaf) => leaf.paneId));
+  const layoutRoot = subject.kind === "group" && isPaneSplit(subject.group.layout) ? splitNodeId(subject.group.layout) : null;
+  [...(container.children || [])].forEach((child) => {
+    if (hasClass(child, "pane-label-rail")) return;
+    if (hasClass(child, "pane-row") || hasClass(child, "pane-column")) {
+      if (layoutRoot && child.dataset && child.dataset.splitId === layoutRoot) return;
+      rescueLiveSurfaces(container, child);
+      detachDomNode(child);
+    } else if (hasClass(child, "workspace-pane")) {
+      if (keepIds.has(child.dataset ? child.dataset.paneId : null)) return;
+      rescueLiveSurfaces(container, child);
+      detachDomNode(child);
+    } else if (hasClass(child, "pane-strip-rail")) {
+      detachDomNode(child);
+    }
+  });
+}
+
 function paneLeafElement(container, root, leaf) {
-  if (isPaneSplit(root)) {
+  // Group subjects render through the split reconcile: the pane sits
+  // somewhere in the layout wrapper, keyed by paneId. Single-panel
+  // subjects keep the flat contract (first .workspace-pane child).
+  if (root && root.kind === "group") {
     return findPaneElementById(container, leaf.paneId) || null;
   }
   const first = [...container.children].find((child) => hasClass(child, "workspace-pane"));
@@ -1548,24 +1704,12 @@ function paneWorkspaceBadgeHtml(leaf) {
   return `<button class="pane-ws-badge" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.stopPropagation();HerdrPaneWorkspacePicker.openPicker(this,'${escapeAttr(encodedPane)}','switch')">${escapeHtml(label)}</button>`;
 }
 
-// Leaves hosting the selected workspace's terminal panels carry the
-// pane-owns-current class: on mixed trees it paints a distinct border
-// so the home pane reads at a glance (the D4 badge names it, the border
-// locates it). Single-workspace trees skip the class: every pane would
-// wear it, no information.
+// Panels hosting the selected workspace's terminal tabs carry the
+// pane-owns-current class: on mixed sessions it paints a distinct
+// border so the home pane reads at a glance (the D4 badge names it,
+// the border locates it). Single-workspace sessions skip the class:
+// every pane would wear it, no information.
 function markCurrentWorkspacePane(pane, leaf) {
-  // Marked slot: the pane element carries the mark so the
-  // slot's dashed affordance styles off a data attribute. Stamped
-  // before the classList guard: stub DOMs without classList still get
-  // the attribute (the real DOM has both).
-  if (pane && leaf) {
-    if (leaf.groupSlot === true && pane.getAttribute && pane.getAttribute("data-group-slot") !== "true") {
-      pane.setAttribute("data-group-slot", "true");
-    }
-    if (leaf.groupSlot !== true && pane.hasAttribute && pane.hasAttribute("data-group-slot")) {
-      pane.removeAttribute("data-group-slot");
-    }
-  }
   if (!pane || !pane.classList) return;
   const ids = leafWorkspaceIds(leaf);
   const owns = treeIsMixed() && ids.length === 1 && ids[0] === state.ws;
@@ -1574,238 +1718,36 @@ function markCurrentWorkspacePane(pane, leaf) {
 }
 
 // Panel chip (collector model): one chip per strip's leading edge, only
-// when the tree holds more than one panel. Standalone panels name their
-// workspace (worktree display name when it has one). Panels inside a
-// GROUP share ONE group chip instead: the icon marks the group, the
-// number is the visible member count, click focuses the group's
-// last-focused leaf. A group is the split whose view area holds the
-// panel: a top-level subtree (v3), or the flat root itself when every
-// root child is a leaf (the first split builds exactly this shape, so
-// the number appears the moment it happens). A split stays a group
-// only while the fan-out is real: at most one member stacks labels
-// (the collector the views split out of), so two label stacks render
-// every panel ungrouped. Single-panel trees hide
-// the chip: one panel names itself through the location bar and
-// sidebar already.
-
-// Group members actually in the view area. Maximize mode parks every
-// sibling behind rail stubs, so the visible set collapses to the
-// maximized member (v3.2): hidden panels stay outside the group.
-function paneGroupVisibleMembers(group) {
-  const members = group ? paneLeaves(group) : [];
-  const entry = panesStateFor();
-  if (!entry || !entry.maximizedPaneId) return members;
-  return members.filter((leaf) => leaf.paneId === entry.maximizedPaneId);
-}
-
-// Group slots and docks (redo model): the fan-out half-drop mints the
-// dragged view PLUS one marked empty leaf (groupSlot), the drop target
-// other labels fill; the source leaf keeps a groupCollector mark so a
-// 1-label dock never miscounts as a view (the "delta with 1 labels has
-// 2" bug class). Both marks persist through saveWorkspacePanesStates
-// (the replacer only strips autoCloseArmed).
-function isGroupSlot(leaf) {
-  return !!(leaf && leaf.groupSlot === true && !(leaf.tabs || []).length);
-}
-
-function isGroupView(leaf) {
-  return !!(leaf && leafTerminalLabelCount(leaf) === 1 && !leaf.groupCollector && !isGroupSlot(leaf));
-}
-
-// The group's dock: the marked collector when it still lives in the
-// split, else the single label stack there. null for dock-less groups
-// (the bar drop mints one rather than fold into a foreign stack).
-function resolveGroupDock(split) {
-  if (!split) return null;
-  const leaves = paneLeaves(split);
-  const marked = leaves.find((leaf) => leaf.groupCollector === true) || null;
-  if (marked) return marked;
-  return leaves.find((leaf) => leafTerminalLabelCount(leaf) > 1) || null;
-}
-
-// Split-out views inside a split: leaves holding exactly ONE terminal
-// label and no dock/slot mark. The collector itself (multiple labels
-// or marked) is not a view; empty slots hold zero labels and never
-// count.
-function paneGroupVisibleViews(group) {
-  return paneLeaves(group).filter(isGroupView);
-}
-
-// Marked empty slots waiting for a label drop.
-function paneGroupSlots(group) {
-  return paneLeaves(group).filter(isGroupSlot);
-}
-
-// A split is a group only while the fan-out is real: at least one real
-// view, at least two fan-out members (views + marked slots), and at
-// most ONE label stack (the collector the views came from). Two stacks
-// are collectors side by side and never group.
-function paneSplitIsGroup(split) {
-  const views = paneGroupVisibleViews(split);
-  if (!views.length) return false;
-  if (views.length + paneGroupSlots(split).length < 2) return false;
-  const stacks = paneLeaves(split).filter(
-    (leaf) => leafTerminalLabelCount(leaf) > 1 || leaf.groupCollector === true
-  );
-  return stacks.length <= 1;
-}
-
-function paneGroupChipHtml(root, group) {
-  const members = paneGroupVisibleMembers(group);
-  const views = paneGroupVisibleViews(group);
-  // The chip counts REAL views only: a slot never inflates the number
-  // (a 1-view fan-out with its slot shows no chip, not "Group 2").
-  if (views.length < 2) return "";
-  const focusedMember = (group && group.kind !== "pane" && group.activePaneId
-    && paneForPaneId(root, group.activePaneId)) || (members.find((leaf) => leaf === activeLeaf(root)) || members[0]);
-  if (!focusedMember) return "";
-  const splitId = splitNodeId(group);
-  const name = group.groupName || `Group ${views.length} panels`;
-  const title = `${name} (double-click to rename)`;
-  const encodedFocus = focusedMember.paneId ? encodeURIComponent(focusedMember.paneId) : "";
-  if (state.editingPaneGroup === splitId) {
-    // inputAttrs is a bundle-scope helper (core.js destructures it from
-    // HerdrAppHelpers); standalone-VM realms boot without it, same
-    // guard pattern as mountEmptyPanelCard's titleWithWebuiShortcut.
-    // The interpolation stays INLINE: the keyboard-guard scan keys on
-    // ${inputAttrs(} inside the tag open itself.
-    return `<input class="pane-group-rename-input" aria-label="Rename panel group" value="${escapeAttr(state.editingPaneGroupValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPaneGroupRename('${escapeAttr(encodedFocus)}')" oninput="state.editingPaneGroupValue=this.value" onkeydown="paneGroupRenameKey(event,'${escapeAttr(encodedFocus)}')">`;
-  }
-  return `<button class="pane-panel-chip pane-panel-group-chip" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-pane-id="${escapeAttr(focusedMember.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedFocus)}')" ondblclick="startPaneGroupRename('${escapeAttr(encodedFocus)}')">${escapeHtml(name)}</button>`;
-}
-
-// Group rename mirrors the tab rename trio (worktrees.js) but stays
-// client-only: the name rides the split node (split.groupName) and
-// persists through saveWorkspacePanesStates. The focused member's
-// paneId keys the session; commitPaneGroupRename resolves the split
-// through it, so a reshape mid-edit ends the session naturally.
-function startPaneGroupRename(encodedFocus) {
-  const root = paneRootFor();
-  const leaf = encodedFocus ? paneForPaneId(root, decodeURIComponent(encodedFocus)) : null;
-  const group = leaf ? paneGroupForLeaf(root, leaf) : null;
-  if (!group) return;
-  const splitId = splitNodeId(group);
-  state.editingPaneGroup = splitId;
-  state.editingPaneGroupValue = group.groupName || "";
-  renderWorkspacePanes();
-  setTimeout(() => {
-    if (state.editingPaneGroup !== splitId) return;
-    const input = document.querySelector(".pane-group-rename-input");
-    if (input && input.select) input.select();
-  }, 0);
-}
-
-function paneGroupRenameKey(e, encodedFocus) {
-  if (e.key === "Enter") {
-    if (e.preventDefault) e.preventDefault();
-    commitPaneGroupRename(encodedFocus);
-  } else if (e.key === "Escape") {
-    state.editingPaneGroup = null;
-    state.editingPaneGroupValue = "";
-    renderWorkspacePanes();
-  }
-}
-
-function commitPaneGroupRename(encodedFocus) {
-  const root = paneRootFor();
-  const leaf = encodedFocus ? paneForPaneId(root, decodeURIComponent(encodedFocus)) : null;
-  const group = leaf ? paneGroupForLeaf(root, leaf) : null;
-  const splitId = state.editingPaneGroup;
-  // Capture the draft BEFORE the editing state resets: the reads below
-  // would see "" and every commit would land as an empty rename.
-  const draft = String(state.editingPaneGroupValue || "").trim();
-  state.editingPaneGroup = null;
-  state.editingPaneGroupValue = "";
-  if (!group) {
-    renderWorkspacePanes();
-    return;
-  }
-  if (splitId && splitNodeId(group) !== splitId) {
-    renderWorkspacePanes();
-    return;
-  }
-  // Empty reverts to the default "Group N panels" (a stale custom name
-  // must not outlive the views it counted).
-  if (draft) group.groupName = draft;
-  else delete group.groupName;
-  saveWorkspacePanesStates();
-  renderWorkspacePanes();
-}
-
-// The STRUCTURAL split whose view area holds a leaf, with no group
-// validity check: the flat root when every root child is a leaf (and
-// the leaf is one of them), else the top-level split child containing
-// the leaf, else null. The decay fold reasons about this split after a
-// move emptied the fan-out (the group checks would reject it by
-// then); paneGroupForLeaf layers the validity on top for renders.
-function paneGroupSplitForLeaf(root, leaf) {
-  if (!root || !leaf || !isPaneSplit(root)) return null;
-  if (root.children.every((child) => child && child.kind === "pane")) {
-    return root.children.includes(leaf) ? root : null;
-  }
-  return root.children.find((child) => isPaneSplit(child) && paneLeaves(child).includes(leaf)) || null;
-}
-
-// The split whose view area groups a leaf: the structural split from
-// paneGroupSplitForLeaf, kept only while it is a real group
-// (paneSplitIsGroup above). Mixed roots keep the doc model: direct
-// leaves stay standalone, subtree members group as before. Derived,
-// never stored: the tree already expresses membership and a stored
-// flag would drift on every reshape.
-function paneGroupForLeaf(root, leaf) {
-  const split = paneGroupSplitForLeaf(root, leaf);
-  return split && paneSplitIsGroup(split) ? split : null;
-}
+// when the session holds more than one panel. Standalone panels name
+// their workspace (worktree display name when it has one). Grouped
+// panels sit behind their group chip in the rail; the strip chip
+// still names the panel itself (focus and identity, never grouping).
+// Single-panel sessions hide the chip: one panel names itself through
+// the location bar and sidebar already.
 
 // Terminal labels stacked in one strip. Editor and git tabs ride on
-// the view they opened from, the boot placeholder is not a label yet:
+// the panel they opened from, the boot placeholder is not a label yet:
 // neither counts toward the stack.
 function leafTerminalLabelCount(leaf) {
   return (leaf.tabs || []).filter((id) => !isEditorTab(id) && !isGitTab(id) && id !== TERMINAL_TAB_PLACEHOLDER).length;
 }
 
-// The group shape a view leaves behind, stamped BEFORE the gesture
-// empties or drops it: the collector's id plus the view's workspace,
-// or null when the leaf is not a single-label view inside a valid
-// group (collector sources and standalone panels never fold). The
-// decay fold reads this after the mutation: the source is empty or
-// gone by then, and re-resolving its split post-reshape could name a
-// region the leaf already left. Ids, not leaf refs: the stamp rides
-// the leaf through saveWorkspacePanesStates, and a persisted ref
-// would come back a stale JSON twin.
+// Group stamp for the sweep (kept minimal in the flat model): a group
+// member emptied by a gesture carries which group it belonged to, so
+// the sweep dissolves the group instead of leaving a one-member stub.
+// Ids, not refs: the stamp rides the leaf through saveWorkspacePanesStates.
 function autoClosePreStateFor(root, leaf) {
   if (!leaf) return null;
-  const split = paneGroupSplitForLeaf(root, leaf);
-  if (!split || !paneSplitIsGroup(split) || !paneGroupVisibleViews(split).includes(leaf)) return null;
-  // v2: the dock resolves through the marks first (a 1-label dock is
-  // still a dock), falling back to the label stack. Dock-less groups
-  // stamp null: their strip/close removals dissolve through the v3.2
-  // armed collapse alone, only the bar drop mints a dock.
-  const collector = resolveGroupDock(split);
-  return collector ? { collectorId: collector.paneId || null, wsId: leafWorkspaceId(leaf) || null } : null;
+  const group = groupForLeaf(root, leaf);
+  return group ? { collectorId: group.groupId, wsId: leafWorkspaceId(leaf) || null } : null;
 }
 
+// Identity chip on each strip: the workspace name, click focuses the
+// panel. Grouped panels sit behind their group chip in the rail; the
+// strip chip keeps working for the panel the strip belongs to.
 function panePanelChipHtml(leaf) {
   const root = paneRootFor();
   if (!leaf || paneLeaves(root).length < 2) return "";
-  // Group chips render on the group's FOCUSED member strip only; the
-  // other members keep standalone chips (v4: the chip is identity and
-  // focus, never a drag handle; labels drag, chips click). Below
-  // 2+ visible members (maximize mode) the focused member falls back
-  // to its standalone chip (v3.2).
-  const group = paneGroupForLeaf(root, leaf);
-  const active = activeLeaf(root);
-  // The group chip needs 2+ REAL views (the fan-out's 1 view + slot
-  // state falls through to the standalone chip: the number appears
-  // only once the second view lands) and 2+ visible members (the
-  // v3.2 maximize guard). paneGroupChipHtml returning "" would strip
-  // the chip entirely, so the fallback must live HERE.
-  if (group && leaf === active && paneGroupVisibleMembers(group).length >= 2
-    && paneGroupVisibleViews(group).length >= 2) {
-    return paneGroupChipHtml(root, group);
-  }
-  // Non-focused members and single-visible-member groups fall through
-  // to the workspace-name chip: click focuses this panel.
   const wsId = leafWorkspaceId(leaf);
   const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
   const label = workspace
@@ -1851,190 +1793,6 @@ function focusPanelFor(encodedPaneId) {
   // stub harness without go()) the render pass still applies the focus.
   if (!hadRoute) renderWorkspacePanes();
   return true;
-}
-
-// A collapsed group rides its split node: dockId + wsId identify the
-// dock leaf (ids, not leaf refs, so the stamp survives persistence and
-// tree reshapes). The split keeps its children untouched through the
-// collapse; the renderer paints the dock pane alone while the stamp
-// lives, and expandCollapsedGroup clears it.
-function isCollapsedGroup(split) {
-  return !!(split && split.groupCollapsed && split.groupCollapsed.dockId);
-}
-
-// The dock leaf of a collapsed group: resolved through the stamp ids
-// against the live tree, so a reshape that re-keyed the split still
-// finds the dock by id.
-function collapsedGroupDock(root, split) {
-  const stamp = split && split.groupCollapsed;
-  if (!stamp || !stamp.dockId) return null;
-  return paneLeaves(root).find((leaf) => leaf.paneId === stamp.dockId) || null;
-}
-
-// Collapse: the pressed label's dock collects every group view's
-// terminal labels (the v3.2 fold-home protocol: ids move, disarmed on
-// arrival, active follows the pressed id), marked slots drop, and the
-// split carries the collapsed stamp. The stamp also records WHERE each
-// label came from (foldedHome: paneId -> [tabIds]) so the expand can
-// route every label back to its view instead of stranding them in the
-// dock's strip (strips only paint backend-known ids per leaf, so a
-// label parked in the wrong leaf disappears). Only a press on a
-// terminal label whose leaf sits inside a live group (a real split, a
-// resolvable dock) collapses; every other press falls through to the
-// plain navigation. Returns true when the collapse fired (the caller
-// skips go()).
-function collapseGroupForTabPress(tabId) {
-  if (!tabId || isEditorTab(tabId) || isGitTab(tabId)) return false;
-  const root = paneRootFor();
-  const source = paneForTab(root, tabId);
-  if (!source) return false;
-  const split = paneGroupSplitForLeaf(root, source);
-  if (!split || !paneSplitIsGroup(split) || isCollapsedGroup(split)) return false;
-  const dock = source.groupCollector === true ? source : resolveGroupDock(split);
-  if (!dock || !dock.tabs.includes(tabId)) return false;
-  // Fold every view's terminal labels home; editor/git ids ride the
-  // leaf (client-owned), and emptied views arm for the sweep so a
-  // plain-collapse never leaves dead panes standing.
-  const views = paneGroupVisibleViews(split);
-  const foldedHome = {};
-  for (const view of views) {
-    const ids = (view.tabs || []).filter((id) => !isEditorTab(id) && !isGitTab(id) && id !== TERMINAL_TAB_PLACEHOLDER);
-    const viewIds = foldedHome[view.paneId] = [];
-    view.autoClosePre = autoClosePreStateFor(root, view);
-    for (const id of ids) {
-      const at = view.tabs.indexOf(id);
-      if (at >= 0) view.tabs.splice(at, 1);
-      if (!dock.tabs.includes(id)) dock.tabs.push(id);
-      viewIds.push(id);
-      disarmLeafAutoClose(dock);
-    }
-    if (!view.tabs.length) armLeafAutoClose(view);
-  }
-  // Marked slots leave with the views: the collapsed dock shows no
-  // empty-space affordance.
-  for (const slot of paneGroupSlots(split)) dropLeafFromTree(slot);
-  dock.active = tabId;
-  dock.groupCollector = true;
-  split.groupCollapsed = { dockId: dock.paneId || null, wsId: leafWorkspaceId(dock) || null, foldedHome };
-  focusLeaf(root, dock);
-  saveWorkspacePanesStates();
-  // Route write goes through writeRouteFromLeaf so the mounted view is
-  // the pressed panel; the refresh renders the collapsed dock alone.
-  if (!writeRouteFromLeaf(dock) || typeof go !== "function") renderWorkspacePanes();
-  return true;
-}
-
-// Expand: the collapsed-group chip press restores the group. The views
-// and slots sit in the tree untouched; clearing the stamp and painting
-// rebuild the split. The dock keeps every label; pressing one again
-// re-collapses.
-function expandCollapsedGroup(encodedSplitId) {
-  const root = paneRootFor();
-  const splitId = decodeURIComponent(String(encodedSplitId || ""));
-  const split = paneLeaves(root).length && root ? findSplitById(root, splitId) : null;
-  if (!split || !isCollapsedGroup(split)) return false;
-  // Route every folded label back to its view leaf: the stamp's
-  // foldedHome map (paneId -> [tabIds]) carries the pre-collapse
-  // homes. Without this pass the ids stay in the dock while the views
-  // stand empty, and the group model paints nothing (a view is one
-  // backend-known label per leaf). The collapse armed the emptied
-  // views for the sweep; the expansion restores their role, so the
-  // arms must go or the first render's sweep eats the whole group the
-  // moment the stamp clears.
-  const stamp = split.groupCollapsed;
-  const homeEntries = Object.entries((stamp && stamp.foldedHome) || {});
-  const root2 = paneRootFor();
-  for (const [viewPaneId, ids] of homeEntries) {
-    const view = paneLeaves(root2).find((leaf) => leaf.paneId === viewPaneId);
-    if (!view) continue;
-    for (const id of ids) {
-      const owner = paneForTab(root2, id) || dockLeaf;
-      const at = owner.tabs.indexOf(id);
-      if (at >= 0) owner.tabs.splice(at, 1);
-      if (!view.tabs.includes(id)) view.tabs.push(id);
-    }
-    if (view.tabs.length && !view.active) view.active = view.tabs[0];
-    disarmLeafAutoClose(view);
-  }
-  for (const leaf of paneLeaves(split)) disarmLeafAutoClose(leaf);
-  const dockLeaf = collapsedGroupDock(root2, split);
-  if (dockLeaf && dockLeaf.active && !dockLeaf.tabs.includes(dockLeaf.active)) dockLeaf.active = dockLeaf.tabs[0] || null;
-  delete split.groupCollapsed;
-  saveWorkspacePanesStates();
-  renderWorkspacePanes();
-  return true;
-}
-
-function findSplitById(node, splitId) {
-  if (!node || !splitId) return null;
-  if (isPaneSplit(node) && splitNodeId(node) === splitId) return node;
-  if (!isPaneSplit(node)) return null;
-  for (const child of node.children || []) {
-    const found = findSplitById(child, splitId);
-    if (found) return found;
-  }
-  return null;
-}
-
-// Spring-loaded dwell state (v4): the pane id a label drag hovered for
-// the dwell window, so the drop switches its placement into that pane.
-let paneDragDwellPaneId = null;
-let paneDragDwellTimer = null;
-
-// v4 dwell window in ms: how long a label drag must hover one pane
-// before the placement switches into it. 2s, the Finder spring-open
-// window the spec named.
-const PANE_DRAG_DWELL_MS = 2000;
-
-// Arm the dwell for the hovered pane. Hovering a different pane
-// restarts the clock; re-entering the armed pane is a no-op.
-function armPaneDragDwell(paneId) {
-  if (paneDragDwellPaneId === paneId) return;
-  clearPaneDragDwell();
-  if (!paneId || typeof setTimeout !== "function") return;
-  paneDragDwellPaneId = paneId;
-  paneDragDwellTimer = setTimeout(() => {
-    paneDragDwellTimer = null;
-  }, PANE_DRAG_DWELL_MS);
-}
-
-function clearPaneDragDwell() {
-  if (typeof clearTimeout === "function" && paneDragDwellTimer) clearTimeout(paneDragDwellTimer);
-  paneDragDwellTimer = null;
-  paneDragDwellPaneId = null;
-}
-
-// The dwell passed when the armed pane still matches the hover. The
-// timer firing alone is not enough: the pointer may have left while a
-// stale pane id sat armed.
-function paneDragDwellLocked(paneId) {
-  return !!(paneDragDwellTimer === null && paneDragDwellPaneId === paneId && paneId);
-}
-
-// Full-pane outline for the locked pane: the visual "the placement
-// switched into this panel" signal. One node, cleaned on every state
-// change so a re-render never resurrects it over the wrong pane.
-function syncPaneDwellOutline(container, lockedPaneId) {
-  const previous = document.getElementById("paneDwellOutline");
-  if (!lockedPaneId) {
-    if (previous) detachDomNode(previous);
-    return;
-  }
-  const pane = lockedPaneId ? findPaneElementById(container, lockedPaneId) : null;
-  if (!pane) return;
-  let outline = previous;
-  if (!outline) {
-    outline = document.createElement("div");
-    outline.id = "paneDwellOutline";
-    outline.className = "pane-dwell-outline";
-    outline.setAttribute("aria-hidden", "true");
-  }
-  if (outline.parentElement !== pane && pane.appendChild) pane.appendChild(outline);
-}
-
-function clearPaneDwellOutline() {
-  const outline = document.getElementById("paneDwellOutline");
-  if (outline) detachDomNode(outline);
 }
 
 // Corner-zone hit test for the chip/tab drag (v3.1): the trigger area is
@@ -2140,80 +1898,10 @@ function renderLeafInto(pane, leaf) {
   }
 }
 
-// ---- maximize rail ----------------------------------------------
-// Sibling strips stay reachable while a leaf is maximized: one stub
-// .workspace-pane per hidden leaf, keyed by the real paneId so strip
-// commands act on the owning leaf. cleanup sweeps direct children only,
-// so the nested stubs survive; find-by-id callers hit the flat pane
-// first (it precedes the rail). Stubs rebuild every render: nothing
-// live ever parks inside the rail.
-function renderPaneStripRail(container, treeRoot, maxLeaf) {
-  const siblings = paneLeaves(treeRoot).filter((leaf) => leaf !== maxLeaf);
-  let rail = [...container.children].find((child) => hasClass(child, "pane-strip-rail")) || null;
-  if (!siblings.length) {
-    if (rail) detachDomNode(rail);
-    return;
-  }
-  if (!rail) {
-    rail = document.createElement("div");
-    rail.className = "pane-strip-rail";
-    container.appendChild(rail);
-  }
-  [...rail.children].forEach(detachDomNode);
-  siblings.forEach((leaf) => {
-    const stub = document.createElement("div");
-    stub.className = "workspace-pane pane-rail-stub";
-    stub.dataset.paneId = leaf.paneId;
-    const strip = document.createElement("div");
-    strip.className = "pane-tab-strip";
-    strip.setAttribute("role", "tablist");
-    strip.setAttribute("aria-label", "Pane tabs");
-    stub.appendChild(strip);
-    rail.appendChild(stub);
-    renderLeafInto(stub, leaf);
-  });
-}
-
 // Node-test stubs have no .remove(): fall back to removeChild.
 function detachDomNode(node) {
   if (node.remove) node.remove();
   else if (node.parentNode && node.parentNode.removeChild) node.parentNode.removeChild(node);
-}
-
-// Layout nodes from a previous tree shape that nothing references anymore
-// (a close promoted the sibling into the root slot). Anything that is not
-// the current split node or the current leaf pane goes; #terminalShell's
-// parking spot and the app.html siblings (#tabs, #projectDashboard) are not
-// layout nodes and are skipped by the class checks.
-function cleanupAbandonedLayout(container, root, extraKeepLeaves) {
-  const drop = (child) => {
-    // Live per-tab surfaces park in #workspacePanes before the subtree
-    // goes. #terminalShell is resolved by id everywhere (el() is
-    // getElementById), and a detached node is unreachable from there:
-    // dropping it orphans the whole terminal. Editor/git containers
-    // stay attached so their mounted state (CodeMirror scroll, cursor)
-    // survives; their owning modules re-parent them on the next mount.
-    rescueLiveSurfaces(container, child);
-    detachDomNode(child);
-  };
-  const keepPaneIds = new Set(paneLeaves(root).map((leaf) => leaf.paneId));
-  // A collapsed group's dock pane sits flat in the container while the
-  // root stays a split; the dock-only paint is not a leftover.
-  for (const leaf of extraKeepLeaves || []) keepPaneIds.add(leaf.paneId);
-  const flatAllowed = new Set((extraKeepLeaves || []).map((leaf) => leaf.paneId));
-  [...container.children].forEach((child) => {
-    if (hasClass(child, "workspace-pane")) {
-      // A split root keeps its leaves inside .pane-row/.pane-column
-      // nodes: any pane sitting directly in the container is a leftover
-      // from the flat single-leaf render and must go, even when its id
-      // still names a live leaf (the split built its own element),
-      // except the collapsed dock's own flat pane.
-      if ((isPaneSplit(root) && !flatAllowed.has(child.dataset.paneId)) || !keepPaneIds.has(child.dataset.paneId)) drop(child);
-    } else if (hasClass(child, "pane-row") || hasClass(child, "pane-column")) {
-      if (isPaneSplit(root) && child.dataset.splitId === splitNodeId(root)) return;
-      drop(child);
-    }
-  });
 }
 
 // Is node inside ancestor? Real DOM has .contains; the node-test stubs
@@ -2324,58 +2012,33 @@ function paneTabAuxClick(event, kind, rawId) {
 // the panes acting on the focused leaf. Strips carry only tabs and the
 // workspace badge. Same builders, same handlers, one subject: the active
 // leaf resolves here instead of coming from the pressed pane's strip.
-// Split placement anchor: the leaf holding the ACTIVE TERMINAL (route
-// tab) decides where a split lands, not the focused leaf. Focus follows
-// clicks on empty space and chips, so the bar's Split could otherwise
-// grow a panel the user is not looking at. Editor/git route tabs and
-// no-route states keep the focused leaf: those tabs own their own
-// surfaces, and minting beside the surface in view matches the drag
-// contract.
-function splitAnchorLeaf(root) {
-  const routeTab = state.tab != null ? String(state.tab) : null;
-  if (routeTab && !isEditorTab(routeTab) && !isGitTab(routeTab) && terminalTabKnown(routeTab)) {
-    const owner = paneForTab(root, routeTab);
-    if (owner) return owner;
-  }
-  return activeLeaf(root);
-}
-
 function paneBarControlsHtml() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return "";
-  // The bar's Split pair anchors on the active terminal's leaf; the
-  // rest of the bar (maximize, close, find, menu) keeps the focused
-  // leaf: those act on the panel in view, the split anchors on the
-  // terminal the route names.
   const leaf = activeLeaf(root);
-  const anchor = splitAnchorLeaf(root);
-  if (!leaf || !anchor) return "";
+  if (!leaf) return "";
   // The dashboard owns the pane area in the empty state: pane controls
   // would target dead chrome, the bar renders none.
   if (dashboardOwnsPaneArea()) return "";
-  return `<span class="pane-strip-controls pane-bar-controls">${paneNewTabControlHtml(leaf)}${paneSplitControlsHtml(anchor)}${panePaneControlsHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
+  return `<span class="pane-strip-controls pane-bar-controls">${paneNewTabControlHtml(leaf)}${paneCloseControlHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
 }
 
 // Signature for the bar's render loop: every input that changes the
 // controls' markup or state, so the bar repaints only on real change.
-// The split anchor rides along: a route move between panels must repaint
-// the Split pair's target even when the focused leaf did not change.
+// The visible subject rides along: a rail press swaps the acting panel
+// without touching the route, and the bar must follow.
 function paneBarControlsSignature() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root) || dashboardOwnsPaneArea()) return "none";
   const leaf = activeLeaf(root);
   if (!leaf) return "none";
-  const parent = parentSplitOf(root, leaf);
-  const maximized = maximizedLeaf(root) === leaf;
+  const subject = visibleSubject(root);
   const activeTab = leaf.active || (leaf.tabs || [])[0] || null;
   const tabKind = isEditorTab(activeTab) ? "editor" : isGitTab(activeTab) ? "git" : activeTab ? "term" : "none";
-  const anchor = splitAnchorLeaf(root);
   return [
     leaf.paneId,
-    anchor ? anchor.paneId : "",
-    parent ? parent.kind : "",
+    subject ? `${subject.kind}:${subject.kind === "group" ? subject.group.groupId : subject.leaf.paneId}` : "",
     paneLeaves(root).length,
-    maximized ? "max" : "",
     tabKind,
     paneMarkdownControlHtml(leaf) ? "md" : "",
   ].join(":");
@@ -2485,27 +2148,13 @@ function paneNewTabControlHtml(leaf) {
   return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newPanelForFocused()">+</button>`;
 }
 
-// The split pair is always fully offered (tmux model): any pane can grow
-// in BOTH directions at any depth. Same-kind parent extends, different
-// kind nests; both mechanics add a pane, so no button ever hides.
-function paneSplitControlsHtml(leaf) {
-  const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  const rightButton = `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("Split right", "splitRight"))}" aria-label="Split right" onclick="event.preventDefault();splitPaneRightFor('${escapeAttr(encoded)}')">◫</button>`;
-  const downButton = `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("Split down", "splitDown"))}" aria-label="Split down" onclick="event.preventDefault();splitPaneDownFor('${escapeAttr(encoded)}')">⊟</button>`;
-  return rightButton + downButton;
-}
-
-// Maximize and close only exist for a pane that is part of a split:
-// maximize hides this pane-content so the sibling takes the space, close
-// hands the pane's tabs to the sibling.
-function panePaneControlsHtml(leaf) {
+// Close only exists when another panel could take the route: one panel
+// keeps it hidden (closing the last panel is closing the workspace).
+function paneCloseControlHtml(leaf) {
   const root = paneRootFor();
   if (paneLeaves(root).length < 2) return "";
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  const maximized = !!leaf && maximizedLeaf(root) === leaf;
-  const maxButton = `<button class="pane-strip-button" title="${maximized ? "Restore pane" : "Maximize pane"}" aria-label="${maximized ? "Restore pane" : "Maximize pane"}" onclick="event.preventDefault();maximizePaneFor('${escapeAttr(encoded)}')">${maximized ? "↔" : "⛶"}</button>`;
-  const closeButton = `<button class="pane-strip-button" title="Close pane" aria-label="Close pane and move tabs to the other pane" onclick="event.preventDefault();closePaneFor('${escapeAttr(encoded)}')">✕</button>`;
-  return maxButton + closeButton;
+  return `<button class="pane-strip-button" title="Close pane" aria-label="Close pane and move tabs to the other pane" onclick="event.preventDefault();closePaneFor('${escapeAttr(encoded)}')">✕</button>`;
 }
 
 // ---- pane menu (Phase 5) -----------------------------------------------
@@ -2517,25 +2166,7 @@ let paneMenu = null;
 function paneMenuItemsFor(leaf, root) {
   const activeTab = leaf.active || (leaf.tabs || [])[0] || null;
   const isTerm = !!activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab);
-  const items = [
-    { id: "split-right", label: "Split right", action: () => { focusLeaf(root, leaf); splitPaneRight(); } },
-    { id: "split-down", label: "Split down", action: () => { focusLeaf(root, leaf); splitPaneDown(); } },
-  ];
-  if (paneLeaves(root).length > 1) {
-    const maximized = !!maximizedLeaf(root);
-    items.push({
-      id: "maximize",
-      label: maximized ? "Restore pane" : "Maximize pane",
-      action: () => { focusLeaf(root, leaf); maximizeActivePane(); },
-    });
-  }
-  if (activeTab && isEditorTab(activeTab)) {
-    items.push({
-      id: "move-tab",
-      label: "Move file to next pane",
-      action: () => { focusLeaf(root, leaf); moveActiveTabToNextPane(); },
-    });
-  }
+  const items = [];
   if (isTerm) {
     const tab = paneTerminalTabById(activeTab);
     if (tab) {
@@ -2730,16 +2361,13 @@ function paneTabDragStart(event) {
 
 function paneTabDragEnd() {
   paneDragTabId = null;
-  // The tab drag owns the container-level preview square (v3) and the
-  // spring-loaded dwell chrome (v4): abandoning a tab drag mid-flight
-  // must clear both, or the dotted square sticks on the last hovered
-  // half and the dwell outline keeps painting over a pane nobody
-  // hovers anymore. The location bar's remove indicator clears here
-  // too: the drag may end on the bar's drop, in which case the bar's
-  // own drop handler already ran; anywhere else the class would stick.
+  // Abandoning a tab drag mid-flight must clear the chrome it owns
+  // (preview square, caret, workspace hint), or the dotted square
+  // sticks on the last hovered half. The location bar's remove
+  // indicator clears here too: the drag may end on the bar's drop, in
+  // which case the bar's own drop handler already ran; anywhere else
+  // the class would stick.
   clearPanelDropPreview();
-  clearPaneDragDwell();
-  clearPaneDwellOutline();
   clearPaneDropCaret();
   clearPaneWorkspaceDropHint();
   clearLocationBarPaneRemove();
@@ -2748,26 +2376,26 @@ function paneTabDragEnd() {
   });
 }
 
-// The location bar's unsplit affordance: a herdr-pane-tab drag hovering
-// the bar with a single-label view inside a valid group qualifies (the
-// remove indicator paints); the drop converts that view back to a
-// collector label. Dock-less groups mint a marked dock at the head of
-// the group area first, so the label always has a strip to land in
-// (the 2-view special case dissolves into the minted dock through the
-// unified collapse on the very same render).
+// The location bar's ungroup affordance: a herdr-pane-tab drag whose
+// owning panel sits in a group qualifies (the remove indicator
+// paints on hover); the drop hands the panel back to the rail as an
+// ungrouped label.
 function clearLocationBarPaneRemove() {
   const bar = el("locationBar");
   if (bar && bar.classList && bar.classList.remove) bar.classList.remove("location-bar-pane-remove");
 }
 
+// The ungroup gesture: a member's LABEL (terminal tab) dragged to the
+// location bar leaves the group. Qualifies while the drag rides a
+// terminal tab whose owning panel belongs to a group with 2+ members.
 function paneTabUnsplitTarget(tabId) {
   if (!tabId) return null;
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return null;
   const leaf = paneForTab(root, tabId);
-  if (!leaf || !isGroupView(leaf)) return null;
-  const group = paneGroupForLeaf(root, leaf);
-  if (!group) return null;
+  if (!leaf || !leaf.groupId) return null;
+  const group = groupForLeaf(root, leaf);
+  if (!group || groupMemberCount(group) < 2) return null;
   return { leaf, group };
 }
 
@@ -2789,29 +2417,86 @@ function paneTabUnsplitDrop(event) {
   if (!drag || drag.kind !== "tab") return false;
   const target = paneTabUnsplitTarget(drag.tabId);
   if (!target) return false;
-  const { leaf, group } = target;
-  const tabId = drag.tabId;
-  // Resolve or mint the landing dock BEFORE the move empties the view:
-  // the stamp needs a live dock id, and a minted dock must land inside
-  // the group area so the collapse finds it structurally. The mint
-  // anchors on the view leaf (same splice the bar's split pair uses):
-  // the dock becomes the view's first neighbor INSIDE the group
-  // split, never a sibling of the group area itself.
-  let dock = resolveGroupDock(group);
-  if (!dock) {
-    dock = newEmptyLeaf();
-    dock.wsId = leafWorkspaceId(leaf) || undefined;
-    dock.groupCollector = true;
-    if (!splitLeafWith(leaf, dock, { axis: group.kind === "column" ? "column" : "row", first: true })) return false;
-  }
   paneTabDragEnd();
-  leaf.autoClosePre = { collectorId: dock.paneId || null, wsId: leafWorkspaceId(leaf) || null };
-  if (movePaneTabTo(tabId, dock.paneId, null, { skipRender: true })) {
-    armLeafAutoClose(leaf);
+  ungroupMember(target.leaf);
+  return true;
+}
+
+// Remove a member from its group: the member turns back into an
+// ungrouped panel (its label returns to the rail). The group keeps
+// the remaining members; dropping under two dissolves it entirely
+// and, when it was visible, the subject heals through visibleSubject.
+function ungroupMember(leaf) {
+  const root = paneRootFor();
+  const group = groupForLeaf(root, leaf);
+  if (!group) return false;
+  const at = group.memberIds.indexOf(leaf.paneId);
+  if (at >= 0) group.memberIds.splice(at, 1);
+  leaf.groupId = null;
+  if (groupMemberCount(group) < 2) {
+    for (const member of groupMembers(group)) member.groupId = null;
+    const atRec = root.groups.indexOf(group);
+    if (atRec >= 0) root.groups.splice(atRec, 1);
+  } else {
+    group.layout = memberLayoutWithout(group.layout, leaf.paneId);
   }
+  // The visible pointer survives through visibleSubject's heal: a
+  // dissolved group hands the subject to this panel.
+  const subject = visibleSubject(root);
+  root.visible = subject && subject.kind === "group"
+    ? { type: "group", id: subject.group.groupId }
+    : { type: "panel", id: subject.leaf.paneId };
   saveWorkspacePanesStates();
   renderWorkspacePanes();
   return true;
+}
+
+// Layout surgery: drop paneId from the layout tree. A split that falls
+// under two children collapses to its survivor; the ROOT dropping to
+// one child returns that child (a paneId string or nested node).
+function memberLayoutWithout(node, paneId) {
+  if (!node) return null;
+  if (node === paneId) return null;
+  if (!Array.isArray(node.children)) return node;
+  node.children = node.children
+    .map((child) => memberLayoutWithout(child, paneId))
+    .filter(Boolean);
+  if (node.children.length === 0) return null;
+  if (node.children.length === 1) return node.children[0];
+  node.sizes = node.children.map((_, i) => (Number.isFinite(node.sizes[i]) && node.sizes[i] > 0 ? node.sizes[i] : 1));
+  return node;
+}
+
+// Rail label drag (one-visible-view model): a panel label picked from
+// the rail carries the panel's paneId. The drop creates or extends a
+// group at the previewed quadrant. Group chips never drag (spec has
+// no group-drag gesture).
+let paneDragLabelPaneId = null;
+
+function paneLabelDragStart(event, encodedPaneId) {
+  const paneId = decodeURIComponent(String(encodedPaneId || ""));
+  const root = paneRootFor();
+  const leaf = paneId ? paneForPaneId(root, paneId) : null;
+  if (!leaf) return;
+  paneDragLabelPaneId = paneId;
+  if (event && event.dataTransfer) {
+    event.dataTransfer.setData("text/herdr-pane-label", paneId);
+    if ("effectAllowed" in event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+  const chip = event && event.target;
+  if (chip && chip.classList && chip.classList.add) chip.classList.add("pane-label-dragging");
+}
+
+function paneLabelDragEnd() {
+  paneDragLabelPaneId = null;
+  clearPanelDropPreview();
+  document.querySelectorAll(".pane-label-dragging").forEach((node) => {
+    if (node.classList && node.classList.remove) node.classList.remove("pane-label-dragging");
+  });
+}
+
+function paneLabelDragKind() {
+  return paneDragLabelPaneId ? { kind: "label", paneId: paneDragLabelPaneId } : null;
 }
 
 // Which slot does the pointer sit at? Compare the pointer x against each
@@ -2885,185 +2570,277 @@ function clearPaneWorkspaceDropHint() {
 // sidebar workspace card (state.dragWorkspace, set by workspaceDragStart).
 // Tab drags win when both signals somehow exist.
 function activeDragKind() {
+  if (paneDragLabelPaneId) return { kind: "label", paneId: paneDragLabelPaneId };
   if (paneDragTabId) return { kind: "tab", tabId: paneDragTabId };
   if (state.dragWorkspace) return { kind: "workspace", workspaceId: state.dragWorkspace };
   return null;
 }
 
-// Container-level TAB drag (v3): dropping a tab on a pane HALF creates
-// a new panel there holding the tab. The strip's own dragover keeps the
-// caret reorder flow; this handler owns pane-content hovers while a tab
-// drag is in flight. v4 spring-load: every dragover arms the dwell clock
-// on the hovered pane; once it passes, the outline paints over the pane
-// and the drop switches its placement INTO it.
+// Container-level drags (one-visible-view model): a TAB drag keeps the
+// member-strip caret flow; a LABEL drag from the rail previews the
+// split quadrant over the visible subject. Both share the container
+// wiring from wirePanelChipDrag.
 function paneContainerTabDragOver(event) {
   const drag = activeDragKind();
-  if (!drag || drag.kind !== "tab") return;
+  if (!drag) return;
+  const onStrip = event.target && event.target.closest && event.target.closest(".pane-tab-strip");
+  if (drag.kind === "label") {
+    if (onStrip) return;
+    const container = el("workspacePanes");
+    const target = panelDropTargetAt(container, event);
+    if (!target || !labelDropTargetValid(target)) {
+      clearPanelDropPreview();
+      return;
+    }
+    if (event.preventDefault) event.preventDefault();
+    if (event.dataTransfer && "dropEffect" in event.dataTransfer)
+      event.dataTransfer.dropEffect = "move";
+    positionPanelDropPreview(container, event, target);
+    return;
+  }
+  if (drag.kind !== "tab") return;
   // The strip owns its own hover: skip when the pointer rides a strip
   // so the caret keeps precedence and the square never overlaps it.
-  const onStrip = event.target && event.target.closest && event.target.closest(".pane-tab-strip");
   if (onStrip) return;
-  const container = el("workspacePanes");
-  const target = panelDropTargetAt(container, event);
-  // Dead zones (v3.1 cross) must not keep the square painted from an
-  // earlier corner pass on the same drag path: a null target clears it.
-  // The dwell keeps its clock for the pane under the pointer: crossing
-  // the dead cross mid-pane does not leave the pane.
-  if (!target) {
-    clearPanelDropPreview();
-    const hoveredPane = paneElementUnderPointer(container, event);
-    const hoveredId = hoveredPane && hoveredPane.dataset ? hoveredPane.dataset.paneId : null;
-    armPaneDragDwell(hoveredId);
-    syncPaneDwellOutline(container, paneDragDwellLocked(hoveredId) ? hoveredId : null);
-    return;
-  }
-  const targetLeaf = target.paneId ? paneForPaneId(paneRootFor(), target.paneId) : null;
-  // The preview square paints whenever the drop would act: a fresh tree
-  // splits its only pane (v3), and an own-pane half split is a real move.
-  // The strip keeps its caret hover; this guard only refuses drops that
-  // cannot change the tree.
-  if (!targetLeaf) {
-    clearPanelDropPreview();
-    armPaneDragDwell(null);
-    syncPaneDwellOutline(container, null);
-    return;
-  }
-  if (event.preventDefault) event.preventDefault();
-  if (event.dataTransfer && "dropEffect" in event.dataTransfer)
-    event.dataTransfer.dropEffect = "move";
-  armPaneDragDwell(target.paneId);
-  const locked = paneDragDwellLocked(target.paneId);
-  syncPaneDwellOutline(container, locked ? target.paneId : null);
-  if (locked) {
-    // Locked: the half preview yields to the full-pane outline so the
-    // two indicators never stack.
-    clearPanelDropPreview();
-    return;
-  }
-  positionPanelDropPreview(container, event, target);
+  // TAB drags no longer split: the group gesture owns geometry. The
+  // caret path in the strips handles reordering; content hovers keep
+  // the preview hidden so a release over dead space drops clean.
+  clearPanelDropPreview();
 }
 
-// Tab drop on a pane half: split the target at the hovered half, park a
-// fresh empty leaf there, then move the dragged tab into it (the same
-// movePaneTabTo mechanics, no surface re-create). v4 spring-load: when
-// the dwell locked the pane under the pointer, the split happens INSIDE
-// that pane no matter what the tree would extend into (forced nest),
-// which is the Finder-style drill the user asked for. Own-pane drops
-// fall through to the strip reorder path (the tab never left the pane,
-// the caret owns that drop).
+// A label drop qualifies only when the auto-join neighbor exists
+// (panel subject) or the visible subject is a group (growth). The
+// dragged panel itself never hosts its own drop.
+function labelDropTargetValid(target, drag) {
+  const root = paneRootFor();
+  if (!target || !target.paneId) return false;
+  const subject = visibleSubject(root);
+  if (!subject) return false;
+  // The dragged panel comes from the CAPTURED drag state (payload or
+  // module state), never from the drop host: after paneLabelDragEnd()
+  // clears the module state, a host fallback would resolve the host
+  // itself as the dragged panel and refuse every drop.
+  const dragged = paneForPaneId(root, (drag && drag.paneId) || (paneLabelDragKind() ? paneLabelDragKind().paneId : null));
+  if (!dragged) return false;
+  if (subject.kind === "group") {
+    // Growth needs the dragged panel OUTSIDE the group (a member drag
+    // is the ungroup gesture, never a re-position).
+    return !dragged.groupId;
+  }
+  if (subject.leaf === dragged) return false;
+  const neighbor = autoJoinNeighborFor(dragged);
+  return !!neighbor;
+}
+
+// The auto-join neighbor (spec point 3): the ungrouped panel beside
+// the dragged one in rail order, right by default, left when the
+// dragged label is the LAST (or the settings choice flips the side).
+function autoJoinNeighborFor(dragged) {
+  const root = paneRootFor();
+  const ungrouped = railOrderUngroupedPanels(root);
+  const at = ungrouped.indexOf(dragged);
+  if (at < 0) return null;
+  // The settings choice flips which neighbor fills the other half
+  // ("right" default, "left" alternative). Bundle-scope options, same
+  // read pane_terminals uses; the typeof guard keeps standalone-VM
+  // harnesses (no core.js) on the default.
+  const preferLeft = typeof options === "object" && options && options.paneGroupAutoJoin === "left";
+  const next = ungrouped[at + 1] || null;
+  const prev = ungrouped[at - 1] || null;
+  // Right preference: the right neighbor when it exists, else the
+  // left. The dragged-last rule in the spec ("left if its the
+  // latest") falls out of the same fallback.
+  if (preferLeft) return prev || next;
+  return next || prev;
+}
+
+// Rail order for the neighbor rule: ungrouped panels in entry.panels
+// order (the rail renders that list verbatim).
+function railOrderUngroupedPanels(root) {
+  return paneLeaves(root).filter((leaf) => !leaf.groupId);
+}
+
+// Label drop on the visible subject: create the group (panel subject)
+// or grow the visible group. The dragged panel lands at the previewed
+// quadrant; the auto-join neighbor fills the opposite side.
 function paneContainerTabDrop(event) {
   const drag = activeDragKind()
-    || (event.dataTransfer && event.dataTransfer.getData
-      ? { kind: "tab", tabId: event.dataTransfer.getData("text/herdr-pane-tab") }
+    || (event && event.dataTransfer && event.dataTransfer.getData
+      ? dropDragKindFromData(event.dataTransfer)
       : null);
-  if (!drag || drag.kind !== "tab") return;
+  if (!drag) return;
   const onStrip = event.target && event.target.closest && event.target.closest(".pane-tab-strip");
   if (onStrip) return;
-  const container = el("workspacePanes");
-  const target = panelDropTargetAt(container, event);
-  const tabId = drag.tabId;
-  // The dwell verdict reads BEFORE the state clears: the lock follows
-  // the pane under the pointer at drop time.
-  const lockedPaneId = paneDragDwellLocked(target ? target.paneId : null) ? target.paneId : null;
-  paneTabDragEnd();
-  clearPanelDropPreview();
-  if (!target || !target.paneId) return;
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return;
-  const source = paneForTab(root, tabId);
-  const targetLeaf = paneForPaneId(root, target.paneId);
-  if (!source || !targetLeaf) return;
-  if (event.preventDefault) event.preventDefault();
-  // The empty slot POPULATES instead of splitting: dropping a label on
-  // the group's marked empty space fills it (the spec's "drag any other
-  // panel label indicator to the empty space"), whatever the dwell
-  // lock says. The stamp/arm protocol below is the standard cross-pane
-  // move, minus the split.
-  if (isGroupSlot(targetLeaf)) {
-    source.autoClosePre = autoClosePreStateFor(paneRootFor(), source);
-    if (movePaneTabTo(tabId, targetLeaf.paneId, null, { skipRender: true })) {
-      disarmLeafAutoClose(targetLeaf);
-      focusLeaf(paneRootFor(), targetLeaf);
-      armLeafAutoClose(source);
-    }
-    saveWorkspacePanesStates();
-    renderWorkspacePanes();
+  if (drag.kind !== "label") {
+    // TAB drops outside strips end the drag cleanly: strips own every
+    // tab drop, and content hovers offered no preview.
+    if (drag.kind === "tab") paneTabDragEnd();
     return;
   }
-  // A tab dropped on a half of its OWN pane splits that pane and moves
-  // into the new half: single-panel trees are the most common first
-  // gesture, so they split too instead of refusing. Cross-pane and
-  // same-pane share one path; only the source lookup differs.
-  const fresh = newEmptyLeaf();
-  fresh.wsId = leafWorkspaceId(targetLeaf) || leafWorkspaceId(source);
-  const landed = splitLeafWith(targetLeaf, fresh, target, { forceNest: !!lockedPaneId });
+  const container = el("workspacePanes");
+  const target = panelDropTargetAt(container, event);
+  // The drag state must survive until the validity gate and the
+  // surgery below resolve the dragged panel: paneLabelDragEnd() clears
+  // paneDragLabelPaneId, so an earlier call would leave the validity
+  // check reading the DROP HOST as the dragged panel (every drop
+  // refused). The clear runs on every exit through the finally-style
+  // call below, so no path leaks drag state.
+  if (!target || !labelDropTargetValid(target, drag)) {
+    paneLabelDragEnd();
+    return;
+  }
+  if (event.preventDefault) event.preventDefault();
+  const root = paneRootFor();
+  const dragged = paneForPaneId(root, drag.paneId);
+  if (!dragged) {
+    paneLabelDragEnd();
+    return;
+  }
+  const axis = target.axis === "row" ? "row" : "column";
+  // The layout host for growth drops: the pane the pointer rode. The
+  // clear must run on EVERY exit (a refused drop would otherwise leak
+  // the host into the next growth drop and misplace it).
+  dropHostPaneId = target.paneId || null;
+  let landed = false;
+  if (labelDropCreatesGroup(root)) {
+    landed = createGroupFromDrop(dragged, axis, target.first);
+  } else {
+    landed = growVisibleGroupWith(dragged, axis, target.first);
+  }
+  dropHostPaneId = null;
+  paneLabelDragEnd();
   if (!landed) return;
-  // Redo fan-out mint: when the target area holds NO valid group yet,
-  // the drop that creates the group mints the dragged view PLUS one
-  // marked empty slot beside it ("the new dragged one forms a view
-  // group with one empty space"), and the SOURCE leaf takes the
-  // groupCollector mark so a 1-label dock never miscounts as a view.
-  // Inside an existing group the drop is plain growth ("the 3 and so
-  // forth"): no slot, no mark. The slot lands through the same
-  // splitLeafWith extend mechanics on the fresh view (same axis, after
-  // it), so every drop geometry keeps the group area flat and the
-  // dock inside it.
-  if (paneGroupForLeaf(paneRootFor(), targetLeaf) === null) {
-    const slot = newGroupSlotLeaf(leafWorkspaceId(targetLeaf) || leafWorkspaceId(source));
-    splitLeafWith(fresh, slot, { axis: target.axis, first: false });
-    source.groupCollector = true;
-  }
-  // The fresh leaf owns the moved tab: same placement contract as a
-  // + mint, so the sync never re-homes the id on the next snapshot.
-  // v3.2 marker ownership: the drop gesture decides. An own-pane half
-  // drop is a SPLIT gesture (both halves are the product, like a Split
-  // press), so the emptied remainder stays disarmed and standing; a
-  // cross-pane move arms its emptied source and the sweep below folds
-  // it. The move itself is pure tree surgery (movePaneTabTo touches no
-  // marker), and skipRender hands this handler the single paint.
-  const splitGesture = source === targetLeaf;
-  // Decay fold stamp, cross-pane moves only: an own-pane drop disarms
-  // below and never folds.
-  if (!splitGesture) source.autoClosePre = autoClosePreStateFor(paneRootFor(), source);
-  if (movePaneTabTo(tabId, fresh.paneId, null, { skipRender: true })) {
-    focusLeaf(paneRootFor(), fresh);
-    if (splitGesture) disarmLeafAutoClose(source);
-    else armLeafAutoClose(source);
-  }
-  // The emptied source (armed cross-pane) folds through the render
-  // below; the focused fresh leaf survives by the sweep's own guard.
   saveWorkspacePanesStates();
   renderWorkspacePanes();
 }
 
-// Split the TARGET leaf at the drop half with a GIVEN fresh leaf (the
-// tab drop owns its leaf so it can move the tab in after). Same
-// extend/nest mechanics as splitActivePane, anchored on the target.
-// opts.forceNest (v4 dwell): skip the extend path, the target itself
-// splits even when its parent runs the drop axis.
-function splitLeafWith(targetLeaf, fresh, target, opts) {
-  const entry = panesStateFor();
-  const root = entry.root;
-  if (!paneTreeRenderable(root) || !targetLeaf) return false;
-  const axis = target.axis === "row" ? "row" : "column";
-  const slot = findLeafSlot(root, targetLeaf);
-  if (!slot) return false;
-  if (slot.holder === "root") {
-    entry.root = { kind: axis, sizes: [1, 1], children: target.first ? [fresh, entry.root] : [entry.root, fresh] };
-    return true;
-  }
-  if (!opts || !opts.forceNest) {
-    if (slot.parent.kind === axis) {
-      if (!Array.isArray(slot.parent.sizes)) slot.parent.sizes = slot.holder.map(() => 1);
-      const share = Math.max(1, slot.parent.sizes[slot.index] || 1) / 2;
-      slot.holder.splice(target.first ? slot.index : slot.index + 1, 0, fresh);
-      slot.parent.sizes.splice(target.first ? slot.index : slot.index + 1, 0, share);
-      slot.parent.sizes[slot.index + (target.first ? 1 : 0)] = share;
-      return true;
-    }
-  }
-  slot.holder[slot.index] = { kind: axis, sizes: [1, 1], children: target.first ? [fresh, targetLeaf] : [targetLeaf, fresh] };
+// dataTransfer-only drops (no dragstart ran in this document, e.g. a
+// stub event): read the payload kind straight from the data.
+function dropDragKindFromData(dataTransfer) {
+  const label = dataTransfer.getData("text/herdr-pane-label");
+  if (label) return { kind: "label", paneId: label };
+  const tab = dataTransfer.getData("text/herdr-pane-tab");
+  if (tab) return { kind: "tab", tabId: tab };
+  return null;
+}
+
+// Panel subject: the drop creates the group. The dragged panel and
+// the auto-join neighbor join; the previously visible panel hands the
+// subject over (it is NOT a member).
+function labelDropCreatesGroup(root) {
+  const subject = visibleSubject(root);
+  return !!(subject && subject.kind === "panel");
+}
+
+function createGroupFromDrop(dragged, axis, draggedFirst) {
+  const root = paneRootFor();
+  const neighbor = autoJoinNeighborFor(dragged);
+  if (!neighbor) return false;
+  const group = {
+    groupId: newGroupId(),
+    name: null,
+    memberIds: [dragged.paneId, neighbor.paneId],
+    layout: null,
+  };
+  // The dragged panel sits at the release quadrant; the neighbor
+  // fills the other half.
+  group.layout = { kind: axis, sizes: [1, 1], children: draggedFirst ? [dragged.paneId, neighbor.paneId] : [neighbor.paneId, dragged.paneId] };
+  root.groups.push(group);
+  dragged.groupId = group.groupId;
+  neighbor.groupId = group.groupId;
+  setVisibleSubject("group", group.groupId);
+  focusLeaf(root, dragged);
   return true;
+}
+
+// Group subject: the dragged ungrouped panel joins the visible group
+// at the previewed quadrant inside the layout.
+function growVisibleGroupWith(dragged, axis, draggedFirst) {
+  const root = paneRootFor();
+  const subject = visibleSubject(root);
+  if (!subject || subject.kind !== "group" || dragged.groupId) return false;
+  const group = subject.group;
+  group.memberIds.push(dragged.paneId);
+  dragged.groupId = group.groupId;
+  group.layout = layoutWithPanelAt(group.layout, dragged.paneId, axis, draggedFirst);
+  focusLeaf(root, dragged);
+  return true;
+}
+
+// Layout insertion: the new paneId lands at the quadrant the release
+// named, relative to the quadrant's host pane (the pane under the
+// pointer). Same-kind hosts extend, other-kind hosts nest, the old
+// split mechanics carried over for group layouts only.
+function layoutWithPanelAt(layout, paneId, axis, first) {
+  const hostId = layoutHostPaneIdUnderPointer();
+  if (layout === null || typeof layout === "string" || !isPaneSplit(layout)) {
+    // Flat or degraded layout: rebuild as a flat split with the new
+    // panel at the requested end.
+    const ids = Array.isArray(layout) ? layout.slice() : (layout ? [layout] : []);
+    const others = ids.filter((id) => id !== paneId);
+    if (!others.length) others.push(paneId === (ids[0] || paneId) ? paneId : ids[0] || paneId);
+    const children = first ? [paneId, ...others] : [...others, paneId];
+    return { kind: axis, sizes: children.map(() => 1), children };
+  }
+  const hostIds = collectLayoutPaneIds(layout);
+  const host = (hostId && hostIds.includes(hostId)) ? hostId : hostIds[0];
+  const slot = findLayoutSlotFor(layout, host);
+  if (!slot) {
+    const children = first ? [paneId, ...collectLayoutPaneIds(layout)] : [...collectLayoutPaneIds(layout), paneId];
+    return { kind: axis, sizes: children.map(() => 1), children };
+  }
+  if (slot.parent === null) {
+    // Layout root IS the host pane (a lone paneId wrapped): wrap it.
+    return { kind: axis, sizes: [1, 1], children: first ? [paneId, layout] : [layout, paneId] };
+  }
+  const parent = slot.parent;
+  if (parent.kind === axis) {
+    // Extend the same-axis parent at the host index.
+    const share = Math.max(1, (parent.sizes && parent.sizes[slot.index]) || 1) / 2;
+    parent.children.splice(first ? slot.index : slot.index + 1, 0, paneId);
+    if (!Array.isArray(parent.sizes)) parent.sizes = parent.children.map(() => 1);
+    parent.sizes.splice(first ? slot.index : slot.index + 1, 0, share);
+    parent.sizes[first ? slot.index + 1 : slot.index] = share;
+    return layout;
+  }
+  // Nest under the host.
+  parent.children[slot.index] = {
+    kind: axis,
+    sizes: [1, 1],
+    children: first ? [paneId, host] : [host, paneId],
+  };
+  return layout;
+}
+
+// The pane under the drag pointer at drop time (layout host). Set by
+// paneContainerTabDrop before the layout surgery reads it; the dragover
+// preview already resolved the same host through panelDropTargetAt.
+let dropHostPaneId = null;
+
+function layoutHostPaneIdUnderPointer() {
+  return dropHostPaneId || null;
+}
+
+function collectLayoutPaneIds(node) {
+  if (!node) return [];
+  if (typeof node === "string") return [node];
+  if (!Array.isArray(node.children)) return [];
+  return node.children.flatMap((child) => collectLayoutPaneIds(child));
+}
+
+// Host slot lookup in a layout tree: {parent, index} where parent is
+// the split node holding the host paneId at children[index], or
+// {parent: null} when the layout IS the host.
+function findLayoutSlotFor(node, hostId) {
+  if (typeof node === "string") return node === hostId ? { parent: null } : null;
+  if (!node || !Array.isArray(node.children)) return null;
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i];
+    if (child === hostId) return { parent: node, index: i };
+    const found = findLayoutSlotFor(child, hostId);
+    if (found) return found;
+  }
+  return null;
 }
 
 function paneStripDragOver(event) {
@@ -3179,10 +2956,6 @@ function movePaneTabTo(tabId, targetPaneId, index, opts) {
   const insertAt = index == null ? target.tabs.length : Math.min(index, target.tabs.length);
   if (!target.tabs.includes(tabId)) target.tabs.splice(insertAt, 0, tabId);
   target.active = tabId;
-  // Slot arrival clears the mark: a populated slot is a plain view now
-  // (isGroupSlot also keys on emptiness, but a stale flag must never
-  // survive in the persisted blob either).
-  delete target.groupSlot;
   source.active = source.tabs[0] || null;
   // Refill protocol: the pane receiving the tab sheds any stale arm.
   disarmLeafAutoClose(target);
@@ -3231,144 +3004,13 @@ function wirePaneStripDrag(strip) {
   strip.addEventListener("dragend", () => paneTabDragEnd());
 }
 
-// ---- split commands (Phase 4) ------------------------------------------
-// Wraps the active leaf in a binary split node holding it and a fresh
-// empty leaf. The new leaf starts empty: the strip's + stays
-// terminal-only, and the terminal singleton means the route terminal
-// never leaves its leaf. Focus moves to the new leaf so the next sidebar
-// open (file click, git status row) lands there.
-
-// tmux model: every split adds a pane. Same-kind parent splices the
-// fresh sibling into the leaf's own axis (extend), different-kind parent
-// wraps the leaf in a nested split (nest). Orientation never rewrites
-// an existing split node: dividers and reconciled subtree identities
-// stay stable across reshapes.
-function splitActivePane(kind) {
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return false;
-  // A split from a maximized pane restores the layout first: the new
-  // sibling joins the visible tree instead of mutating a hidden one
-  // behind a flat view that would show no change.
-  if (maximizedLeaf(root)) {
-    const entry = panesStateFor();
-    entry.maximizedPaneId = null;
-  }
-  const leaf = activeLeaf(root);
-  if (!leaf) return false;
-  const fresh = newEmptyLeaf();
-  const slot = findLeafSlot(root, leaf);
-  if (!slot) return false;
-  if (slot.holder === "root") {
-    const stateEntry = panesStateFor();
-    stateEntry.root = { kind, sizes: [1, 1], children: [leaf, fresh] };
-  } else if (slot.parent.kind === kind) {
-    // Extend: the sibling joins the leaf's own axis, halving the
-    // pressed pane's share so the split keeps its total size.
-    if (!Array.isArray(slot.parent.sizes)) slot.parent.sizes = slot.holder.map(() => 1);
-    const share = Math.max(1, slot.parent.sizes[slot.index] || 1) / 2;
-    slot.holder.splice(slot.index + 1, 0, fresh);
-    slot.parent.sizes.splice(slot.index + 1, 0, share);
-    slot.parent.sizes[slot.index] = share;
-  } else {
-    // Nest: the leaf keeps its slot, an inner split of the new kind
-    // pairs it with the fresh sibling.
-    slot.holder[slot.index] = { kind, sizes: [1, 1], children: [leaf, fresh] };
-  }
-  // The swap above may have replaced the root object; re-read it before
-  // focusing so activePaneId lands on the tree that actually renders.
-  focusLeaf(paneRootFor(), fresh);
-  saveWorkspacePanesStates();
-  renderWorkspacePanes();
-  return true;
-}
-
-// Where a leaf sits in the tree: {holder, index, parent} where holder
-// is "root" (the leaf is the root) or the children array containing it,
-// parent the split node owning that array (null in the root case).
-function findLeafSlot(root, leaf) {
-  if (root === leaf) return { holder: "root", index: 0, parent: null };
-  const walk = (node) => {
-    if (!isPaneSplit(node)) return null;
-    for (let i = 0; i < node.children.length; i++) {
-      if (node.children[i] === leaf) return { holder: node.children, index: i, parent: node };
-      const found = walk(node.children[i]);
-      if (found) return found;
-    }
-    return null;
-  };
-  return walk(root);
-}
-
-// Chord splits (Ctrl+B then D / Shift+D) anchor on the active
-// terminal's leaf too, same rule as the bar's Split pair: the route
-// names the terminal the user is working in, and a split that grows a
-// different panel loses them. Editor/git and no-route states keep the
-// focused leaf.
-function splitPaneRight() {
-  const root = paneRootFor();
-  if (paneTreeRenderable(root)) {
-    const anchor = splitAnchorLeaf(root);
-    if (anchor) {
-      focusLeaf(root, anchor);
-      return splitActivePane("row");
-    }
-  }
-  return splitActivePane("row");
-}
-
-function splitPaneDown() {
-  const root = paneRootFor();
-  if (paneTreeRenderable(root)) {
-    const anchor = splitAnchorLeaf(root);
-    if (anchor) {
-      focusLeaf(root, anchor);
-      return splitActivePane("column");
-    }
-  }
-  return splitActivePane("column");
-}
-
-// The immediate split node holding a leaf, or null when the leaf is the
-// whole tree (no split yet). Nested leaves answer their innermost parent,
-// which is the split the strip buttons act on.
-function parentSplitOf(root, leaf) {
-  if (!isPaneSplit(root) || !leaf) return null;
-  const walk = (node) => {
-    if (!isPaneSplit(node)) return null;
-    for (const child of node.children) {
-      if (child === leaf) return node;
-      const found = walk(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  return walk(root);
-}
-
+// Encoded-paneId resolver for the inline strip handlers (✕ close, +
+// new tab, Enter spawn): decode, resolve by id, fall back to the
+// active leaf. A missing id (empty string) means "the acting panel".
 function leafForPaneId(root, encodedPaneId) {
   const paneId = decodeURIComponent(String(encodedPaneId || ""));
   if (!paneId) return activeLeaf(root);
   return paneForPaneId(root, paneId) || activeLeaf(root);
-}
-
-// Strip split buttons: act on the pane whose strip was pressed. One
-// rule: focus the target leaf, then the same extend/nest mechanic the
-// chords use. Both buttons stay available at any depth (tmux model).
-function splitPaneFor(encodedPaneId, kind) {
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return false;
-  const leaf = leafForPaneId(root, encodedPaneId);
-  if (!leaf) return false;
-  focusLeaf(root, leaf);
-  return splitActivePane(kind);
-}
-
-function splitPaneRightFor(encodedPaneId) {
-  return splitPaneFor(encodedPaneId, "row");
-}
-
-function splitPaneDownFor(encodedPaneId) {
-  return splitPaneFor(encodedPaneId, "column");
 }
 
 // Strip close button: focus the target leaf and reuse closeActivePane, so
@@ -3383,25 +3025,6 @@ function closePaneFor(encodedPaneId) {
   focusLeaf(root, leaf);
   root.activePaneId = leaf.paneId;
   return closeActivePane();
-}
-
-// Strip maximize button: the same toggle as the menu entry, scoped to the
-// pane whose strip was pressed.
-function maximizePaneFor(encodedPaneId) {
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return false;
-  const leaf = leafForPaneId(root, encodedPaneId);
-  if (!leaf) return false;
-  if (paneLeaves(root).length < 2) return false;
-  const entry = panesStateFor();
-  if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
-  else entry.maximizedPaneId = leaf.paneId;
-  root.activePaneId = leaf.paneId;
-  entry.at = Date.now();
-  saveWorkspacePanesStates();
-  renderWorkspacePanes();
-  if (typeof fitTerminalSurface === "function") fitTerminalSurface();
-  return true;
 }
 
 // Strip + button: create the backend panel, then place its tab in the pane
@@ -3476,82 +3099,42 @@ async function openPanelInWorkspace(workspaceId, paneId) {
   }
 }
 
-// Closes the active leaf. The closed leaf's tabs migrate to the
-// survivor instead of dying: the migration target resolves on the
-// pre-collapse tree (the sibling leaf for a 2-child parent, else the
-// nearest surviving leaf), every tab id appends deduped, and the
-// survivor's active pointer heals only when it is null or names a tab
-// it no longer holds. The collapse itself is unchanged (sibling
-// promoted into the parent slot, single-child splits collapse, wider
-// parents splice the leaf out), and the healed active tab re-mounts
-// through its owning module so the survivor's content slot shows it.
-// Editor containers survive via rescueLiveSurfaces on the collapse
-// sweep; no registry close, no container teardown.
+// Closes the acting panel. The closed panel's tabs migrate to the
+// nearest same-workspace panel instead of dying; with no same-ws
+// panel the close is the workspace's last panel and the workspace
+// cascade fires. The visible pointer and focus heal through
+// visibleSubject/activeLeaf.
 async function closeActivePane() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
   const leaves = paneLeaves(root);
   const leaf = activeLeaf(root);
   if (!leaf) return false;
-  // Closing the maximized leaf un-maximizes first: the surviving sibling
-  // takes the screen instead of a half-restored layout.
-  const entry = panesStateFor();
-  if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
   const wsId = leafWorkspaceId(leaf);
-  // Single-panel tree: closing it would leave the collector nothing to
-  // render. The last panel of its workspace is the cascade case below
-  // (workspace close), which never leaves an empty tree because other
-  // workspaces' panels stay. A one-leaf tree with no other workspace
-  // panel to show stays; the strip close stays hidden there.
+  // Single-panel session: closing it would leave nothing to render.
   if (leaves.length <= 1) return false;
   // Migration only inside the same workspace: a panel's tabs must not
-  // leak into another workspace's panel. The nearest same-ws leaf in
-  // tree order takes them; cross-ws neighbors are skipped.
-  // Decay fold stamp: the group shape this panel leaves behind. The
-  // leaf drops out of the tree below, so its split cannot be resolved
-  // after the drop; the fold reads the stamp instead.
-  const pre = autoClosePreStateFor(root, leaf);
-  let migration = paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId) || null;
-  // A view closing out of a group hands its labels to the collector,
-  // not to whatever same-ws leaf tree order found first; the fold below
-  // then merges the last view the same way.
-  if (pre && pre.collectorId
-    && leafWorkspaceId(paneForPaneId(root, pre.collectorId)) === wsId)
-    migration = paneForPaneId(root, pre.collectorId);
+  // leak into another workspace's panel.
+  const migration = paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId) || null;
   const liveRouteTab = state.tab != null ? String(state.tab) : null;
   if (migration) {
     for (const tabId of [...leaf.tabs])
       if (!migration.tabs.includes(tabId)) migration.tabs.push(tabId);
     disarmLeafAutoClose(migration);
-    // Heal only a null or dangling pointer: a survivor already showing a
-    // live tab keeps it. When the pointer must heal, the route terminal
-    // tab wins first (the terminal singleton keeps its home), else the
-    // first migrated tab.
     if (!migration.active || !migration.tabs.includes(migration.active))
       migration.active = (liveRouteTab && migration.tabs.includes(liveRouteTab) ? liveRouteTab : migration.tabs[0]) || null;
   }
   // Cascade rule: the last panel of a workspace closing takes the
   // workspace with it (its tabs and sidebar entry). Any remaining
-  // same-ws panel would have taken the tabs above; reaching here with a
-  // bound leaf means this panel was the last. dropLeafFromTree keeps a
-  // survivor focused and renders.
+  // same-ws panel would have taken the tabs above; reaching here with
+  // a bound panel means this panel was the last.
   const lastOfWs = !!wsId && !paneLeaves(root).some((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId);
   if (!dropLeafFromTree(leaf)) return false;
-  // Unified collapse: closing a view may drop its group below two
-  // members; fold the survivors home before the single paint below
-  // covers both.
-  collapseUnderMemberedGroup(pre);
-  // dropLeafFromTree never renders (the sync's ws sweep calls it
-  // mid-pass; a render there would re-enter renderWorkspacePanes ->
-  // sync). The explicit close owns the render + remount of the healed
-  // active tab in the surviving panel: the owning module re-parents its
-  // container into the fresh content slot on mount. Terminal tabs need
-  // no remount call, the render moves #terminalShell itself.
   renderWorkspacePanes();
   if (lastOfWs && wsId && typeof closeWorkspaceById === "function") {
     // Fire-and-forget: closeWorkspaceById owns its own refresh and
-    // error surfacing. The panel is already gone from the tree; a failed
-    // close leaves the terminal rows to the sync's prune.
+    // error surfacing. The panel is already gone; a failed close
+    // leaves the terminal rows to the sync's prune.
     void closeWorkspaceById(wsId);
   }
   if (migration && migration.active) {
@@ -3563,327 +3146,89 @@ async function closeActivePane() {
   return true;
 }
 
-// The leaf that inherits the closing leaf's tabs, resolved on the
-// pre-collapse tree. A 2-child parent hands them to the sibling; when
-// that sibling is itself a split, its edge leaf nearest the closed pane
-// takes them (last leaf of the subtree when the closed pane sat before
-// it, first leaf when it sat after). Wider parents pick the nearest
-// surviving neighbor's edge leaf.
-function migrationTargetForClosedLeaf(root, leaf) {
-  const slot = findLeafSlot(root, leaf);
-  if (!slot || slot.holder === "root") return null;
-  const holderArray = slot.holder;
-  if (holderArray.length === 2) {
-    const sibling = holderArray[1 - slot.index];
-    if (isPaneLeaf(sibling)) return sibling;
-    if (isPaneSplit(sibling)) {
-      const siblingLeaves = paneLeaves(sibling);
-      return slot.index === 0 ? siblingLeaves[siblingLeaves.length - 1] : siblingLeaves[0];
-    }
-    return null;
-  }
-  const after = holderArray.slice(slot.index + 1);
-  const before = holderArray.slice(0, slot.index).reverse();
-  const firstAfter = after.map(paneLeaves).find((list) => list.length);
-  const firstBefore = before.map(paneLeaves).find((list) => list.length);
-  return (firstAfter && firstAfter[0])
-    || (firstBefore && firstBefore[firstBefore.length - 1])
-    || paneLeaves(root).find((l) => l !== leaf) || null;
-}
-
-function normalizeEntryRoot(stateEntry) {
-  const repaired = normalizePaneTree(stateEntry.root);
-  if (repaired) stateEntry.root = repaired;
-}
-
-// Collector drop: remove a leaf whatever it holds (bound to a closed
-// workspace, or an explicit panel close). collapseEmptyLeafInTree
-// refuses leaves with tabs, so the ws sweep needs this stronger
-// dropper. Reuses the same slot/normalize/focus mechanics: sibling
-// promoted, single-child splits collapse, focus moves to the nearest
-// survivor. Returns false when nothing changed (leaf already gone or
-// it is the whole tree, where dropping it would leave the collector
-// with nothing to render).
+// Panel removal for the flat list: splice the panel out, drop it from
+// any group (the group dissolves under two members through the sweep),
+// heal the visible pointer. Returns false when nothing changed (panel
+// already gone, or it is the last one, where dropping it would leave
+// nothing to render).
 function dropLeafFromTree(leaf) {
   const entry = panesStateFor();
-  const root = entry.root;
-  if (!isPaneLeaf(leaf) || !paneLeaves(root).includes(leaf)) return false;
-  if (root === leaf) return false;
-  const slot = findLeafSlot(root, leaf);
-  if (!slot) return false;
-  if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
-  const holderArray = slot.holder;
-  if (holderArray === "root") return false;
-  const survivor = migrationTargetForClosedLeaf(root, leaf);
-  const sibling = holderArray.length === 2 ? holderArray[1 - slot.index] : null;
-  if (sibling) {
-    const parentSlot = findSplitSlot(root, holderArray);
-    if (!parentSlot) return false;
-    if (parentSlot.holder === "root") entry.root = sibling;
-    else parentSlot.holder[parentSlot.index] = sibling;
-  } else {
-    holderArray.splice(slot.index, 1);
-    normalizeEntryRoot(entry);
+  if (!isPaneLeaf(leaf)) return false;
+  const at = entry.panels.indexOf(leaf);
+  if (at < 0) return false;
+  if (entry.panels.length <= 1) return false;
+  const group = groupForLeaf(entry, leaf);
+  entry.panels.splice(at, 1);
+  if (group) {
+    const memberAt = group.memberIds.indexOf(leaf.paneId);
+    if (memberAt >= 0) group.memberIds.splice(memberAt, 1);
+    group.layout = memberLayoutWithout(group.layout, leaf.paneId);
   }
-  const liveRoot = entry.root;
-  const focusTarget = (survivor && paneLeaves(liveRoot).includes(survivor) && survivor !== leaf)
-    ? survivor
-    : activeLeaf(liveRoot) || paneLeaves(liveRoot)[0];
-  if (focusTarget) focusLeaf(liveRoot, focusTarget);
+  entry.activePaneId = entry.activePaneId === leaf.paneId ? null : entry.activePaneId;
+  const subject = visibleSubject(entry);
+  entry.visible = subject && subject.kind === "group"
+    ? { type: "group", id: subject.group.groupId }
+    : { type: "panel", id: subject.leaf.paneId };
+  if (entry.activePaneId === null && subject) entry.activePaneId = subject.kind === "group"
+    ? (groupMembers(subject.group)[0] || {}).paneId || null
+    : subject.leaf.paneId;
   saveWorkspacePanesStates();
   return true;
 }
 
-// The slot holding the split node whose children array is childrenArray:
-// {holder: "root"} when the split is the root, else the children array
-// and the index of the split inside it. closeActivePane swaps the whole
-// split for the promoted sibling, so the slot must name the split node,
-// not its children (an indexOf on the children array never finds it).
-function findSplitSlot(root, childrenArray) {
-  if (isPaneSplit(root) && root.children === childrenArray) return { holder: "root", index: 0 };
-  const walk = (node) => {
-    for (let i = 0; i < node.children.length; i++) {
-      const child = node.children[i];
-      if (isPaneSplit(child)) {
-        if (child.children === childrenArray) return { holder: node.children, index: i };
-        const found = walk(child);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-  return isPaneSplit(root) ? walk(root) : null;
-}
-
-// A split leaf whose last tab just closed keeps a dead pane on screen.
-// Drop it the same way the strip close does: sibling promoted into the
-// parent slot, single-child splits collapse, wider parents splice. No
-// tab migration here: the leaf emptied out, so the nearest survivor
-// (route- or tree-order) takes focus instead. Single-leaf trees keep
-// their empty leaf for the New terminal card.
-// Collapse works on any workspace's tree, not just the current one: the
-// entry that owns the root must be the one rewritten. Callers pass the
-// entry explicitly (panesStateFor() default keeps the historical
-// single-workspace call sites unchanged); the root-replacement writes
-// below target it, so a sweep over foreign trees can never swap another
-// workspace's root object.
-function collapseEmptyLeafInTree(root, leaf, entry = panesStateFor()) {
-  if (!isPaneSplit(root)) return false;
-  const leaves = paneLeaves(root);
-  if (leaves.length <= 1 || !leaves.includes(leaf)) return false;
-  if (leaf.tabs.length) return false;
-  const survivor = migrationTargetForClosedLeaf(root, leaf);
-  const slot = findLeafSlot(root, leaf);
-  if (!slot || slot.holder === "root") return false;
-  if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
-  const holderArray = slot.holder;
-  const sibling = holderArray.length === 2 ? holderArray[1 - slot.index] : null;
-  if (sibling) {
-    const parentSlot = findSplitSlot(root, holderArray);
-    if (!parentSlot) return false;
-    if (parentSlot.holder === "root") entry.root = sibling;
-    else parentSlot.holder[parentSlot.index] = sibling;
-  } else {
-    holderArray.splice(slot.index, 1);
-    normalizeEntryRoot(entry);
+// Flat-model sweep: armed empty panels (emptied by a gesture) drop
+// from the session, and a group left under two members dissolves (its
+// remaining panel turns ungrouped). The focused panel and the last
+// panel always survive.
+function sweepAbandonedEmptyLeaves() {
+  const root = paneRootFor();
+  const protectedLeaf = activeLeaf(root);
+  const protectedId = (protectedLeaf || {}).paneId || null;
+  let changed = false;
+  // Armed empty panels drop, one at a time, guards against loops.
+  // The focused panel and the last panel survive by the checks below.
+  let guard = 16;
+  while (guard-- > 0) {
+    const live = paneRootFor();
+    const leaves = paneLeaves(live);
+    if (leaves.length <= 1) break;
+    const victim = leaves.find((leaf) => leaf.autoCloseArmed && !leaf.tabs.length && leaf.paneId !== protectedId);
+    if (!victim) break;
+    if (!dropLeafFromTree(victim)) break;
+    changed = true;
   }
-  const liveRoot = entry.root;
-  const focusTarget = (survivor && paneLeaves(liveRoot).includes(survivor) && survivor !== leaf)
-    ? survivor
-    : activeLeaf(liveRoot) || paneLeaves(liveRoot)[0];
-  if (focusTarget) focusLeaf(liveRoot, focusTarget);
-  saveWorkspacePanesStates();
-  return true;
+  // Group dissolve: a group under two members is not a group anymore.
+  for (const group of [...(paneRootFor().groups || [])]) {
+    if (groupMemberCount(group) >= 2) continue;
+    for (const member of groupMembers(group)) member.groupId = null;
+    const at = paneRootFor().groups.indexOf(group);
+    if (at >= 0) paneRootFor().groups.splice(at, 1);
+    changed = true;
+  }
+  // Visible heal: a dropped panel or dissolved group can leave the
+  // pointer stale; visibleSubject's fallbacks own the repair.
+  if (changed) {
+    const live = paneRootFor();
+    const subject = visibleSubject(live);
+    live.visible = subject && subject.kind === "group"
+      ? { type: "group", id: subject.group.groupId }
+      : { type: "panel", id: subject.leaf.paneId };
+    saveWorkspacePanesStates();
+  }
+  return changed;
 }
 
-// Auto-close sweep (v3.2): only panels EMPTIED by a move, drop, or
-// close auto-close; fresh splits (empty by design, Enter spawns there)
-// keep standing until the user closes them. The emptying sites mark the
-// leaf (leaf.autoCloseArmed = true) at the moment the last tab leaves it;
-// the sweep then closes armed leaves the focus pointer is not on (focus
-// moved with the moved tab or the close kept it one gesture), and the
-// tree's last panel never drops. The marker clears when a leaf gains
-// tabs again (Enter spawn, drag-in), so a re-filled panel never closes.
-// Loop-guarded: one collapsed leaf reshapes the tree, so the sweep
-// re-reads the root per iteration instead of walking a stale snapshot.
+// Auto-close arm/disarm (v3.2): only panels EMPTIED by a move, drop,
+// or close auto-close; fresh panels (empty by design, Enter spawns
+// there) never arm. The arm helper owns the emptiness guard; the
+// marker clears when a panel gains tabs again, so a re-filled panel
+// never closes.
 function armLeafAutoClose(leaf) {
   if (leaf && !leaf.tabs.length) leaf.autoCloseArmed = true;
 }
 
 function disarmLeafAutoClose(leaf) {
   if (leaf) leaf.autoCloseArmed = false;
-}
-
-// Fold mechanics: the lone view's tabs append into the collector
-// (deduped, same contract as a close migration), its panel drops, and
-// focus lands on the collector. The collector's active tab keeps
-// priority; a folded label rides as a strip tab, not the shown one.
-// Save sits after the drop: a failed drop must not persist the merged
-// tabs while the panel still stands.
-function foldLeafIntoCollector(view, collector) {
-  for (const tabId of [...view.tabs])
-    if (!collector.tabs.includes(tabId)) collector.tabs.push(tabId);
-  disarmLeafAutoClose(collector);
-  if (!collector.active) collector.active = view.active || collector.tabs[0] || null;
-  const dropped = dropLeafFromTree(view);
-  if (!dropped) return false;
-  saveWorkspacePanesStates();
-  focusLeaf(paneRootFor(), collector);
-  return true;
-}
-
-// The decay fold: a group down to its last view folds that view back
-// into the collector, so the fan-out never strands one split view
-// beside the stack it came from. The stamped pre tells who left (a
-// view, out of a group, with a same-ws collector); the CURRENT split
-// around that collector decides whether the fold fires now, so two
-// views emptied by one batch gesture stay (the surviving collector
-// split still counts 2 views) and a stale pre cannot fire on a
-// freshly placed view.
-// Unified collapse (redo): a group whose fan-out dropped below TWO
-// members (views + marked slots) dissolves back into its dock: every
-// remaining same-ws view folds its labels in, every marked slot drops.
-// The dock itself stays (it is the collector the labels return to);
-// the wrappers flatten through the sibling-promotion the folds trigger.
-// Called (1) per consumed pre stamp (gesture-driven removals: bar drop,
-// strip drop, close) and (2) from the sweep's marker pass (closes that
-// leave no stamp, like the slot's own ✕). Cross-ws views never fold
-// into a foreign dock; they stand and the group dies around them.
-function collapseGroupArea(split, dock) {
-  if (!isPaneSplit(split) || !dock) return false;
-  let changed = false;
-  let guard = 6;
-  while (guard-- > 0) {
-    const liveRoot = paneRootFor();
-    if (!paneLeaves(liveRoot).includes(dock)) break;
-    if (paneGroupSplitForLeaf(liveRoot, dock) !== split) break;
-    const views = paneGroupVisibleViews(split).filter((leaf) => leaf !== dock);
-    const slots = paneGroupSlots(split);
-    if (views.length + slots.length >= 2) break;
-    if (views.length === 1) {
-      const view = views[0];
-      if (leafWorkspaceId(view) !== leafWorkspaceId(dock)) break;
-      if (!foldLeafIntoCollector(view, dock)) break;
-      changed = true;
-      continue;
-    }
-    if (slots.length === 1) {
-      if (!dropLeafFromTree(slots[0])) break;
-      changed = true;
-      continue;
-    }
-    break;
-  }
-  return changed;
-}
-
-// Pre-driven entry: the consumed stamp names the dock the removed view
-// left; the dock's CURRENT structural area decides the fold.
-function collapseUnderMemberedGroup(pre) {
-  if (!pre || !pre.collectorId) return false;
-  const root = paneRootFor();
-  const collector = paneForPaneId(root, pre.collectorId);
-  if (!collector || !paneLeaves(root).includes(collector)) return false;
-  if (leafWorkspaceId(collector) !== (pre.wsId || null)) return false;
-  const split = paneGroupSplitForLeaf(root, collector);
-  if (!split) return false;
-  return collapseGroupArea(split, collector);
-}
-
-// Marker pass: closes that produce no pre stamp (the slot's own ✕)
-// still owe the group a collapse when the marked dock stands with a
-// lone view. Fires only on the strict shape: a marked dock, exactly
-// one view, no slots, no neutral empty leaf, and no second stack
-// (manual split arrangements and dock-less pairs never fold).
-function collapseMarkedGroupAreas() {
-  const root = paneRootFor();
-  if (!isPaneSplit(root)) return false;
-  const areas = root.children.every((child) => child && child.kind === "pane")
-    ? [root]
-    : root.children.filter((child) => isPaneSplit(child));
-  let changed = false;
-  for (const area of areas) {
-    const leaves = paneLeaves(area);
-    const dock = leaves.find((leaf) => leaf.groupCollector === true);
-    if (!dock) continue;
-    if (paneGroupVisibleViews(area).length !== 1) continue;
-    if (paneGroupSlots(area).length) continue;
-    const stacks = leaves.filter(
-      (leaf) => leafTerminalLabelCount(leaf) > 1 || leaf.groupCollector === true
-    );
-    if (stacks.length > 1) continue;
-    const neutral = leaves.filter(
-      (leaf) => leaf !== dock && !isGroupView(leaf) && !isGroupSlot(leaf)
-        && leafTerminalLabelCount(leaf) === 0 && !leaf.tabs.length
-    );
-    if (neutral.length) continue;
-    if (collapseGroupArea(area, dock)) changed = true;
-  }
-  return changed;
-}
-
-// A leaf inside a collapsed group split: the collapsed views and
-// their dock. The sweep and the strip-count guards use this to keep
-// the hidden tree intact while the stamp lives.
-function leafInCollapsedSplit(root, leaf) {
-  if (!root || !leaf) return false;
-  const split = paneGroupSplitForLeaf(root, leaf);
-  return !!(split && isCollapsedGroup(split));
-}
-
-function sweepAbandonedEmptyLeaves() {
-  // Focus capture: the tree's focused leaf at sweep entry keeps immunity
-  // for the WHOLE loop. collapseEmptyLeafInTree reassigns focus to the
-  // survivor mid-collapse; without the capture, that shuffle would
-  // abandon the originally focused armed leaf and the next iteration
-  // would eat it, cascading a split tree down to one panel. The
-  // gesture's focus (user click, split command, tab move) is the intent
-  // signal; the sweep must never generate its own. Resolve through
-  // activeLeaf (same accessor every consumer uses) so a stale/null
-  // activePaneId heals to the effective focused leaf instead of
-  // protecting nobody.
-  const protectedLeaf = activeLeaf(paneRootFor());
-  const protectedId = (protectedLeaf || {}).paneId || null;
-  let guard = 16;
-  let changed = false;
-  // Decay fold first: an armed empty view took its label out of a
-  // group; when the group drops below two members the survivors fold
-  // home and their panels drop in this same sweep, before the armed
-  // source itself collapses below. Each stamp is one-shot: consumed
-  // here, or the pre stays stale for the next sweep to misfire on.
-  for (const leaf of paneLeaves(paneRootFor())) {
-    if (!leaf.autoCloseArmed || leaf.tabs.length || !leaf.autoClosePre) continue;
-    const pre = leaf.autoClosePre;
-    leaf.autoClosePre = null;
-    if (collapseUnderMemberedGroup(pre)) changed = true;
-  }
-  while (guard-- > 0) {
-    const root = paneRootFor();
-    if (!isPaneSplit(root)) break;
-    const leaves = paneLeaves(root);
-    if (leaves.length <= 1) break;
-    const victim = leaves.find((leaf) => leaf.autoCloseArmed && !leaf.tabs.length && leaf.paneId !== protectedId
-      // A collapsed group's views stay in the tree by design: their
-      // labels folded home on the collapse gesture, and the chip press
-      // re-expands into them. Sweeping them would destroy the group.
-      && !leafInCollapsedSplit(paneRootFor(), leaf));
-    if (!victim) break;
-    if (!collapseEmptyLeafInTree(paneRootFor(), victim)) break;
-    changed = true;
-  }
-  // Marker pass AFTER the armed loop (phantom slots are gone by now):
-  // unstamped closes (the slot's own ✕) still owe a marked group its
-  // collapse when the strict under-membered shape stands.
-  if (collapseMarkedGroupAreas()) changed = true;
-  // Restore: a collapse may have moved focus to a survivor; put it back
-  // on the captured leaf when it still lives, so the focused empty panel
-  // (fresh split, Enter target) keeps its focus through the sweep.
-  if (changed && protectedId) {
-    const liveRoot = paneRootFor();
-    const kept = paneForPaneId(liveRoot, protectedId);
-    if (kept && activeLeaf(liveRoot) !== kept) focusLeaf(liveRoot, kept);
-  }
-  return changed;
 }
 
 // v3.2 choke point for single-tab removals from a leaf: splice the id
@@ -4049,17 +3394,17 @@ function tabHoverTitle(tab) {
 
 // ---- editor tab lifecycle ----------------------------------------------
 // openEditorTab ensures the tab exists in the active pane and activates it.
-// The pane tree only stores identity; the file browser module (ensured
+// The pane model only stores identity; the file browser module (ensured
 // loaded before any real open) owns per-file state and mounts the editor
 // container into the pane content slot.
 function paneRootFor() {
-  return panesStateFor().root;
+  return panesStateFor();
 }
 
 // Location-bar + (collector): mint an empty panel for the FOCUSED
-// panel's workspace, auto-split beside the focused leaf, focus it.
-// Returns the minted leaf, or null when no tree exists yet (the
-// dashboard owns the center; the caller falls back to newTab()).
+// panel's workspace, focus it. Returns the minted leaf, or null when
+// no entry exists yet (the dashboard owns the center; the caller
+// falls back to newTab()).
 function newPanelForFocused() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return null;
@@ -4094,8 +3439,6 @@ function paneEnsureEditorTab(path) {
     // render path is gated on its drawer being open, so a render here is
     // the only guarantee when the open comes from a menu or shortcut.
     disarmLeafAutoClose(leaf);
-    // Refill clears the slot mark: a pane hosting an editor tab is a view.
-    delete leaf.groupSlot;
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
@@ -4211,8 +3554,6 @@ function paneEnsureGitTab(viewKey) {
     // Same immediate-render contract as editor tabs: the git drawer's
     // render path is gated on the drawer being open.
     disarmLeafAutoClose(leaf);
-    // Refill clears the slot mark: a pane hosting a git tab is a view.
-    delete leaf.groupSlot;
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
@@ -4300,19 +3641,21 @@ function setActivePaneTab(tabId) {
 
 function activatePaneTab(tabId) {
   if (!tabId) return;
-  // A tab click on the maximize rail's stub (hidden sibling) restores
-  // the layout first: the open paths below must target the clicked
-  // tab's own leaf, not the maximized one. The same-tab early return
-  // below never re-renders, so the restore renders here.
   const root = paneRootFor();
-  const maxLeaf = maximizedLeaf(root);
-  if (maxLeaf) {
-    const owner = paneForTab(root, tabId);
-    if (owner && owner !== maxLeaf) {
-      panesStateFor().maximizedPaneId = null;
-      focusLeaf(root, owner);
-      saveWorkspacePanesStates();
-      renderWorkspacePanes();
+  // A tab click on a panel whose subject is hidden (grouped behind a
+  // chip, or another rail label) switches the subject to its owner
+  // first: the open paths below must target the clicked tab's own
+  // panel. The same-tab early return below never re-renders, so the
+  // subject switch renders here.
+  const owner = paneForTab(root, tabId);
+  if (owner) {
+    const subject = visibleSubject(root);
+    const ownerVisible = subject && subject.kind === "panel" && subject.leaf === owner;
+    const ownerInVisibleGroup = !!(subject && subject.kind === "group"
+      && groupMembers(subject.group).includes(owner));
+    if (!ownerVisible && !ownerInVisibleGroup) {
+      setVisibleSubject("panel", owner.paneId);
+      focusLeaf(paneRootFor(), owner);
     }
   }
   if (isEditorTab(tabId)) {
@@ -4331,13 +3674,6 @@ function activatePaneTab(tabId) {
     if (paneActiveTab() !== tabId) setActivePaneTab(tabId);
     return;
   }
-  // Group collapse: pressing a docked panel label inside a live group
-  // returns the base state (one visualised panel). The pressed label's
-  // dock collects every group view's terminal labels, the marked slots
-  // drop, and the split renders as the dock alone with a "Group N
-  // panels" chip whose press re-expands the group (spec: "once pressed
-  // it will switch fully to that panel view").
-  if (collapseGroupForTabPress(tabId)) return;
   // The route carries the tab's OWN workspace (D1 mixed tree): a
   // cross-workspace tab navigating under state.ws would land on a
   // mismatched route and the snapshot filter would hide its row.
@@ -4390,16 +3726,17 @@ function mountEmptyLeafInPane(shown) {
     return;
   }
   const root = paneRootFor();
+  const subject = visibleSubject(root);
   let pane = null;
-  if (isPaneSplit(root)) {
-    const leaf = activeLeaf(root) || paneLeaves(root)[0];
+  if (subject && subject.kind === "group") {
+    const leaf = activeLeaf(root) || groupMembers(subject.group)[0];
     pane = leaf ? paneLeafElement(container, root, leaf) : null;
   } else {
     pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
-    if (!pane) {
+    if (!pane && subject) {
       pane = document.createElement("div");
       pane.className = "workspace-pane";
-      pane.dataset.paneId = root.paneId || "root";
+      pane.dataset.paneId = subject.leaf.paneId || "root";
       const strip = document.createElement("div");
       strip.className = "pane-tab-strip";
       strip.setAttribute("role", "tablist");
@@ -4450,20 +3787,6 @@ function mountEmptyPanelCard(content, leaf) {
   const newTitle = typeof titleWithWebuiShortcut === "function"
     ? titleWithWebuiShortcut("New terminal", "newPanel")
     : "New terminal";
-  // Marked slots render a placeholder card instead of the empty hint:
-  // the drop target needs a visible surface to hit, and the card text
-  // tells the drag owner what the drop does (populate this group slot).
-  if (leaf.groupSlot === true) {
-    const slotHtml = `<h1>${escapeHtml(name || wsId || "Group slot")}</h1>`
-      + `<p>Drag a tab here to add it to the group.</p>`;
-    if (card.__herdrEmptySignature !== slotHtml) {
-      card.__herdrEmptySignature = slotHtml;
-      const inner = card.querySelector(".workspace-empty-leaf-card");
-      if (inner) inner.innerHTML = slotHtml;
-    }
-    if (card.hidden) card.hidden = false;
-    return;
-  }
   const html = `<h1>${escapeHtml(name || wsId || "Empty panel")}</h1>`
     + `<p>No terminal in this panel yet.</p>`
     + `<p class="workspace-empty-leaf-hint">Press <kbd>Enter</kbd> to open a terminal.</p>`
@@ -4535,35 +3858,6 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
   const leaf = leafArg || activeLeaf(root);
   if (!leaf) return;
   const activeTab = leaf.active;
-  // Dock labels only: the marked collector inside a live group is the
-  // label dock, not a viewing pane. The base rule is one visible panel
-  // at a time, so a dock never selected for viewing mounts no surface:
-  // its strip keeps the docked labels accessible, and pressing one
-  // focuses the dock pane and the view follows the focus (the spec's
-  // "once pressed it will switch fully to that panel view"). The dock
-  // still mounts normally while focused: the user just chose it, and
-  // the focused dock is the one panel being viewed. Editor/git actives
-  // ride unchanged: they are client-owned views, not docked panels.
-  if (leaf.groupCollector === true && activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab)) {
-    const dockGroup = paneGroupForLeaf(root, leaf);
-    const dockFocused = activeLeaf(root) === leaf;
-    if (dockGroup && !dockFocused) {
-      removeEmptyPanelCard(content);
-      hideStalePaneContainers(content);
-      // The dock's parked terminal must not paint under the labels:
-      // a dock whose shell landed here in an earlier focused stint
-      // (drop rescue, reshape) sends it home hidden, same as the
-      // editor/git owner branch below.
-      const shellNow = el("terminalShell");
-      const panesHome = el("workspacePanes");
-      if (shellNow && shellNow.parentElement === content && panesHome) {
-        if (shellNow.parentElement) shellNow.parentElement.removeChild(shellNow);
-        panesHome.appendChild(shellNow);
-      }
-      if (shellNow && shellNow.style) shellNow.style.display = "none";
-      return;
-    }
-  }
   // Empty panel card (collector): a tabs-empty leaf is a valid standing
   // state, and its content slot carries the affordance instead of a
   // blank hole. The card names the bound workspace and routes Enter
@@ -4879,13 +4173,15 @@ function wireDividerDrag(divider) {
   divider.addEventListener("pointercancel", finish);
 }
 
-// Maps a split element back to its tree node via the splitId chain and
-// stores the dragged sizes. The splitId path encodes the tree position,
-// so the lookup walks the same path the renderer used.
+// Maps a split element back to its group layout node via the splitId
+// chain and stores the dragged sizes. The splitId path encodes the
+// layout position, so the lookup walks the same path the renderer used.
 function writeDividerSizes(splitElement, sizes) {
   const root = paneRootFor();
+  const subject = visibleSubject(root);
+  const layout = subject && subject.kind === "group" ? subject.group.layout : null;
   const path = String(splitElement.dataset.splitId || "");
-  const node = findSplitByPath(root, path);
+  const node = layout ? findSplitByPath(layout, path) : null;
   if (!node) return;
   node.sizes = sizes;
   saveWorkspacePanesStates();
@@ -4970,8 +4266,8 @@ window.HerdrWorkspacePanes = {
   paneBarControlsSignature,
   forgetWorkspacePanes,
   pruneWorkspaceTabsFromPanes,
-  // Phase 4: split tree surface. paneLeaves/activePane expose the tree
-  // walk; the commands are the strip buttons and shortcuts' entry points.
+  // Phase 4 surface. paneLeaves/activePane expose the flat panel walk;
+  // consumers keep the names.
   paneLeaves,
   paneRootFor,
   paneTabsForTree,
@@ -4984,27 +4280,25 @@ window.HerdrWorkspacePanes = {
   panelRenameInitialLabel,
   activePane: () => activeLeaf(paneRootFor()),
   activePaneElement,
-  splitPaneRight,
-  splitPaneDown,
   closeActivePane,
-  moveActiveTabToNextPane,
-  // Phase 5: maximize + the [⋮] kind-aware pane menu.
-  maximizeActivePane,
-  paneIsMaximized,
+  // The [⋮] kind-aware pane menu.
   togglePaneMenu,
   closePaneMenu,
-  // Phase 5: tab drag between panes.
+  // Tab drag between member strips.
   movePaneTabTo,
   paneDropIndexAt,
   // Drag pipeline entry points (the strip listeners call these; tests
   // drive them directly because the vm DOM stub does not store listeners).
   paneStripDragOver,
   paneStripDrop,
-  // p6: per-strip controls targeting the pressed pane.
-  splitPaneRightFor,
-  splitPaneDownFor,
+  // Rail label drag pipeline (container wiring + drop).
+  paneLabelDragStart,
+  paneLabelDragEnd,
+  paneContainerTabDragOver,
+  paneContainerTabDrop,
+  showPanelFromRail,
+  showGroupFromRail,
   closePaneFor,
-  maximizePaneFor,
   newTabForPane,
   requestTabPlacement,
   openPanelInWorkspace,
@@ -5015,9 +4309,9 @@ window.HerdrWorkspacePanes = {
   mountEmptyLeafInPane,
   // Collector model helpers: chunk B/C (chips, sidebar resolution,
   // location-bar +) build on these. newPanelForFocused mints an empty
-  // focused panel for the focused panel's workspace (auto-split beside
-  // it). dropLeafFromTree removes a panel whatever it holds (explicit
-  // close cascade + ws-close teardown).
+  // focused panel for the focused panel's workspace. dropLeafFromTree
+  // removes a panel whatever it holds (explicit close cascade + ws-close
+  // teardown).
   newPanelForFocused,
   dropLeafFromTree,
   leafWorkspaceId,
@@ -5025,14 +4319,14 @@ window.HerdrWorkspacePanes = {
   focusedLeaf,
   writeRouteFromLeaf,
   focusPanelFor,
-  // Location bar unsplit wiring: the bar module owns the DOM, this
-  // module owns the tree surgery the bar drop triggers.
+  // Location bar ungroup wiring: the bar module owns the DOM, this
+  // module owns the group surgery the bar drop triggers.
   paneTabUnsplitHover,
   paneTabUnsplitDrop,
-  // Group collapse (label press) + expand (collapsed chip press).
-  expandCollapsedGroup,
-  startCollapsedGroupRename,
-  collapseGroupForTabPress,
+  // Group rename trio (rail chip double-click).
+  startPaneGroupRename,
+  paneGroupRenameKey,
+  commitPaneGroupRename,
   // Close-aftermath facade for cross-module terminal closes: prunes
   // the id from its leaf, sweeps armed+empty leaves, paints once.
   // The sweep and its guards stay inside this module.

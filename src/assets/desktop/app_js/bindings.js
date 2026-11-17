@@ -690,6 +690,11 @@ el("optParentCloseMode").onchange = () => {
   saveOptions();
   applyOptions();
 };
+el("optPaneGroupAutoJoin").onchange = () => {
+  options.paneGroupAutoJoin = el("optPaneGroupAutoJoin").value;
+  saveOptions();
+  applyOptions();
+};
 el("optWorkspaceOpenTerminal").onchange = () => {
   options.workspaceOpenTerminal = el("optWorkspaceOpenTerminal").checked;
   saveOptions();

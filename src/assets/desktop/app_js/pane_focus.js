@@ -35,9 +35,6 @@
     while (node) {
       const classes = String(node.className || "").split(/\s+/);
       if (classes.indexOf("workspace-pane") >= 0) return node;
-      // Rail stubs share the pane class but act on their leaf's behalf;
-      // they are not layout leaves and never take the ring.
-      if (classes.indexOf("pane-rail-stub") >= 0) return null;
       node = node.parentNode;
     }
     return null;
@@ -110,7 +107,7 @@
   function walkPanes(node, visit) {
     for (const child of node.children || []) {
       const classes = String(child.className || "").split(/\s+/);
-      if (classes.indexOf("workspace-pane") >= 0 && classes.indexOf("pane-rail-stub") < 0) {
+      if (classes.indexOf("workspace-pane") >= 0) {
         visit(child);
       }
       walkPanes(child, visit);

@@ -432,21 +432,9 @@ function runPrefixedShortcut(e) {
     focusPrev: () => {
       return focusRelativeControl(-1);
     },
-    splitRight: () => {
-      return splitPaneRight();
-    },
-    splitDown: () => {
-      return splitPaneDown();
-    },
     closePane: () => {
       closeActivePane();
       return true;
-    },
-    moveTabNextPane: () => {
-      return moveActiveTabToNextPane();
-    },
-    maximizePane: () => {
-      return maximizeActivePane();
     },
     togglePaneMenu: () => {
       // The [⋮] rides the location bar and acts on the focused pane; the
