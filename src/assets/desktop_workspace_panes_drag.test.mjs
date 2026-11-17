@@ -1,7 +1,8 @@
 // v4 drag mechanics coverage: half-region label drops with the dotted
 // preview square, the spring-loaded dwell (arm, outline, forced nest),
 // group chips (icon + member count) on split subtrees and flat roots,
-// label strip-drop ungrouping, and tab drags creating a panel at the
+// the fan-out rule (two label stacks render ungrouped), label
+// strip-drop ungrouping, and tab drags creating a panel at the
 // hovered half. The vm DOM stub has no event dispatch, so the tests
 // drive the module-level drag entry points directly (same contract as
 // paneStripDragOver in the main suite: the inline attributes resolve to
@@ -237,6 +238,87 @@ test("flat root split renders one group chip counting every panel", () => {
     assert.ok(html.includes("pane-panel-chip"), "chip renders");
     assert.ok(!html.includes("pane-panel-group-chip"), "non-focused leaves keep standalone chips");
     assert.ok(html.includes(`data-pane-id="${leaf.paneId}"`), "chip names its own panel");
+  }
+});
+
+// Fan-out rule fixtures: flat roots whose panels stack the given
+// terminal-label counts. [3, 1] is a collector plus one split view,
+// [2, 2] is two collectors side by side.
+function bootFlatLeavesWithCounts(ctx, counts) {
+  const panes = ctx.HerdrWorkspacePanes;
+  const entry = panes.panesStateFor();
+  ctx.state.tabs = [];
+  const leaves = [];
+  let index = 0;
+  entry.root = {
+    kind: "row",
+    sizes: counts.map(() => 1),
+    children: counts.map((count, i) => {
+      const tabs = [];
+      for (let j = 0; j < count; j += 1) {
+        index += 1;
+        const tabId = `tab_${index}`;
+        ctx.state.tabs.push({ tab_id: tabId, workspace_id: ctx.state.ws });
+        tabs.push(tabId);
+      }
+      const leaf = { kind: "pane", paneId: `fc_${i}`, tabs, active: tabs[0] || null, wsId: ctx.state.ws };
+      leaves.push(leaf);
+      return leaf;
+    }),
+  };
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  return leaves;
+}
+
+test("collector plus one split view stays grouped", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const leaves = bootFlatLeavesWithCounts(ctx, [3, 1]);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.focusPanelFor(leaves[1].paneId);
+  panes.renderWorkspacePanes();
+  const viewHtml = chipHtmlFor(ctx, leaves[1]);
+  assert.ok(viewHtml.includes("pane-panel-group-chip"), "focused split view carries the group chip");
+  assert.ok(viewHtml.includes("\u25A3 2"), "group counts the collector and the view");
+  const collectorHtml = chipHtmlFor(ctx, leaves[0]);
+  assert.ok(collectorHtml.includes("pane-panel-chip"), "collector chip renders");
+  assert.ok(!collectorHtml.includes("pane-panel-group-chip"), "non-focused collector keeps a standalone chip");
+});
+
+test("two label stacks render ungrouped, no group chip anywhere", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const leaves = bootFlatLeavesWithCounts(ctx, [2, 2]);
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.focusPanelFor(leaves[0].paneId);
+  panes.renderWorkspacePanes();
+  for (const leaf of leaves) {
+    const html = chipHtmlFor(ctx, leaf);
+    assert.ok(html.includes("pane-panel-chip"), "standalone chip renders");
+    assert.ok(!html.includes("pane-panel-group-chip"), "a stacked panel never carries the group chip");
+  }
+});
+
+test("nested split with two stacks keeps every member ungrouped", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  const entry = panes.panesStateFor();
+  const memberA = { kind: "pane", paneId: "na", tabs: ["tab_1", "tab_2"], active: "tab_1", wsId: "ws-1" };
+  const memberB = { kind: "pane", paneId: "nb", tabs: ["tab_3", "tab_4"], active: "tab_3", wsId: "ws-1" };
+  const standalone = { kind: "pane", paneId: "ns", tabs: ["tab_5"], active: "tab_5", wsId: "ws-1" };
+  const holder = { kind: "column", sizes: [1, 1], children: [memberA, memberB] };
+  entry.root = { kind: "row", sizes: [1, 1], children: [holder, standalone] };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_4", "tab_5"].map((id) => ({ tab_id: id, workspace_id: "ws-1" }));
+  ctx.state.tab = "tab_1";
+  panes.renderWorkspacePanes();
+  panes.focusPanelFor("na");
+  panes.renderWorkspacePanes();
+  for (const leaf of panes.paneLeaves(panes.paneRoot())) {
+    const html = chipHtmlFor(ctx, leaf);
+    assert.ok(html.includes("pane-panel-chip"), "standalone chip renders");
+    assert.ok(!html.includes("pane-panel-group-chip"), "no member groups while two members stack labels");
   }
 });
 

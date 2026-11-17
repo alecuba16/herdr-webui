@@ -1414,7 +1414,10 @@ function markCurrentWorkspacePane(pane, leaf) {
 // last-focused leaf. A group is the split whose view area holds the
 // panel: a top-level subtree (v3), or the flat root itself when every
 // root child is a leaf (the first split builds exactly this shape, so
-// the number appears the moment it happens). Single-panel trees hide
+// the number appears the moment it happens). A split stays a group
+// only while the fan-out is real: at most one member stacks labels
+// (the collector the views split out of), so two label stacks render
+// every panel ungrouped. Single-panel trees hide
 // the chip: one panel names itself through the location bar and
 // sidebar already.
 
@@ -1442,17 +1445,33 @@ function paneGroupChipHtml(root, group) {
 // The split whose view area groups a leaf: the top-level subtree
 // holding it when that subtree is a split with 2+ leaves, the FLAT
 // root itself (every root child a leaf, so the root split's view area
-// is one group counting every panel), else null. Mixed roots keep
+// is one group counting every panel), else null. Both paths demand a
+// real fan-out: paneSplitIsGroup below. Mixed roots keep
 // the doc model: direct leaves stay standalone, subtree members group
 // as before. Derived, never stored: the tree already expresses
 // membership and a stored flag would drift on every reshape.
 function paneGroupForLeaf(root, leaf) {
   if (!root || !leaf || !isPaneSplit(root)) return null;
   if (root.children.every((child) => child && child.kind === "pane")) {
-    return root.children.includes(leaf) ? root : null;
+    return root.children.includes(leaf) && paneSplitIsGroup(root) ? root : null;
   }
   const holder = root.children.find((child) => isPaneSplit(child) && paneLeaves(child).includes(leaf));
-  return holder && paneLeaves(holder).length >= 2 ? holder : null;
+  return holder && paneLeaves(holder).length >= 2 && paneSplitIsGroup(holder) ? holder : null;
+}
+
+// Terminal labels stacked in one strip. Editor and git tabs ride on
+// the view they opened from, the boot placeholder is not a label yet:
+// neither counts toward the stack.
+function leafTerminalLabelCount(leaf) {
+  return (leaf.tabs || []).filter((id) => !isEditorTab(id) && !isGitTab(id) && id !== TERMINAL_TAB_PLACEHOLDER).length;
+}
+
+// A split is a group only while the fan-out is real: at most ONE leaf
+// stacks labels, the collector the split views came from. Two stacks
+// are collectors side by side, nothing is visibly fanned out, every
+// panel renders standalone instead.
+function paneSplitIsGroup(split) {
+  return paneLeaves(split).filter((leaf) => leafTerminalLabelCount(leaf) > 1).length <= 1;
 }
 
 function panePanelChipHtml(leaf) {
