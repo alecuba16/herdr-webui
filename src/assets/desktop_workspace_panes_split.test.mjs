@@ -1660,3 +1660,61 @@ test("unfocused group dock mounts no terminal surface; focused dock mounts norma
   assert.notEqual(nodes.shell.parentNode, contentOf(dockPane), "shell left the dock slot");
   assert.equal(nodes.shell.style.display, "none", "shell from the dock's stint parks home hidden");
 });
+
+// Group collapse (label press) and expand (chip press): pressing a
+// docked terminal label inside a live group returns the base state. The
+// dock collects every view's labels, the slots drop, the split renders
+// the dock pane alone with ONE "Group N panels" chip (member labels
+// hidden), and the chip press restores the whole split.
+test("dock label press collapses the group; chip press re-expands it", () => {
+  const { document, nodes } = buildDom();
+  const ctx = loadPanesModule(document, "ws-80");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.panesStateFor();
+  const dock = { kind: "pane", paneId: "da", tabs: ["tab_1", "tab_3"], active: "tab_1", wsId: "ws-80", groupCollector: true };
+  const view1 = { kind: "pane", paneId: "db", tabs: ["tab_2"], active: "tab_2", wsId: "ws-80" };
+  const view2 = { kind: "pane", paneId: "dd", tabs: ["tab_4"], active: "tab_4", wsId: "ws-80" };
+  const slot = { kind: "pane", paneId: "dc", tabs: [], active: null, wsId: "ws-80", groupSlot: true };
+  entry.root = { kind: "row", sizes: [1, 1, 1, 1], children: [dock, view1, slot, view2], activePaneId: "db", splitId: "s90" };
+  ctx.state.tabs = ["tab_1", "tab_2", "tab_3", "tab_4"].map((id) => ({ tab_id: id, workspace_id: "ws-80" }));
+  ctx.state.tab = "tab_2";
+  panes.renderWorkspacePanes();
+  assert.equal(paneElements(nodes).length, 4, "expanded group paints four panes");
+
+  // Press dock label tab_3: collapse. The press folds labels and routes;
+  // the harness go stub skips the render pass, so drive it directly like
+  // the maximize press tests do.
+  panes.activatePaneTab("tab_3");
+  panes.renderWorkspacePanes();
+  assert.equal(paneElements(nodes).length, 1, "collapsed group paints the dock pane alone");
+  const collapsedPane = paneElements(nodes)[0];
+  assert.equal(collapsedPane.dataset.paneId, "da", "collapsed pane keeps the dock id");
+  const collapsedStrip = collapsedPane.querySelector(".pane-tab-strip");
+  // The stub DOM stores innerHTML without parsing it, so assert on the
+  // raw strip markup like the rail/chip tests do.
+  const chipHtml = collapsedStrip.__innerHTML;
+  assert.ok(chipHtml.includes("pane-panel-group-collapsed"), "collapsed strip shows the group chip");
+  assert.ok(chipHtml.includes("Group 4 panels"), "chip names the folded count");
+  assert.ok(!chipHtml.includes("data-tab-id"), "member labels hidden while collapsed");
+  assert.ok(chipHtml.includes("expandCollapsedGroup"), "chip click expands");
+  assert.deepEqual([...dock.tabs].sort().map(String), ["tab_1", "tab_2", "tab_3", "tab_4"], "dock holds every folded label");
+  assert.equal(dock.active, "tab_3", "pressed label is the mounted view");
+  assert.equal(entry.root.activePaneId, "da", "focus sits on the dock");
+  // Views survive the sweep: the stamp protects them.
+  const leaves = panes.paneLeaves(entry.root);
+  assert.equal(leaves.length, 3, "dock + two views stand in the tree");
+  assert.ok(leaves.every((l) => !l.autoCloseArmed || !l.tabs.length), "no view holds tabs while collapsed");
+
+  // Chip press: expand.
+  const splitBefore = entry.root;
+  assert.ok(panes.expandCollapsedGroup(encodeURIComponent("s90")), "expand fires");
+  assert.equal(splitBefore.groupCollapsed, undefined, "stamp cleared");
+  assert.equal(paneElements(nodes).length, 3, "expanded group paints dock + views");
+  // Labels render through strip innerHTML (the stub DOM keeps markup
+  // unparsed), so count labels in the raw markup like the chip tests.
+  const stripMarkups = paneElements(nodes).map((p) => (p.querySelector(".pane-tab-strip") || { __innerHTML: "" }).__innerHTML);
+  const labelCount = stripMarkups.reduce((sum, html) => sum + (html.match(/data-tab-id=/g) || []).length, 0);
+  assert.ok(labelCount >= 4, "member labels visible again");
+  assert.ok(stripMarkups.some((html) => html.includes("data-tab-id=\"tab_2\"")), "view label tab_2 back in its pane");
+});

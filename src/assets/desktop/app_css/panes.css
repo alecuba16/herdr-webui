@@ -360,6 +360,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Collapsed group chip: the group folds back to this one label. The
+ dashed border signals the folded state (panels hide behind it, one
+ press restores them); the rest inherits the group chip so both
+ states read as the same control. */
+.pane-panel-group-collapsed {
+  border-style: dashed;
+  cursor: pointer;
+}
+
 /* Rename input: the editing state swaps the group chip
  button for a plain input. Same metrics as the chip so the strip does
  not reflow on the swap; the input keeps its own border language

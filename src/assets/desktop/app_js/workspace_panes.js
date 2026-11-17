@@ -1225,6 +1225,121 @@ function wirePanelChipDrag(container) {
   });
 }
 
+// The collapsed group split inside a tree: the render walk checks the
+// root's flat children and every nested split, one stamp at most (the
+// collapse writes it on a single split).
+function findCollapsedGroupSplit(node) {
+  if (!node || !isPaneSplit(node)) return null;
+  if (isCollapsedGroup(node)) return node;
+  for (const child of node.children || []) {
+    const found = findCollapsedGroupSplit(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+// Collapsed paint: one flat pane for the dock, strip carrying ONLY the
+// group chip (the member labels stay hidden until the chip's press
+// re-expands them), content mounting the dock's active view like any
+// focused pane. The pane keeps the dock's real paneId so strip
+// commands and focus resolve to the live leaf.
+function renderCollapsedGroupInto(container, split) {
+  const root = paneRoot();
+  const dock = collapsedGroupDock(root, split);
+  if (!dock) return;
+  // Stale split chrome from the expanded paint must go: the rescue pass
+  // parks live surfaces (#terminalShell, editor/git containers) before
+  // the drop, the same cleanup close-promote relies on.
+  [...container.children].forEach((child) => {
+    if (hasClass(child, "pane-row") || hasClass(child, "pane-column") || hasClass(child, "pane-strip-rail")) {
+      rescueLiveSurfaces(container, child);
+      detachDomNode(child);
+    }
+  });
+  let pane = findPaneElementById(container, dock.paneId);
+  if (!pane) {
+    pane = document.createElement("div");
+    pane.className = "workspace-pane";
+    pane.dataset.paneId = dock.paneId;
+    const strip = document.createElement("div");
+    strip.className = "pane-tab-strip";
+    strip.setAttribute("role", "tablist");
+    strip.setAttribute("aria-label", "Pane tabs");
+    pane.appendChild(strip);
+    const content = document.createElement("div");
+    content.className = "pane-content";
+    pane.appendChild(content);
+    container.appendChild(pane);
+  }
+  pane.dataset.paneId = dock.paneId;
+  const stripHtml = collapsedGroupChipHtml(split, dock);
+  const strip = pane.querySelector(".pane-tab-strip");
+  if (strip && strip.__herdrPaneSignature !== stripHtml) {
+    strip.__herdrPaneSignature = stripHtml;
+    strip.innerHTML = stripHtml;
+  }
+  markCurrentWorkspacePane(pane, dock);
+  if (typeof wirePaneStripDrag === "function") wirePaneStripDrag(strip);
+}
+
+// The collapsed group chip: the group's name (renameable), counting the
+// dock's folded panels. Click expands; double-click renames, same trio
+// contract as the live group chip.
+function collapsedGroupChipHtml(split, dock) {
+  // The dock holds EVERY label of the collapsed group: its own plus
+  // the ones the fold parked home, so its count alone names the whole
+  // group ("Group 4 panels", matching the expanded chip's count).
+  const foldedCount = leafTerminalLabelCount(dock);
+  const name = split.groupName || `Group ${foldedCount} panels`;
+  const title = `${name} (double-click to rename, click to expand)`;
+  const encodedSplit = encodeURIComponent(splitNodeId(split));
+  if (state.editingPaneGroup === splitNodeId(split)) {
+    return `<input class="pane-group-rename-input" aria-label="Rename panel group" value="${escapeAttr(state.editingPaneGroupValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitCollapsedGroupRename('${escapeAttr(encodedSplit)}')" oninput="state.editingPaneGroupValue=this.value" onkeydown="collapsedGroupRenameKey(event,'${escapeAttr(encodedSplit)}')">`;
+  }
+  return `<button class="pane-panel-chip pane-panel-group-chip pane-panel-group-collapsed" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-split-id="${escapeAttr(splitNodeId(split))}" onclick="event.preventDefault();expandCollapsedGroup('${escapeAttr(encodedSplit)}')" ondblclick="startCollapsedGroupRename('${escapeAttr(encodedSplit)}')">${escapeHtml(name)}</button>`;
+}
+
+// Rename trio for the collapsed chip, mirroring startPaneGroupRename
+// but keying the split directly: the dock paneId routes strip
+// commands, the splitId routes the collapsed rename.
+function startCollapsedGroupRename(encodedSplit) {
+  const splitId = decodeURIComponent(String(encodedSplit || ""));
+  const split = findSplitById(paneRootFor(), splitId);
+  if (!split || !isCollapsedGroup(split)) return;
+  state.editingPaneGroup = splitId;
+  state.editingPaneGroupValue = split.groupName || "";
+  renderWorkspacePanes();
+  setTimeout(() => {
+    if (state.editingPaneGroup !== splitId) return;
+    const input = document.querySelector(".pane-group-rename-input");
+    if (input && input.select) input.select();
+  }, 0);
+}
+
+function commitCollapsedGroupRename(encodedSplit) {
+  const splitId = decodeURIComponent(String(encodedSplit || ""));
+  const split = findSplitById(paneRootFor(), splitId);
+  const value = (state.editingPaneGroupValue || "").trim();
+  if (split) {
+    if (value) split.groupName = value;
+    else delete split.groupName;
+    saveWorkspacePanesStates();
+  }
+  state.editingPaneGroup = null;
+  state.editingPaneGroupValue = "";
+  renderWorkspacePanes();
+}
+
+function collapsedGroupRenameKey(event, encodedSplit) {
+  if (!event) return;
+  if (event.key === "Enter") commitCollapsedGroupRename(encodedSplit);
+  else if (event.key === "Escape") {
+    state.editingPaneGroup = null;
+    state.editingPaneGroupValue = "";
+    renderWorkspacePanes();
+  }
+}
+
 function renderWorkspacePanes() {
   const container = el("workspacePanes");
   if (!container) return;
@@ -1276,7 +1391,16 @@ function renderWorkspacePanes() {
     // #projectDashboard siblings app.html parks here) are live nodes the
     // whole app resolves by id. Build the layout with createElement so those
     // nodes stay attached, then move #terminalShell into its leaf below.
-    if (!maxLeaf && isPaneSplit(settledRoot)) {
+    // A collapsed group paints its dock pane ALONE: the member views and
+    // slots stand in the tree (one press on the group chip restores
+    // them), but the base rule is one visualised panel, so the split
+    // chrome stays hidden while collapsed. The dock keeps its strip
+    // labels folded away: only the group chip renders, pressing it
+    // re-expands the group (renderCollapsedGroupInto).
+    const collapsedSplit = !maxLeaf && isPaneSplit(settledRoot) ? findCollapsedGroupSplit(settledRoot) : null;
+    if (collapsedSplit) {
+      renderCollapsedGroupInto(container, collapsedSplit);
+    } else if (!maxLeaf && isPaneSplit(settledRoot)) {
       reconcileSplitNode(container, settledRoot, splitNodeId(settledRoot));
     } else {
       // Single leaf: keep the Phase 3 flat contract (no wrapper element),
@@ -1304,7 +1428,7 @@ function renderWorkspacePanes() {
     // Maximize uses the same sweep against the effective root: the parked
     // split DOM goes (live surfaces rescue out first) and the next toggle
     // rebuilds it from the tree, same as close-promote does.
-    cleanupAbandonedLayout(container, root);
+    cleanupAbandonedLayout(container, root, collapsedSplit ? [collapsedGroupDock(root, collapsedSplit)].filter(Boolean) : null);
     // Maximize keeps the hidden siblings' strips reachable: one stub pane
     // per non-maximized leaf under a rail, strips only. No content mount:
     // the loop below runs on the effective root, so sibling surfaces keep
@@ -1316,10 +1440,17 @@ function renderWorkspacePanes() {
     // owning module mounts it); mountPaneTabContent only decides where the
     // terminal shell lives and which stale containers hide.
     const auxTabs = [];
-    paneLeaves(root).forEach((leaf) => {
+    // A collapsed group mounts its dock only: the member views hold no
+    // surface while collapsed (their ids sit in the dock's strip), so
+    // the walk covers the painted panes, never the hidden tree.
+    const mountLeaves = collapsedSplit ? [collapsedGroupDock(settledRoot, collapsedSplit)].filter(Boolean) : paneLeaves(root);
+    mountLeaves.forEach((leaf) => {
       const pane = paneLeafElement(container, root, leaf);
       if (pane) {
-        renderLeafInto(pane, leaf);
+        // renderCollapsedGroupInto already painted this strip (group
+        // chip only); renderLeafInto would overwrite it with the folded
+        // member labels and break the hidden-while-collapsed contract.
+        if (!collapsedSplit) renderLeafInto(pane, leaf);
         mountPaneTabContent(pane, leaf, auxTabs);
       }
     });
@@ -1716,6 +1847,129 @@ function focusPanelFor(encodedPaneId) {
   return true;
 }
 
+// A collapsed group rides its split node: dockId + wsId identify the
+// dock leaf (ids, not leaf refs, so the stamp survives persistence and
+// tree reshapes). The split keeps its children untouched through the
+// collapse; the renderer paints the dock pane alone while the stamp
+// lives, and expandCollapsedGroup clears it.
+function isCollapsedGroup(split) {
+  return !!(split && split.groupCollapsed && split.groupCollapsed.dockId);
+}
+
+// The dock leaf of a collapsed group: resolved through the stamp ids
+// against the live tree, so a reshape that re-keyed the split still
+// finds the dock by id.
+function collapsedGroupDock(root, split) {
+  const stamp = split && split.groupCollapsed;
+  if (!stamp || !stamp.dockId) return null;
+  return paneLeaves(root).find((leaf) => leaf.paneId === stamp.dockId) || null;
+}
+
+// Collapse: the pressed label's dock collects every group view's
+// terminal labels (the v3.2 fold-home protocol: ids move, disarmed on
+// arrival, active follows the pressed id), marked slots drop, and the
+// split carries the collapsed stamp. The stamp also records WHERE each
+// label came from (foldedHome: paneId -> [tabIds]) so the expand can
+// route every label back to its view instead of stranding them in the
+// dock's strip (strips only paint backend-known ids per leaf, so a
+// label parked in the wrong leaf disappears). Only a press on a
+// terminal label whose leaf sits inside a live group (a real split, a
+// resolvable dock) collapses; every other press falls through to the
+// plain navigation. Returns true when the collapse fired (the caller
+// skips go()).
+function collapseGroupForTabPress(tabId) {
+  if (!tabId || isEditorTab(tabId) || isGitTab(tabId)) return false;
+  const root = paneRootFor();
+  const source = paneForTab(root, tabId);
+  if (!source) return false;
+  const split = paneGroupSplitForLeaf(root, source);
+  if (!split || !paneSplitIsGroup(split) || isCollapsedGroup(split)) return false;
+  const dock = source.groupCollector === true ? source : resolveGroupDock(split);
+  if (!dock || !dock.tabs.includes(tabId)) return false;
+  // Fold every view's terminal labels home; editor/git ids ride the
+  // leaf (client-owned), and emptied views arm for the sweep so a
+  // plain-collapse never leaves dead panes standing.
+  const views = paneGroupVisibleViews(split);
+  const foldedHome = {};
+  for (const view of views) {
+    const ids = (view.tabs || []).filter((id) => !isEditorTab(id) && !isGitTab(id) && id !== TERMINAL_TAB_PLACEHOLDER);
+    const viewIds = foldedHome[view.paneId] = [];
+    view.autoClosePre = autoClosePreStateFor(root, view);
+    for (const id of ids) {
+      const at = view.tabs.indexOf(id);
+      if (at >= 0) view.tabs.splice(at, 1);
+      if (!dock.tabs.includes(id)) dock.tabs.push(id);
+      viewIds.push(id);
+      disarmLeafAutoClose(dock);
+    }
+    if (!view.tabs.length) armLeafAutoClose(view);
+  }
+  // Marked slots leave with the views: the collapsed dock shows no
+  // empty-space affordance.
+  for (const slot of paneGroupSlots(split)) dropLeafFromTree(slot);
+  dock.active = tabId;
+  dock.groupCollector = true;
+  split.groupCollapsed = { dockId: dock.paneId || null, wsId: leafWorkspaceId(dock) || null, foldedHome };
+  focusLeaf(root, dock);
+  saveWorkspacePanesStates();
+  // Route write goes through writeRouteFromLeaf so the mounted view is
+  // the pressed panel; the refresh renders the collapsed dock alone.
+  if (!writeRouteFromLeaf(dock) || typeof go !== "function") renderWorkspacePanes();
+  return true;
+}
+
+// Expand: the collapsed-group chip press restores the group. The views
+// and slots sit in the tree untouched; clearing the stamp and painting
+// rebuild the split. The dock keeps every label; pressing one again
+// re-collapses.
+function expandCollapsedGroup(encodedSplitId) {
+  const root = paneRootFor();
+  const splitId = decodeURIComponent(String(encodedSplitId || ""));
+  const split = paneLeaves(root).length && root ? findSplitById(root, splitId) : null;
+  if (!split || !isCollapsedGroup(split)) return false;
+  // Route every folded label back to its view leaf: the stamp's
+  // foldedHome map (paneId -> [tabIds]) carries the pre-collapse
+  // homes. Without this pass the ids stay in the dock while the views
+  // stand empty, and the group model paints nothing (a view is one
+  // backend-known label per leaf). The collapse armed the emptied
+  // views for the sweep; the expansion restores their role, so the
+  // arms must go or the first render's sweep eats the whole group the
+  // moment the stamp clears.
+  const stamp = split.groupCollapsed;
+  const homeEntries = Object.entries((stamp && stamp.foldedHome) || {});
+  const root2 = paneRootFor();
+  for (const [viewPaneId, ids] of homeEntries) {
+    const view = paneLeaves(root2).find((leaf) => leaf.paneId === viewPaneId);
+    if (!view) continue;
+    for (const id of ids) {
+      const owner = paneForTab(root2, id) || dockLeaf;
+      const at = owner.tabs.indexOf(id);
+      if (at >= 0) owner.tabs.splice(at, 1);
+      if (!view.tabs.includes(id)) view.tabs.push(id);
+    }
+    if (view.tabs.length && !view.active) view.active = view.tabs[0];
+    disarmLeafAutoClose(view);
+  }
+  for (const leaf of paneLeaves(split)) disarmLeafAutoClose(leaf);
+  const dockLeaf = collapsedGroupDock(root2, split);
+  if (dockLeaf && dockLeaf.active && !dockLeaf.tabs.includes(dockLeaf.active)) dockLeaf.active = dockLeaf.tabs[0] || null;
+  delete split.groupCollapsed;
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+  return true;
+}
+
+function findSplitById(node, splitId) {
+  if (!node || !splitId) return null;
+  if (isPaneSplit(node) && splitNodeId(node) === splitId) return node;
+  if (!isPaneSplit(node)) return null;
+  for (const child of node.children || []) {
+    const found = findSplitById(child, splitId);
+    if (found) return found;
+  }
+  return null;
+}
+
 // Spring-loaded dwell state (v4): the pane id a label drag hovered for
 // the dwell window, so the drop switches its placement into that pane.
 let paneDragDwellPaneId = null;
@@ -1925,7 +2179,7 @@ function detachDomNode(node) {
 // the current split node or the current leaf pane goes; #terminalShell's
 // parking spot and the app.html siblings (#tabs, #projectDashboard) are not
 // layout nodes and are skipped by the class checks.
-function cleanupAbandonedLayout(container, root) {
+function cleanupAbandonedLayout(container, root, extraKeepLeaves) {
   const drop = (child) => {
     // Live per-tab surfaces park in #workspacePanes before the subtree
     // goes. #terminalShell is resolved by id everywhere (el() is
@@ -1937,13 +2191,18 @@ function cleanupAbandonedLayout(container, root) {
     detachDomNode(child);
   };
   const keepPaneIds = new Set(paneLeaves(root).map((leaf) => leaf.paneId));
+  // A collapsed group's dock pane sits flat in the container while the
+  // root stays a split; the dock-only paint is not a leftover.
+  for (const leaf of extraKeepLeaves || []) keepPaneIds.add(leaf.paneId);
+  const flatAllowed = new Set((extraKeepLeaves || []).map((leaf) => leaf.paneId));
   [...container.children].forEach((child) => {
     if (hasClass(child, "workspace-pane")) {
       // A split root keeps its leaves inside .pane-row/.pane-column
       // nodes: any pane sitting directly in the container is a leftover
       // from the flat single-leaf render and must go, even when its id
-      // still names a live leaf (the split built its own element).
-      if (isPaneSplit(root) || !keepPaneIds.has(child.dataset.paneId)) drop(child);
+      // still names a live leaf (the split built its own element),
+      // except the collapsed dock's own flat pane.
+      if ((isPaneSplit(root) && !flatAllowed.has(child.dataset.paneId)) || !keepPaneIds.has(child.dataset.paneId)) drop(child);
     } else if (hasClass(child, "pane-row") || hasClass(child, "pane-column")) {
       if (isPaneSplit(root) && child.dataset.splitId === splitNodeId(root)) return;
       drop(child);
@@ -3557,6 +3816,15 @@ function collapseMarkedGroupAreas() {
   return changed;
 }
 
+// A leaf inside a collapsed group split: the collapsed views and
+// their dock. The sweep and the strip-count guards use this to keep
+// the hidden tree intact while the stamp lives.
+function leafInCollapsedSplit(root, leaf) {
+  if (!root || !leaf) return false;
+  const split = paneGroupSplitForLeaf(root, leaf);
+  return !!(split && isCollapsedGroup(split));
+}
+
 function sweepAbandonedEmptyLeaves() {
   // Focus capture: the tree's focused leaf at sweep entry keeps immunity
   // for the WHOLE loop. collapseEmptyLeafInTree reassigns focus to the
@@ -3588,7 +3856,11 @@ function sweepAbandonedEmptyLeaves() {
     if (!isPaneSplit(root)) break;
     const leaves = paneLeaves(root);
     if (leaves.length <= 1) break;
-    const victim = leaves.find((leaf) => leaf.autoCloseArmed && !leaf.tabs.length && leaf.paneId !== protectedId);
+    const victim = leaves.find((leaf) => leaf.autoCloseArmed && !leaf.tabs.length && leaf.paneId !== protectedId
+      // A collapsed group's views stay in the tree by design: their
+      // labels folded home on the collapse gesture, and the chip press
+      // re-expands into them. Sweeping them would destroy the group.
+      && !leafInCollapsedSplit(paneRootFor(), leaf));
     if (!victim) break;
     if (!collapseEmptyLeafInTree(paneRootFor(), victim)) break;
     changed = true;
@@ -4053,6 +4325,13 @@ function activatePaneTab(tabId) {
     if (paneActiveTab() !== tabId) setActivePaneTab(tabId);
     return;
   }
+  // Group collapse: pressing a docked panel label inside a live group
+  // returns the base state (one visualised panel). The pressed label's
+  // dock collects every group view's terminal labels, the marked slots
+  // drop, and the split renders as the dock alone with a "Group N
+  // panels" chip whose press re-expands the group (spec: "once pressed
+  // it will switch fully to that panel view").
+  if (collapseGroupForTabPress(tabId)) return;
   // The route carries the tab's OWN workspace (D1 mixed tree): a
   // cross-workspace tab navigating under state.ws would land on a
   // mismatched route and the snapshot filter would hide its row.
@@ -4744,6 +5023,10 @@ window.HerdrWorkspacePanes = {
   // module owns the tree surgery the bar drop triggers.
   paneTabUnsplitHover,
   paneTabUnsplitDrop,
+  // Group collapse (label press) + expand (collapsed chip press).
+  expandCollapsedGroup,
+  startCollapsedGroupRename,
+  collapseGroupForTabPress,
   // Close-aftermath facade for cross-module terminal closes: prunes
   // the id from its leaf, sweeps armed+empty leaves, paints once.
   // The sweep and its guards stay inside this module.
