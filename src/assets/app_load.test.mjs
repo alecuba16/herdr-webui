@@ -905,10 +905,12 @@ describe("app bundle load", () => {
       ctx,
     );
     const panes = ctx.window.HerdrWorkspacePanes;
+    // Traced to the one visible view model: panesStateFor() is the flat
+    // session entry ({panels, groups, visible}); there is no tree root.
     const paneState = panes.panesStateFor("ws-1");
-    const root = paneState.root;
-    root.tabs = [];
-    root.active = null;
+    const leaf = paneState.panels[0];
+    leaf.tabs = [];
+    leaf.active = null;
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
 
     ctx.syncWorkspaceEmptyLeaf();
@@ -928,18 +930,16 @@ describe("app bundle load", () => {
     panes.closeGitTabImmediate("log");
     equal(emptyLeaf.hidden, true, "closing the last Git view keeps it hidden");
 
-    paneState.root = {
-      kind: "row",
-      children: [
-        { kind: "pane", paneId: "p1", tabs: ["git:log", "terminal"], active: "terminal" },
-        { kind: "pane", paneId: "p2", tabs: [], active: null },
-      ],
-      sizes: [1, 1],
-      activePaneId: "p2",
-    };
+    // Traced to the one visible view model: the flat entry carries
+    // panels directly; paneLeaves(entry) is the sanctioned walk.
+    paneState.panels = [
+      { kind: "pane", paneId: "p1", tabs: ["git:log", "terminal"], active: "terminal", groupId: null },
+      { kind: "pane", paneId: "p2", tabs: [], active: null, groupId: null },
+    ];
+    paneState.visible = { type: "panel", id: "p1" };
     ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "split trees keep the retired card hidden");
-    equal(panes.paneLeaves(paneState.root).length, 2, "the sync never collapses the split tree");
+    equal(emptyLeaf.hidden, true, "group subjects keep the retired card hidden");
+    equal(panes.paneLeaves(paneState).length, 2, "the sync never drops panels from the flat list");
   });
 
   it("wires the question dialog and span-button keyboard paths", () => {
@@ -1209,7 +1209,9 @@ describe("app bundle load", () => {
     // panel never mints.
     const panes = ctx.window.HerdrWorkspacePanes;
     const paneState = panes.panesStateFor("ws-1");
-    const root = paneState.root;
+    // Traced to the one visible view model: the flat entry exposes the
+    // acting panel through paneLeaves; the FOCUSED panel still decides.
+    const root = panes.paneLeaves(paneState)[0];
     root.tabs = ["git:log"];
     root.active = "git:log";
     fire(inPanes);
@@ -1227,19 +1229,19 @@ describe("app bundle load", () => {
     fire(inPanes);
     equal(newTabCalls, 2, "Enter with the focused panel holding a terminal tab is ignored");
 
-    // The mixed tree: a tabbed panel focused beside an empty sibling
+    // The flat entry: a tabbed panel focused beside an empty sibling
     // stays inert, and focusing the empty sibling re-arms the mint.
-    const leafA = { kind: "pane", paneId: "pa", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1" };
-    const leafB = { kind: "pane", paneId: "pb", tabs: [], active: null, wsId: "ws-1" };
-    paneState.root = {
-      kind: "row",
-      children: [leafA, leafB],
-      sizes: [1, 1],
-      activePaneId: "pa",
-    };
+    const leafA = { kind: "pane", paneId: "pa", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1", groupId: null };
+    const leafB = { kind: "pane", paneId: "pb", tabs: [], active: null, wsId: "ws-1", groupId: null };
+    // Traced to the one visible view model: panels list plus the
+    // activePaneId pointer replace the old split tree root.
+    paneState.panels = [leafA, leafB];
+    paneState.groups = [];
+    paneState.visible = { type: "panel", id: "pa" };
+    paneState.activePaneId = "pa";
     fire(inPanes);
     equal(newTabCalls, 2, "empty sibling does not unblock Enter: the focused panel holds tabs");
-    paneState.root.activePaneId = "pb";
+    paneState.activePaneId = "pb";
     fire(inPanes);
     equal(newTabCalls, 3, "focusing the empty sibling re-arms the Enter mint");
   });
@@ -1609,7 +1611,12 @@ describe("app bundle load", () => {
     // shortcutLabel/shortcutDisplay at render time, so a remap in the
     // editor is reflected here on the next open (audit W1).
     const webuiIds = [...source.matchAll(/chord\("([a-zA-Z]+)"\)/g)].map((m) => m[1]);
-    for (const id of ["search", "help", "settings", "sidebar", "rightSidebar", "newWorkspace", "newPanel", "openWorktrees", "createWorktree", "closePanel", "closeWorkspace", "nextAgent", "prevAgent", "focusTerminal", "splitRight", "splitDown", "closePane", "moveTabNextPane", "maximizePane", "togglePaneMenu", "sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) ok(webuiIds.includes(id), `help renders a derived chord row for ${id}`);
+    // Traced to the one visible view model: splitRight/splitDown/
+    // moveTabNextPane/maximizePane chords are removed from core.js;
+    // the registry must NOT carry them (a stale id would render a dead
+    // chord row). Every other id keeps its derived row.
+    for (const id of ["search", "help", "settings", "sidebar", "rightSidebar", "newWorkspace", "newPanel", "openWorktrees", "createWorktree", "closePanel", "closeWorkspace", "nextAgent", "prevAgent", "focusTerminal", "closePane", "togglePaneMenu", "sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) ok(webuiIds.includes(id), `help renders a derived chord row for ${id}`);
+    for (const gone of ["splitRight", "splitDown", "moveTabNextPane", "maximizePane"]) ok(!webuiIds.includes(gone), `removed chord ${gone} stays out of the help rows`);
     // Remapping a key changes the rendered text on the next open.
     vm.runInContext('options.webuiShortcuts = Object.assign({}, options.webuiShortcuts, { settings: "F9" });', ctx);
     const remapped = ctx.helpAndShortcutsBodyHtml();
@@ -1833,15 +1840,14 @@ describe("app bundle load", () => {
     equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1");
   });
 
-  it("prefixed pane chords drive the split tree end to end", () => {
+  it("prefixed pane chords drive the panel list end to end", () => {
     const ctx = context();
     runSource(ctx);
-    // The pane-grid chords are plain prefix actions like every other
-    // chord: arm Ctrl+B, press the action key, the tree changes. This
-    // pins the dispatch chain (prefix overlay, chord lookup, action
-    // toast) against the pane tree, not just the shortcut map: a
-    // rewiring that resolves the chord but never reaches the pane
-    // action fails here.
+    // Traced to the one visible view model: free splits are gone, so the
+    // pane-grid chords that still exist are newPanel (mints an empty
+    // focused panel) and closePane (drops the active panel). This pins
+    // the dispatch chain (prefix overlay, chord lookup, action toast)
+    // against the flat panel list, not just the shortcut map.
     vm.runInContext(
       "state.workspaces = [{ workspace_id: 'ws1' }]; state.ws = 'ws1';" +
         "state.tabs = [{ tab_id: 't1', workspace_id: 'ws1' }]; state.tab = 't1';" +
@@ -1880,15 +1886,22 @@ describe("app bundle load", () => {
     };
     const leafCount = () => vm.runInContext("HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRoot()).length", ctx);
 
-    equal(leafCount(), 1, "single pane before any split");
-    const dPress = armAndPress("KeyD", "d");
-    equal(dPress.defaultPrevented, true, "prefix D is consumed");
-    equal(leafCount(), 2, "prefix D splits the active pane to the right");
-    const shiftDPress = armAndPress("KeyD", "D", true);
-    equal(shiftDPress.defaultPrevented, true, "prefix Shift+D is consumed");
-    equal(leafCount(), 3, "prefix Shift+D splits the focused pane downward");
+    equal(leafCount(), 1, "single panel before any chord");
+    // Traced to the one visible view model: the newPanel chord routes
+    // through newTab() (a backend panel mint), not a free split, so the
+    // list does not grow synchronously on the chord. The equivalent
+    // synchronous surface is the location-bar + helper newPanelForFocused:
+    // it mints an empty focused panel in the current workspace.
+    vm.runInContext("HerdrWorkspacePanes.newPanelForFocused();", ctx);
+    equal(leafCount(), 2, "the + helper mints an empty focused panel");
     const stored = JSON.parse(ctx.localStorage.getItem("herdr-web-workspace-panes"));
-    equal(Object.keys(stored).join(","), "__session__", "splits persist in the session tree entry");
+    equal(Object.keys(stored).join(","), "__session__", "the panel list persists in the session entry");
+    // The split chords are gone from the dispatch: prefix D must not
+    // grow the list (the chord resolves to nothing and the key falls
+    // through as unhandled).
+    const leavesBefore = leafCount();
+    const dPress = armAndPress("KeyD", "d");
+    equal(leafCount(), leavesBefore, "prefix D no longer splits: removed chord stays inert");
   });
 
   it("terminal prefix passthrough off keeps the prefix intercepted on the terminal surface", () => {
@@ -3790,19 +3803,25 @@ describe("app bundle load", () => {
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
     equal(panes.foreignWorkspacePrefix("tab9"), "");
 
-    // Mixed tree: the foreign default prefixes with the branch (the real
+    // Mixed list: the foreign default prefixes with the branch (the real
     // worktreeDisplayName chain, no stub), the own default stays bare, and
     // the custom name never prefixes. state.ws is "ws1": its own rows stay
-    // bare even though leaf 1's own row (tab1) coexists with the foreign
+    // bare even though panel 1's own row (tab1) coexists with the foreign
     // ids in the unfiltered map.
-    vm.runInContext("HerdrWorkspacePanes.splitPaneRight();", ctx);
+    // Traced to the one visible view model: splitPaneRight is gone, so the
+    // second panel comes from the flat entry itself (two panels, same
+    // shape a + press or a stored session produces).
     vm.runInContext(`
-      const l = HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRootFor());
-      l[0].tabs = ["tab2"];
-      l[0].active = "tab2";
-      l[1].tabs = ["tab9", "tabc"];
-      l[1].active = "tab9";
+      const entry = HerdrWorkspacePanes.panesStateFor();
+      entry.panels = [
+        { kind: "pane", paneId: "p1", tabs: ["tab2"], active: "tab2", groupId: null },
+        { kind: "pane", paneId: "p2", tabs: ["tab9", "tabc"], active: "tab9", groupId: null },
+      ];
+      entry.groups = [];
+      entry.visible = { type: "panel", id: "p1" };
+      entry.activePaneId = "p1";
     `, ctx);
+    const l = panes.paneLeaves(panes.paneRootFor());
     equal(panes.foreignWorkspacePrefix("tab9"), "feat/panels ");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab9", ctx), 0), "feat/panels 1");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
@@ -4105,9 +4124,35 @@ describe("app bundle load", () => {
     // checks !hidden), and the render bails. Mirror app.html: the dashboard
     // carries the hidden attribute until syncProjectDashboard shows it.
     ctx.document.getElementById("projectDashboard").hidden = true;
+    // Traced to the one visible view model: the renderer now decouples
+    // pane creation from strip painting (it looks the pane up through
+    // container.children again), so the harness must track children
+    // honestly: the element() stub's appendChild is a no-op. Without it
+    // paneLeafElement answers null and no strip ever paints.
+    const trackChildren = (node) => {
+      node.children = [];
+      node.appendChild = (child) => {
+        if (child.parentNode && child.parentNode.children)
+          child.parentNode.children.splice(child.parentNode.children.indexOf(child), 1);
+        child.parentNode = node;
+        node.children.push(child);
+        return child;
+      };
+      node.insertBefore = (child, reference) => {
+        if (child.parentNode && child.parentNode.children)
+          child.parentNode.children.splice(child.parentNode.children.indexOf(child), 1);
+        child.parentNode = node;
+        const at = reference ? node.children.indexOf(reference) : -1;
+        if (at >= 0) node.children.splice(at, 0, child);
+        else node.children.push(child);
+        return child;
+      };
+      return node;
+    };
+    trackChildren(ctx.document.getElementById("workspacePanes"));
     const realCreateElement = ctx.document.createElement;
     ctx.document.createElement = (tag) => {
-      const node = realCreateElement(tag);
+      const node = trackChildren(realCreateElement(tag));
       let html = node.innerHTML || "";
       Object.defineProperty(node, "innerHTML", {
         configurable: true,

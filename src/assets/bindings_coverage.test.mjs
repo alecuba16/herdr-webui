@@ -343,18 +343,23 @@ describe("bindings.js keydown delegation (Enter/Space on span role=button)", () 
       `state.tabs = [{ tab_id: "tab1", workspace_id: "ws1" }];`,
       ctx,
     );
-    paneState.root.tabs = ["tab1"];
-    paneState.root.active = "tab1";
+    // Traced to the one visible view model: panesStateFor() is the flat
+    // session entry ({panels, groups, visible}); the acting panel comes
+    // through paneLeaves, not a tree root.
+    const root = panes.paneLeaves(paneState)[0];
+    root.tabs = ["tab1"];
+    root.active = "tab1";
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
     assert.equal(ctx.window.__newTab, 1, "a real tab in the focused panel blocks the Enter mint");
     // Empty focused panel re-arms the mint (the tab lives in a sibling).
-    const fresh = { kind: "pane", paneId: "pempty", tabs: [], active: null };
-    paneState.root = {
-      kind: "row",
-      children: [paneState.root, fresh],
-      sizes: [1, 1],
-      activePaneId: "pempty",
-    };
+    const fresh = { kind: "pane", paneId: "pempty", tabs: [], active: null, wsId: "ws1", groupId: null };
+    root.groupId = null;
+    // Traced to the one visible view model: panels list plus the
+    // activePaneId pointer replace the old split tree root.
+    paneState.panels = [root, fresh];
+    paneState.groups = [];
+    paneState.visible = { type: "panel", id: "pempty" };
+    paneState.activePaneId = "pempty";
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
     assert.equal(ctx.window.__newTab, 2, "an empty focused sibling mints on Enter");
   });

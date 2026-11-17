@@ -2490,7 +2490,9 @@ describe("desktop file browser editor integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Tab identity and strip markup come from the panes module.
-    const root = h.Panes.paneRoot();
+    // Traced to the one visible view model: paneRoot() is the session
+    // entry (flat panels), so per-tab assertions read the acting panel.
+    const root = h.Panes.activePane();
     assert.deepEqual([...root.tabs], ["terminal", "editor:src/demo.py"]);
     assert.equal(root.active, "editor:src/demo.py");
     const strip = h.stripHtml();
@@ -2718,7 +2720,7 @@ describe("desktop file browser editor integration", () => {
     h.setConfirm(false);
     let closed = await h.FB.closeEditorTab(encodeURIComponent("src/demo.py"));
     assert.equal(closed, false);
-    assert.ok(h.Panes.paneRoot().tabs.includes("editor:src/demo.py"));
+    assert.ok(h.Panes.activePane().tabs.includes("editor:src/demo.py"));
     assert.ok(h.FB.editorFor("src/demo.py"), "state kept while close is declined");
     assert.equal(h.confirmCalls.length, 1);
     assert.match(h.confirmCalls[0], /src\/demo\.py/);
@@ -2727,7 +2729,7 @@ describe("desktop file browser editor integration", () => {
     h.setConfirm(true);
     closed = await h.FB.closeEditorTab(encodeURIComponent("src/demo.py"));
     assert.equal(closed, true);
-    assert.ok(!h.Panes.paneRoot().tabs.includes("editor:src/demo.py"));
+    assert.ok(!h.Panes.activePane().tabs.includes("editor:src/demo.py"));
     assert.ok(!h.FB.editorFor("src/demo.py"), "state dropped after confirmed close");
     assert.equal(h.containerFor("src/demo.py"), null, "container removed with the tab");
   });
@@ -2744,7 +2746,7 @@ describe("desktop file browser editor integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const fetchesAfter = h.requests.filter((r) => r.url.startsWith("/api/file-browser/file")).length;
     assert.equal(fetchesAfter, fetchesBefore, "no duplicate fetch for an open tab");
-    const editorTabs = h.Panes.paneRoot().tabs.filter((tabId) => tabId.startsWith("editor:"));
+    const editorTabs = h.Panes.activePane().tabs.filter((tabId) => tabId.startsWith("editor:"));
     assert.deepEqual([...editorTabs], ["editor:src/demo.py"], "one tab per path");
   });
 
@@ -2763,7 +2765,7 @@ describe("desktop file browser editor integration", () => {
     assert.equal(file.searchHighlight, "needle");
     assert.equal(file.previewSource, true);
     assert.equal(h.editorCalls.at(-1).markdownPreview, false, "highlight forces the source view");
-    const editorTabs = h.Panes.paneRoot().tabs.filter((tabId) => tabId.startsWith("editor:"));
+    const editorTabs = h.Panes.activePane().tabs.filter((tabId) => tabId.startsWith("editor:"));
     assert.deepEqual([...editorTabs], ["editor:README.md"], "search open reuses the existing tab");
   });
 

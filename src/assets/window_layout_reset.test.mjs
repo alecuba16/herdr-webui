@@ -322,10 +322,15 @@ describe("window layout reset integration", () => {
       const stored = JSON.parse(panesStore);
       const keys = Object.keys(stored);
       assert.ok(keys.every((k) => k === "__session__"), "only the session tree persists after reset");
-      const sessionRoot = stored.__session__ && stored.__session__.root;
-      assert.ok(sessionRoot && sessionRoot.kind === "pane", "reset rebuilds a single pane");
-      assert.equal(stored.__session__.maximizedPaneId ?? null, null, "maximized state cleared");
-      assert.ok(!Array.isArray(sessionRoot.children), "no split survives the reset");
+      // Traced to the one visible view model: the fresh entry is the flat
+      // session entry ({v, panels, groups, visible}), a single panel and
+      // no groups.
+      const session = stored.__session__;
+      assert.ok(session && Array.isArray(session.panels), "reset rebuilds the flat session entry");
+      assert.equal(session.panels.length, 1, "reset rebuilds a single panel");
+      assert.equal(session.panels[0].kind, "pane", "the panel is a pane leaf");
+      assert.deepEqual(session.groups, [], "no group survives the reset");
+      assert.ok(!session.maximizedPaneId, "maximized state cleared");
     }
     // The reset writes the fresh defaults back through the canonical
     // setters on purpose: shell mode "terminal" (same as absent for the
@@ -358,10 +363,11 @@ describe("window layout reset integration", () => {
     const panes = vm.runInContext("JSON.stringify(state.workspacePanes)", ctx);
     const parsed = JSON.parse(panes);
     const key = Object.keys(parsed)[0];
-    // panesStateFor rebuilds the fresh single-leaf tree: kind "pane",
-    // one pane id, no maximized pointer, no split children.
-    assert.equal(parsed[key].root.kind, "pane", "single fresh leaf tree");
-    assert.ok(!parsed[key].root.children, "no split children");
+    // Traced to the one visible view model: the fresh entry is the flat
+    // session entry: one panel leaf, no groups, no maximized pointer.
+    assert.equal(parsed[key].panels.length, 1, "single fresh panel");
+    assert.equal(parsed[key].panels[0].kind, "pane", "single fresh panel leaf");
+    assert.deepEqual(parsed[key].groups, [], "no split children");
     assert.equal(parsed[key].maximizedPaneId, undefined);
 
     const shellMode = vm.runInContext(
@@ -444,8 +450,11 @@ describe("window layout reset integration", () => {
     assert.notEqual(kept, "keep");
     if (kept != null) {
       const stored = JSON.parse(kept);
-      const sessionRoot = stored.__session__ && stored.__session__.root;
-      assert.ok(sessionRoot && sessionRoot.kind === "pane", "skipConfirm reset leaves a single pane tree");
+      // Traced to the one visible view model: the flat session entry
+      // replaces the old tree root (a single panel, no groups).
+      const session = stored.__session__;
+      assert.ok(session && Array.isArray(session.panels) && session.panels.length === 1, "skipConfirm reset leaves a single pane tree");
+      assert.deepEqual(session.groups, []);
     }
   });
 
