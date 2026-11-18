@@ -134,6 +134,11 @@
   height: 30px;
   padding: 0 10px;
   border-radius: 6px 6px 0 0;
+  /* Width floor: a short tab (git/editor/renamed one-char panel) kept
+     the ✕ floating mid-tab with dead space on both sides. The floor
+     puts the label left and the ✕ flush right; the label ellipsizes
+     when content outgrows it. */
+  min-width: 88px;
   /* Shrink to content: the label ellipsizes at the configured character
      budget, so a two-char tab is two chars wide instead of a fixed box. */
   max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 54px);
@@ -144,6 +149,18 @@
     background-color 120ms ease,
     color 120ms ease,
     box-shadow 120ms ease;
+}
+
+/* Tab kind marker "terminal" collides with the terminal SURFACE class
+   `.terminal` (terminal.css: display block, width 100%, min-width 0).
+   That rule loads after this file, same specificity, so it turned every
+   terminal tab into a full-width block that ate the strip. Re-assert the
+   tab box model after the collision, inside the strip scope only. */
+.pane-tab-strip .pane-tab.terminal {
+  display: inline-flex;
+  width: auto;
+  height: 30px;
+  min-width: 88px;
 }
 
 .pane-tab:hover {
@@ -196,6 +213,10 @@
 }
 
 .pane-tab-label {
+  /* Fill the tab's width floor so the ✕ sits flush right instead of
+     floating mid-tab. min-width 0 keeps the ellipsis working. */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -348,14 +369,10 @@
   cursor: grabbing;
 }
 
-/* Group chip (rail): the accent slab distinguishes the group chip
- from a plain panel label in the rail. Count text inherits the chip
- font. */
+/* Group chip (rail): the compound with .pane-label-chip below owns
+ the green/dashed look; this bare rule only carries the property no
+ later rule overrides (tabular count digits). */
 .pane-panel-group-chip {
-  border: 1px solid var(--accent);
-  border-left-width: 2px;
-  background: color-mix(in srgb, var(--accent-soft), var(--accent) 14%);
-  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
@@ -573,8 +590,43 @@
 }
 
 .pane-label-chip.pane-panel-group-chip {
-  border-style: solid;
+  /* The group chip reads as a different kind of subject, not a
+     selected panel: green text + dashed border instead of the
+     accent solid border panel chips use. */
+  border: 1px dashed var(--pane-group);
+  color: var(--pane-group);
   font-weight: 600;
+}
+
+.pane-label-chip.pane-panel-group-chip:hover,
+.pane-label-chip.pane-panel-group-chip.active {
+  border-color: var(--pane-group);
+  background: color-mix(in srgb, var(--pane-group), transparent 90%);
+}
+
+/* Pressed stays darker than hover (90%) and active so the three
+   states never collapse into one tint. */
+.pane-label-chip.pane-panel-group-chip:active,
+.pane-label-chip.pane-panel-group-chip.active:active {
+  background: color-mix(in srgb, var(--pane-group), transparent 80%);
+}
+
+.pane-label-chip.pane-panel-group-chip:focus-visible {
+  outline: 2px solid var(--pane-group);
+  outline-offset: 1px;
+}
+
+/* ---- expanded group frame ----
+ * A visible group subject paints its split wrapper directly under
+ * #workspacePanes (a single panel renders flat, no wrapper), so the
+ * id-scoped child selector frames exactly the expanded group. The
+ * same dashed green as the group chip delimits the group's area:
+ * everything inside the dashed outline belongs to the group. */
+#workspacePanes > .pane-row,
+#workspacePanes > .pane-column {
+  border: 1px dashed var(--pane-group);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--pane-group), transparent 94%);
 }
 
 /* ---- pane actions menu (Phase 5) ----
