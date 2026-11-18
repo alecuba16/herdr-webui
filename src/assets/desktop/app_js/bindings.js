@@ -1200,6 +1200,12 @@ document.addEventListener("visibilitychange", () => {
     refresh();
     connectEvents();
     loadNoSleep();
+    // Hidden tabs close their sockets after a grace period, so a panes
+    // broadcast that lands while hidden is lost. Server mode re-adopts
+    // the entry on regain (the GET is idempotent and overlays keep the
+    // per-client pointers); local mode ignores it.
+    if (window.HerdrWorkspacePanes && typeof window.HerdrWorkspacePanes.bootFromServer === "function")
+      void window.HerdrWorkspacePanes.bootFromServer();
   }
 });
 window.addEventListener("focus", loadNoSleep);
