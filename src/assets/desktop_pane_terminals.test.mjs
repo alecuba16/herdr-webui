@@ -501,7 +501,17 @@ test("closing the aux tab disposes its cached surface and socket", async () => {
   // surface parks (D8), not disposes. The pane close itself must NOT
   // kill the cached surface.
   const leaves = panes.paneLeaves(panes.paneRoot());
-  panes.closePaneFor(leaves[1].paneId);
+  // The new close path drains the leaf view-by-view through the real
+  // closeTab (confirm + prune + sweep), and bootGroupedTwoTerminals keeps
+  // LIVE rows in state.tabs: without a closeTab stub the D10 snapshot
+  // race guard keeps the id known and the close legitimately refuses.
+  // Mirror the real close: drop the row everywhere, then notify the
+  // prune (releaseForTab still runs through onTerminalTabClosed).
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    panes.onTerminalTabClosed(tabId);
+  };
+  await panes.closePaneFor(leaves[1].paneId);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ctx.HerdrPaneTerminals.count(), 1, "pane close parks, registry keeps the cache");
   assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "surface parked, not disposed");

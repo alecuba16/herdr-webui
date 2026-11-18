@@ -391,38 +391,33 @@ function subjectOf(panes) {
 // click (editor open keeps the route) early-returned without taking the
 // slot back from the editor. All three live in the sync + activation
 // seam these tests pin.
-test("route navigation takes the strip active pointer from the editor tab", () => {
+test("route navigation tracks the split member owning the route tab", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
   const panes = ctx.HerdrWorkspacePanes;
   // Boot: route restores tab_2 while a stored tree keeps an editor
-  // pointer with no container mounted (the blank-pane boot).
+  // pointer with no container mounted (the blank-pane boot). The second
+  // id split the busy seed, so the seed owns tab_2 and the fresh member
+  // owns tab_3 with pane focus on it.
   ctx.state.tab = "tab_2";
   panes.renderWorkspacePanes();
-  const root = panes.activePane();
-  assert.equal(root.active, "tab_2", "boot sync: route panel takes the pointer");
+  const seed = panes.paneRoot().panels[0];
+  assert.ok(seed.tabs.includes("tab_2"), "seed homes the route tab, one view per flat");
+  const splitMember = panes.paneRoot().panels.find((l) => l.tabs.includes("tab_3"));
+  assert.ok(splitMember, "second id landed in a split member");
 
-  // Open an editor tab: the real flow pushes the tab into the tree
-  // (paneEnsureEditorTab) before the file browser's mount takes the
-  // pointer. The route stays on tab_2 (opening a file does not
-  // navigate).
-  root.tabs.push("editor:src/demo.py");
-  panes.setActivePaneTab("editor:src/demo.py");
-  assert.equal(root.active, "editor:src/demo.py", "editor open takes the pointer");
-
-  // go()-style navigation to another panel: the pointer follows.
+  // go()-style navigation to another panel: the pointer follows the
+  // route tab's owner. The editor-split path itself lives in the split
+  // suite; this test pins only route + pointer semantics.
   ctx.state.tab = "tab_3";
   panes.renderWorkspacePanes();
-  assert.equal(root.active, "tab_3", "route change moves the highlight");
+  assert.equal(splitMember.active, "tab_3", "route change moves the highlight");
 
-  // Re-render without a route change: the editor pointer survives (no
+  // Re-render without a route change: the member pointer survives (no
   // yank on every poll).
-  panes.setActivePaneTab("editor:src/demo.py");
   panes.renderWorkspacePanes();
-  assert.equal(root.active, "editor:src/demo.py", "same route keeps the editor pointer");
-  root.tabs.splice(root.tabs.indexOf("editor:src/demo.py"), 1);
-  root.active = "tab_2";
+  assert.equal(splitMember.active, "tab_3", "same route keeps the pointer");
 });
 
 test("same-route terminal click takes the slot back from the editor", () => {
@@ -519,39 +514,41 @@ test("renderWorkspacePanes is idempotent across renders", () => {
   assert.equal(nodes.shell.parentNode !== null, true, "shell stays attached");
 });
 
-test("backend panel ids sync into the pane tree and render in the strip", () => {
-  // Live regression (Phase 3b): a workspace with existing backend panels
-  // rendered an empty strip because the tree-driven renderer only shows
-  // ids already in the tree, and nothing inserted the real tab ids. The
-  // tree must mirror the backend: the seed placeholder is replaced by
-  // the real ids, and a later panel list drops closed ids.
+test("backend panel ids sync into the pane tree as one view per panel", () => {
+  // The tree must mirror the backend under the locked model: the seed
+  // placeholder is replaced by the first real id, and every further id
+  // splits its busy home instead of stacking.
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
   const panes = ctx.HerdrWorkspacePanes;
   panes.renderWorkspacePanes();
   const root = panes.activePane();
-  assert.deepEqual([...root.tabs], ["tab_2", "tab_3"], "placeholder replaced by backend ids");
-  assert.equal(root.active, "tab_2", "active follows the first real panel");
-  const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(strip.innerHTML.includes('data-tab-id="tab_2"'), "real panel renders in the strip");
-  assert.ok(strip.innerHTML.includes('data-tab-id="tab_3"'), "second panel renders too");
-  assert.ok(!strip.innerHTML.includes('data-tab-id="terminal"'), "no dead placeholder tab");
+  const seed = panes.paneRoot().panels[0];
+  assert.deepEqual([...seed.tabs], ["tab_2"], "first id replaces the placeholder, one view per panel");
+  assert.equal(seed.active, "tab_2", "active follows the first real panel");
+  const splitMember = panes.paneRoot().panels.find((l) => l.tabs.includes("tab_3"));
+  assert.ok(splitMember, "second id lands in its own split member");
+  assert.equal(splitMember.active, "tab_3", "split member owns its id");
+  const group = panes.paneRoot().groups[0];
+  assert.ok(group, "the two panels group as a split");
 
-  // A closed panel drops from the tree on the next render; editor tabs and
-  // a stale active pointer survive the prune.
+  // A closed panel drops from the tree on the next render; the editor
+  // view (split into its own member by the open) survives the prune.
   panes.openEditorTab("src/demo.py");
-  root.active = "tab_3";
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
   panes.renderWorkspacePanes();
-  assert.deepEqual([...root.tabs], ["tab_2", "editor:src/demo.py"], "closed panel id drops, editor tab stays");
-  assert.equal(root.active, "tab_2", "active pointer heals onto a live tab");
+  const ownerOfTab3 = panes.paneRoot().panels.find((l) => l.tabs.includes("tab_3"));
+  assert.ok(!ownerOfTab3, "closed panel id drops");
+  const editorOwner = panes.paneRoot().panels.find((l) => l.tabs.includes("editor:src/demo.py"));
+  assert.ok(editorOwner, "editor view survives the prune in its split member");
+  assert.equal(seed.active, "tab_2", "seed pointer heals onto a live tab");
 
   // An empty panel list never prunes (poll gap / closed workspace): the
   // render filter hides ids without a panel instead of losing layout.
   ctx.state.tabs = [];
   panes.renderWorkspacePanes();
-  assert.deepEqual([...root.tabs], ["tab_2", "editor:src/demo.py"], "empty panel list keeps the tree");
+  assert.ok(seed.tabs.includes("tab_2"), "empty panel list keeps the tree");
 });
 
 // ---- unfiltered universe + prune rule (split-panel slice 2, D10) -------
@@ -668,15 +665,22 @@ test("git tab identity helpers map view-keys to tab ids and strip labels", () =>
   assert.equal(panes.isGitTab("editor:src/a.py"), false);
   assert.equal(panes.isGitTab("tab_1"), false);
 
-  // Persisted git tabs render in the strip with data-tab-kind="git" and
-  // labels derived from the view-key alone (placeholder tabs render
-  // identically before git_ui.js loads).
+  // Persisted git tabs render in the merged header with data-tab-kind="git"
+  // and labels derived from the view-key alone (placeholder tabs render
+  // identically before git_ui.js loads). Markup lives on split members only,
+  // so park the acting leaf in a stored split first (a flat renders no strip).
   const root = panes.activePane();
   root.tabs.push(panes.gitTabId("changes"), panes.gitTabId("history@src/a.py"));
-  root.active = panes.gitTabId("log"); // no log tab in the tree yet
+  root.active = panes.gitTabId("changes");
+  const entry = panes.paneRoot();
+  const neighbor = { paneId: "p2", tabs: ["terminal"], active: "terminal", groupId: "g_git", wsId: root.wsId };
+  entry.panels.push(neighbor);
+  root.groupId = "g_git";
+  entry.groups.push({ groupId: "g_git", name: null, memberIds: [root.paneId, "p2"], layout: { kind: "row", sizes: [1, 1], children: [root.paneId, "p2"] } });
+  entry.visible = { type: "group", id: "g_git" };
   panes.renderWorkspacePanes();
   const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(strip.innerHTML.includes('data-tab-kind="git" data-tab-id="git:changes"'), "git tab renders in the strip");
+  assert.ok(strip.innerHTML.includes('data-tab-kind="git" data-tab-id="git:changes"'), "git tab renders in the merged header");
   assert.ok(strip.innerHTML.includes('data-tab-id="git:history@src/a.py"'), "per-file history tab renders");
   assert.ok(strip.innerHTML.includes(">gitchanges</span>"), "changes label is the compact gitchanges");
   assert.ok(strip.innerHTML.includes(">history a.py</span>"), "history label carries the file basename");
@@ -687,7 +691,9 @@ test("git tab identity helpers map view-keys to tab ids and strip labels", () =>
   assert.equal(panes.gitTabTitle("compare@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), "gitcmp aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "compare hover keeps the full refs");
   assert.equal(panes.gitTabTitle("compare@cccc..current"), "gitcmp cccc..current", "against-working-tree compare hover keeps its refs");
   assert.equal(panes.gitTabTitle("changes"), "gitchanges", "non-compare hover reuses the tab label");
-  panes.activePane().tabs.push(panes.gitTabId("compare@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..current"));
+  const gitOwner = panes.activePane();
+  gitOwner.tabs.push(panes.gitTabId("compare@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..current"));
+  gitOwner.active = panes.gitTabId("compare@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..current");
   panes.renderWorkspacePanes();
   const full = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   assert.ok(strip.innerHTML.includes(`title="gitcmp ${full}..current"`), "strip compare button hovers the full compare text");
@@ -730,7 +736,7 @@ test("openGitTab ensures the tab, hands the open to git_ui, and drops the placeh
   assert.ok(root.tabs.includes("git:log"), "earlier git tab survives");
 });
 
-test("closing the active git tab reactivates the neighbor and releases the container", async () => {
+test("closing a git view leaves its split member and the pointer heals", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
@@ -739,29 +745,26 @@ test("closing the active git tab reactivates the neighbor and releases the conta
   const git = makeGitStub();
   ctx.window.HerdrGitUi = git;
   panes.renderWorkspacePanes();
-  const root = panes.activePane();
+  const seed = panes.paneRoot().panels[0];
 
-  // Two git tabs: close the active one, the neighbor git tab reactivates
-  // through openGitTab (openViewTab refetches its content).
+  // Open a git view on the busy seed: the view splits into its own
+  // member, the terminal stays in the seed.
   await panes.openGitTab("changes");
-  await panes.openGitTab("log");
-  panes.setActivePaneTab("git:log");
-  assert.equal(root.active, "git:log", "pointer sits on the log tab");
+  const changesOwner = panes.paneRoot().panels.find((l) => l.tabs.includes("git:changes"));
+  assert.ok(changesOwner && changesOwner.paneId !== seed.paneId, "git view splits the busy seed");
+  assert.ok(seed.tabs.includes("tab_2"), "terminal keeps the seed panel");
+  assert.equal(changesOwner.active, "git:changes", "pointer sits on the git view in its member");
   git.calls.length = 0;
-  panes.closeGitTab(encodeURIComponent("log"));
-  assert.ok(!root.tabs.includes("git:log"), "closed tab drops from the tree");
-  assert.equal(root.active, "git:changes", "neighbor git tab reactivates");
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(git.calls.filter((c) => c.openViewTab), [{ openViewTab: "changes" }], "reactivation reopens the neighbor view");
-  assert.deepEqual(git.calls.filter((c) => c.releaseViewTab), [{ releaseViewTab: "log" }], "close releases the tab's view state");
 
-  // Close the last git tab while a terminal tab lives in the tree: the
-  // pointer heals onto the terminal tab.
+  // Close the git view: the member empties, the sweep folds it (focus
+  // moved back), and the pointer heals onto the terminal tab.
   panes.closeGitTab(encodeURIComponent("changes"));
-  assert.equal(root.active, "tab_2", "pointer heals onto the terminal tab");
+  assert.ok(!panes.paneRoot().panels.some((l) => l.tabs.includes("git:changes")), "closed view drops from the tree");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(git.calls.some((c) => c.releaseViewTab === "changes"), "close releases the tab's view state");
 });
 
-test("terminal sync keeps git tabs in the tree and prefers them for the healed pointer", async () => {
+test("terminal sync keeps git views in their split members across the prune", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
@@ -770,20 +773,16 @@ test("terminal sync keeps git tabs in the tree and prefers them for the healed p
   const git = makeGitStub();
   ctx.window.HerdrGitUi = git;
   panes.renderWorkspacePanes();
-  const root = panes.activePane();
   await panes.openGitTab("changes");
-  panes.setActivePaneTab("git:changes");
+  const changesOwner = panes.paneRoot().panels.find((l) => l.tabs.includes("git:changes"));
+  assert.ok(changesOwner, "git view owns its split member");
 
-  // A backend list change prunes only backend ids; the git tab survives.
+  // A backend list change prunes only backend ids; the git view survives
+  // in its own member, unaffected by the seed's id churn.
   ctx.state.tabs = [{ tab_id: "tab_9", workspace_id: "ws-1" }];
   panes.renderWorkspacePanes();
-  assert.deepEqual([...root.tabs], ["git:changes", "tab_9"], "git tab survives the backend prune");
-
-  // A stale active pointer (closed backend panel) heals onto the git tab
-  // before falling back to the first tab.
-  root.active = "tab_2";
-  panes.renderWorkspacePanes();
-  assert.equal(root.active, "git:changes", "healed pointer prefers the git tab");
+  const ownerAfter = panes.paneRoot().panels.find((l) => l.tabs.includes("git:changes"));
+  assert.ok(ownerAfter, "git view survives the backend prune");
 });
 
 // A git tab id belongs to one leaf. A strip click on a non-active pane
@@ -893,7 +892,7 @@ test("paneElementForTab resolves the owning pane element and falls back to the a
 test("a label drop forms a two-panel group and renders it as the subject", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
-  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
   ctx.state.tab = "tab_2";
   const panes = ctx.HerdrWorkspacePanes;
   panes.renderWorkspacePanes();
@@ -978,30 +977,38 @@ test("closePaneFor with a stale pane id is a no-op, not an active-leaf close", a
 test("closing the terminal member hands the terminal tab to the survivor", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
-  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
   ctx.state.tab = "tab_2";
   const panes = ctx.HerdrWorkspacePanes;
   panes.renderWorkspacePanes();
   const entry = panes.paneRoot();
   const seed = entry.panels[0];
   const second = mintSecondPanel(panes, "ws-1");
-  // Give the fresh member a second terminal tab to hold: the move
-  // migrates the terminal-holding member's ids to the survivor.
+  // The real closeTab owns the backend row close; model the row half so
+  // the closed id does not re-home as a fresh split after the drop.
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    panes.onTerminalTabClosed(tabId);
+  };
+  // Give the fresh member its own terminal view for the group.
   second.tabs.push("tab_3");
   second.active = "tab_3";
   ctx.state.tabsById = { tab_3: { tab_id: "tab_3", workspace_id: "ws-1" } };
   ctx.state.allTabs = [{ tab_id: "tab_3", workspace_id: "ws-1" }];
   panes.renderWorkspacePanes();
 
-  // Close the terminal-holding member from inside a group: its terminal
-  // tab migrates to the same-workspace survivor, the group dissolves.
+  // Close the seed member from inside the group: its terminal row really
+  // closes, the panel record drops, the group dissolves, and the survivor
+  // keeps exactly its own view (no migration).
   dropLabelOn(panes, nodes, second.paneId, 0.95, 0.1);
   assert.equal(await panes.closePaneFor(seed.paneId), true, "close accepted");
   const after = panes.paneRoot();
   assert.equal(after.groups.length, 0, "group dissolved");
+  assert.ok(!after.panels.some((p) => p.paneId === seed.paneId), "closed panel record drops");
   const survivor = after.panels.find((p) => p.paneId === second.paneId);
-  deepEqual([...survivor.tabs], ["tab_2", "tab_3"], "terminal tab migrates to the survivor head");
-  assert.equal(survivor.active, "tab_2", "close focuses the migrated terminal tab");
+  deepEqual([...survivor.tabs], ["tab_3"], "survivor keeps only its own view, never a migration");
+  assert.equal(survivor.active, "tab_3", "survivor pointer stays on its own view");
+  assert.ok(!ctx.state.tabs.some((row) => row.tab_id === "tab_2"), "the closed terminal row is gone from the backend");
 });
 
 test("movePaneTabTo moves an editor tab between group members at the caret index", async () => {
@@ -1340,7 +1347,7 @@ test("bar controls render for a multi-panel session with close gated on panel co
 // (multi-panel sessions). Maximize left the model: one visible subject
 // replaced the tree maximize, its exports and shortcuts are gone.
 
-test("pane menu items adapt to the active tab kind and panel count", () => {
+test("pane menu offers panel rename for every leaf and close per panel count", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-12");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1350,25 +1357,26 @@ test("pane menu items adapt to the active tab kind and panel count", () => {
   const root = panes.paneRoot();
   const leaves = panes.paneLeaves(root);
 
-  // Terminal leaf: rename panel entry, no move-file entry.
+  // Terminal leaf: rename names the PANEL (leaf.name) through the rail
+  // chip, whatever the view kind.
   const seededLeaf = { ...leaves[0], tabs: ["tab_7"], active: "tab_7" };
   const termItems = ctx.paneMenuItemsFor(seededLeaf, root);
-  assert.ok(termItems.some((item) => item.id === "rename-tab"), "terminal menu offers rename");
-  assert.ok(!termItems.some((item) => item.id === "move-tab"), "terminal menu hides move-file");
+  assert.ok(termItems.some((item) => item.id === "rename-pane"), "terminal menu offers rename");
+  assert.ok(!termItems.some((item) => item.id === "rename-tab"), "the tab-rename id is gone");
   assert.ok(termItems.some((item) => item.id === "close-pane"), "multi-panel menu offers close");
 
-  // Editor leaf: no rename entry (rename is terminal-only).
+  // Editor leaf: rename stays (it names the panel now, not the tab).
   const editItems = ctx.paneMenuItemsFor({ ...leaves[1], tabs: ["editor:src/main.py"], active: "editor:src/main.py" }, root);
-  assert.ok(!editItems.some((item) => item.id === "rename-tab"), "editor menu hides rename");
+  assert.ok(editItems.some((item) => item.id === "rename-pane"), "editor menu keeps the panel rename");
   assert.ok(editItems.some((item) => item.id === "close-pane"), "editor menu keeps close");
 
   // Single-panel session: close hides entirely (closing the last
-  // panel is closing the workspace), and an empty panel hides rename.
+  // panel is closing the workspace); rename still names the panel.
   const freshCtx = loadPanesModule(buildDom().document, "ws-13");
   const freshRoot = freshCtx.HerdrWorkspacePanes.paneRoot();
   const freshItems = freshCtx.paneMenuItemsFor(freshRoot.panels[0], freshRoot);
   assert.ok(!freshItems.some((item) => item.id === "close-pane"), "single-panel menu hides close");
-  assert.ok(!freshItems.some((item) => item.id === "rename-tab"), "empty menu hides rename");
+  assert.ok(freshItems.some((item) => item.id === "rename-pane"), "single-panel menu still renames");
 });
 
 test("pane menu keydown: arrows move focus and Escape returns to the button", () => {
@@ -1782,25 +1790,25 @@ test("sibling heal picks a surviving editor tab over null", () => {
   assert.equal(bAfter.active, "editor:src/keep.rs", "pointer heals to the surviving editor tab");
 });
 
-test("closePaneFor migrates editor, git, and terminal tabs to the survivor", async () => {
+test("closePaneFor really closes editor, git, and terminal views of the panel", async () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-23");
   const panes = ctx.HerdrWorkspacePanes;
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-23" }];
   ctx.state.tab = "tab_2";
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    panes.onTerminalTabClosed(tabId);
+  };
   panes.renderWorkspacePanes();
   const survivor = panes.paneRoot().panels[0];
   const closing = mintSecondPanel(panes, "ws-23");
 
   // All three kinds live in the closing panel. The registry stubs mirror
-  // the real module flow: activateEditorTab/openGitTab call the module's
-  // open entry with the path/view-key, and the module calls back
-  // setActivePaneTab with the tab id it mounted.
+  // the real module flow: the editor close path runs the module's own
+  // immediate close.
   ctx.window.HerdrFileBrowser = {
-    async openEditorTab(path) { panes.setActivePaneTab("editor:" + path); },
-  };
-  ctx.window.HerdrGitUi = {
-    async openViewTab() { panes.setActivePaneTab("git:commit:main"); },
+    async closeEditorTab(path) { panes.closeEditorTabImmediate(path); },
   };
   closing.tabs.push("editor:src/demo.py", "git:commit:main", "tab_2");
   closing.active = "editor:src/demo.py";
@@ -1810,16 +1818,14 @@ test("closePaneFor migrates editor, git, and terminal tabs to the survivor", asy
   assert.equal(await panes.closePaneFor(closing.paneId), true, "close accepted");
   const after = panes.paneRoot();
   assert.equal(after.panels.length, 1, "closing panel dropped from the entry");
+  assert.ok(!after.panels.some((p) => p.paneId === closing.paneId), "closing panel gone");
   const target = after.panels[0];
-  const migrated = ["editor:src/demo.py", "git:commit:main", "tab_2"];
-  for (const id of migrated) {
-    assert.ok(target.tabs.includes(id), `migrated tab survived: ${id}`);
+  const closed = ["editor:src/demo.py", "git:commit:main", "tab_2"];
+  for (const id of closed) {
+    assert.ok(!target.tabs.includes(id), `closed view never migrates: ${id}`);
   }
-  // Dedupe: the survivor's own tab is not duplicated.
-  assert.equal(target.tabs.filter((id) => id === "editor:src/survivor.py").length, 1, "survivor tab not duplicated");
-  // The survivor keeps its own live active pointer (no clobber).
-  assert.equal(target.active, "editor:src/survivor.py", "survivor keeps its active tab");
-  assert.notEqual(target.paneId, closing.paneId, "closing panel gone");
+  assert.ok(!ctx.state.tabs.some((row) => row.tab_id === "tab_2"), "terminal row really closed");
+  assert.equal(target.active, "editor:src/survivor.py", "survivor keeps its own active tab");
 });
 
 test("closePaneFor heals a null survivor pointer to the route terminal tab", async () => {
@@ -1842,26 +1848,34 @@ test("closePaneFor heals a null survivor pointer to the route terminal tab", asy
   assert.equal(after.active, "tab_2", "null pointer heals to the route terminal tab");
 });
 
-test("closePaneFor routes to the migrated tab when the survivor was empty", async () => {
+test("closePaneFor on an empty-survivor tree closes without migration", async () => {
   // The pre-op survivor object reads empty (active null) in server
   // mode until the adoption lands: the route must re-read the survivor
-  // from the live tree after the op, or the center surface stays on the
-  // closed panel's route.
+  // from the live tree after the op. Under the real-close contract the
+  // closed panel's tab is gone for good; the survivor keeps its own
+  // empty state and the route stays on its live tab.
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-26");
   const panes = ctx.HerdrWorkspacePanes;
-  ctx.state.tabs = [
-    { tab_id: "tab_9", workspace_id: "ws-26" },
-    { tab_id: "tab_10", workspace_id: "ws-26" },
-  ];
-  ctx.state.tabsById = { tab_10: { tab_id: "tab_10", workspace_id: "ws-26" } };
-  ctx.state.allTabs = [{ tab_id: "tab_10", workspace_id: "ws-26" }];
+  ctx.state.tabs = [{ tab_id: "tab_9", workspace_id: "ws-26" }];
   ctx.state.tab = "tab_9";
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    ctx.state.tabsById = {};
+    ctx.state.allTabs = ctx.state.allTabs.filter((row) => row.tab_id !== tabId);
+    panes.onTerminalTabClosed(tabId);
+  };
   panes.renderWorkspacePanes();
   const survivor = panes.paneRoot().panels[0];
   const closing = mintSecondPanel(panes, "ws-26");
-  closing.tabs.push("tab_10");
-  closing.active = "tab_10";
+  // The closing panel holds an editor view: the drain exercises the
+  // editor path (immediate close through the registry stub), and the
+  // terminal row of the route stays in the survivor.
+  ctx.window.HerdrFileBrowser = {
+    async closeEditorTab(path) { panes.closeEditorTabImmediate(path); },
+  };
+  closing.tabs.push("editor:src/x.py");
+  closing.active = "editor:src/x.py";
   survivor.tabs = [];
   survivor.active = null;
   const goCalls = [];
@@ -1869,32 +1883,35 @@ test("closePaneFor routes to the migrated tab when the survivor was empty", asyn
 
   assert.equal(await panes.closePaneFor(closing.paneId), true, "close accepted");
   const after = panes.paneRoot().panels[0];
-  assert.ok(after.tabs.includes("tab_10"), "terminal tab migrated");
-  assert.equal(after.active, "tab_10", "migrated tab is the survivor active");
-  assert.ok(goCalls.some(([ws, tab]) => ws === "ws-26" && tab === "tab_10"), "route writes the migrated tab");
+  assert.ok(!after.tabs.includes("editor:src/x.py"), "closed editor view never migrates");
+  assert.ok(after.tabs.includes("tab_9"), "route tab keeps its home");
+  assert.equal(after.active, "tab_9", "route tab is the survivor active");
+  assert.ok(!goCalls.some(([ws, tab]) => tab === "editor:src/x.py"), "route never writes the closed view");
 });
 
-test("closePaneFor migrates into the nearest same-workspace panel", async () => {
-  // The old edge-leaf-of-a-split rule is gone: the flat entry has no
-  // split geometry, the migration hands tabs to the nearest panel of the
-  // closing panel's own workspace (entry order neighbor).
+test("closePaneFor drops the panel, neighbors keep their own views", async () => {
+  // The migration rule is gone with the merge model: closing a panel
+  // closes its views; the surviving panels keep exactly what they held.
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-25");
   const panes = ctx.HerdrWorkspacePanes;
+  ctx.window.HerdrFileBrowser = {
+    async closeEditorTab(path) { panes.closeEditorTabImmediate(path); },
+  };
   panes.renderWorkspacePanes();
   const first = panes.paneRoot().panels[0];
   const middle = mintSecondPanel(panes, "ws-25");
   const last = mintSecondPanel(panes, "ws-25");
   middle.tabs.push("editor:src/x.py");
+  middle.active = "editor:src/x.py";
 
   assert.equal(await panes.closePaneFor(middle.paneId), true, "close accepted");
   const after = panes.paneRoot();
   assert.equal(after.panels.length, 2, "entry dropped the closing panel");
-  // Both neighbors share the workspace; the migration hands the tabs
-  // to one surviving same-workspace panel (terminal-holding first
-  // panel in the cascade order).
-  const receiver = after.panels.find((p) => p.tabs.includes("editor:src/x.py"));
-  assert.ok(receiver, "tabs landed in a surviving panel");
+  assert.ok(!after.panels.some((p) => p.paneId === middle.paneId), "closing panel gone");
+  for (const panel of after.panels) {
+    assert.ok(!panel.tabs.includes("editor:src/x.py"), "the closed view lands nowhere");
+  }
   deepEqual(after.panels.map((p) => p.paneId), [first.paneId, last.paneId], "survivors keep their slots");
 });
 
@@ -1979,16 +1996,19 @@ test("an empty owner panel parks the shell home hidden", () => {
   assert.ok(maxContent.querySelector(".workspace-empty-leaf"), "empty card owns the slot");
 });
 
-// A dangling survivor pointer heals to the first migrated tab and
-// re-mounts it through the owning module: the git path must round-trip
-// through openGitTab, not just sit in the tree.
-test("closePaneFor heals a dangling pointer to a migrated git tab and re-mounts it", async () => {
+test("closePaneFor leaves the survivor's own views intact, no re-mount", async () => {
+  // The dangling-pointer-to-migrated-tab heal is gone with migration:
+  // the survivor keeps its own git view and its pointer, and nothing
+  // re-mounts through openGitTab because no tab moved.
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-29");
   const panes = ctx.HerdrWorkspacePanes;
   const gitCalls = [];
   ctx.window.HerdrGitUi = {
     async openViewTab(viewKey) { gitCalls.push(String(viewKey)); panes.setActivePaneTab("git:" + viewKey); },
+  };
+  ctx.window.HerdrFileBrowser = {
+    async closeEditorTab(path) { panes.closeEditorTabImmediate(path); },
   };
   panes.renderWorkspacePanes();
   const survivor = panes.paneRoot().panels[0];
@@ -2000,9 +2020,9 @@ test("closePaneFor heals a dangling pointer to a migrated git tab and re-mounts 
 
   assert.equal(await panes.closePaneFor(closing.paneId), true, "close accepted");
   const after = panes.paneRoot().panels[0];
-  assert.ok(after.tabs.includes("git:changes"), "git tab survived the migration");
-  assert.equal(after.active, "git:changes", "dangling pointer healed to the git tab");
-  assert.deepEqual(gitCalls, ["changes"], "healed git tab re-mounted through openGitTab");
+  assert.ok(after.tabs.includes("git:changes"), "survivor keeps its own git view");
+  assert.equal(after.active, "git:changes", "dangling pointer heals to the held view");
+  assert.deepEqual(gitCalls, [], "no re-mount: nothing migrated");
 });
 
 // The bar find control: an editor-active focused leaf renders the ⌕
@@ -2102,12 +2122,13 @@ test("an editor close mid-fetch does not resurrect the tab when the fetch lands"
 
   const opened = panes.openEditorTab("src/demo.py");
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.ok(leaf.tabs.includes("editor:src/demo.py"), "placeholder tab sits in the strip while the fetch runs");
+  const tabIn = (id) => panes.paneLeaves(panes.paneRoot()).some((l) => l.tabs.includes(id));
+  assert.ok(tabIn("editor:src/demo.py"), "placeholder view sits in its split member while the fetch runs");
 
   // The ✕ wins the race: the tree drops the id, teardown fires, and the
   // pointer falls back to the terminal tab.
   await panes.closeEditorTab(encodeURIComponent("src/demo.py"));
-  assert.ok(!leaf.tabs.includes("editor:src/demo.py"), "close dropped the tab id mid-fetch");
+  assert.ok(!tabIn("editor:src/demo.py"), "close dropped the tab id mid-fetch");
   assert.ok(closed.has("src/demo.py"), "registry tore the per-file state down");
   assert.equal(leaf.active, "tab_2", "pointer falls back to the terminal tab");
 
@@ -2115,7 +2136,7 @@ test("an editor close mid-fetch does not resurrect the tab when the fetch lands"
   await opened;
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(!events.includes("mount:src/demo.py"), "the landed fetch never mounts the editor");
-  assert.ok(!leaf.tabs.includes("editor:src/demo.py"), "the closed tab id stays out of the tree");
+  assert.ok(!tabIn("editor:src/demo.py"), "the closed tab id stays out of the tree");
   assert.equal(leaf.active, "tab_2", "the pointer stays on the terminal tab");
 });
 
@@ -2154,6 +2175,16 @@ test("pane strip tabs carry middle-click close routing", () => {
   ctx.state.tab = "tab_2";
   panes.renderWorkspacePanes();
   const leaf = panes.activePane();
+  // Degraded multi-tab blob (a stored tree violating the one-view
+  // invariant) still renders every view in the merged header, so the
+  // auxclick routing stays reachable. Park the leaf in a split first:
+  // flat strips render nothing.
+  const entry = panes.paneRoot();
+  const neighbor = { paneId: "p_aux", tabs: ["terminal"], active: "terminal", groupId: "g_aux", wsId: leaf.wsId };
+  entry.panels.push(neighbor);
+  leaf.groupId = "g_aux";
+  entry.groups.push({ groupId: "g_aux", name: null, memberIds: [leaf.paneId, "p_aux"], layout: { kind: "row", sizes: [1, 1], children: [leaf.paneId, "p_aux"] } });
+  entry.visible = { type: "group", id: "g_aux" };
   leaf.tabs.push("editor:src/readme.md");
   leaf.tabs.push(panes.gitTabId("status"));
   leaf.active = "tab_2";
@@ -2425,24 +2456,30 @@ test("foreign default panels prefix the worktree name on a mixed tree", () => {
   const leaves = panes.paneLeaves(panes.paneRoot());
   assert.equal(leaves.length, 2, "foreign row minted its own ws-2 panel");
   // One visible view: only the visible subject renders. Both panels
-  // must share a group, or the strip pass paints one of them.
+  // must share a group, or the flat strip pass paints one of them.
   dropLabelOn(panes, nodes, leaves[1].paneId, 0.75, 0.5);
   panes.renderWorkspacePanes();
 
-  // Strips resolve by tab id: layout order is not strip index.
-  const ownLabel = stripHtmlForTab(nodes, "tab_2");
-  const foreignLabel = stripHtmlForTab(nodes, "tab_9");
+  // Identity surfaces in the merged header per member: strip markup
+  // resolves by pane id (layout order is not strip index) and the rail
+  // chips spell the same labels.
+  const ownHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[0].paneId}"`)) || "";
+  const foreignHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[1].paneId}"`)) || "";
   // Both default panels carry their worktree prefix now: the origin is
   // part of the identity everywhere, not only on foreign panels.
-  assert.ok(ownLabel, "own panel renders");
-  assert.match(ownLabel, /<span class="pane-tab-label" data-ws-prefix="main">1<\/span>/, "own default panel carries its worktree prefix");
-  assert.match(ownLabel, /aria-label="Panel main 1"/, "own accessible name spells the origin");
-  // Foreign workspace: prefix attribute with the worktree name, number
-  // as the span text, and the full string as the accessible name.
-  assert.ok(foreignLabel, "foreign panel renders");
-  assert.ok(foreignLabel.includes('data-ws-prefix="feat/panels"'), "foreign panel carries the worktree name");
-  assert.match(foreignLabel, /<span class="pane-tab-label" data-ws-prefix="feat\/panels">1<\/span>/, "foreign number renders bare with the prefix beside it");
-  assert.match(foreignLabel, /aria-label="Panel feat\/panels 1"/, "foreign accessible name spells the origin");
+  assert.ok(ownHeader, "own panel renders");
+  assert.ok(ownHeader.includes('<span class="pane-label-chip-text">main 1</span>'), "own default member header carries its worktree prefix");
+  assert.ok(ownHeader.includes('aria-label="Focus panel: main 1"'), "own accessible name spells the origin");
+  // Foreign workspace: same prefix-plus-number identity in the merged
+  // header, with the worktree name and the full string as the
+  // accessible name.
+  assert.ok(foreignHeader, "foreign panel renders");
+  assert.ok(foreignHeader.includes('<span class="pane-label-chip-text">feat/panels 1</span>'), "foreign member header carries the worktree name plus number");
+  assert.ok(foreignHeader.includes('aria-label="Focus panel: feat/panels 1"'), "foreign accessible name spells the origin");
+  // The rail chips speak the same identity strings.
+  const rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">main 1</span>'), "own rail chip carries the prefix");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feat/panels 1</span>'), "foreign rail chip carries the prefix");
 });
 
 test("foreign prefixes flip with the selected workspace and skip custom names", () => {
@@ -2460,29 +2497,41 @@ test("foreign prefixes flip with the selected workspace and skip custom names", 
     tab_c: { tab_id: "tab_c", workspace_id: "ws-1", label: "build", number: 2 },
   };
   panes.renderWorkspacePanes();
-  // v2 panel model: mint a second panel, splits only exist in groups.
+  // v2 panel model: mint two more panels, splits only exist in groups.
+  mintSecondPanel(panes);
   mintSecondPanel(panes);
   const leaves = panes.paneLeaves(panes.paneRoot());
-  leaves[0].tabs = ["tab_9", "tab_2", "tab_c"];
-  leaves[0].active = "tab_9";
+  const home = leaves.find((leaf) => leaf.tabs.includes("tab_9")) || leaves[0];
+  const others = leaves.filter((leaf) => leaf !== home);
+  // One fresh leaf keeps a default ws-1 row; the other carries a custom
+  // name (the name is the identity, never prefixed). Default leaves keep
+  // their row's prefix.
+  others[0].wsId = "ws-1";
+  others[0].tabs = ["tab_2"];
+  others[0].active = "tab_2";
+  others[1].wsId = "ws-1";
+  others[1].tabs = ["tab_c"];
+  others[1].active = "tab_c";
+  others[1].name = "build";
   panes.renderWorkspacePanes();
 
   // Every default panel prefixes with its row's workspace; the custom
-  // name never prefixes (the name is the identity).
-  const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.match(strip.innerHTML, /<span class="pane-tab-label" data-ws-prefix="feat">1<\/span>/, "ws-2 default prefixes with its label");
-  assert.ok(strip.innerHTML.includes('data-ws-prefix="main"'), "ws-1 default prefixes with its label");
-  assert.match(strip.innerHTML, /<span class="pane-tab-label">build<\/span>/, "custom name renders unprefixed");
-  assert.ok(!strip.innerHTML.includes('data-ws-prefix="build"'), "custom tab carries no prefix attribute");
+  // name never prefixes (the name is the identity). The rail is the
+  // flat panel's identity surface in the stripless model.
+  const rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail, "rail renders with more than one panel");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feat 1</span>'), "ws-2 default prefixes with its label");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">main 1</span>'), "ws-1 default prefixes with its label");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">build</span>'), "custom name renders unprefixed");
 
   // Switch the selection: the prefixes stay stable (they come from the
   // row's workspace, not the selected one).
   ctx.state.ws = "ws-1";
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
   panes.renderWorkspacePanes();
-  const stripAfter = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(stripAfter.innerHTML.includes('data-ws-prefix="feat"'), "ws-2 default keeps its prefix after the switch");
-  assert.ok(stripAfter.innerHTML.includes('data-ws-prefix="main"'), "ws-1 default keeps its prefix after the switch");
+  const railAfter = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(railAfter.__innerHTML.includes('<span class="pane-label-chip-text">feat 1</span>'), "ws-2 default keeps its prefix after the switch");
+  assert.ok(railAfter.__innerHTML.includes('<span class="pane-label-chip-text">main 1</span>'), "ws-1 default keeps its prefix after the switch");
 });
 
 test("single-workspace trees and unknown foreign workspaces keep bare numbers", () => {
@@ -2492,9 +2541,14 @@ test("single-workspace trees and unknown foreign workspaces keep bare numbers", 
   ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
   panes.renderWorkspacePanes();
-  let strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.match(strip.innerHTML, /<span class="pane-tab-label" data-ws-prefix="main">1<\/span>/, "single-workspace tree prefixes with the workspace name");
-  assert.ok(strip.innerHTML.includes('data-ws-prefix="main"'), "the only workspace carries the prefix machinery");
+  // Single-workspace tree: the prefix identity carries into the rail
+  // chip once a second subject exists (a one-panel session keeps the
+  // identity in the bar; the rail is the multi-subject surface).
+  mintSecondPanel(panes, "ws-1");
+  panes.renderWorkspacePanes();
+  let rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail, "rail renders once a second panel exists");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">main 1</span>'), "single-workspace tree prefixes with the workspace name");
 
   // Foreign row whose workspace record is missing (snapshot race): the
   // label keeps the bare number instead of a misleading or empty prefix.
@@ -2507,9 +2561,9 @@ test("single-workspace trees and unknown foreign workspaces keep bare numbers", 
   // arrival, same as every mint.
   panes.renderWorkspacePanes();
   panes.renderWorkspacePanes();
-  const rail = nodes.container.querySelector(".pane-label-rail");
-  assert.ok(rail, "foreign row mints its own panel (rail renders)");
-  const chipMatch = rail.__innerHTML.match(/<button[^>]*data-pane-id="([^"]+)"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?<\/button>/g) || [];
+  const railAfterMint = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(railAfterMint, "foreign row mints its own panel (rail renders)");
+  const chipMatch = railAfterMint.__innerHTML.match(/<button[^>]*data-pane-id="([^"]+)"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?<\/button>/g) || [];
   assert.ok(chipMatch.length >= 2, "rail lists the ws-gone panel beside the own one");
   const foreignChip = chipMatch.find((html) => html.includes(">3</span>"));
   assert.ok(foreignChip, "unknown workspace keeps the bare number");
@@ -2529,15 +2583,16 @@ test("pane menu rename seeds empty for defaults and the name for customs", () =>
   // resolve it (the loadPanesModule stub starts with a fake).
   ctx.panelRenameInitialLabel = (tab) => panes.panelRenameInitialLabel(tab);
   panes.renderWorkspacePanes();
-  // The menu takes the acting LEAF, not the session entry: in the v2
-  // model paneRoot() returns the entry and the menu's leaf argument
-  // must resolve through activePane().
+  // The v2 model's pane menu always names the panel, never the tab:
+  // rename-pane wires startPanelChipRename, the one rename surface left.
   const leaf = panes.activePane();
-  const defaultItems = panes.paneMenuItemsFor(leaf, panes.paneRoot());
-  const renameDefault = defaultItems.find((item) => item.id === "rename-tab");
-  assert.ok(renameDefault, "default terminal tab offers rename");
-  // panelRenameInitialLabel comes from the module; the pane menu passes
-  // it to startTabRename, so a default seeds "" (fresh name) and a
+  const items = panes.paneMenuItemsFor(leaf, panes.paneRoot());
+  const renameDefault = items.find((item) => item.id === "rename-pane");
+  assert.ok(renameDefault, "the pane menu offers panel rename");
+  assert.equal(renameDefault.label, "Rename panel");
+  assert.ok(!items.some((item) => item.id === "rename-tab"), "no tab-level rename id survives");
+  // panelRenameInitialLabel is still the seed source, now read by the
+  // panel-chip rename input: a default seeds "" (fresh name) and a
   // custom seeds its own name.
   assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[0]), "");
   assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[1]), "build");
@@ -2564,17 +2619,16 @@ test("a slash branch name rides the prefix attribute through escapeAttr", () => 
   // together (splits only exist inside groups now).
   dropLabelOn(panes, nodes, leaves[1].paneId, 0.75, 0.5);
   panes.renderWorkspacePanes();
-  const foreign = stripHtmlForTab(nodes, "tab_9");
-  // "/" and spaces survive the attribute round trip; the number stays
-  // the span text; the accessible name carries the full string.
-  assert.ok(foreignLabelAttr(foreign, "feature/slash-branch name"), "slash branch rides data-ws-prefix");
-  assert.match(foreign, /<span class="pane-tab-label" data-ws-prefix="feature\/slash-branch name">2<\/span>/, "number stays the span text");
-  assert.match(foreign, /aria-label="Panel feature\/slash-branch name 2"/, "accessible name carries the full string");
+  // The merged header and the rail chip carry the identity; the slash
+  // and spaces must survive the escapeAttr round trips on the chip
+  // text, the title, and the accessible name.
+  const foreignHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[1].paneId}"`)) || "";
+  assert.ok(foreignHeader.includes('<span class="pane-label-chip-text">feature/slash-branch name 2</span>'), "slash branch rides the member header label");
+  assert.ok(foreignHeader.includes('aria-label="Focus panel: feature/slash-branch name 2"'), "accessible name carries the full string");
+  const rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feature/slash-branch name 2</span>'), "slash branch rides the rail chip text");
+  assert.ok(rail.__innerHTML.includes('title="Show panel feature/slash-branch name 2"'), "rail title carries the full string through escapeAttr");
 });
-
-function foreignLabelAttr(html, value) {
-  return html.includes(`data-ws-prefix="${value}"`);
-}
 
 // A row the tree references but neither state.tabs nor tabsById resolves
 // (older server without the map, or a snapshot race): the strip must not
@@ -2603,11 +2657,11 @@ test("unresolvable tab rows render nothing instead of a broken button", () => {
   dropLabelOn(panes, nodes, leaves[1].paneId, 0.75, 0.5);
   panes.renderWorkspacePanes();
 
-  const ghostStrip = stripHtmlForTab(nodes, "tab_ghost");
-  const liveStrip = stripHtmlForTab(nodes, "tab_2");
-  assert.ok(ghostStrip !== liveStrip, "both member strips render");
-  assert.ok(!ghostStrip.includes('data-tab-id="tab_ghost"'), "unresolvable row renders no terminal button");
-  assert.ok(!ghostStrip.includes("data-ws-prefix"), "no prefix for a row that resolves nothing");
+  const ghostHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[1].paneId}"`)) || "";
+  const liveHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[0].paneId}"`)) || "";
+  assert.ok(ghostHeader !== liveHeader, "both member strips render");
+  assert.ok(!ghostHeader.includes('data-tab-id="tab_ghost"'), "unresolvable row renders no terminal button");
+  assert.ok(!ghostHeader.includes("data-ws-prefix"), "no prefix for a row that resolves nothing");
   // The null-row exit is the same guard the strip filter relies on.
   // Collector model: the prune emptied the ghost leaf, and an emptied
   // leaf STANDS as an empty panel (its card owns the slot, no blank
@@ -2663,9 +2717,11 @@ test("prefix fallback matrix: no workspace id, missing record, empty name", () =
   leaves[0].tabs.push("tab_e");
   panes.renderWorkspacePanes();
   assert.equal(panes.foreignWorkspacePrefix("tab_e"), "", "empty name chain keeps the bare number");
-  const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(strip.__innerHTML.includes('<span class="pane-tab-label">6</span>'), "nameless workspace renders a bare number");
-  assert.ok(!strip.__innerHTML.includes('data-ws-prefix=""'), "no empty prefix attribute ever renders");
+  // The stripless rail is the markup surface: the nameless workspace's
+  // panel falls back to its bare ws id (no empty label ever renders).
+  const rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail, "rail renders with more than one panel");
+  assert.ok(!rail.__innerHTML.includes('<span class="pane-label-chip-text"></span>'), "no empty chip label ever renders");
 });
 
 // The workspace label carries the prefix when the worktree display name
@@ -2696,7 +2752,12 @@ test("a foreign workspace without a worktree prefixes with its label", () => {
 
   assert.equal(panes.foreignWorkspacePrefix("tab_9"), "feat ", "label is the prefix without a worktree");
   assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_9, 0), "feat 1");
-  assert.ok(stripHtmlForTab(nodes, "tab_9").includes('data-ws-prefix="feat"'), "strip carries the label prefix");
+  // The rail chip speaks the same prefix-plus-number identity the old
+  // strip span carried.
+  const rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail, "rail renders with more than one panel");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feat 1</span>'), "rail chip carries the label prefix");
+  assert.ok(rail.__innerHTML.includes('title="Show panel feat 1"'), "rail chip title names the origin");
 });
 
 // panelNumberLabel fallbacks, pinned directly: the tree may hold rows the
@@ -2766,26 +2827,33 @@ test("editor and git tabs stay unprefixed on a mixed tree", () => {
   dropLabelOn(panes, nodes, editorLeaf.paneId, 0.75, 0.5);
   panes.renderWorkspacePanes();
 
-  const foreign = stripHtmlForTab(nodes, "tab_9");
-  const editorAndGit = stripHtmls(nodes).find((s) => s.includes('data-tab-kind="editor"'));
+  const foreign = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${home.paneId}"`)) || "";
+  const editorAndGit = stripHtmls(nodes).find((s) => s.includes('data-tab-kind="editor"')) || "";
   assert.ok(foreign, "foreign default panel renders");
   assert.ok(editorAndGit, "editor and git tabs render");
-  // Foreign default panel prefixes; the editor and git buttons never
-  // do: paneTabButtonHtml renders the prefix, the other two kinds
-  // never touch it (the strip may hold a prefixed terminal tab beside
-  // them, so the check scopes to the buttons).
+  // Foreign default panel prefixes (paneMemberHeaderLabel); the editor
+  // and git views ride the merged header as view spans (file basename /
+  // git view label) with NO ws prefix, and their degraded-blob buttons
+  // never touch the prefix machinery either.
+  assert.ok(foreign.includes('<span class="pane-label-chip-text">feat 2</span>'), "foreign default panel carries the prefix");
+  // The degraded two-view blob renders the editor/git views as plain tab
+  // buttons after the header: file basename and git view label, with NO
+  // ws prefix (the prefix machinery only exists on terminal rows).
+  const editorButton = editorAndGit.match(/<button class="pane-tab editor [^"]*"[^>]*>/) || [""];
+  assert.ok(editorButton[0], "editor blob button renders");
+  assert.ok(editorAndGit.includes(">feature.py</span>"), "editor view rides the blob unprefixed");
+  assert.ok(editorAndGit.includes('data-tab-kind="git"'), "git tab renders beside the editor tab");
   const editorAndGitButtons = editorAndGit.match(/<button class="pane-tab (?:editor|git) [^"]*"[^>]*>/g) || [];
-  assert.ok(foreign.includes('data-ws-prefix="feat"'), "foreign default panel carries the prefix");
   assert.ok(editorAndGitButtons.length === 2, "editor and git buttons render");
   assert.ok(editorAndGitButtons.every((html) => !html.includes("data-ws-prefix")), "editor and git rows carry no prefix attribute");
-  assert.ok(editorAndGit.includes('data-tab-kind="git"'), "git tab renders beside the editor tab");
+  assert.ok(!editorAndGit.includes("data-ws-prefix"), "the editor/git strip carries no prefix attribute");
 });
 
-// Rename input (the paneTabButtonHtml editing branch) lives in app_load's
-// suite (inputAttrs ships with shared/core.js, which only that bundle loads).
-// Here the same branch is pinned at the function level: a default panel
-// seeds "" and a custom panel seeds its own name, the exact strings the
-// strip's ondblclick hands to startTabRename.
+// Rename input wiring lives in app_load's suite (inputAttrs ships with
+// shared/core.js, which only that bundle loads). Here the seed is pinned
+// at the function level: a default panel seeds "" and a custom panel
+// seeds its own name, the exact strings the panel-chip rename input
+// opens with.
 test("panelRenameInitialLabel seeds empty for defaults and the name for customs", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
@@ -2797,26 +2865,7 @@ test("panelRenameInitialLabel seeds empty for defaults and the name for customs"
   ctx.panelRenameInitialLabel = (tab) => panes.panelRenameInitialLabel(tab);
   assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[0]), "", "default panel seeds a fresh name");
   assert.equal(panes.panelRenameInitialLabel(ctx.state.tabs[1]), "build", "custom panel seeds its name");
-  // The strip wires the seed into the double-click handler.
-  ctx.state.tab = "tab_2";
-  panes.renderWorkspacePanes();
-  const strip = nodesStripHtml(ctx, panes);
-  assert.ok(strip.includes("startTabRename('tab_c','build')"), "custom tab's double-click seeds its name");
-  assert.ok(strip.includes("startTabRename('tab_2','')"), "default tab's double-click seeds empty");
 });
-
-function nodesStripHtml(ctx, panes) {
-  const root = panes.paneRoot();
-  const first = panes.paneLeaves(root)[0];
-  const paneEl = paneElementFor(ctx, first);
-  return paneEl.querySelector(".pane-tab-strip").__innerHTML;
-}
-
-function paneElementFor(ctx, leaf) {
-  const el = ctx.el("workspacePanes");
-  const panes = Array.from(el.querySelectorAll(".workspace-pane"));
-  return panes.find((p) => p.dataset.paneId === leaf.paneId) || panes[0];
-}
 
 // The prefix must reach the rail too. The old model re-rendered hidden
 // siblings' strips through a maximized-pane rail; the v2 model has no
@@ -2894,13 +2943,15 @@ test("mixed tree renders the one-home foreign tab with its prefix", () => {
   const foreign = leaves.find((leaf) => leaf.tabs.includes("tab_9"));
   assert.ok(own && foreign, "both ids homed");
   assert.equal(panes.leafWorkspaceId(foreign), "ws-2", "foreign panel bound to ws-2");
-  // One visible view: the foreign panel renders through its strip when
-  // the subject points at it, or through its rail chip when hidden. The
-  // prefix must land both ways: the strip when the foreign subject shows,
-  // the chip label otherwise. Show the foreign panel first.
-  panes.showPanelFromRail(encodeURIComponent(foreign.paneId));
-  const foreignStrip = stripHtmlForTab(nodes, "tab_9");
-  assert.ok(foreignStrip, "foreign panel renders when its subject is visible");
-  assert.ok(foreignStrip.includes('<span class="pane-tab-label" data-ws-prefix="feat">1</span>'), "strip spells the prefix plus number");
-  assert.ok(foreignStrip.includes('aria-label="Panel feat 1"'), "strip accessible name spells the origin");
+  // One visible view: the foreign panel's identity renders through its
+  // rail chip when hidden (strip markup only exists inside a split).
+  // The prefix must land on the chip: worktree name plus number, the
+  // same identity the old strip span carried.
+  const rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail, "rail renders with more than one panel");
+  const foreignChipMatch = rail.__innerHTML.match(new RegExp(`<button[^>]*data-pane-id="${foreign.paneId}"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?</button>`));
+  assert.ok(foreignChipMatch, "foreign panel keeps a rail chip");
+  assert.equal(foreignChipMatch[1], "feat 1", "rail chip spells the foreign prefix plus number");
+  assert.ok(rail.__innerHTML.includes('title="Show panel feat 1"'), "rail chip title spells the origin");
+  assert.ok(rail.__innerHTML.includes('aria-label="Show panel feat 1 (double-click or press F2 to rename)"'), "rail chip accessible name spells the origin");
 });

@@ -4108,7 +4108,7 @@ describe("app bundle load", () => {
     equal(ctx.document.title, "ws-x • 1");
   });
 
-  it("strip rename input names itself and seeds the current name", () => {
+  it("panel chip rename input names itself and seeds the current name", () => {
     const ctx = context();
     runSource(ctx);
     vm.runInContext(`
@@ -4172,18 +4172,24 @@ describe("app bundle load", () => {
       return node;
     };
     vm.runInContext("renderWorkspacePanes();", ctx);
-    vm.runInContext("state.editingTab = 't1'; state.editingTabValue = 'build'; renderWorkspacePanes();", ctx);
+    // The stripless model renames PANELS through the rail chip swap
+    // (startPanelChipRename), so the input renders inside the rail: a
+    // second panel makes the rail (the multi-subject surface) render.
+    vm.runInContext("HerdrWorkspacePanes.newPanelForFocused();", ctx);
+    vm.runInContext("state.editingPanelPaneId = HerdrWorkspacePanes.paneRoot().panels[0].paneId; state.editingPanelValue = 'build'; renderWorkspacePanes();", ctx);
     const all = (ctx.__written || []).join("");
-    match(all, /class="tab-rename-input" aria-label="Rename panel"/);
+    match(all, /class="pane-group-rename-input" aria-label="Rename panel"/);
     match(all, /value="build"/);
-    match(all, /onblur="commitTabRename\('t1'\)"/);
-    match(all, /onkeydown="tabRenameKey\(event,'t1'\)"/);
-    // Leaving rename mode restores the plain button with the aria name.
+    match(all, /onblur="commitPanelChipRename\('/);
+    match(all, /onkeydown="panelChipRenameKey\(event,'/);
+    // Leaving rename mode restores the plain chip with the aria name.
     ctx.__written.length = 0;
-    vm.runInContext("state.editingTab = null; renderWorkspacePanes();", ctx);
+    vm.runInContext("state.editingPanelPaneId = null; renderWorkspacePanes();", ctx);
     const restored = (ctx.__written || []).join("");
-    ok(!restored.includes("tab-rename-input"), "input leaves with the editing state");
-    match(restored, /aria-label="Panel build"/);
+    ok(!restored.includes("pane-group-rename-input"), "input leaves with the editing state");
+    // The restored chip speaks the panel identity through its rail title
+    // ("Show panel <name>"), the stripless model's aria surface.
+    match(restored, /aria-label="Show panel build/);
   });
 
   it("keeps session manager buttons on one rounded style", () => {
