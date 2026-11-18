@@ -4217,14 +4217,23 @@ async function newTabForPane(encodedPaneId) {
   }
   const root = paneRootFor();
   const leaf = paneTreeRenderable(root) ? leafForPaneId(root, encodedPaneId) : null;
-  if (typeof newTab === "function") {
-    if (leaf) {
-      // Terminal ids are the only backend kind; remember where this one
-      // belongs before the backend list lands.
-      requestTabPlacement(leaf.paneId);
-    }
-    await newTab();
+  if (typeof newTab !== "function") return;
+  let target = leaf;
+  if (leaf && leafBusyViews(leaf)) {
+    // One view per flat panel: the + SPLITS a busy leaf. The fresh
+    // empty member takes the placement and the backend id lands in
+    // it on the next sync. A failed split keeps the placement on the
+    // original leaf (the id lands in place, pre-invariant behavior).
+    const fresh = await splitLeafWithFreshMember(leaf, () => true);
+    if (fresh === PANES_OP_REJECTED) return;
+    if (fresh) target = fresh;
   }
+  if (target) {
+    // Terminal ids are the only backend kind; remember where this one
+    // belongs before the backend list lands.
+    requestTabPlacement(target.paneId);
+  }
+  await newTab();
 }
 
 // Where the + button (and the workspace picker) wants the next created
@@ -4253,7 +4262,21 @@ function requestTabPlacement(paneId) {
 // new row visible on arrival).
 async function openPanelInWorkspace(workspaceId, paneId) {
   if (!workspaceId) return;
-  if (paneId) requestTabPlacement(paneId);
+  let targetPaneId = paneId || null;
+  if (paneId) {
+    const root = paneRootFor();
+    const leaf = paneTreeRenderable(root) ? leafForPaneId(root, paneId) : null;
+    if (leaf && leafBusyViews(leaf)) {
+      // One view per flat panel: a new panel in a busy pane SPLITS, the
+      // fresh member binding the PICKED workspace (the picker's whole
+      // point is cross-workspace placement). A failed split keeps the
+      // placement on the original leaf.
+      const fresh = await splitLeafWithFreshMember(leaf, () => true, workspaceId);
+      if (fresh === PANES_OP_REJECTED) return;
+      if (fresh) targetPaneId = fresh.paneId;
+    }
+  }
+  if (targetPaneId) requestTabPlacement(targetPaneId);
   if (typeof showBlocking === "function") showBlocking("Creating panel...");
   try {
     const r = await api("/api/tabs", {
