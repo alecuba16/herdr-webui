@@ -332,17 +332,19 @@
   align-self: center;
 }
 
-/* Panel chip (collector): strip leading edge, click focuses the panel,
- drag re-docks it (chunk C). First child of the strip so it never
- fights the tab order. Cursor grab, not pointer: the drag is the
- primary affordance on multi-panel trees. */
+/* Panel chip (collector): strip leading edge, click focuses the panel.
+ In a group view the chip drags (re-position inside the split, drop on
+ the rail to leave); on a standalone panel it stays click-only. First
+ child of the strip so it never fights the tab order. Cursor grab only
+ where the drag exists: the attribute rides the markup, the cursor
+ rule keeps the affordance honest. */
 .pane-panel-chip {
   appearance: none;
   border: 0;
   border-left: 2px solid var(--accent);
   background: var(--accent-soft);
   color: var(--text);
-  cursor: grab;
+  cursor: pointer;
   font-size: 11px;
   line-height: 1;
   padding: 3px 6px;
@@ -356,6 +358,10 @@
   flex: none;
 }
 
+.pane-panel-chip[draggable="true"] {
+  cursor: grab;
+}
+
 .pane-panel-chip:hover {
   background: color-mix(in srgb, var(--accent), transparent 78%);
 }
@@ -365,7 +371,7 @@
   outline-offset: 1px;
 }
 
-.pane-panel-chip:active {
+.pane-panel-chip[draggable="true"]:active {
   cursor: grabbing;
 }
 
@@ -515,7 +521,8 @@
  * EVERY panel plus one group chip when a group is the visible
  * subject (groups are ephemeral, only the visible one exists).
  * Pressing a chip switches the subject; dragging a panel chip into the view
- * forms or grows a group. The rail renders only when more than one
+ * forms or grows a group; a group member's strip chip dropped here
+ * leaves the visible group. The rail renders only when more than one
  * subject choice exists. */
 .pane-label-rail {
   flex: 0 0 auto;
@@ -527,6 +534,14 @@
   background: var(--panel2, var(--panel));
   overflow-x: auto;
   scrollbar-width: thin;
+}
+
+/* Member drag over the rail: the release point for leaving the visible
+   group. The accent underline answers "drop here and the view returns
+   as an independent panel" while the chip payload hovers. */
+.pane-label-rail.pane-rail-drop-target {
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 
 /* A rail chip is a pill, not a text line: the label sits in a span

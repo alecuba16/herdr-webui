@@ -253,11 +253,22 @@ fn collect_layout_ids(node: &Value, out: &mut Vec<String>) {
 
 /// Layout surgery, mirroring the client's memberLayoutWithout: drop the
 /// paneId from the tree; a split under two children collapses to its
-/// survivor, the root collapsing to one child returns that child.
+/// survivor, the root collapsing to one child returns that child. A
+/// degraded FLAT array filters the id directly (the client twin keeps
+/// the array shape, even one member long: normalize only rebuilds a
+/// layout that loses members, and a survivor must not read as lost).
 fn layout_without(node: &Value, pane_id: &str) -> Option<Value> {
     match node {
         Value::String(id) => (id != pane_id).then(|| node.clone()),
         Value::Null => None,
+        Value::Array(items) => {
+            let kept: Vec<Value> = items
+                .iter()
+                .filter(|child| child.as_str() != Some(pane_id))
+                .cloned()
+                .collect();
+            (!kept.is_empty()).then(|| Value::Array(kept))
+        }
         _ => {
             let children = node.get("children").and_then(Value::as_array)?;
             let mut kept: Vec<Value> = Vec::new();
@@ -318,9 +329,20 @@ fn layout_with_panel_at(
         })
     };
     if !layout.get("children").and_then(Value::as_array).is_some() {
-        // Flat or degraded layout: rebuild as a flat split.
-        let mut ids: Vec<String> = vec![];
-        if let Some(id) = layout.as_str() {
+        // Flat or degraded layout: rebuild as a flat split. Array
+        // layouts keep their members (the client twin slices the
+        // array; dropping them would strand live members out of the
+        // layout until normalize rebuilt it from memberIds).
+        let mut ids: Vec<String> = Vec::new();
+        if let Some(items) = layout.as_array() {
+            for item in items {
+                if let Some(id) = item.as_str() {
+                    if id != pane_id {
+                        ids.push(id.to_string());
+                    }
+                }
+            }
+        } else if let Some(id) = layout.as_str() {
             if id != pane_id {
                 ids.push(id.to_string());
             }
@@ -1077,6 +1099,69 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             );
             Ok(())
         }
+        "group.move" => {
+            let dragged = op
+                .pane_id
+                .clone()
+                .ok_or((StatusCode::BAD_REQUEST, "pane_id required".into()))?;
+            let group_id = op
+                .group_id
+                .clone()
+                .ok_or((StatusCode::BAD_REQUEST, "group_id required".into()))?;
+            let host = op
+                .host_pane_id
+                .clone()
+                .ok_or((StatusCode::BAD_REQUEST, "host_pane_id required".into()))?;
+            let axis = valid_axis(op.axis.as_deref())
+                .ok_or((StatusCode::BAD_REQUEST, "axis must be row or column".into()))?;
+            let dragged_at = panel_index(entry, &dragged)
+                .ok_or((StatusCode::NOT_FOUND, "dragged panel not found".into()))?;
+            let actual_group = entry.panels[dragged_at]
+                .group_id
+                .clone()
+                .ok_or((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "panel is not grouped".into(),
+                ))?;
+            if actual_group != group_id {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "panel is not a member of this group".into(),
+                ));
+            }
+            let group_at = group_index(entry, &group_id)
+                .ok_or((StatusCode::NOT_FOUND, "group not found".into()))?;
+            // Ephemeral groups: only the visible split view re-positions.
+            if entry.visible.kind != "group" || entry.visible.id != group_id {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "group is not the visible subject".into(),
+                ));
+            }
+            if host == dragged {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "host must differ from the moved panel".into(),
+                ));
+            }
+            // The host must be a live member: a drop outside the split
+            // never reaches this op (the client gates it), but the server
+            // re-checks so a stale client cannot strand the layout on a
+            // dead id.
+            let members = live_members(entry, &entry.groups[group_at]);
+            if !members.iter().any(|id| id == &host) {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "host is not a member of this group".into(),
+                ));
+            }
+            let layout = entry.groups[group_at].layout.clone();
+            let removed = layout_without(&layout, &dragged)
+                .unwrap_or_else(|| Value::String(dragged.clone()));
+            entry.groups[group_at].layout =
+                layout_with_panel_at(&removed, &dragged, axis, op.dragged_first, Some(&host));
+            Ok(())
+        }
         "group.ungroup" => {
             let pane_id = op
                 .pane_id
@@ -1348,6 +1433,118 @@ mod tests {
         assert_eq!(entry.groups.len(), 1);
         assert_eq!(entry.groups[0].member_ids, vec!["p2", "p3"]);
         assert_eq!(entry.groups[0].group_id, recreated_id);
+    }
+
+    #[test]
+    fn group_move_repositions_member_beside_host() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3", "p4"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p4".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("column".into());
+        grow.dragged_first = false;
+        grow.host_pane_id = Some("p2".into());
+        apply_op(&mut entry, &grow).unwrap();
+        // Layout: row [p1, column [p2, p4]]. Move p1 after p4's slot on
+        // the row axis with p4 as host: p1 leaves the root, nests a row
+        // inside the column after p4.
+        let mut mv = req("group.move");
+        mv.pane_id = Some("p1".into());
+        mv.group_id = Some("g1".into());
+        mv.host_pane_id = Some("p4".into());
+        mv.axis = Some("row".into());
+        mv.dragged_first = false;
+        apply_op(&mut entry, &mv).unwrap();
+        let group = &entry.groups[0];
+        // Membership order is untouched (only the layout moves).
+        assert_eq!(group.member_ids, vec!["p1", "p2", "p4"]);
+        // The root row collapses when p1 leaves it (single-survivor
+        // rule), so the column becomes the root: p2 on top, p1 nested
+        // beside p4 on the row axis under it.
+        assert_eq!(group.layout["kind"], "column");
+        let children = group.layout["children"].as_array().unwrap();
+        assert_eq!(children[0], serde_json::json!("p2"));
+        let inner = &children[1];
+        assert_eq!(inner["kind"], "row");
+        assert_eq!(inner["children"], serde_json::json!(["p4", "p1"]));
+    }
+
+    #[test]
+    fn group_move_flat_pair_swaps_order() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p2".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        assert_eq!(entry.groups[0].layout["children"], serde_json::json!(["p2", "p3"]));
+        // Move p3 first beside host p2 (dragged first on the row axis).
+        let mut mv = req("group.move");
+        mv.pane_id = Some("p3".into());
+        mv.group_id = Some("g1".into());
+        mv.host_pane_id = Some("p2".into());
+        mv.axis = Some("row".into());
+        mv.dragged_first = true;
+        apply_op(&mut entry, &mv).unwrap();
+        assert_eq!(entry.groups[0].layout["children"], serde_json::json!(["p3", "p2"]));
+    }
+
+    #[test]
+    fn group_move_refuses_foreign_panel_and_missing_fields() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3", "p4"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p2".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        // p4 is not a member: refused.
+        let mut foreign = req("group.move");
+        foreign.pane_id = Some("p4".into());
+        foreign.group_id = Some("g1".into());
+        foreign.host_pane_id = Some("p2".into());
+        foreign.axis = Some("row".into());
+        assert!(apply_op(&mut entry, &foreign).is_err());
+        // Self-host: refused.
+        let mut self_host = req("group.move");
+        self_host.pane_id = Some("p2".into());
+        self_host.group_id = Some("g1".into());
+        self_host.host_pane_id = Some("p2".into());
+        self_host.axis = Some("row".into());
+        assert!(apply_op(&mut entry, &self_host).is_err());
+        // Missing host: 400.
+        let mut no_host = req("group.move");
+        no_host.pane_id = Some("p2".into());
+        no_host.group_id = Some("g1".into());
+        no_host.axis = Some("row".into());
+        assert!(apply_op(&mut entry, &no_host).is_err());
+        // Non-visible group: switch the subject away, then the move 422s
+        // (ephemeral contract: only the visible split re-positions).
+        let mut subject = req("subject.set");
+        subject.visible = Some(serde_json::json!({"type": "panel", "id": "p1"}));
+        apply_op(&mut entry, &subject).unwrap();
+        // The subject switch dissolved the group; rebuilding one by hand
+        // keeps the refusal target alive for the check.
+        entry.groups.push(GroupRecord {
+            group_id: "g1".into(),
+            name: None,
+            member_ids: vec!["p2".to_string(), "p3".to_string()],
+            layout: serde_json::json!({
+                "kind": "row",
+                "sizes": [1, 1],
+                "children": ["p2", "p3"],
+            }),
+        });
+        let mut stale = req("group.move");
+        stale.pane_id = Some("p2".into());
+        stale.group_id = Some("g1".into());
+        stale.host_pane_id = Some("p3".into());
+        stale.axis = Some("row".into());
+        assert!(apply_op(&mut entry, &stale).is_err());
     }
 
     #[test]

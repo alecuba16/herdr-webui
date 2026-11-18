@@ -1016,7 +1016,156 @@ test("single ungrouped panel renders no rail", () => {
   assert.equal(rail, null, "one subject renders no rail chrome");
 });
 
-// ---- 7. storage blob shape -------------------------------------------------
+// ---- 7. member chip drag (re-position inside the split, rail exit) -----
+// The strip chip of a visible-group member drags: onto another
+// member's corner zone it re-positions inside the group layout, onto
+// the rail it ungroups. Independent panels keep a click-only chip.
+
+test("member dragstart arms the drag state only for a visible-group member", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const chip = makeNode("chip_p2", "pane-panel-chip");
+  chip.classList = {
+    add(n) { chip.className += ` ${n}`; },
+    remove(n) { chip.className = chip.className.split(/\s+/).filter((c) => c && c !== n).join(" "); },
+  };
+  const event = dragEvent(chip, 0, 0);
+  panes.paneMemberDragStart(event, encodeURIComponent("p2"));
+  assertDragKind(ctx.paneMemberDragKind(), "member", "p2", "dragstart arms the member state");
+  assert.equal(event.dataTransfer.getData("text/herdr-pane-member"), "p2", "payload carries the paneId");
+  assert.equal(event.dataTransfer.effectAllowed, "move", "payload allows move");
+  // An ungrouped panel never arms the member drag: p4 sits outside the
+  // group, so the chip stays click-only. The refused start leaves the
+  // armed state alone (same contract as the label pipeline: a foreign
+  // payload must not clear a live drag).
+  const event2 = dragEvent(chip, 0, 0);
+  const prevented = { value: false };
+  event2.preventDefault = () => { prevented.value = true; };
+  panes.paneMemberDragStart(event2, encodeURIComponent("p4"));
+  assert.ok(prevented.value, "the refused start cancels the drag event");
+  assertDragKind(ctx.paneMemberDragKind(), "member", "p2", "the armed drag survives the refused start");
+  panes.paneMemberDragEnd();
+  assert.equal(ctx.paneMemberDragKind(), null, "dragend clears the drag state");
+});
+
+test("member dragstart on a non-visible group panel is refused", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  // Leave the group subject: the panels become independent again
+  // (ephemeral contract dissolves the record).
+  panes.showPanelFromRail(encodeURIComponent("p4"));
+  const group = panes.paneRoot().groups[0];
+  assert.equal(group, undefined, "subject switch dissolved the group");
+  const chip = makeNode("chip_p2", "pane-panel-chip");
+  panes.paneMemberDragStart(dragEvent(chip, 0, 0), encodeURIComponent("p2"));
+  assert.equal(ctx.paneMemberDragKind(), null, "a panel without a group never arms");
+});
+
+test("member drop re-positions the view inside the split at the release quadrant", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  const group = buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const p3El = fixRects(document, "p3");
+  panes.paneMemberDragStart(dragEvent(p3El, ...P_LEFT), encodeURIComponent("p2"));
+  // Left corner on p3's pane: p2 lands before p3 in the row.
+  panes.paneContainerTabDrop(dragEvent(p3El, ...P_LEFT));
+  const layout = stripSplitIds(group.layout);
+  assert.equal(layout.kind, "row", "the split stays a row");
+  assert.deepEqual([...layout.children], ["p2", "p3"], "p2 re-positioned before p3");
+  assert.equal(ctx.paneMemberDragKind(), null, "the drop clears the drag state");
+  assert.equal(panes.paneRoot().groups.length, 1, "the group survived the move");
+  assert.deepEqual([...group.memberIds], ["p2", "p3"], "membership untouched");
+});
+
+test("member drop on its own pane is a clean miss, not a surgery", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  const group = buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const p2El = fixRects(document, "p2");
+  const before = stripSplitIds(group.layout);
+  panes.paneMemberDragStart(dragEvent(p2El, ...P_RIGHT), encodeURIComponent("p2"));
+  panes.paneContainerTabDrop(dragEvent(p2El, ...P_RIGHT));
+  const layout = stripSplitIds(group.layout);
+  assert.deepEqual(layout, before, "the layout never changed");
+  assert.equal(ctx.paneMemberDragKind(), null, "the miss clears the drag state");
+});
+
+test("member drag previews the quadrant on a sibling member pane", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const p3El = fixRects(document, "p3");
+  panes.paneMemberDragStart(dragEvent(p3El, ...P_LEFT), encodeURIComponent("p2"));
+  panes.paneContainerTabDragOver(dragEvent(p3El, ...P_LEFT));
+  const preview = document.getElementById("panelDropPreview");
+  assert.ok(preview, "the quadrant preview paints on the sibling pane");
+  // The same hover over the dragged member's own pane paints nothing:
+  // the release host must be a different member.
+  const p2El = findPaneEl(document, "p2");
+  p2El.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 100 });
+  panes.paneContainerTabDragOver(dragEvent(p2El, ...P_RIGHT));
+  assert.equal(preview.style.display, "none", "no preview on the dragged pane itself");
+  panes.paneMemberDragEnd();
+});
+
+test("rail member drop ungroups the member back to an independent panel", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const rail = railOf(document);
+  assert.ok(rail, "the rail renders above the group view");
+  const railEvent = (kind) => {
+    const event = dragEvent(rail, 0, 0);
+    event.currentTarget = rail;
+    return event;
+  };
+  panes.paneMemberDragStart(dragEvent(rail, 0, 0), encodeURIComponent("p2"));
+  const drop = railEvent();
+  panes.paneRailMemberDrop(drop);
+  const entry = panes.paneRoot();
+  const p2 = entry.panels.find((l) => l.paneId === "p2");
+  assert.equal(p2.groupId, null, "the member left the group");
+  // Two members minus one dissolves the group (ephemeral contract).
+  assert.equal(entry.groups.length, 0, "the undersized group dissolved");
+  assert.equal(entry.visible.type, "panel", "the subject healed to a panel");
+  assert.equal(ctx.paneMemberDragKind(), null, "the drop clears the drag state");
+});
+
+test("member chip html carries the drag wiring only in a group view", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  // Group view: every member strip chip drags.
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const p2El = findPaneEl(document, "p2");
+  const stripP2 = p2El && p2El.querySelector ? p2El.querySelector(".pane-tab-strip") : null;
+  const chipHtmlP2 = stripP2 ? stripP2.__innerHTML : "";
+  assert.ok(chipHtmlP2.includes('draggable="true" ondragstart="paneMemberDragStart(event,'), "group-view member chip drags");
+  // Panel view (no group): the chip stays click-only.
+  panes.showPanelFromRail(encodeURIComponent("p1"));
+  const p1El = findPaneEl(document, "p1");
+  const stripP1 = p1El && p1El.querySelector ? p1El.querySelector(".pane-tab-strip") : null;
+  const chipHtmlP1 = stripP1 ? stripP1.__innerHTML : "";
+  assert.ok(!chipHtmlP1.includes("paneMemberDragStart"), "standalone panel chip never drags");
+  assert.ok(chipHtmlP1.includes("focusPanelFor"), "the click wiring survives");
+});
+
+// ---- 8. storage blob shape -------------------------------------------------
 
 test("saved blob holds the v2 session entry and strips runtime markers", () => {
   const { document } = buildDom();

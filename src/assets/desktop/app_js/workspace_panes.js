@@ -320,6 +320,15 @@ function visibleSubject(entry) {
   return { kind: "panel", leaf: panel };
 }
 
+// Is the named group the visible split subject? Chip affordances and
+// drop validity both gate on this: only the visible group can grow or
+// re-position (the ephemeral contract kills every other group).
+function visibleSubjectIsGroup(entry, groupId) {
+  if (!entry || !groupId) return false;
+  const vis = entry.visible;
+  return !!(vis && vis.type === "group" && vis.id === groupId);
+}
+
 // Subject switch, ephemeral-group contract: a group exists ONLY as the
 // visible split view. Leaving it (any panel subject, or an implicit
 // fallback) dissolves the group record and frees its members. The one
@@ -2001,6 +2010,7 @@ function renderLabelRail(container, entry, subject) {
       hasClass(child, "workspace-pane") || hasClass(child, "pane-row") || hasClass(child, "pane-column"));
     if (firstPane && container.insertBefore) container.insertBefore(rail, firstPane);
     else container.appendChild(rail);
+    wireRailMemberDrop(rail);
   }
   let html = "";
   for (const leaf of panels) {
@@ -2026,6 +2036,68 @@ function renderLabelRail(container, entry, subject) {
     rail.__herdrRailSignature = resting;
     rail.innerHTML = html;
   }
+}
+
+// The rail as an UNGROUP drop target: a member chip held over the
+// rail leaves the visible group and returns as an independent panel.
+// The rail is a subject chooser, not a reordering strip, so only the
+// exit gesture lands here; every other drag kind passes through to the
+// container wiring untouched.
+function wireRailMemberDrop(rail) {
+  if (!rail || rail.__herdrRailMemberDropWired || typeof rail.addEventListener !== "function") return;
+  rail.__herdrRailMemberDropWired = true;
+  rail.addEventListener("dragenter", (event) => {
+    paneRailMemberDragOver(event);
+  });
+  rail.addEventListener("dragover", (event) => {
+    paneRailMemberDragOver(event);
+  });
+  rail.addEventListener("drop", (event) => {
+    paneRailMemberDrop(event);
+  });
+  // dragleave fires on every chip boundary crossing; the highlight
+  // only clears when the pointer truly leaves the rail row.
+  rail.addEventListener("dragleave", (event) => {
+    const drag = activeDragKind();
+    if (!drag || drag.kind !== "member") return;
+    const related = event.relatedTarget;
+    if (!related || (typeof related.closest === "function" && !related.closest(".pane-label-rail"))) {
+      if (rail.classList && rail.classList.remove) rail.classList.remove("pane-rail-drop-target");
+    }
+  });
+}
+
+function paneRailMemberDragOver(event) {
+  const drag = activeDragKind();
+  if (!drag || drag.kind !== "member") return;
+  // Strip hovers keep their own affordances (carets, workspace hints);
+  // the member exit only arms over the rail's own chip row.
+  if (event.target && event.target.closest && event.target.closest(".pane-tab-strip")) return;
+  if (event.preventDefault) event.preventDefault();
+  if (event.dataTransfer && "dropEffect" in event.dataTransfer)
+    event.dataTransfer.dropEffect = "move";
+  const rail = event.currentTarget;
+  if (rail && rail.classList && rail.classList.add) rail.classList.add("pane-rail-drop-target");
+}
+
+function paneRailMemberDrop(event) {
+  const drag = activeDragKind()
+    || (event && event.dataTransfer && event.dataTransfer.getData
+      ? dropDragKindFromData(event.dataTransfer)
+      : null);
+  const rail = event.currentTarget;
+  if (rail && rail.classList && rail.classList.remove) rail.classList.remove("pane-rail-drop-target");
+  if (!drag || drag.kind !== "member") return;
+  if (event.target && event.target.closest && event.target.closest(".pane-tab-strip")) return;
+  if (event.preventDefault) event.preventDefault();
+  // The rail owns this release: stop the bubble so the container's
+  // payload re-read cannot run a second pass over the same drop.
+  if (event.stopPropagation) event.stopPropagation();
+  const root = paneRootFor();
+  const leaf = paneForPaneId(root, drag.paneId);
+  paneMemberDragEnd();
+  if (!leaf) return;
+  ungroupMember(leaf);
 }
 
 // Resting rail markup: every chip as a button, no editing swap. Used
@@ -2335,7 +2407,10 @@ function autoClosePreStateFor(root, leaf) {
 // Identity chip on each strip: the workspace name plus the panel's
 // own identity, click focuses the panel. Grouped panels sit behind
 // their group chip in the rail; the strip chip keeps working for the
-// panel the strip belongs to.
+// panel the strip belongs to. In a group view the chip also drags:
+// onto another member's corner zone it re-positions inside the split,
+// onto the rail it leaves the group and returns as an independent
+// panel.
 function panePanelChipHtml(leaf) {
   const root = paneRootFor();
   if (!leaf || paneLeaves(root).length < 2) return "";
@@ -2365,7 +2440,14 @@ function panePanelChipHtml(leaf) {
   }
   const title = name ? `${wsName}: ${name}` : `Focus panel: ${label}`;
   const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  return `<button class="pane-panel-chip" title="${escapeAttr(title)}" aria-label="Focus panel: ${escapeAttr(label)}" data-pane-id="${escapeAttr(leaf.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
+  // Only a member of the visible group drags: an independent panel's
+  // strip chip stays click-only (the rail owns that panel's drag).
+  const group = groupForLeaf(root, leaf);
+  const draggable = !!(group && visibleSubjectIsGroup(root, group.groupId));
+  const dragAttrs = draggable
+    ? ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeAttr(encodedPane)}')" ondragend="paneMemberDragEnd()"`
+    : "";
+  return `<button class="pane-panel-chip" title="${escapeAttr(title)}" aria-label="Focus panel: ${escapeAttr(label)}" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs} onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
 }
 
 // Route write from a panel (design: the location bar always mirrors the
@@ -3134,6 +3216,51 @@ function paneLabelDragKind() {
   return paneDragLabelPaneId ? { kind: "label", paneId: paneDragLabelPaneId } : null;
 }
 
+// Member drag (group view): a strip chip of a VISIBLE-group member
+// carries the panel's paneId. Inside the split the drop re-positions
+// the panel; over the rail it ungroups. The member kind outranks the
+// tab kind in activeDragKind so a terminal-tab drag started from the
+// same strip never forks the state mid-gesture.
+let paneDragMemberPaneId = null;
+
+function paneMemberDragStart(event, encodedPaneId) {
+  const paneId = decodeURIComponent(String(encodedPaneId || ""));
+  const root = paneRootFor();
+  const leaf = paneId ? paneForPaneId(root, paneId) : null;
+  const group = groupForLeaf(root, leaf);
+  // Only a member of the visible split drags: an independent panel's
+  // chip never carries the drag wiring, and a stale group (dissolved
+  // under the pointer mid-gesture) must not arm a dead drag.
+  if (!leaf || !group || !visibleSubjectIsGroup(root, group.groupId)) {
+    if (event && event.preventDefault) event.preventDefault();
+    return;
+  }
+  paneDragMemberPaneId = paneId;
+  if (event && event.dataTransfer) {
+    event.dataTransfer.setData("text/herdr-pane-member", paneId);
+    if ("effectAllowed" in event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+  const chip = event && event.target;
+  if (chip && chip.classList && chip.classList.add) chip.classList.add("pane-label-dragging");
+}
+
+function paneMemberDragEnd() {
+  paneDragMemberPaneId = null;
+  clearPanelDropPreview();
+  clearPaneDropCaret();
+  clearPaneWorkspaceDropHint();
+  document.querySelectorAll(".pane-rail-drop-target").forEach((node) => {
+    if (node.classList && node.classList.remove) node.classList.remove("pane-rail-drop-target");
+  });
+  document.querySelectorAll(".pane-label-dragging").forEach((node) => {
+    if (node.classList && node.classList.remove) node.classList.remove("pane-label-dragging");
+  });
+}
+
+function paneMemberDragKind() {
+  return paneDragMemberPaneId ? { kind: "member", paneId: paneDragMemberPaneId } : null;
+}
+
 // Which slot does the pointer sit at? Compare the pointer x against each
 // tab's midpoint: the caret sits where the dragged tab would land.
 function paneDropIndexAt(strip, event, draggedId) {
@@ -3201,10 +3328,14 @@ function clearPaneWorkspaceDropHint() {
   document.querySelectorAll(".pane-ws-drop-hint").forEach(detachDomNode);
 }
 
-// Which drag payload is in flight: a pane tab (text/herdr-pane-tab) or a
-// sidebar workspace card (state.dragWorkspace, set by workspaceDragStart).
-// Tab drags win when both signals somehow exist.
+// Which drag payload is in flight: a pane tab (text/herdr-pane-tab), a
+// strip member chip (text/herdr-pane-member, the visible group's view),
+// a rail panel label (text/herdr-pane-label), or a sidebar workspace
+// card (state.dragWorkspace, set by workspaceDragStart). Member and
+// tab drags win when several signals somehow exist (a member drag is
+// never a tab drag: the kinds are armed by different elements).
 function activeDragKind() {
+  if (paneMemberDragKind()) return paneMemberDragKind();
   if (paneDragLabelPaneId) return { kind: "label", paneId: paneDragLabelPaneId };
   if (paneDragTabId) return { kind: "tab", tabId: paneDragTabId };
   if (state.dragWorkspace) return { kind: "workspace", workspaceId: state.dragWorkspace };
@@ -3213,17 +3344,19 @@ function activeDragKind() {
 
 // Container-level drags (one-visible-view model): a TAB drag keeps the
 // member-strip caret flow; a LABEL drag from the rail previews the
-// split quadrant over the visible subject. Both share the container
-// wiring from wirePanelChipDrag.
+// split quadrant over the visible subject; a MEMBER drag from a group
+// strip chip previews the re-position quadrant over another member's
+// pane. All share the container wiring from wirePanelChipDrag.
 function paneContainerTabDragOver(event) {
   const drag = activeDragKind();
   if (!drag) return;
   const onStrip = event.target && event.target.closest && event.target.closest(".pane-tab-strip");
-  if (drag.kind === "label") {
+  if (drag.kind === "label" || drag.kind === "member") {
     if (onStrip) return;
     const container = el("workspacePanes");
     const target = panelDropTargetAt(container, event);
-    if (!target || !labelDropTargetValid(target)) {
+    const valid = drag.kind === "label" ? labelDropTargetValid(target, drag) : memberDropTargetValid(target, drag);
+    if (!target || !valid) {
       clearPanelDropPreview();
       return;
     }
@@ -3241,6 +3374,23 @@ function paneContainerTabDragOver(event) {
   // caret path in the strips handles reordering; content hovers keep
   // the preview hidden so a release over dead space drops clean.
   clearPanelDropPreview();
+}
+
+// A member re-position drop qualifies on another member of the same
+// visible group: the release pane hosts the dragged view's new slot.
+// The dragged member never hosts its own drop (a no-op at best, a
+// corruption vector at worst: layoutWithPanelAt assumes an external
+// id).
+function memberDropTargetValid(target, drag) {
+  const root = paneRootFor();
+  if (!target || !target.paneId) return false;
+  const dragged = paneForPaneId(root, (drag && drag.paneId) || (paneMemberDragKind() ? paneMemberDragKind().paneId : null));
+  if (!dragged || !dragged.groupId) return false;
+  const group = groupForLeaf(root, dragged);
+  if (!group || !visibleSubjectIsGroup(root, group.groupId)) return false;
+  if (target.paneId === dragged.paneId) return false;
+  const host = paneForPaneId(root, target.paneId);
+  return !!(host && host.groupId === group.groupId);
 }
 
 // A label drop qualifies only when the auto-join neighbor exists
@@ -3297,7 +3447,8 @@ function railOrderUngroupedPanels(root) {
 
 // Label drop on the visible subject: create the group (panel subject)
 // or grow the visible group. The dragged panel lands at the previewed
-// quadrant; the auto-join neighbor fills the opposite side.
+// quadrant; the auto-join neighbor fills the opposite side. A member
+// drop re-positions the dragged view inside the visible group.
 function paneContainerTabDrop(event) {
   const drag = activeDragKind()
     || (event && event.dataTransfer && event.dataTransfer.getData
@@ -3306,6 +3457,18 @@ function paneContainerTabDrop(event) {
   if (!drag) return;
   const onStrip = event.target && event.target.closest && event.target.closest(".pane-tab-strip");
   if (onStrip) return;
+  if (drag.kind === "member") {
+    const container = el("workspacePanes");
+    const target = panelDropTargetAt(container, event);
+    if (!target || !memberDropTargetValid(target, drag)) {
+      paneMemberDragEnd();
+      return;
+    }
+    if (event.preventDefault) event.preventDefault();
+    const moved = repositionGroupMember(drag.paneId, target.paneId, target.axis === "row" ? "row" : "column", target.first);
+    paneMemberDragEnd();
+    return;
+  }
   if (drag.kind !== "label") {
     // TAB drops outside strips end the drag cleanly: strips own every
     // tab drop, and content hovers offered no preview.
@@ -3350,8 +3513,12 @@ function paneContainerTabDrop(event) {
 }
 
 // dataTransfer-only drops (no dragstart ran in this document, e.g. a
-// stub event): read the payload kind straight from the data.
+// stub event): read the payload kind straight from the data. The
+// member payload outranks the label one: both carry a paneId, but a
+// member payload only ever mints on a visible-group chip.
 function dropDragKindFromData(dataTransfer) {
+  const member = dataTransfer.getData("text/herdr-pane-member");
+  if (member) return { kind: "member", paneId: member };
   const label = dataTransfer.getData("text/herdr-pane-label");
   if (label) return { kind: "label", paneId: label };
   const tab = dataTransfer.getData("text/herdr-pane-tab");
@@ -3443,6 +3610,36 @@ function localGrowVisibleGroupWith(dragged, group, axis, draggedFirst) {
   return true;
 }
 
+// Member re-position inside the visible group (strip chip drag): the
+// dragged view moves beside the release host at the previewed quadrant.
+// Same dispatch shape as ungroupMember; the server owns the op name
+// group.move, the local twin runs the same surgery on the local entry.
+function repositionGroupMember(paneId, hostPaneId, axis, draggedFirst) {
+  const root = paneRootFor();
+  const dragged = paneForPaneId(root, paneId);
+  const group = groupForLeaf(root, dragged);
+  if (!dragged || !group) return false;
+  return panesOpWithFallback(
+    {
+      op: "group.move",
+      groupId: group.groupId,
+      paneId,
+      hostPaneId,
+      axis,
+      draggedFirst,
+    },
+    () => {
+      const groupNow = groupForLeaf(paneRootFor(), paneId);
+      if (!groupNow) return false;
+      const removed = memberLayoutWithout(groupNow.layout, paneId);
+      dropHostPaneId = hostPaneId;
+      groupNow.layout = removed === null ? paneId : layoutWithPanelAt(removed, paneId, axis, draggedFirst);
+      dropHostPaneId = null;
+      return true;
+    },
+  );
+}
+
 // Layout insertion: the new paneId lands at the quadrant the release
 // named, relative to the quadrant's host pane (the pane under the
 // pointer). Same-kind hosts extend, other-kind hosts nest, the old
@@ -3522,6 +3719,11 @@ function findLayoutSlotFor(node, hostId) {
 function paneStripDragOver(event) {
   const drag = activeDragKind();
   if (!drag) return;
+  // A member drag transiting a strip paints nothing: the caret is a
+  // TAB affordance, and the member's landing zones (pane quadrant,
+  // rail) keep their own previews. No preventDefault either, so the
+  // strip never arms itself as a drop target for the member payload.
+  if (drag.kind === "member") return;
   // The strip under the pointer owns the caret or the workspace hint;
   // hovering pane content targets the same strip's append slot.
   const target = event.target;
@@ -3545,6 +3747,13 @@ function paneStripDrop(event) {
       ? { kind: "tab", tabId: event.dataTransfer.getData("text/herdr-pane-tab") }
       : null);
   const pane = event.target && event.target.closest ? event.target.closest(".workspace-pane") : null;
+  if (drag && drag.kind === "member") {
+    // A member release over a strip is a gesture miss: the member's
+    // landing zones are the pane quadrant and the rail. Clean the drag
+    // state, no surgery.
+    paneMemberDragEnd();
+    return;
+  }
   if (drag && drag.kind === "workspace") {
     clearPaneWorkspaceDropHint();
     if (event.preventDefault) event.preventDefault();
@@ -5039,6 +5248,11 @@ window.HerdrWorkspacePanes = {
   // Rail label drag pipeline (container wiring + drop).
   paneLabelDragStart,
   paneLabelDragEnd,
+  // Member chip drag pipeline (group view: re-position inside the
+  // split, rail drop ungroups).
+  paneMemberDragStart,
+  paneMemberDragEnd,
+  paneRailMemberDrop,
   paneContainerTabDragOver,
   paneContainerTabDrop,
   showPanelFromRail,
