@@ -3624,6 +3624,194 @@ function localGrowVisibleGroupWith(dragged, group, axis, draggedFirst) {
   return true;
 }
 
+// ---- one-view-per-flat-panel split engine -------------------------------
+// A flat panel holds at most one view. Every creator that would push a
+// second view into a busy leaf instead SPLITS: the old view keeps its
+// panel, a fresh member mints beside it (row axis: old left, new right)
+// and takes the focus. A busy MEMBER of a group grows the split the
+// same way, seated next to the busy member. The terminal placeholder
+// is not a view: a placeholder-only leaf counts as free.
+function leafBusyViews(leaf) {
+  return ((leaf && leaf.tabs) || []).filter((id) => id !== TERMINAL_TAB_PLACEHOLDER).length;
+}
+
+// Split entry point. Returns the fresh member leaf, null when the
+// gesture could not land (already announced), or PANES_OP_REJECTED
+// when the server refused it (the resync already painted server
+// truth; the caller must not touch local state).
+async function splitLeafWithFreshMember(leaf, applyView) {
+  if (!leaf) return null;
+  const group = groupForLeaf(paneRootFor(), leaf);
+  if (!group) return splitFlatHost(leaf, applyView);
+  return splitGroupedHost(leaf, group, applyView);
+}
+
+// The fresh panel minted by a server panel.create: the op response
+// adopts the entry, and the new id is the one the panel list gained
+// (known ids snapshotted before the op). Exactly one gain is the
+// answer; anything else means a broadcast raced the gesture.
+function adoptedFreshPanel(knownIds) {
+  const gained = paneLeaves(paneRootFor()).filter((l) => !knownIds.has(l.paneId));
+  return gained.length === 1 ? gained[0] : null;
+}
+
+// Flat host. Server: panel.create mints the fresh member bound to the
+// host's workspace, then group.create wraps [host, fresh] with the
+// fresh member focused and the group visible (dragged = the fresh
+// panel, neighbor = the host, draggedFirst false = host LEFT). Local
+// mode and a demoted session run the local twin; a REJECTED op is
+// server truth: no local surgery, no view.
+async function splitFlatHost(leaf, applyView) {
+  const localTwin = (preMinted) => {
+    const rootNow = paneRootFor();
+    const host = paneForPaneId(rootNow, leaf.paneId);
+    if (!host) return null;
+    const fresh = preMinted || mintPanelForWorkspace(leafWorkspaceId(host), host);
+    if (!fresh || !rootNow.panels.includes(fresh)) return null;
+    const group = {
+      groupId: newGroupId(),
+      name: null,
+      memberIds: [host.paneId, fresh.paneId],
+      layout: { kind: "row", sizes: [1, 1], children: [host.paneId, fresh.paneId] },
+      focusedPaneId: fresh.paneId,
+    };
+    rootNow.groups.push(group);
+    host.groupId = group.groupId;
+    fresh.groupId = group.groupId;
+    return settleSplitView(host, fresh, applyView);
+  };
+  if (panesMode !== "server" || !panesServerReachable()) return localTwin(null);
+  const known = new Set(paneLeaves(paneRootFor()).map((l) => l.paneId));
+  const mint = await panesServerOp({ op: "panel.create", wsId: leafWorkspaceId(leaf) || undefined });
+  if (mint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+  if (!mint) return localTwin(null);
+  const freshMint = adoptedFreshPanel(known);
+  if (!freshMint) {
+    announcePaneChanges("Could not place the new view");
+    return null;
+  }
+  const create = await panesServerOp({
+    op: "group.create",
+    paneId: freshMint.paneId,
+    neighborPaneId: leaf.paneId,
+    axis: "row",
+    draggedFirst: false,
+  });
+  if (create === PANES_OP_REJECTED) {
+    dropFreshSplitMember(freshMint.paneId);
+    return PANES_OP_REJECTED;
+  }
+  // Transport failure after a successful mint: the session demoted to
+  // local, so the twin adopts the already-minted panel instead of
+  // minting a second one.
+  if (!create) return localTwin(freshMint);
+  const rootNow = paneRootFor();
+  const hostNow = paneForPaneId(rootNow, leaf.paneId);
+  const freshNow = paneForPaneId(rootNow, freshMint.paneId);
+  if (!hostNow || !freshNow || !hostNow.groupId || freshNow.groupId !== hostNow.groupId) {
+    announcePaneChanges("Could not place the new view");
+    return null;
+  }
+  return settleSplitView(hostNow, freshNow, applyView);
+}
+
+// Member host. The sync ladder can home an id into any bound leaf, so
+// the busy member's group may be PARKED: group.grow only runs on the
+// visible subject, so a parked group opens first (subject.set).
+// Server: panel.create mints, the subject opens when parked, then
+// group.grow seats the fresh member beside the busy member.
+async function splitGroupedHost(leaf, group, applyView) {
+  const localTwin = (preMinted) => {
+    const rootNow = paneRootFor();
+    const host = paneForPaneId(rootNow, leaf.paneId);
+    const groupNow = groupById(rootNow, group.groupId);
+    if (!host || !groupNow) return null;
+    const fresh = preMinted || mintPanelForWorkspace(leafWorkspaceId(host), host);
+    if (!fresh || !rootNow.panels.includes(fresh)) return null;
+    fresh.groupId = groupNow.groupId;
+    groupNow.memberIds.push(fresh.paneId);
+    // Seat beside the busy member: layoutWithPanelAt reads the drop
+    // host, so pin it for the call and restore it after (the drag
+    // paths set the same global before their own surgery).
+    const prevHost = dropHostPaneId;
+    dropHostPaneId = leaf.paneId;
+    groupNow.layout = layoutWithPanelAt(groupNow.layout, fresh.paneId, "row", false);
+    dropHostPaneId = prevHost;
+    return settleSplitView(host, fresh, applyView);
+  };
+  if (panesMode !== "server" || !panesServerReachable()) return localTwin(null);
+  const known = new Set(paneLeaves(paneRootFor()).map((l) => l.paneId));
+  const mint = await panesServerOp({ op: "panel.create", wsId: leafWorkspaceId(leaf) || undefined });
+  if (mint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+  if (!mint) return localTwin(null);
+  const freshMint = adoptedFreshPanel(known);
+  if (!freshMint) {
+    announcePaneChanges("Could not place the new view");
+    return null;
+  }
+  if (!visibleSubjectIsGroup(paneRootFor(), group.groupId)) {
+    const vis = await panesServerOp({ op: "subject.set", visible: { type: "group", id: group.groupId } });
+    if (vis === PANES_OP_REJECTED) {
+      dropFreshSplitMember(freshMint.paneId);
+      return PANES_OP_REJECTED;
+    }
+    if (!vis) return localTwin(freshMint);
+  }
+  const grow = await panesServerOp({
+    op: "group.grow",
+    groupId: group.groupId,
+    paneId: freshMint.paneId,
+    axis: "row",
+    draggedFirst: false,
+    hostPaneId: leaf.paneId,
+  });
+  if (grow === PANES_OP_REJECTED) {
+    dropFreshSplitMember(freshMint.paneId);
+    return PANES_OP_REJECTED;
+  }
+  if (!grow) return localTwin(freshMint);
+  const rootNow = paneRootFor();
+  const hostNow = paneForPaneId(rootNow, leaf.paneId);
+  const freshNow = paneForPaneId(rootNow, freshMint.paneId);
+  if (!hostNow || !freshNow || freshNow.groupId !== group.groupId) {
+    announcePaneChanges("Could not place the new view");
+    return null;
+  }
+  return settleSplitView(hostNow, freshNow, applyView);
+}
+
+// Shared tail: the view lands in the fresh member (applyView owns the
+// tab push; a falsy answer means nothing landed and the fresh member
+// drops), then the fresh member takes focus under the split subject.
+function settleSplitView(host, fresh, applyView) {
+  if (applyView && !applyView(fresh)) {
+    dropFreshSplitMember(fresh.paneId);
+    return null;
+  }
+  const root = paneRootFor();
+  disarmLeafAutoClose(host);
+  disarmLeafAutoClose(fresh);
+  const group = groupForLeaf(root, fresh);
+  if (group) setVisibleSubject("group", group.groupId, { groupId: group.groupId, focusedPaneId: fresh.paneId });
+  focusLeaf(root, fresh);
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+  return fresh;
+}
+
+// Cleanup when a fresh split member never landed its view: the panel
+// closes through the real close path (server op, local twin, group
+// surgery), so no empty second panel and no under-two group survive.
+function dropFreshSplitMember(freshPaneId) {
+  const leaf = paneForPaneId(paneRootFor(), freshPaneId);
+  if (!leaf) return;
+  if (!dropLeafFromTree(leaf)) return;
+  // The local twin splices the member but leaves the group record;
+  // the sweep dissolves it and heals the subject.
+  sweepAbandonedEmptyLeaves();
+  renderWorkspacePanes();
+}
+
 // Member re-position inside the visible group (strip chip drag): the
 // dragged view moves beside the release host at the previewed quadrant.
 // Same dispatch shape as ungroupMember; the server owns the op name
