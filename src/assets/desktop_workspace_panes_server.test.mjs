@@ -1026,3 +1026,72 @@ test("close inside a split adopts the server merge and the survivor heal", async
   assert.equal(after.visible.type, "panel", "subject healed to a panel");
   assert.equal(after.visible.id, "p2", "the survivor takes the subject, not panels[0]");
 });
+
+test("close during panel.close flight pushes no panel.update for the sibling", async () => {
+  const { document } = buildDom();
+  // Tree order matters for the reproduction: the D7.1 one-owner repair
+  // lets the first panel win a duplicated id, so the doomed panel (p2)
+  // must precede its sibling (p3) exactly like the live p3/p4 case.
+  const starting = serverEntry();
+  starting.panels[0].tabs = [];
+  starting.panels[0].active = null;
+  starting.panels[1].tabs = ["t1", "t2"];
+  starting.panels[1].active = "t2";
+  starting.panels.push({ kind: "pane", paneId: "p3", tabs: [], active: null, wsId: "ws-1", groupId: "g1", name: null });
+  starting.panels[1].groupId = "g1";
+  starting.groups = [
+    { groupId: "g1", name: null, memberIds: ["p2", "p3"], layout: { kind: "row", sizes: [1, 1], children: ["p2", "p3"] } },
+  ];
+  starting.visible = { type: "group", id: "g1" };
+  const script = makeServerApi(starting);
+  // Hold panel.close in flight so the pre-adoption window is observable.
+  let releaseClose = null;
+  const gate = script.api;
+  script.api = async (url, opt) => {
+    if (url === "/api/workspace-panes/op") {
+      const op = JSON.parse(opt.body);
+      if (op.op === "panel.close") {
+        await new Promise((resolve) => { releaseClose = resolve; });
+        return gate(url, opt);
+      }
+    }
+    return gate(url, opt);
+  };
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const panes = ctx.HerdrWorkspacePanes;
+  const closePromise = panes.closePaneFor("p2");
+  assert.ok(releaseClose, "close op fired and is parked in flight");
+  // The close op is in flight: the local tree still holds p2 with its
+  // tabs, p3 empty. A sync pass here is the exact window where the old
+  // code's pre-merge put the doomed tabs in two owners, D7.1 stripped
+  // the later sibling, and the panel.update push (tabs=[]) landed
+  // after the close response and wiped the server merge.
+  script.calls = script.calls.filter((c) => c.url !== "/api/workspace-panes/op");
+  panes.syncTerminalTabsIntoTree();
+  const midFlight = script.calls.filter((c) => {
+    if (c.url !== "/api/workspace-panes/op") return false;
+    const op = JSON.parse(c.opt.body);
+    return op.op === "panel.update" && op.paneId === "p3";
+  });
+  assert.equal(midFlight.length, 0, "no sibling panel.update while the close is in flight");
+  releaseClose();
+  await closePromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const after = panes.paneRoot();
+  const survivor = after.panels.find((p) => p.paneId === "p3");
+  assert.ok(survivor, "survivor stands");
+  // Cross-realm array: deepStrictEqual would compare prototypes and
+  // fail on a vm-context array that holds the right items.
+  assert.equal(survivor.tabs.length, 2, "both doomed tabs landed");
+  assert.equal(survivor.tabs[0], "t1", "server merge order kept");
+  assert.equal(survivor.tabs[1], "t2", "server merge order kept");
+  assert.equal(after.groups.length, 0, "group dissolved under two members");
+  assert.equal(after.visible.id, "p3", "the survivor takes the subject");
+});

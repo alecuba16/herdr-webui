@@ -929,6 +929,9 @@ async function panesServerOp(op, opts) {
 // callers save here and render once at their own settle.
 function panesOpWithFallback(opPayload, localMutation, opts) {
   const settle = () => {
+    // preLocal runs inside the twin (and only there): the server-success
+    // path must not run it, the op response owns the post-op state.
+    if (opts && typeof opts.preLocal === "function") opts.preLocal();
     const out = localMutation ? localMutation() : undefined;
     saveWorkspacePanesStates();
     if (!(opts && opts.skipRender)) renderWorkspacePanes();
@@ -4045,20 +4048,38 @@ async function closeActivePane() {
     || paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId)
     || null;
   const liveRouteTab = state.tab != null ? String(state.tab) : null;
-  if (migration) {
+  // The doomed tabs' merge into the survivor travels with the drop as a
+  // preLocal hook, not as a mutation here: run here it would also run in
+  // server mode before the panel.close response, the render's one-owner
+  // repair would strip the sibling during the flight, and its
+  // panel.update push would land after the close and wipe the
+  // server-side merge.
+  const mergeIntoSurvivor = () => {
+    if (!migration) return;
     for (const tabId of [...leaf.tabs])
       if (!migration.tabs.includes(tabId)) migration.tabs.push(tabId);
     disarmLeafAutoClose(migration);
     if (!migration.active || !migration.tabs.includes(migration.active))
       migration.active = (liveRouteTab && migration.tabs.includes(liveRouteTab) ? liveRouteTab : migration.tabs[0]) || null;
-  }
+  };
   // Cascade rule: the last panel of a workspace closing takes the
   // workspace with it (its tabs and sidebar entry). Any remaining
   // same-ws panel would have taken the tabs above; reaching here with
   // a bound panel means this panel was the last.
   const lastOfWs = !!wsId && !paneLeaves(root).some((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId);
-  if (!dropLeafFromTree(leaf)) return false;
-  renderWorkspacePanes();
+  // Subject protocol (same as createGroupFromDrop's __pending__ write):
+  // the op response owns the post-close subject, but the adoption's
+  // keepLocalVisible overlay prefers the local pointer when it still
+  // names a live panel. A stale stored pointer (boot overlaid it) would
+  // survive the close and steal the center from the survivor, so the
+  // survivor is pre-written here and the overlay keeps the intended
+  // subject. Only when the close dissolves the visible group: a plain
+  // panel subject that was never the doomed member keeps its subject.
+  const group = groupForLeaf(root, leaf);
+  const visibleWasDoomedGroup = !!(root.visible && root.visible.type === "group" && group && root.visible.id === group.groupId);
+  if (visibleWasDoomedGroup && migration) root.visible = { type: "panel", id: migration.paneId };
+  const dropped = dropLeafFromTree(leaf, { preLocal: mergeIntoSurvivor });
+  if (!dropped) return false;
   if (lastOfWs && wsId && typeof closeWorkspaceById === "function") {
     // Fire-and-forget: closeWorkspaceById owns its own refresh and
     // error surfacing. The panel is already gone; a failed close
@@ -4066,10 +4087,22 @@ async function closeActivePane() {
     void closeWorkspaceById(wsId);
   }
   if (migration && migration.active) {
-    if (isEditorTab(migration.active)) void activateEditorTab(editorTabPath(migration.active));
-    else if (isGitTab(migration.active)) void openGitTab(gitTabViewKey(migration.active));
-    else if (typeof go === "function" && state.tab !== migration.active)
-      go(workspaceIdForTab(migration.active), migration.active);
+    // The survivor's post-merge active only exists after the op owns
+    // the tree: in server mode the adoption replaces the entry, so
+    // routing here would read pre-merge tabs and mount editor surfaces
+    // into the dying panel. Local mode ran the twin synchronously, so
+    // the survivor leaf is already final there.
+    const routeToSurvivorActive = () => {
+      const survivor = migration ? paneForPaneId(paneRootFor(), migration.paneId) : null;
+      if (!survivor || !survivor.tabs.length) return;
+      const active = survivor.tabs.includes(survivor.active) ? survivor.active : survivor.tabs[0];
+      if (isEditorTab(active)) void activateEditorTab(editorTabPath(active));
+      else if (isGitTab(active)) void openGitTab(gitTabViewKey(active));
+      else if (typeof go === "function" && state.tab !== active)
+        go(workspaceIdForTab(active), active);
+    };
+    if (dropped && typeof dropped.then === "function") void dropped.then(routeToSurvivorActive);
+    else routeToSurvivorActive();
   }
   return true;
 }
