@@ -971,11 +971,23 @@ test("rail renders the group chip beside member chips", () => {
   const rail = railOf(document);
   assert.ok(rail, "rail still renders");
   const html = rail.__innerHTML;
-  // Ephemeral contract: ALL panels keep their chips (members included);
-  // the group chip is the split view's own entry, rendered last.
+  // Ephemeral contract retired: ALL panels keep their chips (members
+  // included); the group chip is the split view's own entry, rendered
+  // last, and PERSISTS when the subject moves away.
   assert.ok(html.includes('data-pane-id="p2"'), "member chip p2 stays in the rail");
   assert.ok(html.includes('data-pane-id="p3"'), "member chip p3 stays in the rail");
   assert.ok(html.includes('data-pane-id="p1"'), "host panel keeps its rail label");
+  // The render pass also paints the group layout: both member panes
+  // exist in the split wrapper.
+  assert.ok(findPaneEl(document, "p2"), "member pane p2 rendered");
+  assert.ok(findPaneEl(document, "p3"), "member pane p3 rendered");
+  assert.ok(!findPaneEl(document, "p1"), "non-member pane left the container");
+  // Persistence: the group chip renders even when the subject names a
+  // flat panel (hidden group keeps its rail chip).
+  panes.showPanelFromRail(encodeURIComponent("p1"));
+  const flatHtml = railOf(document).__innerHTML;
+  assert.ok(flatHtml.includes("pane-panel-group-chip"), "hidden group chip persists on a panel subject");
+  assert.ok(flatHtml.includes(`showGroupFromRail('${encodeURIComponent(group.groupId)}')`), "hidden group chip still wires the reopen");
   // Group chip: default "Group N views" name, never draggable, press and
   // dblclick rename wired.
   assert.ok(html.includes("pane-panel-group-chip"), "group chip class renders");
@@ -984,11 +996,6 @@ test("rail renders the group chip beside member chips", () => {
   assert.ok(html.includes(`onclick="event.preventDefault();showGroupFromRail('${encodeURIComponent(group.groupId)}')"`), "group chip wires showGroupFromRail");
   assert.ok(html.includes(`ondblclick="startPaneGroupRename('${encodeURIComponent(group.groupId)}')"`), "group chip wires the rename");
   assert.ok(html.includes('class="pane-label-chip pane-panel-group-chip active"'), "visible group chip is active");
-  // The render pass also paints the group layout: both member panes
-  // exist in the split wrapper.
-  assert.ok(findPaneEl(document, "p2"), "member pane p2 rendered");
-  assert.ok(findPaneEl(document, "p3"), "member pane p3 rendered");
-  assert.ok(!findPaneEl(document, "p1"), "non-member pane left the container");
 });
 
 test("grouped member chips refuse the grouping drag", () => {
@@ -1104,14 +1111,14 @@ test("member dragstart on a non-visible group panel is refused", () => {
   seedPanels(ctx, 4);
   const panes = ctx.HerdrWorkspacePanes;
   buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
-  // Leave the group subject: the panels become independent again
-  // (ephemeral contract dissolves the record).
+  // Leave the group subject: the record PERSISTS (rail chip) but the
+  // split view is gone, so its member chips must not arm a drag.
   panes.showPanelFromRail(encodeURIComponent("p4"));
   const group = panes.paneRoot().groups[0];
-  assert.equal(group, undefined, "subject switch dissolved the group");
+  assert.ok(group, "subject switch kept the group record");
   const chip = makeNode("chip_p2", "pane-panel-chip");
   panes.paneMemberDragStart(dragEvent(chip, 0, 0), encodeURIComponent("p2"));
-  assert.equal(ctx.paneMemberDragKind(), null, "a panel without a group never arms");
+  assert.equal(ctx.paneMemberDragKind(), null, "a member outside the visible split never arms");
 });
 
 test("member drop re-positions the view inside the split at the release quadrant", () => {
@@ -1186,7 +1193,8 @@ test("rail member drop ungroups the member back to an independent panel", () => 
   const entry = panes.paneRoot();
   const p2 = entry.panels.find((l) => l.paneId === "p2");
   assert.equal(p2.groupId, null, "the member left the group");
-  // Two members minus one dissolves the group (ephemeral contract).
+  // Two members minus one dissolves the undersized group (close and
+  // ungroup still dissolve; only the subject switch stopped doing it).
   assert.equal(entry.groups.length, 0, "the undersized group dissolved");
   assert.equal(entry.visible.type, "panel", "the subject healed to a panel");
   assert.equal(entry.visible.id, "p3", "the surviving member takes the subject");

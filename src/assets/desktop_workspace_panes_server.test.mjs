@@ -309,6 +309,14 @@ function makeServerApi(startingEntry) {
         }
       } else if (op.op === "subject.set") {
         entry.visible = { type: op.visible.type, id: op.visible.id };
+        // Server contract: the record persists through the switch; the
+        // op's focus memory lands on it when it names a live member.
+        if (op.groupId && op.focusedPaneId) {
+          const group = entry.groups.find((g) => g.groupId === op.groupId);
+          if (group && group.memberIds.includes(op.focusedPaneId)) {
+            group.focusedPaneId = op.focusedPaneId;
+          }
+        }
       }
       return { ...entry, session: "work" };
     },
@@ -486,9 +494,8 @@ test("broadcast frame adopts the entry through applyRemoteEntry", async () => {
   ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
   // A second client grouped p1 with a new p3; the local pointer (p2)
   // names an ungrouped panel and must survive the broadcast adoption.
-  // Ephemeral contract: the remote group is NOT this client's subject,
-  // so the adoption dissolves it instead of parking it hidden; the
-  // panels stay, freed to plain rail chips.
+  // Persistence: the remote group is NOT this client's subject, but it
+  // still adopts as a parked rail chip with its member links intact.
   const remote = serverEntry();
   remote.panels.push({ kind: "pane", paneId: "p3", tabs: [], active: null, wsId: "ws-1", groupId: "g1", name: null });
   remote.groups = [
@@ -499,9 +506,10 @@ test("broadcast frame adopts the entry through applyRemoteEntry", async () => {
   const adopted = ctx.HerdrWorkspacePanes.applyRemoteEntry(remote);
   assert.equal(adopted, true);
   const entry = ctx.HerdrWorkspacePanes.paneRoot();
-  assert.equal(entry.groups.length, 0, "remote-only group dissolved: not this client's subject");
+  assert.equal(entry.groups.length, 1, "remote group adopted as a parked chip");
+  assert.equal(entry.groups[0].groupId, "g1", "group record stands");
   assert.equal(entry.panels.length, 3, "the new server panel adopted");
-  assert.ok(entry.panels.every((p) => !p.groupId), "members freed to plain panels");
+  assert.equal(entry.panels.find((p) => p.paneId === "p1").groupId, "g1", "member link adopted");
   // The local visible pointer (panel p2, still ungrouped) survives.
   assert.equal(entry.visible.type, "panel");
   assert.equal(entry.visible.id, "p2");
@@ -865,7 +873,7 @@ test("visibility regain re-adopts the drifted server entry (bindings.js bootFrom
   );
 });
 
-test("subject switch to a panel sends subject.set and dissolves the group locally", async () => {
+test("subject switch to a panel sends subject.set and keeps the group", async () => {
   const { document } = buildDom();
   // Server entry with a visible group g1 over p1+p2.
   const starting = serverEntry();
@@ -878,13 +886,18 @@ test("subject switch to a panel sends subject.set and dissolves the group locall
   await ctx.HerdrWorkspacePanes.bootFromServer();
   ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
   assert.equal(ctx.HerdrWorkspacePanes.paneRoot().groups.length, 1, "group adopted");
-  // Panel press: the group dies immediately in the local entry.
+  // Member press: the record survives, the pressed member rides the op
+  // as the group's focus memory, and the server stub mirrors it back.
   assert.equal(ctx.HerdrWorkspacePanes.showPanelFromRail(encodeURIComponent("p1")), true);
   const entry = ctx.HerdrWorkspacePanes.paneRoot();
-  assert.equal(entry.groups.length, 0, "subject switch dissolved the group");
-  assert.ok(entry.panels.every((p) => !p.groupId), "members freed");
+  assert.equal(entry.groups.length, 1, "subject switch kept the group record");
+  assert.equal(entry.visible.type, "panel", "subject names the pressed panel");
   const subjectSet = script.calls.find((c) => c.url === "/api/workspace-panes/op" && c.opt && JSON.parse(c.opt.body).op === "subject.set");
   assert.ok(subjectSet, "subject.set op fired");
+  const body = JSON.parse(subjectSet.opt.body);
+  assert.equal(body.groupId, "g1", "op carries the group id");
+  assert.equal(body.focusedPaneId, "p1", "op carries the pressed member");
+  assert.equal(entry.groups[0].focusedPaneId, "p1", "adopted frame mirrors the focus memory");
 });
 
 test("a 422-rejected intent resyncs and never runs the local twin", async () => {

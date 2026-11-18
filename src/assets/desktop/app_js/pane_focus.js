@@ -54,6 +54,12 @@
     const leaves = (window.HerdrWorkspacePanes.paneLeaves && window.HerdrWorkspacePanes.paneLeaves(root)) || [];
     if (!leaves.some((leaf) => leaf.paneId === paneId)) return false;
     root.activePaneId = paneId;
+    // Group focus memory: the record carries the last member clicked
+    // inside the split, so a subject switch away and back reopens on
+    // the same member. activePaneId alone cannot hold it: every rail
+    // chip press overwrites that pointer.
+    if (window.HerdrWorkspacePanes.rememberGroupFocus)
+      window.HerdrWorkspacePanes.rememberGroupFocus(root, paneId);
     if (window.HerdrWorkspacePanes.saveWorkspacePanesStates) window.HerdrWorkspacePanes.saveWorkspacePanesStates();
     // Collector model (design: the location bar always mirrors the
     // focused panel): clicking into a panel writes the route from that

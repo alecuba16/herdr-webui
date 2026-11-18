@@ -920,14 +920,23 @@ test("showPanelFromRail and showGroupFromRail switch the visible subject", () =>
   assert.equal(flat.dataset.paneId, "p3", "flat pane keyed by the panel");
   assert.equal(flat.parentNode, nodes.container, "flat pane sits directly under the container");
   const rail = railOf(nodes);
-  // Ephemeral contract: switching to a panel DISSOLVES the group; the
-  // rail holds only panel chips afterwards and no group chip remains.
+  // Persistence contract: switching to a panel KEEPS the group record;
+  // the rail still paints its chip beside the member chips.
   assert.ok(rail.__innerHTML.includes('data-pane-id="p3"'), "pressed panel chip renders");
-  assert.ok(!rail.__innerHTML.includes("pane-panel-group-chip"), "dissolved group leaves no chip");
-  assert.equal(entryOf(panes).groups.length, 0, "group record dissolved on subject switch");
-  assert.ok(panes.paneLeaves(entryOf(panes)).every((l) => !l.groupId), "members freed to plain panels");
-  // Group press on the dissolved id refuses (no resurrect).
-  assert.equal(panes.showGroupFromRail(encodeURIComponent(group.groupId)), false, "dissolved group id refused");
+  assert.ok(rail.__innerHTML.includes("pane-panel-group-chip"), "group chip persists beside member chips");
+  assert.equal(entryOf(panes).groups.length, 1, "group record survives the subject switch");
+  assert.ok(panes.paneLeaves(entryOf(panes)).every((l) => !l.groupId || l.groupId === group.groupId), "member links survive");
+  // A NON-member press never touches the group's focus memory; the
+  // boot focus (p1, the active tab's owner) must stand.
+  assert.equal(group.focusedPaneId, "p1", "independent panel press leaves the group memory alone");
+  // A member press becomes the remembered focus for the reopen.
+  assert.equal(panes.showPanelFromRail(encodeURIComponent("p2")), true, "member panel switch accepted");
+  assert.equal(group.focusedPaneId, "p2", "member press becomes the group's focus memory");
+  // Group press reopens the split ON the remembered member.
+  assert.ok(panes.showGroupFromRail(encodeURIComponent(group.groupId)), "group chip reopens the split");
+  assert.equal(entryOf(panes).visible.type, "group", "subject is the group again");
+  assert.equal(paneElements(nodes).length, 2, "split repaints its members");
+  assert.equal(entryOf(panes).activePaneId, "p2", "reopen restores the remembered member");
   // Unknown ids refuse.
   assert.equal(panes.showPanelFromRail(encodeURIComponent("p404")), false, "unknown panel refused");
   assert.equal(panes.showGroupFromRail(encodeURIComponent("g404")), false, "unknown group refused");

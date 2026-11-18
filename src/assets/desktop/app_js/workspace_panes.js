@@ -329,21 +329,20 @@ function visibleSubject(entry) {
 
 // Is the named group the visible split subject? Chip affordances and
 // drop validity both gate on this: only the visible group can grow or
-// re-position (the ephemeral contract kills every other group).
+// re-position (hidden records are read-only until reopened).
 function visibleSubjectIsGroup(entry, groupId) {
   if (!entry || !groupId) return false;
   const vis = entry.visible;
   return !!(vis && vis.type === "group" && vis.id === groupId);
 }
 
-// Subject switch, ephemeral-group contract: a group exists ONLY as the
-// visible split view. Leaving it (any panel subject, or an implicit
-// fallback) dissolves the group record and frees its members. The one
-// group the app can hold is the visible one, so subject.set to a panel
-// is the destroy signal; nothing else may keep a group alive.
-function setVisibleSubject(type, id) {
+// Subject switch. Groups PERSIST: switching to a panel shows that panel
+// flat while every group record survives as its own rail chip, and a
+// group subject reopens the split. opts ({groupId, focusedPaneId})
+// rides the op so the server's record (other clients, reload) learns
+// the member this client last viewed inside that group.
+function setVisibleSubject(type, id, opts) {
   const entry = panesStateFor();
-  if (type !== "group") dissolveGroupInvisibleTo(entry, id);
   const subject = type === "group" ? { type: "group", id } : { type: "panel", id };
   const prev = visibleSubject(entry);
   entry.visible = subject;
@@ -355,34 +354,15 @@ function setVisibleSubject(type, id) {
   // the local render never waits on the round trip: the local write is
   // already saved, and the helper only fires the op (null mutation).
   if (panesMode === "server") {
-    panesOpWithFallback({ op: "subject.set", visible: subject }, null);
+    const payload = { op: "subject.set", visible: subject };
+    if (opts && opts.groupId && opts.focusedPaneId) {
+      payload.groupId = opts.groupId;
+      payload.focusedPaneId = opts.focusedPaneId;
+    }
+    panesOpWithFallback(payload, null);
   }
   renderWorkspacePanes();
   return prev;
-}
-
-// Dissolve every group that is not the named group: the rail shows ALL
-// panels, and a group only lives while it is the visible split, so a
-// subject switch to any panel destroys the group record and clears the
-// members' groupId (their chips return to the rail as plain panels).
-function dissolveGroupInvisibleTo(entry, keepGroupId) {
-  if (!entry || !Array.isArray(entry.groups)) return;
-  const groups = entry.groups.filter((g) => g && g.groupId !== keepGroupId);
-  if (!groups.length) return;
-  for (const group of groups) {
-    for (const member of groupMembers(group, entry)) member.groupId = null;
-  }
-  entry.groups = entry.groups.filter((g) => g && g.groupId === keepGroupId);
-}
-
-// Ephemeral-group choke point for repaired entries (load, adoption):
-// keep exactly the group the visible pointer names, drop every other
-// group record and free its members. The entry-visible read must come
-// BEFORE any caller heals the pointer, so both callers pass through
-// unchanged state.
-function dissolveGroupsExceptVisible(entry) {
-  const keepId = entry && entry.visible && entry.visible.type === "group" ? entry.visible.id : null;
-  dissolveGroupInvisibleTo(entry, keepId);
 }
 
 // ---- panel model (one-visible-view redo) ----------------------------
@@ -536,6 +516,20 @@ function paneForTab(entry, tabId) {
 function focusLeaf(entry, leaf) {
   if (!leaf) return;
   entry.activePaneId = leaf.paneId;
+  rememberGroupFocus(entry, leaf.paneId);
+}
+
+// Group focus memory: the record carries the last member this client
+// focused so reopening the split restores that member, not just
+// members[0]. activePaneId cannot serve here: every rail chip press
+// overwrites it with the panel the user switched TO. pane_focus.js
+// (pane activation clicks) calls this directly to share the memory.
+function rememberGroupFocus(entry, paneId) {
+  if (!entry || !paneId) return;
+  const leaf = paneForPaneId(entry, paneId);
+  if (!leaf || !leaf.groupId) return;
+  const group = (entry.groups || []).find((g) => g.groupId === leaf.groupId);
+  if (group) group.focusedPaneId = paneId;
 }
 
 // Repairs one panel leaf loaded from storage: missing paneId, missing
@@ -631,6 +625,10 @@ function normalizeGroupRecord(group, entry) {
   }
   group.memberIds = memberIds;
   if (group.name != null && typeof group.name !== "string") group.name = null;
+  // Focus memory is part of the record now; a stale member pointer
+  // (closed panel) heals to null so reopening falls back to the
+  // first member instead of a dead id.
+  group.focusedPaneId = memberIds.includes(group.focusedPaneId) ? group.focusedPaneId : null;
   group.layout = normalizeLayoutNode(group.layout);
   // A degraded layout rebuilds FLAT from all memberIds (never the
   // first two: a 3+ member group would lose members from the layout
@@ -655,12 +653,6 @@ function normalizePanelEntry(entry) {
   if (!entry.panels.length) return null;
   if (!Array.isArray(entry.groups)) entry.groups = [];
   entry.groups = entry.groups.map((g) => normalizeGroupRecord(g, entry)).filter(Boolean);
-  // Ephemeral-group rule: a group only exists as the VISIBLE split.
-  // A repaired entry keeps exactly the group its visible pointer names;
-  // every other group record is stale (pre-redo blob, subject switch
-  // that never ran the dissolve) and dies here, freeing its members
-  // back to plain panel chips.
-  dissolveGroupsExceptVisible(entry);
   // The visible pointer survives only when it names a live subject;
   // anything else heals to the first panel (all panels are subjects now).
   const subject = visibleSubject(entry);
@@ -817,12 +809,6 @@ function adoptServerPanesEntry(incoming, opts) {
   if (prevFocus && healed.panels.some((p) => p.paneId === prevFocus)) {
     healed.activePaneId = prevFocus;
   }
-  // Ephemeral-group rule after the pointer overlay: a kept PANEL
-  // pointer means the server's group (another client's subject) is not
-  // this client's subject, so it dissolves here instead of hiding in
-  // the store. A kept GROUP pointer keeps its group; the render pass
-  // heals the visible pointer through visibleSubject.
-  dissolveGroupsExceptVisible(healed);
   return true;
 }
 
@@ -986,11 +972,11 @@ function applyRemoteWorkspacePanesEntry(incoming) {
   if (!incoming || typeof incoming !== "object" || !Array.isArray(incoming.panels)) return false;
   if (live && Array.isArray(live.panels) && entrySignaturesMatch(live, incoming)) return false;
   const beforePanels = live && Array.isArray(live.panels) ? live.panels.length : 0;
-  // Group delta reads the INCOMING entry, not the pre-adopt local one:
-  // adoption dissolves groups this client cannot see (ephemeral rule,
-  // a panel subject dissolves every group), and counting those as
-  // "removed" would announce a change the server never made.
-  const beforeGroups = incoming.groups && Array.isArray(incoming.groups) ? incoming.groups.length : 0;
+  // Group delta reads the PRE-ADOPT local entry: adoption keeps every
+  // server group now (persistence), so local-before vs local-after
+  // measures exactly what the frame changed and never counts a
+  // normalize repair (dead member sweep) as a server removal.
+  const beforeGroups = live && Array.isArray(live.groups) ? live.groups.length : 0;
   const adopted = adoptServerPanesEntry(incoming, { keepLocalVisible: true });
   if (adopted) {
     saveWorkspacePanesStates();
@@ -1017,7 +1003,7 @@ function applyRemoteWorkspacePanesEntry(incoming) {
 function entrySignaturesMatch(a, b) {
   const sig = (entry) => JSON.stringify({
     panels: (entry.panels || []).map((p) => [p.paneId, p.tabs || [], p.active || null, p.groupId || null, p.wsId || null, p.name || null]),
-    groups: (entry.groups || []).map((g) => [g.groupId, g.memberIds || [], g.name || null, g.layout || null]),
+    groups: (entry.groups || []).map((g) => [g.groupId, g.memberIds || [], g.name || null, g.layout || null, g.focusedPaneId || null]),
   });
   return sig(a) === sig(b);
 }
@@ -1991,20 +1977,16 @@ function announcePaneChanges(text) {
   }, 0);
 }
 
-// The rail lists EVERY panel chip plus, when a group is the visible
-// split, the group chip. Groups are ephemeral (only the visible one
-// exists), so the group chip never competes with hidden member chips:
-// members render as plain chips too, and the group chip is the split
-// view's own entry. The rail paints when more than one choice exists;
-// a single-panel session renders nothing (the strip carries the
-// identity already).
+// The rail lists EVERY panel chip plus one chip per group record:
+// groups persist, so a hidden group keeps its chip and clicking it
+// reopens the split. The rail paints when more than one choice exists;
+// a single-panel session with no groups renders nothing (the strip
+// carries the identity already).
 function renderLabelRail(container, entry, subject) {
   let rail = [...(container.children || [])].find((child) => hasClass(child, "pane-label-rail")) || null;
   const panels = paneLeaves(entry);
-  const group = subject && subject.kind === "group" && groupMemberCount(subject.group, entry) >= 2
-    ? subject.group
-    : null;
-  const needRail = panels.length + (group ? 1 : 0) > 1;
+  const groups = (entry.groups || []).filter((g) => groupMemberCount(g, entry) >= 2);
+  const needRail = panels.length + groups.length > 1;
   if (!needRail) {
     if (rail) detachDomNode(rail);
     return;
@@ -2027,8 +2009,8 @@ function renderLabelRail(container, entry, subject) {
     const active = subject && subject.kind === "panel" && subject.leaf === leaf;
     html += railPanelChipHtml(leaf, active);
   }
-  if (group) {
-    html += railGroupChipHtml(group, subject.kind === "group");
+  for (const group of groups) {
+    html += railGroupChipHtml(group, subject.kind === "group" && subject.group === group);
   }
   // Mid-edit protection, DOM-truth based: rebuild the rail exactly when
   // the editing state and the rail DOM disagree (open: state set, DOM
@@ -2041,7 +2023,7 @@ function renderLabelRail(container, entry, subject) {
   const editingState = !!(state.editingPanelPaneId || state.editingPaneGroup);
   const railShowsInput = [...(rail.children || [])].some((child) =>
     hasClass(child, "pane-group-rename-input"));
-  const resting = paneRailRestingHtml(panels, group, subject);
+  const resting = paneRailRestingHtml(panels, groups, subject);
   if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== resting)) {
     rail.__herdrRailSignature = resting;
     rail.innerHTML = html;
@@ -2113,45 +2095,54 @@ function paneRailMemberDrop(event) {
 // Resting rail markup: every chip as a button, no editing swap. Used
 // only for the signature compare so an open edit never counts as a
 // rail change.
-function paneRailRestingHtml(panels, group, subject) {
+function paneRailRestingHtml(panels, groups, subject) {
   let html = "";
   for (const leaf of panels) {
     const active = subject && subject.kind === "panel" && subject.leaf === leaf;
     html += railPanelChipHtml(leaf, active);
   }
-  if (group) {
-    html += railGroupChipHtml(group, subject.kind === "group");
+  for (const group of groups) {
+    html += railGroupChipHtml(group, subject.kind === "group" && subject.group === group);
   }
   return html;
 }
 
-// Subject switch from a rail chip: the panel press dissolves the
-// visible group (ephemeral rule: only the visible split view keeps a
-// group record) and shows the panel alone.
+// Subject switch from a rail chip: the panel press shows the panel
+// flat while its group record persists; pressing a member chip also
+// remembers that member as the group's focus so reopening restores it.
 function showPanelFromRail(encodedPaneId) {
   const entry = paneRootFor();
   const paneId = decodeURIComponent(String(encodedPaneId || ""));
   const leaf = paneId ? paneForPaneId(entry, paneId) : null;
   if (!leaf) return false;
-  setVisibleSubject("panel", leaf.paneId);
   focusLeaf(entry, leaf);
+  const group = groupForLeaf(entry, leaf);
+  setVisibleSubject("panel", leaf.paneId,
+    group ? { groupId: group.groupId, focusedPaneId: leaf.paneId } : null);
   saveWorkspacePanesStates();
   if (!writeRouteFromLeaf(leaf) || typeof go !== "function") renderWorkspacePanes();
   return true;
 }
 
+// Subject switch from the rail: the group chip press reopens the split.
+// The focused member resolves in priority order: the group record's
+// memory (the member this or another client last opened the split on),
+// then the focus pointer while it still names a member (same-session
+// press), then the first member. Reopening writes the memory back so
+// the server round trip keeps it.
 function showGroupFromRail(encodedGroupId) {
   const entry = paneRootFor();
   const groupId = decodeURIComponent(String(encodedGroupId || ""));
   const group = groupById(entry, groupId);
   if (!group || groupMemberCount(group) < 2) return false;
   const members = groupMembers(group);
-  const prev = setVisibleSubject("group", group.groupId);
-  // The first member carries the subject unless the previous subject's
-  // focus already names one of the members.
-  const focused = entry.activePaneId && members.find((l) => l.paneId === entry.activePaneId);
+  const remembered = group.focusedPaneId
+    ? members.find((l) => l.paneId === group.focusedPaneId)
+    : null;
+  const focused = remembered || (entry.activePaneId && members.find((l) => l.paneId === entry.activePaneId));
   const target = focused || members[0];
   focusLeaf(entry, target);
+  const prev = setVisibleSubject("group", group.groupId, { groupId: group.groupId, focusedPaneId: target.paneId });
   saveWorkspacePanesStates();
   if (!writeRouteFromLeaf(target) || typeof go !== "function") renderWorkspacePanes();
   return prev;
@@ -3160,6 +3151,10 @@ function localUngroupMember(leaf) {
     if (survivor && wasVisible) root.visible = { type: "panel", id: survivor.paneId };
   } else {
     group.layout = memberLayoutWithout(group.layout, leaf.paneId);
+    // Focus memory cannot name the just-removed member: the record
+    // keeps a dead pointer otherwise, and reopening the group would
+    // fall back to members[0] only because of the normalize heal.
+    if (group.focusedPaneId === leaf.paneId) group.focusedPaneId = null;
   }
   const subject = visibleSubject(root);
   root.visible = subject && subject.kind === "group"
@@ -3202,11 +3197,11 @@ function paneLabelDragStart(event, encodedPaneId) {
   const paneId = decodeURIComponent(String(encodedPaneId || ""));
   const root = paneRootFor();
   const leaf = paneId ? paneForPaneId(root, paneId) : null;
-  // A grouped member never drags as a grouping payload: its group IS
-  // the visible split (ephemeral contract), so grouping it elsewhere
-  // is impossible; leaving the group is the tab-to-location-bar
-  // ungroup gesture. Refuse the dragstart so the chip cannot offer a
-  // dead drop target.
+  // A grouped member never drags as a grouping payload: panels cannot
+  // group outside a split view, and a parked (hidden) group member is
+  // not addressable until its chip reopens the split. Leaving a group
+  // is the tab-to-location-bar ungroup gesture inside the split.
+  // Refuse the dragstart so the chip cannot offer a dead drop target.
   if (!leaf || leaf.groupId) {
     if (event && event.preventDefault) event.preventDefault();
     return;
@@ -3585,6 +3580,9 @@ function localCreateGroupFromDrop(dragged, neighbor, axis, draggedFirst) {
     name: null,
     memberIds: [dragged.paneId, neighbor.paneId],
     layout: null,
+    // Fresh split opens focused on the dragged panel (parity with
+    // the server op, which seeds the same memory).
+    focusedPaneId: dragged.paneId,
   };
   // The dragged panel sits at the release quadrant; the neighbor
   // fills the other half.
@@ -4680,7 +4678,11 @@ function activatePaneTab(tabId) {
     const ownerInVisibleGroup = !!(subject && subject.kind === "group"
       && groupMembers(subject.group).includes(owner));
     if (!ownerVisible && !ownerInVisibleGroup) {
-      setVisibleSubject("panel", owner.paneId);
+      // Same memory rule as a rail member press: viewing a hidden
+      // member remembers it for the group chip's reopen.
+      const ownerGroup = groupForLeaf(root, owner);
+      setVisibleSubject("panel", owner.paneId,
+        ownerGroup ? { groupId: ownerGroup.groupId, focusedPaneId: owner.paneId } : null);
       focusLeaf(paneRootFor(), owner);
     }
   }
@@ -5330,6 +5332,7 @@ window.HerdrWorkspacePanes = {
   paneContainerTabDrop,
   showPanelFromRail,
   showGroupFromRail,
+  rememberGroupFocus,
   closePaneFor,
   newTabForPane,
   requestTabPlacement,

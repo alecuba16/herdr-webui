@@ -93,6 +93,12 @@ pub struct GroupRecord {
     /// renderer, not a server-side enum.
     #[serde(default)]
     pub layout: Value,
+    /// Last member this session's split view focused. Groups persist
+    /// (survive subject switches as rail chips), so the record carries
+    /// the member to restore when the group chip reopens the split.
+    /// Healed to None when the named panel is gone.
+    #[serde(default)]
+    pub focused_pane_id: Option<String>,
 }
 
 /// Per-session stores plus the server-wide broadcast channel. Loaded
@@ -583,25 +589,26 @@ fn normalize_entry(entry: &mut PanesEntry) {
     if entry.groups.len() > MAX_GROUPS {
         entry.groups.truncate(MAX_GROUPS);
     }
-    // Ephemeral groups: a group exists only as the visible split view.
-    // Every group but the one visible names dissolves, clearing member
-    // group_ids, so no hidden group survives any op or adoption.
-    if entry.visible.kind != "group" {
-        entry.groups.clear();
-        for panel in entry.panels.iter_mut() {
-            panel.group_id = None;
+    // Persistent groups: every well-formed group record survives
+    // regardless of the visible subject. The sweep only enforces
+    // agreement: a panel whose groupId names no kept group loses it
+    // (orphaned by a record that normalize_group dropped for dead
+    // members), and members listed by a kept record regain their
+    // groupId so client blobs cannot strand a member ungrouped while
+    // the record still holds it.
+    let kept: HashSet<String> = entry.groups.iter().map(|g| g.group_id.clone()).collect();
+    for panel in entry.panels.iter_mut() {
+        match panel.group_id.as_deref() {
+            Some(id) if !kept.contains(id) => panel.group_id = None,
+            _ => {}
         }
-    } else {
-        entry
-            .groups
-            .retain(|group| group.group_id == entry.visible.id);
-        for panel in entry.panels.iter_mut() {
-            if panel
-                .group_id
-                .as_deref()
-                .is_some_and(|id| id != entry.visible.id)
-            {
-                panel.group_id = None;
+    }
+    for group in &entry.groups {
+        for id in &group.member_ids {
+            if let Some(panel) = entry.panels.iter_mut().find(|p| &p.pane_id == id) {
+                if panel.group_id.as_deref() != Some(group.group_id.as_str()) {
+                    panel.group_id = Some(group.group_id.clone());
+                }
             }
         }
     }
@@ -640,6 +647,16 @@ fn normalize_group(entry: &PanesEntry, mut group: GroupRecord) -> Option<GroupRe
         .retain(|id| panel_index(entry, id).is_some() && seen.insert(id.clone()));
     if group.member_ids.len() < 2 {
         return None;
+    }
+    // Focus memory must name a live member; a stale pointer (closed or
+    // ungrouped panel) heals to None so reopening falls back to the
+    // first member.
+    if group
+        .focused_pane_id
+        .as_deref()
+        .is_some_and(|id| !group.member_ids.contains(&id.to_string()))
+    {
+        group.focused_pane_id = None;
     }
     // Every member must appear in the layout; a stale layout rebuilds
     // flat from memberIds (geometry is cheap, membership is not).
@@ -856,6 +873,11 @@ struct PanesOpRequest {
     /// Focus pointer write (per-client, rides the shared entry).
     #[serde(default)]
     active_pane_id: Option<String>,
+    /// Group focus memory (subject.set): the group record stores the
+    /// member the client last viewed inside the split, so reopening
+    /// restores that member.
+    #[serde(default)]
+    focused_pane_id: Option<String>,
 }
 
 async fn panes_op(
@@ -1104,6 +1126,7 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                     "sizes": [1, 1],
                     "children": children,
                 }),
+                focused_pane_id: Some(dragged.clone()),
             };
             entry.groups.push(group);
             for id in [&dragged, &neighbor] {
@@ -1148,6 +1171,8 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             entry.panels[dragged_at].group_id = Some(group_id.clone());
             let layout = entry.groups[group_at].layout.clone();
             entry.groups[group_at].member_ids.push(dragged.clone());
+            // The just-dropped panel opens focused in the split.
+            entry.groups[group_at].focused_pane_id = Some(dragged.clone());
             entry.groups[group_at].layout = layout_with_panel_at(
                 &layout,
                 &dragged,
@@ -1285,14 +1310,16 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 kind: kind.to_string(),
                 id: id.to_string(),
             };
-            // Ephemeral groups: a panel subject means no split view, so
-            // every group dissolves now (normalize re-enforces anyway).
-            if kind == "panel" {
-                for group in entry.groups.drain(..) {
-                    for member in &group.member_ids {
-                        if let Some(panel) = entry.panels.iter_mut().find(|p| &p.pane_id == member)
-                        {
-                            panel.group_id = None;
+            // Persistent groups: a panel subject shows that panel flat
+            // but never dissolves a group record; hidden groups stay
+            // parked as rail chips. The optional focus memory rides the
+            // op so the record learns the member this client viewed
+            // last (subject switch onto a member, split reopen).
+            if let Some(group_id) = op.group_id.as_deref() {
+                if let Some(focused) = op.focused_pane_id.as_deref() {
+                    if let Some(group) = entry.groups.iter_mut().find(|g| g.group_id == group_id) {
+                        if group.member_ids.iter().any(|id| id == focused) {
+                            group.focused_pane_id = Some(focused.to_string());
                         }
                     }
                 }
@@ -1353,6 +1380,7 @@ mod tests {
             active: None,
             visible: None,
             active_pane_id: None,
+            focused_pane_id: None,
         }
     }
 
@@ -1701,22 +1729,13 @@ mod tests {
         no_host.axis = Some("row".into());
         assert!(apply_op(&mut entry, &no_host).is_err());
         // Non-visible group: switch the subject away, then the move 422s
-        // (ephemeral contract: only the visible split re-positions).
+        // (read-only contract: only the visible split re-positions).
         let mut subject = req("subject.set");
         subject.visible = Some(serde_json::json!({"type": "panel", "id": "p1"}));
         apply_op(&mut entry, &subject).unwrap();
-        // The subject switch dissolved the group; rebuilding one by hand
-        // keeps the refusal target alive for the check.
-        entry.groups.push(GroupRecord {
-            group_id: "g1".into(),
-            name: None,
-            member_ids: vec!["p2".to_string(), "p3".to_string()],
-            layout: serde_json::json!({
-                "kind": "row",
-                "sizes": [1, 1],
-                "children": ["p2", "p3"],
-            }),
-        });
+        // Persistence kept the record through the switch; only the
+        // visible guard should refuse the move.
+        assert_eq!(entry.groups.len(), 1);
         let mut stale = req("group.move");
         stale.pane_id = Some("p2".into());
         stale.group_id = Some("g1".into());
@@ -1757,22 +1776,42 @@ mod tests {
     }
 
     #[test]
-    fn subject_set_to_panel_dissolves_group() {
+    fn subject_set_to_panel_keeps_group_and_focus_memory() {
         let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
         let mut create = req("group.create");
         create.pane_id = Some("p1".into());
         create.axis = Some("row".into());
         create.dragged_first = true;
         apply_op(&mut entry, &create).unwrap();
+        // Fresh splits open focused on the dragged panel.
+        assert_eq!(entry.groups[0].focused_pane_id.as_deref(), Some("p1"));
         let mut set = req("subject.set");
         set.visible = Some(serde_json::json!({ "type": "panel", "id": "p3" }));
         apply_op(&mut entry, &set).unwrap();
-        // Ephemeral groups: switching the subject to a panel deletes the
-        // group record and clears every member's groupId.
-        assert!(entry.groups.is_empty());
-        assert!(entry.panels.iter().all(|p| p.group_id.is_none()));
+        // Persistent groups: the switch shows p3 flat but the record and
+        // its member links survive for the rail chip.
+        assert_eq!(entry.groups.len(), 1);
+        assert_eq!(entry.groups[0].group_id, "g1");
+        assert!(entry.panels.iter().all(|p| {
+            p.group_id.is_none() || p.group_id.as_deref() == Some("g1")
+        }));
         assert_eq!(entry.visible.kind, "panel");
         assert_eq!(entry.visible.id, "p3");
+        // Focus memory rides the switch when the client names the group
+        // and a live member (member chip press stores the viewed member).
+        let mut member = req("subject.set");
+        member.visible = Some(serde_json::json!({ "type": "panel", "id": "p2" }));
+        member.group_id = Some("g1".into());
+        member.focused_pane_id = Some("p2".into());
+        apply_op(&mut entry, &member).unwrap();
+        assert_eq!(entry.groups[0].focused_pane_id.as_deref(), Some("p2"));
+        // A dead member pointer never lands in the record.
+        let mut stale = req("subject.set");
+        stale.visible = Some(serde_json::json!({ "type": "panel", "id": "p3" }));
+        stale.group_id = Some("g1".into());
+        stale.focused_pane_id = Some("p404".into());
+        apply_op(&mut entry, &stale).unwrap();
+        assert_eq!(entry.groups[0].focused_pane_id.as_deref(), Some("p2"));
     }
 
     #[test]
@@ -1849,7 +1888,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_dissolves_groups_not_named_by_visible() {
+    fn normalize_keeps_hidden_groups_and_sweeps_orphans() {
         let mut entry = entry_with_panels(&["p1", "p2", "p3", "p4"]);
         entry.groups = vec![
             GroupRecord {
@@ -1857,12 +1896,14 @@ mod tests {
                 name: None,
                 member_ids: vec!["p1".into(), "p2".into()],
                 layout: serde_json::json!(["p1", "p2"]),
+                focused_pane_id: None,
             },
             GroupRecord {
                 group_id: "g2".into(),
                 name: None,
                 member_ids: vec!["p3".into(), "p4".into()],
                 layout: serde_json::json!(["p3", "p4"]),
+                focused_pane_id: Some("p3".into()),
             },
         ];
         entry.panels[0].group_id = Some("g1".into());
@@ -1874,14 +1915,31 @@ mod tests {
             id: "g2".into(),
         };
         normalize_entry(&mut entry);
-        // Only the visible group survives; the other dissolved and its
-        // members cleared.
-        assert_eq!(entry.groups.len(), 1);
-        assert_eq!(entry.groups[0].group_id, "g2");
-        assert_eq!(entry.panels[0].group_id, None);
-        assert_eq!(entry.panels[1].group_id, None);
+        // Persistence: BOTH groups survive while the subject names
+        // only g2; hidden g1 stays parked with its member links.
+        assert_eq!(entry.groups.len(), 2);
+        assert_eq!(entry.groups[0].group_id, "g1");
+        assert_eq!(entry.groups[1].group_id, "g2");
+        assert_eq!(entry.groups[1].focused_pane_id.as_deref(), Some("p3"));
+        assert_eq!(entry.panels[0].group_id.as_deref(), Some("g1"));
+        assert_eq!(entry.panels[1].group_id.as_deref(), Some("g1"));
         assert_eq!(entry.panels[2].group_id.as_deref(), Some("g2"));
         assert_eq!(entry.panels[3].group_id.as_deref(), Some("g2"));
+        // Orphan sweep: a groupId naming no kept record clears, and a
+        // member listed by a kept record regains its link (blob-side
+        // disagreement heals both directions).
+        let mut stray = panel("p5");
+        stray.group_id = Some("g404".into());
+        entry.panels.push(stray);
+        entry.panels[1].group_id = None;
+        normalize_entry(&mut entry);
+        assert_eq!(entry.panels[4].group_id, None);
+        assert_eq!(entry.panels[1].group_id.as_deref(), Some("g1"));
+        // Focus memory heals off a dead member: p3 closed elsewhere,
+        // the pointer must clear so reopening falls back to first.
+        entry.groups[1].focused_pane_id = Some("p9".into());
+        normalize_entry(&mut entry);
+        assert_eq!(entry.groups[1].focused_pane_id, None);
     }
 
     #[test]
