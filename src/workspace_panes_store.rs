@@ -996,53 +996,11 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             }
             // Capture the doomed panel's group BEFORE the splice: after
             // the remove there is no record left to read the groupId
-            // from.
+            // from. No tab migration: the client drains each view
+            // through its own close path (confirm included) before the
+            // panel.close arrives, so the doomed tabs die with the
+            // panel and the survivor keeps exactly its own views.
             let group_id = entry.panels[at].group_id.clone();
-            // Same-workspace sibling merge, before the splice: the doomed
-            // member's tabs move to its group sibling while both panels
-            // are still readable. Option equality is the ws gate, tabs
-            // never leak into another workspace's panel.
-            if let Some(group_id) = group_id.as_deref() {
-                let doomed_ws = entry.panels[at].ws_id.clone();
-                let doomed_tabs = entry.panels[at].tabs.clone();
-                let doomed_active = entry.panels[at].active.clone();
-                let survivor_id = entry
-                    .groups
-                    .iter()
-                    .find(|g| g.group_id == group_id)
-                    .and_then(|g| {
-                        g.member_ids
-                            .iter()
-                            .filter(|id| **id != pane_id)
-                            .find(|id| {
-                                entry
-                                    .panels
-                                    .iter()
-                                    .find(|p| &p.pane_id == *id)
-                                    .is_some_and(|p| p.ws_id == doomed_ws)
-                            })
-                            .cloned()
-                    });
-                if let Some(survivor_id) = survivor_id {
-                    if let Some(survivor_at) = panel_index(entry, &survivor_id) {
-                        let survivor = &mut entry.panels[survivor_at];
-                        for tab in doomed_tabs {
-                            if !survivor.tabs.contains(&tab) {
-                                survivor.tabs.push(tab);
-                            }
-                        }
-                        let active_live = survivor
-                            .active
-                            .as_ref()
-                            .is_some_and(|tab| survivor.tabs.contains(tab));
-                        if !active_live {
-                            survivor.active = doomed_active
-                                .filter(|tab| survivor.tabs.contains(tab))
-                                .or_else(|| survivor.tabs.first().cloned());
-                        }
-                    }
-                }
-            }
             entry.panels.remove(at);
             if let Some(group_id) = group_id {
                 if let Some(group) = entry.groups.iter_mut().find(|g| g.group_id == group_id) {
@@ -1522,7 +1480,7 @@ mod tests {
     }
 
     #[test]
-    fn panel_close_merges_doomed_tabs_into_same_ws_sibling() {
+    fn panel_close_drops_doomed_tabs_with_the_panel() {
         let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
         for (at, ws) in [(0, "ws_1"), (1, "ws_1"), (2, "ws_2")] {
             entry.panels[at].ws_id = Some(ws.into());
@@ -1544,22 +1502,23 @@ mod tests {
         let mut close = req("panel.close");
         close.pane_id = Some("p1".into());
         apply_op(&mut entry, &close).unwrap();
-        // Doomed tabs migrated to the same-ws sibling, deduped, the
-        // survivor's live active pointer kept.
+        // The client drains the doomed views through their own close
+        // paths before panel.close; the splice drops the panel and
+        // whatever it still held, the survivor keeps exactly its own.
         assert_eq!(entry.panels[0].pane_id, "p2");
-        assert_eq!(entry.panels[0].tabs, vec!["t2", "t3", "t1"]);
+        assert_eq!(entry.panels[0].tabs, vec!["t2", "t3"]);
         assert_eq!(entry.panels[0].active.as_deref(), Some("t3"));
         // Group dissolved under two, the survivor owns the subject.
         assert!(entry.groups.is_empty());
         assert_eq!(entry.panels[0].group_id, None);
         assert_eq!(entry.visible.kind, "panel");
         assert_eq!(entry.visible.id, "p2");
-        // The other-workspace panel stayed out of the merge.
+        // The other-workspace panel never received anything.
         assert!(entry.panels[1].tabs.is_empty());
     }
 
     #[test]
-    fn panel_close_refuses_cross_ws_tab_merge() {
+    fn panel_close_drops_tabs_even_across_workspaces() {
         let mut entry = entry_with_panels(&["p1", "p2"]);
         entry.panels[0].ws_id = Some("ws_a".into());
         entry.panels[1].ws_id = Some("ws_b".into());
@@ -1577,8 +1536,8 @@ mod tests {
         let mut close = req("panel.close");
         close.pane_id = Some("p1".into());
         apply_op(&mut entry, &close).unwrap();
-        // The ws gate refused the merge: tabs die with the doomed
-        // panel, the dissolve still heals to the survivor.
+        // No migration anywhere: tabs die with the doomed panel, the
+        // dissolve still heals to the survivor.
         assert!(entry.panels[0].tabs.is_empty());
         assert_eq!(entry.panels[0].active, None);
         assert!(entry.groups.is_empty());
@@ -1587,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn panel_close_active_pointer_falls_back_to_migrated_tab() {
+    fn panel_close_keeps_survivor_pointer_its_own() {
         let mut entry = entry_with_panels(&["p1", "p2"]);
         entry.panels[0].ws_id = Some("ws_1".into());
         entry.panels[1].ws_id = Some("ws_1".into());
@@ -1598,14 +1557,16 @@ mod tests {
         apply_op(&mut entry, &create).unwrap();
         entry.panels[0].tabs = vec!["t1".into()];
         entry.panels[0].active = Some("t1".into());
-        // Stale survivor pointer: the merge hands it the doomed tab.
+        // Stale survivor pointer: no migration heals it anymore; the
+        // client's own heal (syncTerminalTabsIntoTree's stale-pointer
+        // pass) owns dangling actives.
         entry.panels[1].tabs = vec!["t2".into()];
         entry.panels[1].active = Some("stale".into());
         let mut close = req("panel.close");
         close.pane_id = Some("p1".into());
         apply_op(&mut entry, &close).unwrap();
-        assert_eq!(entry.panels[0].tabs, vec!["t2", "t1"]);
-        assert_eq!(entry.panels[0].active.as_deref(), Some("t1"));
+        assert_eq!(entry.panels[0].tabs, vec!["t2"]);
+        assert_eq!(entry.panels[0].active.as_deref(), Some("stale"));
     }
 
     #[test]
