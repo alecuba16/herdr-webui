@@ -1318,6 +1318,13 @@ function syncTerminalTabsIntoTree(root) {
     if (!wsId) continue;
     const home = terminalHomeLeafFor(wsId);
     if (!home) continue;
+    if (!home.tabs.includes(id) && leafBusyViews(home)) {
+      // One view per flat panel: the id splits the busy home instead
+      // of stacking a second view. Deferred (see queueHomingSplit): the
+      // id stays homeless this pass, the task lands it.
+      queueHomingSplit(home.paneId, wsId, id);
+      continue;
+    }
     if (!home.tabs.includes(id)) {
       home.tabs.push(id);
       // v3.2: an adopted id refills the panel; an armed auto-close from
@@ -3635,15 +3642,33 @@ function leafBusyViews(leaf) {
   return ((leaf && leaf.tabs) || []).filter((id) => id !== TERMINAL_TAB_PLACEHOLDER).length;
 }
 
+// Tab-landing applyView shared by the creators: the view lands in the
+// fresh member and its pointer follows. Pure leaf surgery, no render
+// or save: the split engine's settle tail owns both, so the group and
+// the tab never appear out of sync.
+function landTabIntoLeaf(leaf, tabId) {
+  if (!leaf || !tabId) return false;
+  if (leaf.tabs.includes(tabId)) {
+    leaf.active = tabId;
+    return true;
+  }
+  leaf.tabs.push(tabId);
+  leaf.active = tabId;
+  disarmLeafAutoClose(leaf);
+  return true;
+}
+
 // Split entry point. Returns the fresh member leaf, null when the
 // gesture could not land (already announced), or PANES_OP_REJECTED
 // when the server refused it (the resync already painted server
-// truth; the caller must not touch local state).
-async function splitLeafWithFreshMember(leaf, applyView) {
+// truth; the caller must not touch local state). The fresh member
+// binds the host's workspace unless wsIdOverride names another one
+// (the picker path lands a panel in a picked workspace).
+async function splitLeafWithFreshMember(leaf, applyView, wsIdOverride) {
   if (!leaf) return null;
   const group = groupForLeaf(paneRootFor(), leaf);
-  if (!group) return splitFlatHost(leaf, applyView);
-  return splitGroupedHost(leaf, group, applyView);
+  if (!group) return splitFlatHost(leaf, applyView, wsIdOverride);
+  return splitGroupedHost(leaf, group, applyView, wsIdOverride);
 }
 
 // The fresh panel minted by a server panel.create: the op response
@@ -3661,12 +3686,13 @@ function adoptedFreshPanel(knownIds) {
 // panel, neighbor = the host, draggedFirst false = host LEFT). Local
 // mode and a demoted session run the local twin; a REJECTED op is
 // server truth: no local surgery, no view.
-async function splitFlatHost(leaf, applyView) {
+async function splitFlatHost(leaf, applyView, wsIdOverride) {
+  const targetWs = wsIdOverride || leafWorkspaceId(leaf) || undefined;
   const localTwin = (preMinted) => {
     const rootNow = paneRootFor();
     const host = paneForPaneId(rootNow, leaf.paneId);
     if (!host) return null;
-    const fresh = preMinted || mintPanelForWorkspace(leafWorkspaceId(host), host);
+    const fresh = preMinted || mintPanelForWorkspace(targetWs || null, host);
     if (!fresh || !rootNow.panels.includes(fresh)) return null;
     const group = {
       groupId: newGroupId(),
@@ -3682,7 +3708,7 @@ async function splitFlatHost(leaf, applyView) {
   };
   if (panesMode !== "server" || !panesServerReachable()) return localTwin(null);
   const known = new Set(paneLeaves(paneRootFor()).map((l) => l.paneId));
-  const mint = await panesServerOp({ op: "panel.create", wsId: leafWorkspaceId(leaf) || undefined });
+  const mint = await panesServerOp({ op: "panel.create", wsId: targetWs });
   if (mint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
   if (!mint) return localTwin(null);
   const freshMint = adoptedFreshPanel(known);
@@ -3720,13 +3746,14 @@ async function splitFlatHost(leaf, applyView) {
 // visible subject, so a parked group opens first (subject.set).
 // Server: panel.create mints, the subject opens when parked, then
 // group.grow seats the fresh member beside the busy member.
-async function splitGroupedHost(leaf, group, applyView) {
+async function splitGroupedHost(leaf, group, applyView, wsIdOverride) {
+  const targetWs = wsIdOverride || leafWorkspaceId(leaf) || undefined;
   const localTwin = (preMinted) => {
     const rootNow = paneRootFor();
     const host = paneForPaneId(rootNow, leaf.paneId);
     const groupNow = groupById(rootNow, group.groupId);
     if (!host || !groupNow) return null;
-    const fresh = preMinted || mintPanelForWorkspace(leafWorkspaceId(host), host);
+    const fresh = preMinted || mintPanelForWorkspace(targetWs || null, host);
     if (!fresh || !rootNow.panels.includes(fresh)) return null;
     fresh.groupId = groupNow.groupId;
     groupNow.memberIds.push(fresh.paneId);
@@ -3741,7 +3768,7 @@ async function splitGroupedHost(leaf, group, applyView) {
   };
   if (panesMode !== "server" || !panesServerReachable()) return localTwin(null);
   const known = new Set(paneLeaves(paneRootFor()).map((l) => l.paneId));
-  const mint = await panesServerOp({ op: "panel.create", wsId: leafWorkspaceId(leaf) || undefined });
+  const mint = await panesServerOp({ op: "panel.create", wsId: targetWs });
   if (mint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
   if (!mint) return localTwin(null);
   const freshMint = adoptedFreshPanel(known);
@@ -3810,6 +3837,42 @@ function dropFreshSplitMember(freshPaneId) {
   // the sweep dissolves it and heals the subject.
   sweepAbandonedEmptyLeaves();
   renderWorkspacePanes();
+}
+
+// Deferred homing splits (one view per flat panel): a homeless terminal
+// id whose home leaf is busy splits the home instead of stacking. The
+// sync runs inside the render pass, so the split (whose settle repaints)
+// must leave that pass: the id stays homeless this tick, the queued
+// task lands it through the full engine, and the dedupe set keeps a
+// sync tick that fires while the task is in flight from double-splitting.
+const pendingHomingSplits = new Set();
+
+function queueHomingSplit(homePaneId, wsId, tabId) {
+  const key = String(tabId);
+  if (pendingHomingSplits.has(key)) return;
+  pendingHomingSplits.add(key);
+  setTimeout(async () => {
+    try {
+      const root = paneRootFor();
+      // Landed elsewhere already (placement race, broadcast): done.
+      if (paneForTab(root, tabId)) return;
+      const host = paneForPaneId(root, homePaneId);
+      if (!host) return;
+      const fresh = await splitLeafWithFreshMember(host, (target) => landTabIntoLeaf(target, tabId), wsId);
+      if (fresh) return; // landed; REJECTED leaves server truth in charge
+      // Split failed (announced): never strand the id, land it in the
+      // host as the pre-invariant behavior did.
+      if (!host.tabs.includes(tabId)) {
+        host.tabs.push(tabId);
+        if (!host.active) host.active = tabId;
+        disarmLeafAutoClose(host);
+        saveWorkspacePanesStates();
+        renderWorkspacePanes();
+      }
+    } finally {
+      pendingHomingSplits.delete(key);
+    }
+  }, 0);
 }
 
 // Member re-position inside the visible group (strip chip drag): the
@@ -4630,7 +4693,12 @@ function newPanelForFocused() {
   return fresh;
 }
 
-function paneEnsureEditorTab(path) {
+// One view per flat panel: a creator landing a view the active leaf
+// does not own SPLITS instead of pushing. The applyView pushes the
+// tab id into the fresh member and points its active there; a falsy
+// split answer (gesture failed, server refused) lands nothing, the
+// caller proceeds with its module open over the ORIGINAL leaf.
+async function paneEnsureEditorTab(path) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return null;
   const tabId = editorTabId(path);
@@ -4638,21 +4706,42 @@ function paneEnsureEditorTab(path) {
   // focuses the owning leaf instead of duplicating the id into the
   // active one.
   const owner = paneForTab(root, tabId);
-  const leaf = owner || activeLeaf(root);
-  if (!leaf) return null;
   if (owner) {
     owner.active = tabId;
     focusLeaf(root, owner);
     saveWorkspacePanesStates();
     renderWorkspacePanes();
-  } else if (!leaf.tabs.includes(tabId)) {
-    leaf.tabs.push(tabId);
-    // The strip must show the placeholder right away: the file browser's
-    // render path is gated on its drawer being open, so a render here is
-    // the only guarantee when the open comes from a menu or shortcut.
-    disarmLeafAutoClose(leaf);
-    saveWorkspacePanesStates();
-    renderWorkspacePanes();
+    if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
+    return owner;
+  }
+  const leaf = activeLeaf(root);
+  if (!leaf) return null;
+  if (!leaf.tabs.includes(tabId)) {
+    if (!leafBusyViews(leaf)) {
+      // Free flat leaf (or placeholder-only): the first view lands in
+      // place, exactly as before.
+      leaf.tabs.push(tabId);
+      leaf.active = tabId;
+      disarmLeafAutoClose(leaf);
+      saveWorkspacePanesStates();
+      renderWorkspacePanes();
+    } else {
+      // Busy leaf: split. The old view keeps its panel, the new view
+      // lands RIGHT, focused. The split rendered already (settle tail).
+      const fresh = await splitLeafWithFreshMember(leaf, (target) => landTabIntoLeaf(target, tabId));
+      if (fresh === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+      if (fresh) return fresh;
+      // Split failed (announced where the engine could): degrade to
+      // the old in-place landing so the module mount still finds a
+      // recorded tab id, else setActivePaneTab would point active at a
+      // non-member id and the next sync heal would wipe it.
+      leaf.tabs.push(tabId);
+      leaf.active = tabId;
+      disarmLeafAutoClose(leaf);
+      saveWorkspacePanesStates();
+      renderWorkspacePanes();
+      return leaf;
+    }
   }
   if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   return leaf;
@@ -4668,7 +4757,10 @@ async function ensureFileBrowserModule() {
 async function openEditorTab(path, searchHighlight) {
   if (!path) return;
   const id = String(path);
-  paneEnsureEditorTab(id);
+  const leaf = await paneEnsureEditorTab(id);
+  // null covers the no-tree boot (dashboard): the old flow still opened
+  // the file through the module. Only a server rejection bails.
+  if (leaf === PANES_OP_REJECTED) return;
   const registry = await ensureFileBrowserModule();
   if (!registry || !registry.openEditorTab) {
     // Module failed to load: drop the placeholder so the strip does not
@@ -4741,7 +4833,7 @@ async function closeEditorTab(encodedPath) {
 // hands the open to git_ui (loaded lazily like the file browser). The pane
 // tree owns identity; git_ui owns per-view state and renders renderMain
 // into the tab's container.
-function paneEnsureGitTab(viewKey) {
+async function paneEnsureGitTab(viewKey) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return null;
   const tabId = gitTabId(viewKey);
@@ -4750,8 +4842,6 @@ function paneEnsureGitTab(viewKey) {
   // focus that leaf, not mint a second tab: a duplicate id desyncs the
   // strip from the container mount and leaves one pane blank.
   const owner = paneForTab(root, tabId);
-  const leaf = owner || activeLeaf(root);
-  if (!leaf) return null;
   if (owner) {
     // Clicking a tab that lives in another pane focuses that pane and
     // activates the tab there: the module mount follows the owner, and
@@ -4761,13 +4851,34 @@ function paneEnsureGitTab(viewKey) {
     focusLeaf(root, owner);
     saveWorkspacePanesStates();
     renderWorkspacePanes();
-  } else if (!leaf.tabs.includes(tabId)) {
-    leaf.tabs.push(tabId);
-    // Same immediate-render contract as editor tabs: the git drawer's
-    // render path is gated on the drawer being open.
-    disarmLeafAutoClose(leaf);
-    saveWorkspacePanesStates();
-    renderWorkspacePanes();
+    if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
+    return owner;
+  }
+  const leaf = activeLeaf(root);
+  if (!leaf) return null;
+  if (!leaf.tabs.includes(tabId)) {
+    if (!leafBusyViews(leaf)) {
+      // Free flat leaf (or placeholder-only): the first view lands in
+      // place, exactly as before.
+      leaf.tabs.push(tabId);
+      leaf.active = tabId;
+      disarmLeafAutoClose(leaf);
+      saveWorkspacePanesStates();
+      renderWorkspacePanes();
+    } else {
+      // Busy leaf: split, same contract as editor tabs.
+      const fresh = await splitLeafWithFreshMember(leaf, (target) => landTabIntoLeaf(target, tabId));
+      if (fresh === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+      if (fresh) return fresh;
+      // Split failed: degrade to the old in-place landing (same reason
+      // as the editor path: the module mount needs a recorded id).
+      leaf.tabs.push(tabId);
+      leaf.active = tabId;
+      disarmLeafAutoClose(leaf);
+      saveWorkspacePanesStates();
+      renderWorkspacePanes();
+      return leaf;
+    }
   }
   if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   return leaf;
@@ -4782,7 +4893,10 @@ async function ensureGitUiModule() {
 
 async function openGitTab(viewKey) {
   if (!viewKey) return;
-  paneEnsureGitTab(String(viewKey));
+  const leaf = await paneEnsureGitTab(String(viewKey));
+  // null covers the no-tree boot: the old flow still opened the view
+  // through the module. Only a server rejection bails.
+  if (leaf === PANES_OP_REJECTED) return;
   const gitUi = await ensureGitUiModule();
   if (!gitUi || !gitUi.openViewTab) {
     // Module failed to load: drop the placeholder so the strip does not
