@@ -1,5 +1,27 @@
 # Release notes
 
+## Unreleased
+- Flat panels outside a split hold exactly one view and render no
+  strip: their identity lives in the label rail chip and the location
+  bar, and every second-view path auto-splits the host (old left,
+  new right, focus on the fresh member). A visible split renders one
+  merged header per member: the panel label plus accent, the view
+  tab, and the ✕ ride one element (click focuses, double-click or F2
+  renames, the ✕ leaves the split back to the rail, never a close).
+  The rail chips every live leaf plus one chip per group record, so
+  empty fresh-mint panels stay reachable and groups survive subject
+  switches as reopenable chips.
+- Panel close is real close everywhere: the pane menu's close, the
+  flat panel ✕, `prefix E`, and `prefix X` drain each view through
+  its own confirmation path (terminal ask, dirty editor confirm,
+  Git silent), then drop the panel record with its views. No close
+  migrates tabs into a sibling anymore, client or server: the
+  store's `panel.close` splices the panel and its tabs, the
+  under-two dissolve and subject heal stay.
+- The pane menu Rename names the panel through the rail chip swap on
+  every leaf (the tab rename entry is gone), and the merged header
+  carries the same rename on double-click and F2.
+
 ## 0.7.54 Release Notes
 - The terminal hub join race is closed: `start_attach` spawns the
   connect task before the joiner registers its queue, so a fast attach
