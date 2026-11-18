@@ -816,7 +816,7 @@ function adoptServerPanesEntry(incoming, opts) {
 // null on transport failure. Any structured 4xx is an authoritative
 // rejection (the server refused the intent, e.g. "panel is not
 // grouped" or a 422 business-rule refusal): no retry, no demotion,
-// no local twin — the caller must resync to server truth instead.
+// no local twin: the caller must resync to server truth instead.
 // Transport failures and 5xx retry once, then drop the session to
 // local mode so the local mutation stands and no later adoption
 // resurrects stale server state.
