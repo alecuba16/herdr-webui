@@ -329,6 +329,13 @@ function setVisibleSubject(type, id) {
   entry.visible = subject;
   entry.at = Date.now();
   saveWorkspacePanesStates();
+  // Server mode: the entry's visible rides the shared record as the
+  // last writer's view (the design keeps the SUBJECT per-client, and
+  // each adoption overlays its own pointer back). Fire-and-forget so
+  // the local render never waits on the round trip.
+  if (panesMode === "server") {
+    void panesServerOp({ op: "subject.set", visible: subject });
+  }
   renderWorkspacePanes();
   return prev;
 }
@@ -680,6 +687,163 @@ function saveWorkspacePanesStates() {
   } catch (_) {}
 }
 
+// ---- server sync (shared panes) -------------------------------------
+// The webui server owns the panel/group entry for this herdr session
+// (GET/POST /api/workspace-panes, POST /api/workspace-panes/op). This
+// layer adopts server entries, sends intent ops at the mutation sites,
+// and demotes localStorage to a migration seed. Two failure shapes keep
+// the old behavior: an older server without the routes (network error or
+// non-JSON body) pins panesMode "local" for the session, and a failed
+// op under "server" falls back to the local mutation so a dropped
+// gesture never blocks the user.
+let panesMode = "local";
+
+function panesServerReachable() {
+  return typeof api === "function" && state && typeof state === "object";
+}
+
+// Entry adoption. normalizePanelEntry repairs the server's entry the
+// same way it repairs a stored blob (server invariants run server-side,
+// but the client re-registers ids through the normalize pass). Three
+// per-client overlays survive the swap: the visible pointer (each
+// client keeps its own subject when still live), the auto-close arm
+// markers (runtime-only, never serialized to the server), and the
+// editor/git tab ids (client-owned; the server stores whatever the last
+// writer pushed, so each client merges its own back).
+function adoptServerPanesEntry(incoming, opts) {
+  if (!incoming || typeof incoming !== "object" || !Array.isArray(incoming.panels)) return false;
+  const prev = state.workspacePanes[SESSION_PANES_KEY] || null;
+  const prevVisible = prev && prev.visible && typeof prev.visible === "object" ? prev.visible : null;
+  const runtimeMarks = new Map();
+  const localFileTabs = new Map();
+  if (prev && Array.isArray(prev.panels)) {
+    for (const leaf of prev.panels) {
+      if (!leaf || !leaf.paneId) continue;
+      if (leaf.autoCloseArmed || leaf.autoClosePre)
+        runtimeMarks.set(leaf.paneId, { armed: !!leaf.autoCloseArmed, pre: leaf.autoClosePre || null });
+      const fileTabs = (leaf.tabs || []).filter((id) => isEditorTab(id) || isGitTab(id));
+      if (fileTabs.length) localFileTabs.set(leaf.paneId, fileTabs);
+    }
+  }
+  const healed = normalizePanelEntry(incoming);
+  if (!healed) return false;
+  state.workspacePanes[SESSION_PANES_KEY] = healed;
+  for (const leaf of healed.panels) {
+    const marks = runtimeMarks.get(leaf.paneId);
+    if (marks) {
+      if (marks.armed) leaf.autoCloseArmed = true;
+      if (marks.pre) leaf.autoClosePre = marks.pre;
+    }
+    const mine = localFileTabs.get(leaf.paneId);
+    if (mine) {
+      for (const id of mine) if (!leaf.tabs.includes(id)) leaf.tabs.push(id);
+    }
+  }
+  if (!opts || !opts.keepLocalVisible) return true;
+  const vis = prevVisible;
+  if (vis && vis.type === "panel" && healed.panels.some((p) => p.paneId === vis.id && !p.groupId)) {
+    healed.visible = { type: "panel", id: vis.id };
+  } else if (vis && vis.type === "group" && (healed.groups || []).some((g) => g.groupId === vis.id)) {
+    healed.visible = { type: "group", id: vis.id };
+  }
+  return true;
+}
+
+// Send one intent op. Returns the adopted server entry on success, null
+// on failure. Failure retries once (transient drop); a second failure
+// drops the session to local mode so the local mutation stands and no
+// later adoption resurrects stale server state.
+async function panesServerOpRaw(op) {
+  const body = await api("/api/workspace-panes/op", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(op),
+  });
+  const entry = body && body.entry && typeof body.entry === "object" ? body.entry : body;
+  if (!adoptServerPanesEntry(entry, { keepLocalVisible: true })) return null;
+  return entry;
+}
+
+async function panesServerOp(op) {
+  if (panesMode !== "server" || !panesServerReachable()) return null;
+  try {
+    const entry = await panesServerOpRaw(op);
+    if (entry) {
+      saveWorkspacePanesStates();
+      renderWorkspacePanes();
+      return entry;
+    }
+    return null;
+  } catch (_) {
+    // Retry once, then the session falls back to local mode.
+    try {
+      const entry = await panesServerOpRaw(op);
+      if (entry) {
+        saveWorkspacePanesStates();
+        renderWorkspacePanes();
+        return entry;
+      }
+    } catch (_) {}
+    panesMode = "local";
+    return null;
+  }
+}
+
+// Boot adoption. GET the server entry; on success switch to server
+// mode. On 404 (older server or a first boot) POST the local entry once
+// as the seed: the seed-never-overwrites rule on the server keeps a
+// second client from clobbering real content. Any other failure keeps
+// local mode, where localStorage stays the truth as before.
+async function bootWorkspacePanesFromServer() {
+  if (!panesServerReachable()) return;
+  try {
+    const body = await api("/api/workspace-panes");
+    const entry = body && typeof body === "object" ? body.entry || body : null;
+    if (adoptServerPanesEntry(entry, { keepLocalVisible: true })) {
+      panesMode = "server";
+      saveWorkspacePanesStates();
+      renderWorkspacePanes();
+      return;
+    }
+    // No server entry yet: seed it with the local one (migration POST).
+    await api("/api/workspace-panes", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ entry: paneRootFor() }),
+    });
+    panesMode = "server";
+  } catch (_) {
+    // Older server or transport failure: local mode stays.
+  }
+}
+
+// Broadcast adoption (workspace_panes_changed). Idempotent against the
+// settled entry: the sender's own op response already adopted the same
+// snapshot, and a frame that matches the live entry skips the render.
+function applyRemoteWorkspacePanesEntry(incoming) {
+  if (panesMode !== "server") return false;
+  const live = paneRootFor();
+  if (!incoming || typeof incoming !== "object" || !Array.isArray(incoming.panels)) return false;
+  if (live && Array.isArray(live.panels) && entrySignaturesMatch(live, incoming)) return false;
+  const adopted = adoptServerPanesEntry(incoming, { keepLocalVisible: true });
+  if (adopted) {
+    saveWorkspacePanesStates();
+    renderWorkspacePanes();
+  }
+  return adopted;
+}
+
+// Signature compare for the broadcast guard: membership, groups, and the
+// tab arrays. Runtime marks and the visible pointer are per-client and
+// excluded on purpose (they never ride the server entry).
+function entrySignaturesMatch(a, b) {
+  const sig = (entry) => JSON.stringify({
+    panels: (entry.panels || []).map((p) => [p.paneId, p.tabs || [], p.active || null, p.groupId || null, p.wsId || null, p.name || null]),
+    groups: (entry.groups || []).map((g) => [g.groupId, g.memberIds || [], g.name || null, g.layout || null]),
+  });
+  return sig(a) === sig(b);
+}
+
 // A closed workspace never deletes the session entry: its ids leave
 // through pruneWorkspaceTabsFromPanes, and the entry survives to host
 // the remaining workspaces' panels. Legacy per-workspace entries from
@@ -942,6 +1106,13 @@ function terminalHomeLeafFor(wsId) {
     disarmLeafAutoClose(available);
     return available;
   }
+  // Server mode: the server mints. The op response adopts the new panel
+  // and the next sync pass homes the id into it (one-tick delay beats a
+  // client-only panel the next adoption would drop).
+  if (panesMode === "server") {
+    void panesServerOp({ op: "panel.create", wsId: wsId || undefined });
+    return null;
+  }
   return mintPanelForWorkspace(wsId, focused || leaves[0]);
 }
 
@@ -1123,10 +1294,16 @@ function syncTerminalTabsIntoTree(root) {
           focusLeaf(target, unbound);
           changed = true;
         } else {
-          const fresh = mintPanelForWorkspace(state.ws, focused || paneLeaves(target)[0]);
-          if (fresh) {
-            focusLeaf(paneRootFor(), fresh);
-            changed = true;
+          // Server mode: the server mints (same rule as the home ladder);
+          // adoption lands the panel and the next pass focuses it.
+          if (panesMode === "server") {
+            void panesServerOp({ op: "panel.create", wsId: state.ws || undefined });
+          } else {
+            const fresh = mintPanelForWorkspace(state.ws, focused || paneLeaves(target)[0]);
+            if (fresh) {
+              focusLeaf(paneRootFor(), fresh);
+              changed = true;
+            }
           }
         }
       }
@@ -1147,7 +1324,25 @@ function syncTerminalTabsIntoTree(root) {
       }
     }
   }
-  if (changed) saveWorkspacePanesStates();
+  if (changed) {
+    saveWorkspacePanesStates();
+    // Server mode: push the tabs deltas so the server entry holds the
+    // authoritative arrays (terminal ids are backend truth; editor/git
+    // ids ride as opaque strings). One panel.update per leaf,
+    // fire-and-forget: the next sync pass re-derives the same state if a
+    // push is lost.
+    if (panesMode === "server") {
+      for (const leaf of paneLeaves(paneRootFor())) {
+        void panesServerOp({
+          op: "panel.update",
+          paneId: leaf.paneId,
+          tabs: (leaf.tabs || []).slice(),
+          active: leaf.active || undefined,
+          wsId: leafWorkspaceId(leaf) || undefined,
+        });
+      }
+    }
+  }
   return changed;
 }
 
@@ -1357,6 +1552,9 @@ function wirePanelChipDrag(container) {
 // group, double-click renames). Grouped panels fold behind their
 // group's chip while the group is not the visible subject.
 function railEntryLabelForPanel(leaf) {
+  // A set name wins (panel rename); everything else derives from the
+  // active tab or the bound workspace as before.
+  if (leaf && leaf.name) return String(leaf.name);
   const activeTab = paneActiveTabOf(leaf);
   if (activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab)) {
     const row = paneTerminalTabById(activeTab);
@@ -1378,7 +1576,10 @@ function railPanelChipHtml(leaf, isActive) {
   const label = railEntryLabelForPanel(leaf);
   const encoded = encodeURIComponent(leaf.paneId);
   const title = `Show panel ${label}`;
-  return `<button class="pane-label-chip${isActive ? " active" : ""}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" aria-pressed="${isActive ? "true" : "false"}" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()">${escapeHtml(label)}</button>`;
+  if (state.editingPanelPaneId === leaf.paneId) {
+    return `<input class="pane-group-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeAttr(encoded)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeAttr(encoded)}')">`;
+  }
+  return `<button class="pane-label-chip${isActive ? " active" : ""}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click to rename)" aria-pressed="${isActive ? "true" : "false"}" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondblclick="startPanelChipRename('${escapeAttr(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()">${escapeHtml(label)}</button>`;
 }
 
 function railGroupChipHtml(group, isActive) {
@@ -1436,6 +1637,59 @@ function commitPaneGroupRename(encodedGroupId) {
   // must not outlive the panels it counted).
   if (draft) group.name = draft;
   else group.name = null;
+  if (panesMode === "server") {
+    void panesServerOp({ op: "group.rename", groupId, name: draft || null });
+  }
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+}
+
+// Panel rename (rail chip double-click, same edit contract as the
+// group chips): the name rides the panel record. The op response
+// repaints every client of the session.
+function startPanelChipRename(encodedPaneId) {
+  const paneId = decodeURIComponent(String(encodedPaneId || ""));
+  const leaf = paneId ? paneForPaneId(paneRootFor(), paneId) : null;
+  if (!leaf) return;
+  state.editingPanelPaneId = paneId;
+  state.editingPanelValue = leaf.name || "";
+  renderWorkspacePanes();
+  setTimeout(() => {
+    if (state.editingPanelPaneId !== paneId) return;
+    const input = document.querySelector(".pane-group-rename-input");
+    if (input && input.select) input.select();
+  }, 0);
+}
+
+function panelChipRenameKey(e, encodedPaneId) {
+  if (e.key === "Enter") {
+    if (e.preventDefault) e.preventDefault();
+    commitPanelChipRename(encodedPaneId);
+  } else if (e.key === "Escape") {
+    state.editingPanelPaneId = null;
+    state.editingPanelValue = "";
+    renderWorkspacePanes();
+  }
+}
+
+function commitPanelChipRename(encodedPaneId) {
+  const paneId = decodeURIComponent(String(encodedPaneId || ""));
+  const leaf = paneId ? paneForPaneId(paneRootFor(), paneId) : null;
+  const editingId = state.editingPanelPaneId;
+  // Same draft-before-reset rule as the group rename: the reads below
+  // must not see the cleared editing value.
+  const draft = String(state.editingPanelValue || "").trim();
+  state.editingPanelPaneId = null;
+  state.editingPanelValue = "";
+  if (!leaf || editingId !== paneId) {
+    renderWorkspacePanes();
+    return;
+  }
+  // Empty reverts to the derived label (active tab, workspace name).
+  leaf.name = draft || null;
+  if (panesMode === "server") {
+    void panesServerOp({ op: "panel.rename", paneId, name: draft || null });
+  }
   saveWorkspacePanesStates();
   renderWorkspacePanes();
 }
@@ -2455,6 +2709,26 @@ function ungroupMember(leaf) {
   const root = paneRootFor();
   const group = groupForLeaf(root, leaf);
   if (!group) return false;
+  if (panesMode === "server") {
+    const res = panesServerOp({ op: "group.ungroup", paneId: leaf.paneId });
+    if (res && typeof res.then === "function") {
+      res.then((entry) => {
+        if (!entry) {
+          localUngroupMember(leaf);
+          saveWorkspacePanesStates();
+          renderWorkspacePanes();
+        }
+      });
+    }
+    return true;
+  }
+  return localUngroupMember(leaf);
+}
+
+function localUngroupMember(leaf) {
+  const root = paneRootFor();
+  const group = groupForLeaf(root, leaf);
+  if (!group) return false;
   const at = group.memberIds.indexOf(leaf.paneId);
   if (at >= 0) group.memberIds.splice(at, 1);
   leaf.groupId = null;
@@ -2761,6 +3035,37 @@ function createGroupFromDrop(dragged, axis, draggedFirst) {
   const root = paneRootFor();
   const neighbor = autoJoinNeighborFor(dragged);
   if (!neighbor) return false;
+  if (panesMode === "server") {
+    // Server owns the mint: the op response carries the authoritative
+    // entry (new groupId, layout, visible) and panesServerOp adopts it.
+    // The local pointer is written first so the adopt pass keeps it.
+    root.visible = { type: "group", id: "__pending__" };
+    const res = panesServerOp({
+      op: "group.create",
+      paneId: dragged.paneId,
+      neighborPaneId: neighbor.paneId,
+      axis,
+      draggedFirst,
+    });
+    if (res && typeof res.then === "function") {
+      res.then((entry) => {
+        if (!entry) {
+          // Op failed: fall back to the local mutation so the drop
+          // never lands dead.
+          root.visible = { type: "panel", id: dragged.paneId };
+          localCreateGroupFromDrop(dragged, neighbor, axis, draggedFirst);
+          saveWorkspacePanesStates();
+          renderWorkspacePanes();
+        }
+      });
+    }
+    return true;
+  }
+  return localCreateGroupFromDrop(dragged, neighbor, axis, draggedFirst);
+}
+
+function localCreateGroupFromDrop(dragged, neighbor, axis, draggedFirst) {
+  const root = paneRootFor();
   const group = {
     groupId: newGroupId(),
     name: null,
@@ -2785,6 +3090,31 @@ function growVisibleGroupWith(dragged, axis, draggedFirst) {
   const subject = visibleSubject(root);
   if (!subject || subject.kind !== "group" || dragged.groupId) return false;
   const group = subject.group;
+  if (panesMode === "server") {
+    const res = panesServerOp({
+      op: "group.grow",
+      groupId: group.groupId,
+      paneId: dragged.paneId,
+      axis,
+      draggedFirst,
+      hostPaneId: dropHostPaneId || undefined,
+    });
+    if (res && typeof res.then === "function") {
+      res.then((entry) => {
+        if (!entry) {
+          localGrowVisibleGroupWith(dragged, group, axis, draggedFirst);
+          saveWorkspacePanesStates();
+          renderWorkspacePanes();
+        }
+      });
+    }
+    return true;
+  }
+  return localGrowVisibleGroupWith(dragged, group, axis, draggedFirst);
+}
+
+function localGrowVisibleGroupWith(dragged, group, axis, draggedFirst) {
+  const root = paneRootFor();
   group.memberIds.push(dragged.paneId);
   dragged.groupId = group.groupId;
   group.layout = layoutWithPanelAt(group.layout, dragged.paneId, axis, draggedFirst);
@@ -3182,6 +3512,33 @@ function dropLeafFromTree(leaf) {
   const at = entry.panels.indexOf(leaf);
   if (at < 0) return false;
   if (entry.panels.length <= 1) return false;
+  if (panesMode === "server") {
+    // Server owns the splice and the group surgery. The local mutation
+    // still runs when the op fails (the .then fallback), and the op
+    // response repaints through adoption. The doom read (paneId, group)
+    // happens BEFORE anything mutates, mirroring the server's own
+    // capture-before-remove rule.
+    const doomedId = leaf.paneId;
+    const res = panesServerOp({ op: "panel.close", paneId: doomedId });
+    if (res && typeof res.then === "function") {
+      res.then((serverEntry) => {
+        if (!serverEntry) {
+          localDropLeafFromTree(leaf);
+          renderWorkspacePanes();
+        }
+      });
+    }
+    return true;
+  }
+  return localDropLeafFromTree(leaf);
+}
+
+function localDropLeafFromTree(leaf) {
+  const entry = panesStateFor();
+  if (!isPaneLeaf(leaf)) return false;
+  const at = entry.panels.indexOf(leaf);
+  if (at < 0) return false;
+  if (entry.panels.length <= 1) return false;
   const group = groupForLeaf(entry, leaf);
   entry.panels.splice(at, 1);
   if (group) {
@@ -3435,6 +3792,30 @@ function newPanelForFocused() {
   if (!paneTreeRenderable(root)) return null;
   const anchor = activeLeaf(root);
   const wsId = anchor ? leafWorkspaceId(anchor) : null;
+  if (panesMode === "server") {
+    // Server mints the paneId: the returned entry names the new panel,
+    // and the focus lands on the appended panel of the same ws (the
+    // server appends, so it is the last panel bound like this).
+    void panesServerOp({ op: "panel.create", wsId: wsId || undefined }).then((entry) => {
+      if (!entry) {
+        const fresh = mintPanelForWorkspace(wsId, anchor);
+        if (fresh) {
+          focusLeaf(paneRootFor(), fresh);
+          saveWorkspacePanesStates();
+          renderWorkspacePanes();
+        }
+        return;
+      }
+      const panels = entry.panels || [];
+      const fresh = panels[panels.length - 1];
+      if (fresh) {
+        focusLeaf(paneRootFor(), paneForPaneId(paneRootFor(), fresh.paneId));
+        saveWorkspacePanesStates();
+        renderWorkspacePanes();
+      }
+    });
+    return null;
+  }
   const fresh = mintPanelForWorkspace(wsId, anchor);
   if (!fresh) return null;
   focusLeaf(paneRootFor(), fresh);
@@ -4352,6 +4733,18 @@ window.HerdrWorkspacePanes = {
   startPaneGroupRename,
   paneGroupRenameKey,
   commitPaneGroupRename,
+  // Panel rename trio (rail chip double-click, same contract).
+  startPanelChipRename,
+  panelChipRenameKey,
+  commitPanelChipRename,
+  // Server sync (shared panes): boot adoption, op dispatch, broadcast
+  // adoption. Tests drive these directly; the bundle calls bootFromServer
+  // from bindings.js after connectEvents().
+  bootFromServer: bootWorkspacePanesFromServer,
+  applyRemoteEntry: applyRemoteWorkspacePanesEntry,
+  adoptServerEntry: adoptServerPanesEntry,
+  panesMode: () => panesMode,
+  setPanesModeForTests: (mode) => { panesMode = mode === "server" ? "server" : "local"; },
   // Close-aftermath facade for cross-module terminal closes: prunes
   // the id from its leaf, sweeps armed+empty leaves, paints once.
   // The sweep and its guards stay inside this module.

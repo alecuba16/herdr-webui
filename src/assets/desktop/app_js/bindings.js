@@ -1244,6 +1244,12 @@ loadVersions();
 loadServerSettings();
 refresh();
 connectEvents();
+// Shared panes adoption (server-owned panels/groups): fetch the session's
+// entry after the route pin is known so the x-herdr-session header rides
+// the GET. Older servers without the route leave the local model as the
+// truth (the boot helper falls back silently).
+if (window.HerdrWorkspacePanes && typeof window.HerdrWorkspacePanes.bootFromServer === "function")
+  void window.HerdrWorkspacePanes.bootFromServer();
 // First visit in this browser starts the onboarding tour once the first
 // layout lands. The tour module itself persists done/skipped state, so a
 // reload or an explicit skip never replays it; the Help modal's Replay

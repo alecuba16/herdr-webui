@@ -89,6 +89,8 @@ let state = {
   editingTabValue: "",
   editingPaneGroup: null,
   editingPaneGroupValue: "",
+  editingPanelPaneId: null,
+  editingPanelValue: "",
   editingWorkspace: null,
   editingWorkspaceValue: "",
   workspaceCreateSuggestedLabel: "",

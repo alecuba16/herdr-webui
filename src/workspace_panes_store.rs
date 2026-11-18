@@ -57,6 +57,10 @@ pub struct VisiblePointer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelRecord {
+    /// Wire marker the client blob carries (isPaneLeaf requires it).
+    /// Serialize-only: entries arrive without it and normalize fills it.
+    #[serde(default = "panel_kind_pane")]
+    pub kind: String,
     pub pane_id: String,
     #[serde(default)]
     pub tabs: Vec<String>,
@@ -69,6 +73,10 @@ pub struct PanelRecord {
     /// Custom rail label. None means "derive from tabs/workspace".
     #[serde(default)]
     pub name: Option<String>,
+}
+
+fn panel_kind_pane() -> String {
+    "pane".to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -149,6 +157,7 @@ fn default_entry() -> PanesEntry {
     PanesEntry {
         v: ENTRY_VERSION,
         panels: vec![PanelRecord {
+            kind: "pane".to_string(),
             pane_id: "p1".to_string(),
             tabs: vec![],
             active: None,
@@ -472,6 +481,16 @@ fn normalize_entry(entry: &mut PanesEntry) {
     // Group ids must be unique; dedupe keeps the first.
     let mut seen_groups: HashSet<String> = HashSet::new();
     entry.groups.retain(|g| !g.group_id.is_empty() && seen_groups.insert(g.group_id.clone()));
+    // Id sequence heal: an adopted client entry carries no seq fields
+    // (serde defaults them to 0), so the counters must clear the highest
+    // minted id or the next panel.create/group.create collides with a
+    // live id.
+    entry.next_pane_seq = entry
+        .next_pane_seq
+        .max(entry.panels.iter().filter_map(|p| p.pane_id.strip_prefix("p").and_then(|s| s.parse().ok())).max().unwrap_or(0) + 1);
+    entry.next_group_seq = entry
+        .next_group_seq
+        .max(entry.groups.iter().filter_map(|g| g.group_id.strip_prefix("g").and_then(|s| s.parse().ok())).max().unwrap_or(0) + 1);
     heal_visible(entry);
 }
 
@@ -628,7 +647,7 @@ async fn panes_apply(
         return response;
     }
     let session = panes_session(&headers);
-    let mut incoming: PanesEntry = match serde_json::from_value(body.entry.clone()) {
+    let incoming: PanesEntry = match serde_json::from_value(body.entry.clone()) {
         Ok(entry) => entry,
         Err(err) => {
             return panes_json_error(StatusCode::BAD_REQUEST, format!("invalid entry: {err}"))
@@ -743,6 +762,7 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             let pane_id = format!("p{}", entry.next_pane_seq.max(1));
             entry.next_pane_seq = entry.next_pane_seq.max(1) + 1;
             entry.panels.push(PanelRecord {
+                kind: "pane".to_string(),
                 pane_id: pane_id.clone(),
                 tabs: vec![],
                 active: None,
@@ -769,6 +789,12 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                     return Err((StatusCode::BAD_REQUEST, "too many tabs".into()));
                 }
                 panel.tabs = tabs.clone();
+            }
+            // The sync push carries the client-resolved workspace
+            // binding (adoption ladder, legacy heals): a non-empty wsId
+            // updates the binding, an explicit empty string clears it.
+            if let Some(ws_id) = op.ws_id.as_deref() {
+                panel.ws_id = (!ws_id.is_empty()).then(|| ws_id.to_string());
             }
             if let Some(active) = op.active.as_ref() {
                 panel.active = Some(active.clone());
@@ -1021,6 +1047,7 @@ mod tests {
 
     fn panel(pane_id: &str) -> PanelRecord {
         PanelRecord {
+            kind: "pane".to_string(),
             pane_id: pane_id.to_string(),
             tabs: vec![],
             active: None,
