@@ -1016,6 +1016,53 @@ test("single ungrouped panel renders no rail", () => {
   assert.equal(rail, null, "one subject renders no rail chrome");
 });
 
+// ---- 6b. strip chip contract (split-only) ------------------------------
+// The flat strip carries no chip: the rail already names every
+// independent panel, and a chip there read the same identity twice
+// (chip + tab). Inside the visible split each member strip keeps its
+// chip: it names the member and carries the re-position / rail-exit
+// drag.
+
+test("flat panel strip renders no chip", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  const leaf = panes.paneRoot().panels.find((p) => p.paneId === "p1");
+  assert.equal(
+    panes.panePanelChipHtml(leaf).includes("pane-panel-chip"),
+    false,
+    "an independent panel's strip carries no chip",
+  );
+});
+
+test("visible-group member strip renders the chip with the member drag", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const leaf = panes.paneRoot().panels.find((p) => p.paneId === "p2");
+  const html = panes.panePanelChipHtml(leaf);
+  assert.ok(html.includes("pane-panel-chip"), "a visible-group member strip carries the chip");
+  assert.ok(html.includes("paneMemberDragStart"), "the member chip carries the drag wiring");
+});
+
+test("dissolved member strip loses its chip with the group", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  panes.showPanelFromRail(encodeURIComponent("p4"));
+  const leaf = panes.paneRoot().panels.find((p) => p.paneId === "p2");
+  assert.equal(
+    panes.panePanelChipHtml(leaf).includes("pane-panel-chip"),
+    false,
+    "a dissolved group member is independent again: no chip",
+  );
+});
+
 // ---- 7. member chip drag (re-position inside the split, rail exit) -----
 // The strip chip of a visible-group member drags: onto another
 // member's corner zone it re-positions inside the group layout, onto
@@ -1157,13 +1204,13 @@ test("member chip html carries the drag wiring only in a group view", () => {
   const stripP2 = p2El && p2El.querySelector ? p2El.querySelector(".pane-tab-strip") : null;
   const chipHtmlP2 = stripP2 ? stripP2.__innerHTML : "";
   assert.ok(chipHtmlP2.includes('draggable="true" ondragstart="paneMemberDragStart(event,'), "group-view member chip drags");
-  // Panel view (no group): the chip stays click-only.
+  // Panel view (no group): no chip at all, the rail names the panel.
   panes.showPanelFromRail(encodeURIComponent("p1"));
   const p1El = findPaneEl(document, "p1");
   const stripP1 = p1El && p1El.querySelector ? p1El.querySelector(".pane-tab-strip") : null;
   const chipHtmlP1 = stripP1 ? stripP1.__innerHTML : "";
   assert.ok(!chipHtmlP1.includes("paneMemberDragStart"), "standalone panel chip never drags");
-  assert.ok(chipHtmlP1.includes("focusPanelFor"), "the click wiring survives");
+  assert.ok(!chipHtmlP1.includes("pane-panel-chip"), "a standalone panel renders no chip");
 });
 
 // ---- 8. storage blob shape -------------------------------------------------

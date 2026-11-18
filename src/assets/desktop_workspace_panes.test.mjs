@@ -955,6 +955,26 @@ test("closePaneFor drops the closing member, dissolves the group, and refuses th
   assert.equal(await panes.closeActivePane(), false, "last panel refuses to close");
 });
 
+test("closePaneFor with a stale pane id is a no-op, not an active-leaf close", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  ctx.state.tab = "tab_2";
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const entry = panes.paneRoot();
+  const survivorId = entry.panels[0].paneId;
+  const second = mintSecondPanel(panes, "ws-1");
+
+  // A strip ✕ whose pane id no longer resolves (stale markup after an
+  // adoption) must refuse: falling back to the active leaf would close
+  // an unrelated panel and migrate its tabs into a stranger.
+  assert.equal(await panes.closePaneFor(encodeURIComponent("p_ghost")), false, "unknown id refuses");
+  const after = panes.paneRoot();
+  deepEqual(after.panels.map((p) => p.paneId), [survivorId, second.paneId], "no panel dropped");
+  deepEqual(after.panels[0].tabs, ["tab_2"], "tabs untouched");
+});
+
 test("closing the terminal member hands the terminal tab to the survivor", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
@@ -1820,6 +1840,38 @@ test("closePaneFor heals a null survivor pointer to the route terminal tab", asy
   assert.ok(after.tabs.includes("tab_2"), "terminal tab migrated");
   // The route tab wins the heal when the survivor pointer is null.
   assert.equal(after.active, "tab_2", "null pointer heals to the route terminal tab");
+});
+
+test("closePaneFor routes to the migrated tab when the survivor was empty", async () => {
+  // The pre-op survivor object reads empty (active null) in server
+  // mode until the adoption lands: the route must re-read the survivor
+  // from the live tree after the op, or the center surface stays on the
+  // closed panel's route.
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-26");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [
+    { tab_id: "tab_9", workspace_id: "ws-26" },
+    { tab_id: "tab_10", workspace_id: "ws-26" },
+  ];
+  ctx.state.tabsById = { tab_10: { tab_id: "tab_10", workspace_id: "ws-26" } };
+  ctx.state.allTabs = [{ tab_id: "tab_10", workspace_id: "ws-26" }];
+  ctx.state.tab = "tab_9";
+  panes.renderWorkspacePanes();
+  const survivor = panes.paneRoot().panels[0];
+  const closing = mintSecondPanel(panes, "ws-26");
+  closing.tabs.push("tab_10");
+  closing.active = "tab_10";
+  survivor.tabs = [];
+  survivor.active = null;
+  const goCalls = [];
+  ctx.go = (ws, tab) => { goCalls.push([ws, tab]); };
+
+  assert.equal(await panes.closePaneFor(closing.paneId), true, "close accepted");
+  const after = panes.paneRoot().panels[0];
+  assert.ok(after.tabs.includes("tab_10"), "terminal tab migrated");
+  assert.equal(after.active, "tab_10", "migrated tab is the survivor active");
+  assert.ok(goCalls.some(([ws, tab]) => ws === "ws-26" && tab === "tab_10"), "route writes the migrated tab");
 });
 
 test("closePaneFor migrates into the nearest same-workspace panel", async () => {

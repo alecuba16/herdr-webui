@@ -2414,16 +2414,21 @@ function autoClosePreStateFor(root, leaf) {
   return group ? { collectorId: group.groupId, wsId: leafWorkspaceId(leaf) || null } : null;
 }
 
-// Identity chip on each strip: the workspace name plus the panel's
-// own identity, click focuses the panel. Grouped panels sit behind
-// their group chip in the rail; the strip chip keeps working for the
-// panel the strip belongs to. In a group view the chip also drags:
-// onto another member's corner zone it re-positions inside the split,
-// onto the rail it leaves the group and returns as an independent
-// panel.
+// Identity chip on each strip of the VISIBLE split: names the member
+// (workspace + panel identity), click focuses it, drag re-positions
+// inside the split or drops on the rail to leave the group and return
+// as an independent panel. Flat views carry no chip: the rail already
+// names every independent panel, and a chip there duplicated the
+// panel's identity next to its own tab label.
 function panePanelChipHtml(leaf) {
   const root = paneRootFor();
-  if (!leaf || paneLeaves(root).length < 2) return "";
+  if (!leaf) return "";
+  // Split-only: the rail already names every independent panel, so a
+  // flat view whose strip also carried the chip read the same identity
+  // twice (chip + tab label). Inside the visible split the chip stays:
+  // it names the member and carries the re-position / rail-exit drag.
+  const group = groupForLeaf(root, leaf);
+  if (!group || !visibleSubjectIsGroup(root, group.groupId)) return "";
   const wsId = leafWorkspaceId(leaf);
   const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
   const wsName = workspace
@@ -2450,13 +2455,7 @@ function panePanelChipHtml(leaf) {
   }
   const title = name ? `${wsName}: ${name}` : `Focus panel: ${label}`;
   const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  // Only a member of the visible group drags: an independent panel's
-  // strip chip stays click-only (the rail owns that panel's drag).
-  const group = groupForLeaf(root, leaf);
-  const draggable = !!(group && visibleSubjectIsGroup(root, group.groupId));
-  const dragAttrs = draggable
-    ? ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeAttr(encodedPane)}')" ondragend="paneMemberDragEnd()"`
-    : "";
+  const dragAttrs = ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeAttr(encodedPane)}')" ondragend="paneMemberDragEnd()"`;
   return `<button class="pane-panel-chip" title="${escapeAttr(title)}" aria-label="Focus panel: ${escapeAttr(label)}" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs} onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
 }
 
@@ -3922,12 +3921,16 @@ function wirePaneStripDrag(strip) {
 }
 
 // Encoded-paneId resolver for the inline strip handlers (✕ close, +
-// new tab, Enter spawn): decode, resolve by id, fall back to the
-// active leaf. A missing id (empty string) means "the acting panel".
+// new tab, Enter spawn): decode, resolve by id; an empty id means
+// "the acting panel" (active leaf), a KNOWN id resolves to its leaf,
+// and an unknown non-empty id resolves to nothing: the button belonged
+// to a pane that no longer exists (stale strip after an adoption), and
+// falling back to the active leaf there would close or mint into a
+// random other panel.
 function leafForPaneId(root, encodedPaneId) {
   const paneId = decodeURIComponent(String(encodedPaneId || ""));
   if (!paneId) return activeLeaf(root);
-  return paneForPaneId(root, paneId) || activeLeaf(root);
+  return paneForPaneId(root, paneId) || null;
 }
 
 // Strip close button: focus the target leaf and reuse closeActivePane, so
@@ -4086,7 +4089,7 @@ async function closeActivePane() {
     // leaves the terminal rows to the sync's prune.
     void closeWorkspaceById(wsId);
   }
-  if (migration && migration.active) {
+  if (migration) {
     // The survivor's post-merge active only exists after the op owns
     // the tree: in server mode the adoption replaces the entry, so
     // routing here would read pre-merge tabs and mount editor surfaces
@@ -4101,7 +4104,8 @@ async function closeActivePane() {
       else if (typeof go === "function" && state.tab !== active)
         go(workspaceIdForTab(active), active);
     };
-    if (dropped && typeof dropped.then === "function") void dropped.then(routeToSurvivorActive);
+    if (dropped && typeof dropped.then === "function")
+      void dropped.then((res) => { if (res !== PANES_OP_REJECTED) routeToSurvivorActive(); });
     else routeToSurvivorActive();
   }
   return true;
@@ -5316,8 +5320,9 @@ window.HerdrWorkspacePanes = {
   // Rail label drag pipeline (container wiring + drop).
   paneLabelDragStart,
   paneLabelDragEnd,
-  // Member chip drag pipeline (group view: re-position inside the
-  // split, rail drop ungroups).
+  // Strip chip HTML (split-only) + member chip drag pipeline (group
+  // view: re-position inside the split, rail drop ungroups).
+  panePanelChipHtml,
   paneMemberDragStart,
   paneMemberDragEnd,
   paneRailMemberDrop,
