@@ -518,8 +518,8 @@
 
 /* ---- label rail (one-visible-view model) ----
  * A horizontal row of chips above the visible subject: one chip for
- * EVERY panel plus one group chip when a group is the visible
- * subject (groups are ephemeral, only the visible one exists).
+ * EVERY live panel plus one chip per group RECORD (groups persist,
+ * so a hidden group keeps its chip and pressing it reopens the split).
  * Pressing a chip switches the subject; dragging a panel chip into the view
  * forms or grows a group; a group member's strip chip dropped here
  * leaves the visible group. The rail renders only when more than one

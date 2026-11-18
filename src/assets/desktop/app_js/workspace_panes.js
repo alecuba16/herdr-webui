@@ -2510,8 +2510,9 @@ function ungroupPaneMember(encodedPaneId) {
 }
 
 // Merged-header keyboard: F2 renames the panel (same affordance as
-// the rail chip). The close span keeps click-only activation, matching
-// the existing tab-close spans' contract.
+// the rail chip). The close span stays click-and-delegated-Enter:
+// bindings.js routes Enter/Space through .pane-tab-close, the same
+// contract as the tab-close spans.
 function memberHeaderKey(e, encodedPaneId) {
   if (!e) return;
   if (e.key === "F2") {
