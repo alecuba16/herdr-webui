@@ -243,6 +243,25 @@ function makeServerApi(startingEntry) {
             }
           }
         }
+      } else if (op.op === "group.create") {
+        const dragged = entry.panels.find((p) => p.paneId === op.paneId);
+        const neighbor = entry.panels.find((p) => p.paneId === op.neighborPaneId);
+        if (dragged && neighbor) {
+          const groupId = `g${entry.groups.length + 1}`;
+          entry.groups.push({
+            groupId,
+            name: null,
+            memberIds: [op.paneId, op.neighborPaneId],
+            layout: {
+              kind: op.axis,
+              sizes: [1, 1],
+              children: op.draggedFirst ? [op.paneId, op.neighborPaneId] : [op.neighborPaneId, op.paneId],
+            },
+          });
+          dragged.groupId = groupId;
+          neighbor.groupId = groupId;
+          entry.visible = { type: "group", id: groupId };
+        }
       } else if (op.op === "panel.create") {
         const paneId = `p${entry.panels.length + 1}`;
         entry.panels.push({ kind: "pane", paneId, tabs: [], active: null, wsId: op.wsId || null, groupId: null, name: null });
@@ -582,4 +601,223 @@ test("boot with no server entry seeds it through the apply POST", async () => {
   assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server");
   assert.ok(stored, "seed POST fired");
   assert.equal(stored.panels.length, 1, "the local entry seeded the server");
+});
+
+test("label drop posts group.create with the drop geometry and adopts the group", async () => {
+  const { nodes, document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  // Paint once so a real .workspace-pane with data-pane-id exists for
+  // the drop hit test (panelDropTargetAt climbs from event.target).
+  ctx.HerdrWorkspacePanes.renderWorkspacePanes();
+  // Drag p1's label and drop it on the right half of the visible p2.
+  ctx.HerdrWorkspacePanes.paneLabelDragStart(
+    { target: { classList: { add() {}, remove() {} } }, dataTransfer: { setData() {}, effectAllowed: "move" } },
+    encodeURIComponent("p1")
+  );
+  const pane2 = document.getElementById("workspacePanes").querySelector(".workspace-pane");
+  assert.ok(pane2 && pane2.dataset.paneId, "the painted pane carries its paneId");
+  // Container rect: left 10, top 10, width 24, height 24 (the stub
+  // geometry). x=30 lands in the right third (fx=.83), y=15 in the top
+  // third (fy=.21), dx=.17 < dy=.21: quadrant row, second half (the
+  // dragged panel is NOT first).
+  ctx.HerdrWorkspacePanes.paneContainerTabDrop({
+    target: pane2,
+    clientX: 30,
+    clientY: 15,
+    dataTransfer: { getData: () => "p1", dropEffect: "move" },
+    preventDefault() {},
+  });
+  const createCall = script.calls.find((c) => c.url === "/api/workspace-panes/op" && JSON.parse(c.opt.body).op === "group.create");
+  assert.ok(createCall, "group.create op posted");
+  const op = JSON.parse(createCall.opt.body);
+  assert.equal(op.paneId, "p1");
+  assert.equal(op.neighborPaneId, "p2", "auto-join picks the rail neighbor");
+  assert.equal(op.axis, "row");
+  assert.equal(op.draggedFirst, false, "the drop quadrant places the neighbor first");
+  // The op response carries the server-minted group; the adoption is
+  // async (fire-and-forget promise), let the microtask settle.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(entry.groups.length, 1, "server group adopted");
+  assert.equal(entry.groups[0].groupId, "g1");
+  assert.deepEqual(entry.groups[0].memberIds, ["p1", "p2"]);
+  assert.deepEqual(entry.groups[0].layout.children, ["p2", "p1"]);
+  assert.equal(entry.panels.find((p) => p.paneId === "p1").groupId, "g1");
+  assert.equal(entry.panels.find((p) => p.paneId === "p2").groupId, "g1");
+});
+
+test("a sync pass with a changed leaf pushes one panel.update per leaf", async () => {
+  const { nodes, document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  // Simulate drift: the server entry believes the focused panel p2
+  // lost t2 (another client's stale push). The homing ladder serves
+  // the focused leaf first (terminalHomeLeafFor), so the sync pass
+  // homes t2 back into p2 and pushes the leaf deltas.
+  const drifted = ctx.HerdrWorkspacePanes.paneRoot();
+  drifted.panels.find((p) => p.paneId === "p2").tabs = [];
+  drifted.panels.find((p) => p.paneId === "p2").active = null;
+  const changed = ctx.HerdrWorkspacePanes.syncTerminalTabsIntoTree(ctx.HerdrWorkspacePanes.paneRoot());
+  assert.equal(changed, true, "the pass reported a change (t2 re-homed)");
+  // Fire-and-forget pushes: settle before reading the op log.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const updates = script.calls
+    .map((c) => (c.url === "/api/workspace-panes/op" ? JSON.parse(c.opt.body) : null))
+    .filter((op) => op && op.op === "panel.update");
+  assert.equal(updates.length, 2, "one panel.update per leaf");
+  const byId = new Map(updates.map((op) => [op.paneId, op]));
+  const p1 = byId.get("p1");
+  const p2 = byId.get("p2");
+  assert.ok(p1 && p2, "both leaves pushed");
+  assert.deepEqual(p1.tabs, ["t1"], "the untouched leaf pushed its tabs too");
+  assert.equal(p1.active, "t1");
+  assert.equal(p1.wsId, "ws-1");
+  assert.deepEqual(p2.tabs, ["t2"], "p2 pushed its re-homed tabs");
+  assert.equal(p2.active, "t2");
+  assert.equal(p2.wsId, "ws-1");
+});
+
+test("a transient op failure retries once, stays in server mode, and adopts", async () => {
+  const { nodes, document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  let opAttempts = 0;
+  let opFailures = 0;
+  const flakyApi = async (url, opt) => {
+    if (url === "/api/workspace-panes/op") {
+      opAttempts += 1;
+      if (opAttempts === 1) {
+        opFailures += 1;
+        throw Error("transient drop");
+      }
+    }
+    return script.api(url, opt);
+  };
+  const ctx = loadPanesModule(document, "ws-1", flakyApi);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const enc = encodeURIComponent("p1");
+  ctx.HerdrWorkspacePanes.startPanelChipRename(enc);
+  ctx.state.editingPanelValue = "retry wins";
+  ctx.HerdrWorkspacePanes.commitPanelChipRename(enc);
+  // First attempt rejects, the retry rides a real response: settle the
+  // fire-and-forget dispatch before asserting.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(opAttempts, 2, "exactly one failed attempt plus one successful retry");
+  assert.equal(opFailures, 1, "only the first attempt failed");
+  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server", "no local-mode demotion");
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(entry.panels[0].name, "retry wins", "the retry's response adopted");
+  // A follow-up op still dispatches in server mode (no sticky demotion).
+  ctx.HerdrWorkspacePanes.startPanelChipRename(enc);
+  ctx.state.editingPanelValue = "second op";
+  ctx.HerdrWorkspacePanes.commitPanelChipRename(enc);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server");
+  assert.equal(ctx.HerdrWorkspacePanes.paneRoot().panels[0].name, "second op");
+});
+
+test("entrySignaturesMatch: visible and runtime marks are excluded, tabs order is not", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+
+  // A frame differing ONLY in the visible pointer matches the live
+  // signature: the pointer is per-client, the guard must skip adoption.
+  const otherVisible = serverEntry();
+  otherVisible.visible = { type: "panel", id: "p1" };
+  let adopted = ctx.HerdrWorkspacePanes.applyRemoteEntry(otherVisible);
+  assert.equal(adopted, false, "a visible-only difference is a no-op");
+  assert.equal(ctx.HerdrWorkspacePanes.paneRoot().visible.id, "p2", "the local pointer kept");
+
+  // A runtime mark (auto-close arm) is client-only state: the same
+  // server signature must still match with the mark on the live leaf.
+  const marked = ctx.HerdrWorkspacePanes.paneRoot();
+  marked.panels[0].autoCloseArmed = true;
+  marked.panels[0].autoClosePre = { tabs: ["t1"] };
+  adopted = ctx.HerdrWorkspacePanes.applyRemoteEntry(serverEntry());
+  assert.equal(adopted, false, "runtime marks never enter the signature");
+  const after = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(after.panels[0].autoCloseArmed, true, "the mark survived the (skipped) adoption");
+
+  // A tabs difference does NOT match: the adoption runs. The remote tab
+  // is an editor id (client-owned, opaque to the server), so it survives
+  // the sync pass instead of pruning as an unknown terminal id.
+  const reordered = serverEntry();
+  reordered.panels[1].tabs = ["t2", "editor:src/x.py"];
+  adopted = ctx.HerdrWorkspacePanes.applyRemoteEntry(reordered);
+  assert.equal(adopted, true, "a tabs difference adopts");
+  assert.deepEqual(
+    Array.from(ctx.HerdrWorkspacePanes.paneRoot().panels[1].tabs),
+    ["t2", "editor:src/x.py"],
+    "the adopted tabs stand"
+  );
+});
+
+test("visibility regain re-adopts the drifted server entry (bindings.js bootFromServer path)", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  // Client A went hidden: broadcasts stop landing (the harness simply
+  // never calls applyRemoteEntry). While hidden, another client renamed
+  // p1 and p3 got created server-side.
+  script.entry.panels[0].name = "renamed while hidden";
+  script.entry.panels.push({ kind: "pane", paneId: "p3", tabs: [], active: null, wsId: "ws-1", groupId: null, name: null });
+  // Client A regains visibility: bindings.js calls bootFromServer again.
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server");
+  assert.equal(entry.panels.length, 3, "the hidden-period panel p3 adopted");
+  assert.equal(entry.panels.find((p) => p.paneId === "p1").name, "renamed while hidden");
+  // The per-client visible pointer survives when its subject still lives.
+  assert.equal(entry.visible.type, "panel");
+  assert.equal(entry.visible.id, "p2", "the live local pointer kept through the re-adopt");
+
+  // Second regain where the local subject DIED while hidden: p2 closed
+  // server-side, so the heal must hand the pointer to a live subject.
+  script.entry = serverEntry();
+  script.entry.panels[0].name = "renamed while hidden";
+  script.entry.panels.push({ kind: "pane", paneId: "p3", tabs: [], active: null, wsId: "ws-1", groupId: null, name: null });
+  script.entry.panels = script.entry.panels.filter((p) => p.paneId !== "p2");
+  script.entry.visible = { type: "panel", id: "p3" };
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  const healed = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(healed.panels.length, 2, "the closed p2 dropped");
+  assert.notEqual(healed.visible.id, "p2", "the dead pointer healed");
+  assert.ok(
+    healed.visible.type === "panel" && healed.panels.some((p) => p.paneId === healed.visible.id),
+    "the healed pointer names a live panel"
+  );
 });

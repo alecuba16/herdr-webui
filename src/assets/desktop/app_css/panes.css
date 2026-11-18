@@ -369,19 +369,22 @@
   border: 1px solid var(--accent);
   border-radius: 4px;
   color: var(--text);
-  font-size: 11px;
-  line-height: 1;
+  font-size: 13px;
+  line-height: 1.4;
   padding: 3px 6px;
   margin-right: 4px;
   width: 110px;
   align-self: center;
   flex: none;
+  box-sizing: content-box;
+  min-height: 24px;
 }
 
 .pane-group-rename-input:focus {
-  outline: none;
   border-color: var(--accent);
   background: var(--panel, #fff);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* Half-region drop preview (v3): a dotted, shaded square over the
@@ -511,7 +514,9 @@
   display: inline-flex;
   align-items: center;
   max-width: 220px;
-  padding: 2px 10px;
+  min-height: 24px;
+  box-sizing: border-box;
+  padding: 3px 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
@@ -538,6 +543,29 @@
 .pane-label-chip.active {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent), transparent 86%);
+}
+
+/* Pressed state reads darker than hover (92%) and active (86%) so the
+ * three states never collapse into one tint. */
+.pane-label-chip:active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 76%);
+}
+
+.pane-label-chip.active:active {
+  background: color-mix(in srgb, var(--accent), transparent 72%);
+}
+
+.pane-label-chip:disabled,
+.pane-label-chip[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pane-label-chip:disabled:hover,
+.pane-label-chip[aria-disabled="true"]:hover {
+  border-color: var(--border);
+  background: transparent;
 }
 
 .pane-label-chip.pane-label-dragging {

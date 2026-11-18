@@ -58,7 +58,8 @@ pub struct VisiblePointer {
 #[serde(rename_all = "camelCase")]
 pub struct PanelRecord {
     /// Wire marker the client blob carries (isPaneLeaf requires it).
-    /// Serialize-only: entries arrive without it and normalize fills it.
+    /// Healed to "pane" in normalize_entry: a missing or stray value
+    /// must never survive into the stored or broadcast entry.
     #[serde(default = "panel_kind_pane")]
     pub kind: String,
     pub pane_id: String,
@@ -100,6 +101,14 @@ pub struct GroupRecord {
 pub struct PanesStore {
     pub sessions: Mutex<HashMap<String, PanesEntry>>,
     pub tx: tokio::sync::broadcast::Sender<Value>,
+    /// Serializes sidecar writes. save_entry runs OUTSIDE the sessions
+    /// mutex on blocking threads, and atomic_write stages every payload
+    /// through one shared temp path (panes-<session>.new): two
+    /// concurrent saves rename the same temp away, so the loser fails
+    /// with ENOENT and the client sees a 500. One lock for all sessions
+    /// because the collision is on the sibling temp name, not the
+    /// session file itself.
+    pub save_lock: Mutex<()>,
 }
 
 impl PanesStore {
@@ -108,6 +117,7 @@ impl PanesStore {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
             tx,
+            save_lock: Mutex::new(()),
         })
     }
 }
@@ -115,6 +125,14 @@ impl PanesStore {
 const ENTRY_VERSION: u32 = 3;
 const MAX_TABS_PER_PANEL: usize = 200;
 const MAX_NAME_CHARS: usize = 120;
+
+// Array caps: entries arrive as full client blobs, and normalize must
+// bound what one POST can leave in memory and on disk. 64 panels is
+// generous for a human rail (the v3 UI struggles past ~20 chips) yet
+// keeps a hostile 2MB body (axum's default limit) from parking tens of
+// thousands of records in the store and rewriting them per mutation.
+const MAX_PANELS: usize = 64;
+const MAX_GROUPS: usize = 64;
 
 /// Sidecar path for one session's shared panes entry. The herdr-webui
 /// config dir (next to webui-settings.json) so XDG_CONFIG_HOME keeps
@@ -455,7 +473,30 @@ fn normalize_entry(entry: &mut PanesEntry) {
     entry.v = ENTRY_VERSION;
     // Panel ids must be unique and non-empty; dedupe keeps the first.
     let mut seen: HashSet<String> = HashSet::new();
-    entry.panels.retain(|p| !p.pane_id.is_empty() && seen.insert(p.pane_id.clone()));
+    entry.panels.retain(|p| {
+        // Id charset whitelist: ids flow into inline onclick handlers
+        // as single-quoted JS strings (encodeURIComponent leaves ' and
+        // a few mark chars intact, escapeAttr does not stop the HTML
+        // parser from decoding &#39; back to ' before JS parsing). A
+        // poisoned id from a full-entry apply is therefore an XSS
+        // vector in every client that renders the session, so anything
+        // outside [A-Za-z0-9_-] is dropped here at the source; the
+        // client renders what the server normalized, and future
+        // clients inherit the guarantee for free. Dropping (not
+        // regenerating) is the smaller and safer move: the rail shows
+        // the surviving panels instead of silently forking a record's
+        // identity under a fresh server-minted id, and the same
+        // drop-dead-records philosophy already governs group members
+        // (live_members) and stale visible pointers (heal_visible).
+        p.pane_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !p.pane_id.is_empty()
+            && seen.insert(p.pane_id.clone())
+    });
+    // Same cap logic as tabs: oversized arrays truncate, the rest of
+    // normalize (group dissolve, visible heal) sweeps the fallout.
+    if entry.panels.len() > MAX_PANELS {
+        entry.panels.truncate(MAX_PANELS);
+    }
     for panel in entry.panels.iter_mut() {
         if panel.tabs.len() > MAX_TABS_PER_PANEL {
             panel.tabs.truncate(MAX_TABS_PER_PANEL);
@@ -468,6 +509,10 @@ fn normalize_entry(entry: &mut PanesEntry) {
             .map(str::trim)
             .filter(|name| !name.is_empty() && name.chars().count() <= MAX_NAME_CHARS)
             .map(str::to_string);
+        // Panel kind heal: the client's isPaneLeaf requires kind ===
+        // "pane"; a missing or non-"pane" value coerces back the same
+        // way the seq counters heal.
+        panel.kind = "pane".to_string();
     }
     let mut groups: Vec<GroupRecord> = Vec::new();
     let drained: Vec<GroupRecord> = std::mem::take(&mut entry.groups);
@@ -480,7 +525,18 @@ fn normalize_entry(entry: &mut PanesEntry) {
     entry.groups = groups;
     // Group ids must be unique; dedupe keeps the first.
     let mut seen_groups: HashSet<String> = HashSet::new();
-    entry.groups.retain(|g| !g.group_id.is_empty() && seen_groups.insert(g.group_id.clone()));
+    entry.groups.retain(|g| {
+        // Same charset whitelist as pane ids: group ids ride the same
+        // inline-handler sinks (startPaneGroupRename('ENC')).
+        g.group_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !g.group_id.is_empty()
+            && seen_groups.insert(g.group_id.clone())
+    });
+    if entry.groups.len() > MAX_GROUPS {
+        entry.groups.truncate(MAX_GROUPS);
+    }
     // Id sequence heal: an adopted client entry carries no seq fields
     // (serde defaults them to 0), so the counters must clear the highest
     // minted id or the next panel.create/group.create collides with a
@@ -526,9 +582,11 @@ fn normalize_group(entry: &PanesEntry, mut group: GroupRecord) -> Option<GroupRe
     Some(group)
 }
 
-/// Mutate the per-session entry, persist, broadcast. One lock scope
-/// covers mutate+snapshot so the broadcast always matches the disk
-/// write; a client that misses the frame self-heals on the next GET.
+/// Mutate the per-session entry, persist, broadcast. One store guard
+/// covers read+mutate+insert (mutate runs on a clone inside the guard so
+/// a mutate error leaves the map untouched); persist and broadcast run
+/// after the guard drops, broadcast only when the disk write succeeded.
+/// A client that misses the frame self-heals on the next GET.
 async fn apply_panes(
     state: &WebState,
     session: &str,
@@ -542,26 +600,26 @@ async fn apply_panes(
             .entry(session.to_string())
             .or_insert_with(|| load_entry(session))
             .clone();
-        drop(store);
         let mut next = entry;
         mutate(&mut next)?;
         normalize_entry(&mut next);
         next.at = crate::unix_now_seconds();
         let snapshot = next.clone();
-        state
-            .panes_store
-            .sessions
-            .lock()
-            .map_err(|_| {
-                (StatusCode::SERVICE_UNAVAILABLE, "panes store unavailable".to_string())
-            })?
-            .insert(session.to_string(), next);
+        store.insert(session.to_string(), next);
         snapshot
     };
     let persist = {
         let snapshot = entry.clone();
         let session = session.to_string();
-        tokio::task::spawn_blocking(move || save_entry(&session, &snapshot))
+        let save_lock = state.panes_store.clone();
+        tokio::task::spawn_blocking(move || {
+            // Hold the save lock across stage+rename: concurrent saves for
+            // ANY session share the sibling temp name pattern, and without
+            // the lock one save renames the temp out from under the
+            // other's rename (ENOENT -> 500).
+            let _guard = save_lock.save_lock.lock();
+            save_entry(&session, &snapshot)
+        })
     };
     match persist.await {
         Ok(Ok(())) => {}

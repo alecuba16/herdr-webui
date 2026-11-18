@@ -954,11 +954,12 @@ test("rail chips carry the drag and press wiring in their HTML", () => {
   assert.ok(html.includes(`ondragstart="paneLabelDragStart(event,'${encodeURIComponent("p2")}')"`), "chip wires paneLabelDragStart");
   assert.ok(html.includes('ondragend="paneLabelDragEnd()"'), "chip wires paneLabelDragEnd");
   assert.ok(html.includes(`onclick="event.preventDefault();showPanelFromRail('${encodeURIComponent("p2")}')"`), "chip wires showPanelFromRail");
-  assert.ok(html.includes('aria-pressed="false"'), "non-visible chip is not pressed");
+  assert.ok(html.includes('aria-selected="false"'), "non-visible chip is not selected");
   // The visible panel's own chip carries the active state (notes: the
   // rail shows ALL panels not inside the visible group, the visible
-  // one in pressed state).
+  // one selected).
   assert.ok(html.includes('class="pane-label-chip active"'), "visible panel chip carries active");
+  assert.ok(html.includes('aria-selected="true"'), "visible chip is selected (tablist pattern)");
 });
 
 test("rail renders a group chip and hides grouped labels", () => {

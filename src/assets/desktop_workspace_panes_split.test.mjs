@@ -808,7 +808,7 @@ test("the rail renders only with more than one subject and chips follow the rule
   assert.ok(rail.__innerHTML.includes(`data-pane-id="p1"`) && rail.__innerHTML.includes(`data-pane-id="p2"`), "one chip per ungrouped panel");
   assert.ok(rail.__innerHTML.includes('draggable="true"'), "panel chips drag");
   assert.ok(rail.__innerHTML.includes("showPanelFromRail"), "chip press switches the subject");
-  assert.ok(rail.__innerHTML.includes('aria-pressed="true"'), "the visible panel chip is active");
+  assert.ok(rail.__innerHTML.includes('aria-selected="true"'), "the visible panel chip is selected (tablist pattern)");
 });
 
 test("group chips render the default name, never drag, and carry the rename hook", () => {

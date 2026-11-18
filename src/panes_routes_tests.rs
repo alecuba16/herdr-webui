@@ -234,6 +234,178 @@ async fn panes_apply_seed_never_overwrites_real_content() {
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
+async fn panes_apply_heals_poisoned_ids_and_caps_arrays() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-panes-hardening");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let cookie = "herdr_web_session=token-123";
+    let app = test_app();
+
+    // One poisoned panel id (JS-string breakout payload), one clean
+    // panel, an oversized panels array, and a poisoned group id: the
+    // apply must drop the poisoned records and cap the arrays.
+    let mut panels = vec![
+        json!({ "paneId": "p1", "tabs": ["tab_a"] }),
+        json!({ "paneId": "p'-alert(1)-'", "tabs": ["tab_b"] }),
+    ];
+    for i in 0..80 {
+        panels.push(json!({ "paneId": format!("bulk-{i}"), "tabs": [] }));
+    }
+    let body = json!({
+        "entry": {
+            "v": 3,
+            "panels": panels,
+            "groups": [{ "groupId": "g'-xss-'", "memberIds": ["p1", "bulk-0"], "layout": ["p1", "bulk-0"] }],
+            "visible": { "type": "panel", "id": "p1" },
+        }
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/workspace-panes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let healed = response_json(response).await;
+
+    // The poisoned panel is gone; the clean one survived.
+    let panel_ids: Vec<&str> = healed["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["paneId"].as_str().unwrap())
+        .collect();
+    assert!(!panel_ids.contains(&"p'-alert(1)-'"));
+    assert!(panel_ids.contains(&"p1"));
+    // Array cap: 2 + 80 panels truncate to the MAX_PANELS cap.
+    assert!(healed["panels"].as_array().unwrap().len() <= 64);
+    // The poisoned group dissolved; nothing references it.
+    assert!(
+        healed["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|g| g["groupId"] != json!("g'-xss-'"))
+    );
+
+    // Round-trip: GET returns the healed entry, never the poison.
+    let get = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/api/workspace-panes")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    let persisted = response_json(get).await;
+    assert!(
+        persisted["panels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["paneId"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    );
+
+    // Ops on the healed entry keep working: panel.create mints a clean id.
+    let create = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/workspace-panes/op")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "op": "panel.create" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn panes_op_rejects_malformed_bodies() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-panes-malformed");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let cookie = "herdr_web_session=token-123";
+    let app = test_app();
+
+    // group.create without paneId: 400, not a panic or a silent no-op.
+    let missing_pane = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/workspace-panes/op")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "op": "group.create", "axis": "row" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_pane.status(), StatusCode::BAD_REQUEST);
+
+    // Non-JSON body: axum's Json extractor rejection, still a 400.
+    let non_json = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/workspace-panes/op")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("not json at all"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(non_json.status(), StatusCode::BAD_REQUEST);
+
+    // A JSON object missing the op field: axum's Json extractor
+    // rejects a deserialization failure with 422.
+    let no_op = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/workspace-panes/op")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "paneId": "p1" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_op.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Same contract on the apply route: a non-JSON body is rejected.
+    let bad_apply = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/workspace-panes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("not json at all"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_apply.status(), StatusCode::BAD_REQUEST);
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn panes_ops_broadcast_per_session() {
     use futures_util::StreamExt;
     use tokio_tungstenite::connect_async;
