@@ -272,23 +272,12 @@ function makeServerApi(startingEntry) {
         const paneId = `p${entry.panels.length + 1}`;
         entry.panels.push({ kind: "pane", paneId, tabs: [], active: null, wsId: op.wsId || null, groupId: null, name: null });
       } else if (op.op === "panel.close") {
-        // Server contract: a grouped close merges its tabs into the
-        // same-ws sibling, then the under-two dissolve heals the
+        // Server contract (real close): the splice drops the panel and
+        // its tabs; no migration. The client drains each view through
+        // its own close path first, the under-two dissolve heals the
         // visible pointer to the survivor.
         const doomed = entry.panels.find((p) => p.paneId === op.paneId);
         const groupId = doomed && doomed.groupId;
-        if (doomed && groupId) {
-          const group = entry.groups.find((g) => g.groupId === groupId);
-          const siblingId = group
-            ? group.memberIds.find((id) => id !== op.paneId && entry.panels.find((p) => p.paneId === id && p.wsId === doomed.wsId))
-            : null;
-          const sibling = siblingId ? entry.panels.find((p) => p.paneId === siblingId) : null;
-          if (sibling) {
-            for (const tabId of doomed.tabs) if (!sibling.tabs.includes(tabId)) sibling.tabs.push(tabId);
-            if (!sibling.active || !sibling.tabs.includes(sibling.active))
-              sibling.active = (doomed.active && sibling.tabs.includes(doomed.active)) || sibling.tabs[0] || null;
-          }
-        }
         entry.panels = entry.panels.filter((p) => p.paneId !== op.paneId);
         if (groupId) {
           const group = entry.groups.find((g) => g.groupId === groupId);
@@ -1006,7 +995,7 @@ test("adoption preserves the local focus pointer", async () => {
   assert.equal(panes.paneRoot().activePaneId, "p1", "local focus survived the adoption");
 });
 
-test("close inside a split adopts the server merge and the survivor heal", async () => {
+test("close inside a split adopts the server drop and the survivor heal", async () => {
   const { document } = buildDom();
   const starting = serverEntry();
   starting.panels.push({ kind: "pane", paneId: "p3", tabs: ["editor:src/gone.py"], active: "editor:src/gone.py", wsId: "ws-1", groupId: null, name: null });
@@ -1022,6 +1011,9 @@ test("close inside a split adopts the server merge and the survivor heal", async
     { tab_id: "t1", workspace_id: "ws-1" },
     { tab_id: "t2", workspace_id: "ws-1" },
   ];
+  ctx.window.HerdrFileBrowser = {
+    async closeEditorTab(path) { ctx.HerdrWorkspacePanes.closeEditorTabImmediate(path); },
+  };
   await ctx.HerdrWorkspacePanes.bootFromServer();
   ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1034,7 +1026,8 @@ test("close inside a split adopts the server merge and the survivor heal", async
   const after = panes.paneRoot();
   const survivor = after.panels.find((p) => p.paneId === "p2");
   assert.ok(survivor, "survivor stands");
-  assert.ok(survivor.tabs.includes("editor:src/gone.py"), "doomed tabs merged into the sibling");
+  assert.ok(!survivor.tabs.includes("editor:src/gone.py"), "doomed views die with the panel, no server merge");
+  assert.ok(!after.panels.some((p) => p.paneId === "p3"), "closed panel record dropped");
   assert.equal(after.groups.length, 0, "group dissolved under two members");
   assert.equal(after.visible.type, "panel", "subject healed to a panel");
   assert.equal(after.visible.id, "p2", "the survivor takes the subject, not panels[0]");
@@ -1075,10 +1068,19 @@ test("close during panel.close flight pushes no panel.update for the sibling", a
     { tab_id: "t1", workspace_id: "ws-1" },
     { tab_id: "t2", workspace_id: "ws-1" },
   ];
+  // The real closeTab owns the backend row close; model the row half
+  // so the drain's close does not strand re-homeable ids.
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    ctx.HerdrWorkspacePanes.onTerminalTabClosed(tabId);
+  };
   await ctx.HerdrWorkspacePanes.bootFromServer();
   ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
   const panes = ctx.HerdrWorkspacePanes;
   const closePromise = panes.closePaneFor("p2");
+  // The drain awaits each view's own close path before the panel.close
+  // fires: settle one microtask tick so the op parks in flight.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(releaseClose, "close op fired and is parked in flight");
   // The close op is in flight: the local tree still holds p2 with its
   // tabs, p3 empty. A sync pass here is the exact window where the old
@@ -1100,11 +1102,10 @@ test("close during panel.close flight pushes no panel.update for the sibling", a
   const after = panes.paneRoot();
   const survivor = after.panels.find((p) => p.paneId === "p3");
   assert.ok(survivor, "survivor stands");
-  // Cross-realm array: deepStrictEqual would compare prototypes and
-  // fail on a vm-context array that holds the right items.
-  assert.equal(survivor.tabs.length, 2, "both doomed tabs landed");
-  assert.equal(survivor.tabs[0], "t1", "server merge order kept");
-  assert.equal(survivor.tabs[1], "t2", "server merge order kept");
+  // The close is real: the doomed rows are gone, the survivor keeps
+  // nothing of the closed panel (no merge), and the group dissolved.
+  assert.ok(!after.panels.some((p) => p.paneId === "p2"), "closed panel record dropped");
+  assert.equal(survivor.tabs.length, 0, "survivor keeps only its own views");
   assert.equal(after.groups.length, 0, "group dissolved under two members");
   assert.equal(after.visible.id, "p3", "the survivor takes the subject");
 });
