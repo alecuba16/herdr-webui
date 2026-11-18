@@ -56,6 +56,7 @@ mod server_settings;
 mod service;
 mod terminal_hub;
 mod terminal_text;
+mod workspace_panes_store;
 
 use assets::{
     app_boot_js, app_html, desktop_css, desktop_directory_picker_css, desktop_directory_picker_js,
@@ -654,6 +655,11 @@ pub(crate) struct WebState {
     /// Broadcasts the full notes snapshot after every notes mutation so
     /// every connected tab converges without polling.
     notes_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Shared panel/group state per herdr session
+    /// (workspace_panes_store.rs): every mutation persists a
+    /// per-session sidecar and fans the new entry out here so every
+    /// connected client of that session converges on one truth.
+    panes_store: Arc<workspace_panes_store::PanesStore>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
     lsp: Arc<lsp::LspRegistry>,
     /// Shared terminal attach hub: one backend attach per
@@ -1080,6 +1086,7 @@ async fn main() -> io::Result<()> {
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
     let notes = Arc::new(Mutex::new(notes::load_notes()));
     let (notes_tx, _) = tokio::sync::broadcast::channel(16);
+    let panes_store = workspace_panes_store::PanesStore::new();
     let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
     let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
     let state = WebState {
@@ -1103,6 +1110,7 @@ async fn main() -> io::Result<()> {
         settings_tx,
         notes,
         notes_tx,
+        panes_store,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: lsp_registry,
         terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
@@ -1479,6 +1487,7 @@ fn app_router(state: WebState) -> Router {
         .merge(git_ui::routes())
         .merge(lsp::routes())
         .merge(notes::routes())
+        .merge(workspace_panes_store::routes())
         .route(
             "/api/workspaces/{workspace_id}/rename",
             post(rename_workspace),
@@ -6534,10 +6543,13 @@ async fn events_ws(
         query.backend.as_deref(),
     )
     .await;
-    ws.on_upgrade(move |socket| events_socket(state, api, socket))
+    // Shared panes frames are per-session: the broadcast carries the
+    // session name and each socket drops frames from other sessions.
+    let panes_session = canonical_session_name(query.session.as_deref());
+    ws.on_upgrade(move |socket| events_socket(state, api, socket, panes_session))
 }
 
-async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
+async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket, panes_session: String) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     // Settings changes must reach open tabs immediately: a backend disabled
     // mid-session stops being targeted/offered without a page reload.
@@ -6545,6 +6557,9 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     // Notes mutations broadcast the full snapshot; receivers that lag a
     // burst miss frames and self-heal on the next panel-open GET.
     let mut notes_rx = state.notes_tx.subscribe();
+    // Shared panes mutations broadcast the full session entry the same
+    // way; the session filter below keeps other sessions' frames out.
+    let mut panes_rx = state.panes_store.tx.subscribe();
     let subscribe_api = api.clone();
     // backend_info() does a blocking ping over a Unix socket; run it on a
     // blocking thread so it does not stall the async runtime while waiting
@@ -6716,6 +6731,17 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             notes = notes_rx.recv() => {
                 let Ok(notes) = notes else { break; };
                 if socket.send(Message::Text(notes.to_string().into())).await.is_err() { break; }
+            }
+            panes = panes_rx.recv() => {
+                let Ok(panes) = panes else { break; };
+                // Per-session gate: the shared panes entry belongs to one
+                // herdr session; a socket pinned to another session must
+                // not repaint from it.
+                if panes.get("session").and_then(serde_json::Value::as_str) == Some(panes_session.as_str()) {
+                    let mut frame = panes.clone();
+                    frame["type"] = serde_json::json!("workspace_panes_changed");
+                    if socket.send(Message::Text(frame.to_string().into())).await.is_err() { break; }
+                }
             }
             message = socket.recv() => {
                 if message.is_none() { break; }
@@ -7552,6 +7578,9 @@ fn terminal_release_toggle(text: &str, armed: &mut bool) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod panes_routes_tests;
 
 #[cfg(test)]
 mod test_env_guard;

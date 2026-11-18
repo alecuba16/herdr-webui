@@ -13,7 +13,7 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use std::thread;
 use tower::ServiceExt;
 
-fn test_state() -> WebState {
+pub(crate) fn test_state() -> WebState {
     // ONE hash shared by auth and server_settings: a fresh salt per
     // hash_password call means two separate hashes of "pass" differ as
     // strings, and the identity-change detector compares stored strings,
@@ -76,28 +76,29 @@ fn test_state() -> WebState {
         settings_tx,
         notes: Arc::new(Mutex::new(notes::NotesState::default())),
         notes_tx,
+        panes_store: crate::workspace_panes_store::PanesStore::new(),
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: Arc::new(lsp::LspRegistry::new(Default::default())),
         terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
     }
 }
 
-fn test_app() -> Router {
+pub(crate) fn test_app() -> Router {
     app_router(test_state())
 }
 
-fn test_app_with_state(state: WebState) -> Router {
+pub(crate) fn test_app_with_state(state: WebState) -> Router {
     app_router(state)
 }
 
-fn request(method: Method, uri: &str) -> axum::http::request::Builder {
+pub(crate) fn request(method: Method, uri: &str) -> axum::http::request::Builder {
     Request::builder()
         .method(method)
         .uri(uri)
         .extension(ConnectInfo("192.0.2.1:1234".parse::<SocketAddr>().unwrap()))
 }
 
-async fn response_json(response: Response) -> Value {
+pub(crate) async fn response_json(response: Response) -> Value {
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
@@ -5208,7 +5209,7 @@ async fn static_asset_routes_serve_embedded_content() {
             > 2 * 1024 * 1024
     );
     assert!(
-        to_bytes(app_js.into_body(), 1024 * 1024)
+        to_bytes(app_js.into_body(), 4 * 1024 * 1024)
             .await
             .unwrap()
             .len()
@@ -13851,7 +13852,7 @@ async fn events_socket_broadcasts_notes_changed() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
-fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
+pub(crate) fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
     // pid-keyed name: the dead-test-artifact sweeper can prove ownership

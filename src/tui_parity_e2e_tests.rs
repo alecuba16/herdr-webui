@@ -212,6 +212,7 @@ fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
         settings_tx,
         notes: Arc::new(Mutex::new(notes::NotesState::default())),
         notes_tx,
+        panes_store: crate::workspace_panes_store::PanesStore::new(),
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: Arc::new(LspRegistry::new(Default::default())),
         terminal_hub: Arc::new(crate::terminal_hub::TerminalHub::new()),
