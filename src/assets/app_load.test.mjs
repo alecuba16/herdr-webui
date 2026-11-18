@@ -3798,16 +3798,17 @@ describe("app bundle load", () => {
     `, ctx);
     const panes = vm.runInContext("HerdrWorkspacePanes", ctx);
 
-    // Single-workspace tree: every default stays a bare number (D15 gates
-    // on treeIsMixed, so the common case carries zero noise).
-    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
-    equal(panes.foreignWorkspacePrefix("tab9"), "");
+    // Single-workspace tree: the default carries the worktree prefix
+    // (a bare number names nothing), the own row included.
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "main 2");
+    // tab9's row resolves even before any mixed entry exists: the
+    // prefix follows the row's workspace, not the tree's shape.
+    equal(panes.foreignWorkspacePrefix("tab9"), "feat/panels ");
 
-    // Mixed list: the foreign default prefixes with the branch (the real
-    // worktreeDisplayName chain, no stub), the own default stays bare, and
-    // the custom name never prefixes. state.ws is "ws1": its own rows stay
-    // bare even though panel 1's own row (tab1) coexists with the foreign
-    // ids in the unfiltered map.
+    // Mixed list: every default prefixes with its worktree branch (the
+    // real worktreeDisplayName chain, no stub); the custom name never
+    // prefixes. state.ws is "ws1": its own rows prefix the same way,
+    // the origin is part of the identity everywhere now.
     // Traced to the one visible view model: splitPaneRight is gone, so the
     // second panel comes from the flat entry itself (two panels, same
     // shape a + press or a stored session produces).
@@ -3824,7 +3825,7 @@ describe("app bundle load", () => {
     const l = panes.paneLeaves(panes.paneRootFor());
     equal(panes.foreignWorkspacePrefix("tab9"), "feat/panels ");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab9", ctx), 0), "feat/panels 1");
-    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "main 2");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tabc", ctx), 1), "build");
 
     // The prefix renders as a muted ::before on the label span: the number
@@ -3870,7 +3871,9 @@ describe("app bundle load", () => {
       "tabHoverInfo({ tab_id: 'tab8', label: 'shell', number: 1, workspace_id: 'ws-2' }, new Map())",
       ctx,
     );
-    equal(foreignDefault, "Workspace feat/panels (ws-2) · 1");
+    // The label already carries the worktree (strip language), so the
+    // hover collapses to the label plus the raw id, no duplicated name.
+    equal(foreignDefault, "feat/panels 1 (ws-2)");
   });
 
   it("window title shows the visible panel name, never the raw shell label", () => {
@@ -3895,7 +3898,9 @@ describe("app bundle load", () => {
     // agentTabLabel stays empty (count <= 1) and the title segment falls
     // through to the strip language (D15), not the raw "shell".
     vm.runInContext("updateTitle(Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w])), state.tabsById, new Map(), null)", ctx);
-    equal(ctx.document.title, "feat/panels • 1");
+    // The panel segment already carries the worktree (strip language),
+    // so the title shows it once, not "feat/panels • feat/panels 1".
+    equal(ctx.document.title, "feat/panels 1");
 
     // Multi-panel foreign workspace keeps the #N disambiguation.
     vm.runInContext(`
@@ -3961,13 +3966,15 @@ describe("app bundle load", () => {
       ctx,
     );
     // Hovering a non-focused tab: the size suffix belongs to state.tab only.
-    equal(foreign, "Workspace feat/panels (ws-2) · 1 · p8 · t-8");
+    // The default label carries the worktree, so the hover collapses the
+    // workspace line to the label plus the raw id.
+    equal(foreign, "feat/panels 1 (ws-2) · p8 · t-8");
     // The focused foreign panel adds the size suffix.
     const foreignFocused = vm.runInContext(
       'state.tab = "tab8"; tabHoverInfo({ tab_id: "tab8", label: "shell", number: 1, workspace_id: "ws-2" }, new Map([["tab8", [{ pane_id: "p8", terminal_id: "t-8" }]]]))',
       ctx,
     );
-    equal(foreignFocused, "Workspace feat/panels (ws-2) · 1 · p8 · t-8 · 120x40");
+    equal(foreignFocused, "feat/panels 1 (ws-2) · p8 · t-8 · 120x40");
     // pane rows exist but the active pane is not among them: the first row
     // in the list backs the suffix (the strip highlight fallback).
     const firstPane = vm.runInContext(
@@ -3989,7 +3996,7 @@ describe("app bundle load", () => {
     // keeps the raw tabTitle. The strip path pins the catch in the pane
     // suite through the throwing harness stub.
     const fallback = vm.runInContext("tabHoverTitle({ tab_id: 'tabZ' })", ctx);
-    equal(fallback, "1", "label-less rows render the number fallback");
+    equal(fallback, "main 1", "label-less rows render the workspace plus number fallback");
   });
 
   it("workspaceHoverName walks record, worktree name, label, then raw id", () => {

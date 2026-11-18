@@ -2380,11 +2380,11 @@ test("foreign default panels prefix the worktree name on a mixed tree", () => {
   // Strips resolve by tab id: layout order is not strip index.
   const ownLabel = stripHtmlForTab(nodes, "tab_2");
   const foreignLabel = stripHtmlForTab(nodes, "tab_9");
-  // Own workspace: bare number, no prefix machinery in the markup.
+  // Both default panels carry their worktree prefix now: the origin is
+  // part of the identity everywhere, not only on foreign panels.
   assert.ok(ownLabel, "own panel renders");
-  assert.match(ownLabel, /<span class="pane-tab-label">1<\/span>/, "own default panel stays a bare number");
-  assert.ok(!ownLabel.includes("data-ws-prefix"), "own panel carries no prefix attribute");
-  assert.match(ownLabel, /aria-label="Panel 1"/, "own button names itself Panel 1");
+  assert.match(ownLabel, /<span class="pane-tab-label" data-ws-prefix="main">1<\/span>/, "own default panel carries its worktree prefix");
+  assert.match(ownLabel, /aria-label="Panel main 1"/, "own accessible name spells the origin");
   // Foreign workspace: prefix attribute with the worktree name, number
   // as the span text, and the full string as the accessible name.
   assert.ok(foreignLabel, "foreign panel renders");
@@ -2415,21 +2415,22 @@ test("foreign prefixes flip with the selected workspace and skip custom names", 
   leaves[0].active = "tab_9";
   panes.renderWorkspacePanes();
 
-  // Selected workspace (ws-2) keeps the bare number; ws-1's default
-  // panel prefixes; ws-1's custom name never prefixes.
+  // Every default panel prefixes with its row's workspace; the custom
+  // name never prefixes (the name is the identity).
   const strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.match(strip.innerHTML, /<span class="pane-tab-label">1<\/span>/, "selected workspace default stays bare");
+  assert.match(strip.innerHTML, /<span class="pane-tab-label" data-ws-prefix="feat">1<\/span>/, "ws-2 default prefixes with its label");
   assert.ok(strip.innerHTML.includes('data-ws-prefix="main"'), "ws-1 default prefixes with its label");
   assert.match(strip.innerHTML, /<span class="pane-tab-label">build<\/span>/, "custom name renders unprefixed");
   assert.ok(!strip.innerHTML.includes('data-ws-prefix="build"'), "custom tab carries no prefix attribute");
 
-  // Switch the selection: ws-2's panel takes the prefix, ws-1's goes bare.
+  // Switch the selection: the prefixes stay stable (they come from the
+  // row's workspace, not the selected one).
   ctx.state.ws = "ws-1";
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
   panes.renderWorkspacePanes();
   const stripAfter = nodes.container.querySelector(".pane-tab-strip");
-  assert.ok(stripAfter.innerHTML.includes('data-ws-prefix="feat"'), "ws-2 default prefixes after the switch");
-  assert.match(stripAfter.innerHTML, /<span class="pane-tab-label">1<\/span>/, "ws-1 default goes bare after the switch");
+  assert.ok(stripAfter.innerHTML.includes('data-ws-prefix="feat"'), "ws-2 default keeps its prefix after the switch");
+  assert.ok(stripAfter.innerHTML.includes('data-ws-prefix="main"'), "ws-1 default keeps its prefix after the switch");
 });
 
 test("single-workspace trees and unknown foreign workspaces keep bare numbers", () => {
@@ -2440,8 +2441,8 @@ test("single-workspace trees and unknown foreign workspaces keep bare numbers", 
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
   panes.renderWorkspacePanes();
   let strip = nodes.container.querySelector(".pane-tab-strip");
-  assert.match(strip.innerHTML, /<span class="pane-tab-label">1<\/span>/, "single-workspace tree keeps bare numbers");
-  assert.ok(!strip.innerHTML.includes("data-ws-prefix"), "no prefix machinery on a clean tree");
+  assert.match(strip.innerHTML, /<span class="pane-tab-label" data-ws-prefix="main">1<\/span>/, "single-workspace tree prefixes with the workspace name");
+  assert.ok(strip.innerHTML.includes('data-ws-prefix="main"'), "the only workspace carries the prefix machinery");
 
   // Foreign row whose workspace record is missing (snapshot race): the
   // label keeps the bare number instead of a misleading or empty prefix.
@@ -2450,12 +2451,9 @@ test("single-workspace trees and unknown foreign workspaces keep bare numbers", 
     tab_x: { tab_id: "tab_x", workspace_id: "ws-gone", label: "shell", number: 3 },
   };
   // Collector model: the foreign id has no ws-gone panel yet, so the
-  // sync mints one (mint layout lands on the render after the id's
-  // arrival, same as every mint).
+  // sync mints one; the mint lands on the render after the id's
+  // arrival, same as every mint.
   panes.renderWorkspacePanes();
-  // One visible view: the minted ws-gone panel renders through the
-  // label rail chip, not a second strip (splits only exist inside
-  // groups). The chip keeps the bare number and no prefix attribute.
   panes.renderWorkspacePanes();
   const rail = nodes.container.querySelector(".pane-label-rail");
   assert.ok(rail, "foreign row mints its own panel (rail renders)");
@@ -2571,11 +2569,11 @@ test("unresolvable tab rows render nothing instead of a broken button", () => {
   deepEqual(panes.paneTabsForTree(leavesAfter.find((leaf) => leaf.tabs.includes("tab_2"))), ["tab_2"], "resolvable id stays in the tree tabs");
 });
 
-// foreignWorkspacePrefix guards, one assertion per exit: a row with no
-// workspace_id inherits state.ws (own workspace, bare), a foreign id with
-// no workspace record keeps the bare number, and a workspace whose name
-// chain (worktreeDisplayName then label) is empty keeps the bare number
-// too. An empty prefix must never render as an empty attribute.
+// workspacePrefixForTab guards, one assertion per exit: a row with no
+// workspace_id inherits state.ws (the workspace still prefixes), an id
+// with no workspace record keeps the bare number, and a workspace whose
+// name chain (worktreeDisplayName then label) is empty keeps the bare
+// number too. An empty prefix must never render as an empty attribute.
 test("prefix fallback matrix: no workspace id, missing record, empty name", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
@@ -2598,11 +2596,12 @@ test("prefix fallback matrix: no workspace id, missing record, empty name", () =
   leaves[0].active = "tab_2";
   panes.renderWorkspacePanes();
 
-  // No workspace_id on the row: the state.ws fallback makes it own, bare.
-  assert.equal(panes.foreignWorkspacePrefix("tab_noid"), "", "row without workspace id stays bare");
+  // No workspace_id on the row: the state.ws fallback resolves the
+  // workspace, so the prefix still applies.
+  assert.equal(panes.foreignWorkspacePrefix("tab_noid"), "main ", "row without workspace id prefixes from state.ws");
   // Unknown foreign workspace: no record, no display name, bare number.
   assert.equal(panes.foreignWorkspacePrefix("tab_gone"), "", "missing workspace record stays bare");
-  assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_noid, 3), "4", "visible label falls back to the number");
+  assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_noid, 3), "main 4", "visible label carries the workspace prefix");
   assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_gone, 4), "5", "unknown workspace keeps the bare number");
 
   // Workspace record with every name source empty: bare number, and the
@@ -2719,11 +2718,14 @@ test("editor and git tabs stay unprefixed on a mixed tree", () => {
   const editorAndGit = stripHtmls(nodes).find((s) => s.includes('data-tab-kind="editor"'));
   assert.ok(foreign, "foreign default panel renders");
   assert.ok(editorAndGit, "editor and git tabs render");
-  // Foreign default panel prefixes; the editor and git rows never do:
-  // paneTabButtonHtml renders the prefix, the other two kinds never touch
-  // it.
+  // Foreign default panel prefixes; the editor and git buttons never
+  // do: paneTabButtonHtml renders the prefix, the other two kinds
+  // never touch it (the strip may hold a prefixed terminal tab beside
+  // them, so the check scopes to the buttons).
+  const editorAndGitButtons = editorAndGit.match(/<button class="pane-tab (?:editor|git) [^"]*"[^>]*>/g) || [];
   assert.ok(foreign.includes('data-ws-prefix="feat"'), "foreign default panel carries the prefix");
-  assert.ok(!editorAndGit.includes("data-ws-prefix"), "editor and git rows carry no prefix attribute");
+  assert.ok(editorAndGitButtons.length === 2, "editor and git buttons render");
+  assert.ok(editorAndGitButtons.every((html) => !html.includes("data-ws-prefix")), "editor and git rows carry no prefix attribute");
   assert.ok(editorAndGit.includes('data-tab-kind="git"'), "git tab renders beside the editor tab");
 });
 

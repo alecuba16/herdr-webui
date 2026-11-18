@@ -209,7 +209,13 @@ function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
     : pane
       ? pane.pane_id
       : "panel";
-  document.title = `${workspace} • ${panel}`;
+  // Default panel labels now carry the worktree ("feat/panels 1"), so
+  // the leading workspace token would duplicate the label's own head:
+  // the title collapses to the label alone in that case, keeping
+  // "workspace • panel" for custom names and #N disambiguation.
+  document.title = panel.startsWith(`${workspace} `)
+    ? panel
+    : `${workspace} • ${panel}`;
 }
 function pushMapList(map, key, value) {
   const rows = map.get(key) || [];
@@ -219,23 +225,26 @@ function pushMapList(map, key, value) {
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
-  // D15: the tooltip must speak the strip's language. A foreign default
-  // panel reads "<worktree> N" in the strip, so the hover starts from the
-  // same visible label (panelDisplayName), never the raw backend "shell".
-  // The workspace line carries the friendly name the badge shows, plus
-  // the id for exact lookup.
-  const workspace =
-    t.workspace_id && t.workspace_id !== state.ws
-      ? `Workspace ${workspaceHoverName(t.workspace_id)} (${t.workspace_id}) · `
-      : "";
+  // The tooltip must speak the strip's language. A default panel now
+  // reads "<worktree> N" there, so when the label already carries the
+  // workspace name the hover collapses the workspace line to the raw
+  // id suffix; custom names keep the full "Workspace <name> (<id>)"
+  // line (the name alone does not spell the origin).
   const label =
     typeof panelDisplayName === "function" ? panelDisplayName(t) : tabTitle(t);
-  if (!pane) return `${workspace}${label}`;
+  const foreignWs = t.workspace_id && t.workspace_id !== state.ws ? t.workspace_id : null;
+  const wsName = foreignWs ? workspaceHoverName(foreignWs) : "";
+  const head = wsName && label.startsWith(`${wsName} `)
+    ? `${label} (${foreignWs})`
+    : foreignWs
+      ? `Workspace ${wsName} (${foreignWs}) · ${label}`
+      : label;
+  if (!pane) return head;
   const size =
     t.tab_id === state.tab && state.termCols && state.termRows
       ? ` · ${state.termCols}x${state.termRows}`
       : "";
-  return `${workspace}${label} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
+  return `${head} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
 }
 
 // The hover's workspace line uses the same friendly name the pane badge

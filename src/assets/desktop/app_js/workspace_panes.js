@@ -2332,19 +2332,40 @@ function autoClosePreStateFor(root, leaf) {
   return group ? { collectorId: group.groupId, wsId: leafWorkspaceId(leaf) || null } : null;
 }
 
-// Identity chip on each strip: the workspace name, click focuses the
-// panel. Grouped panels sit behind their group chip in the rail; the
-// strip chip keeps working for the panel the strip belongs to.
+// Identity chip on each strip: the workspace name plus the panel's
+// own identity, click focuses the panel. Grouped panels sit behind
+// their group chip in the rail; the strip chip keeps working for the
+// panel the strip belongs to.
 function panePanelChipHtml(leaf) {
   const root = paneRootFor();
   if (!leaf || paneLeaves(root).length < 2) return "";
   const wsId = leafWorkspaceId(leaf);
   const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
-  const label = workspace
+  const wsName = workspace
     ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
     : (wsId || "panel");
+  // Panel identity on the chip: a set name is the identity alone (the
+  // workspace rides the title); a default panel carries its worktree
+  // name plus number so two panels of the same worktree never read
+  // identical in a group view.
+  const name = leaf.name ? String(leaf.name).trim() : "";
+  let label;
+  if (name) {
+    label = name;
+  } else {
+    // The active tab decides the number; an editor/git active tab is
+    // not a terminal row, so the first terminal tab of the leaf takes
+    // over (the number still identifies the panel behind the strip).
+    const tabs = leaf.tabs || [];
+    const activeTab = paneActiveTabOf(leaf);
+    const candidate = activeTab && paneTerminalTabById(activeTab) ? activeTab : tabs.find((id) => paneTerminalTabById(id)) || null;
+    const row = candidate ? paneTerminalTabById(candidate) : null;
+    const number = row ? String(row.number || "") : "";
+    label = number ? `${wsName} ${number}` : wsName;
+  }
+  const title = name ? `${wsName}: ${name}` : `Focus panel: ${label}`;
   const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  return `<button class="pane-panel-chip" title="${escapeAttr(label)}" aria-label="Focus panel: ${escapeAttr(label)}" data-pane-id="${escapeAttr(leaf.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')">${escapeHtml(label)}</button>`;
+  return `<button class="pane-panel-chip" title="${escapeAttr(title)}" aria-label="Focus panel: ${escapeAttr(label)}" data-pane-id="${escapeAttr(leaf.paneId || "")}" onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
 }
 
 // Route write from a panel (design: the location bar always mirrors the
@@ -2561,7 +2582,7 @@ function rescueLiveSurfaces(container, element) {
 function paneTabButtonHtml(tab, isActive, index, tabs) {
   if (state.editingTab === tab.tab_id)
     return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
-  // The strip prefix (D15) is the foreign panel's origin, and only a
+  // The strip prefix is the panel's origin, and only a
   // default-numbered label gets one (a custom name is the identity).
   // Computed HERE, once, and panelVisibleLabel receives it so the two
   // never drift: the visible span text, the data-ws-prefix attribute,
@@ -2570,7 +2591,7 @@ function paneTabButtonHtml(tab, isActive, index, tabs) {
   // readable head; the full string rides aria-label (beats title for
   // screen readers, and the visible text may truncate).
   const isDefault = isDefaultPanelTitle(String((tab && tab.label) || "").trim());
-  const prefix = isDefault ? foreignWorkspacePrefix(tab && tab.tab_id) : "";
+  const prefix = isDefault ? workspacePrefixForTab(tab && tab.tab_id) : "";
   const shown = prefix ? panelNumberLabel(tab, index, tabs) : panelVisibleLabel(tab, index, tabs);
   const label = prefix ? `${prefix}${shown}` : shown;
   const labelSpan = prefix
@@ -4014,21 +4035,25 @@ function panelNumberLabel(tab, index, tabs = state.tabs || []) {
   return String((fallbackIndex >= 0 ? fallbackIndex : 0) + 1);
 }
 
-// ---- default-label workspace prefix (D15) ----------------------------
-// Foreign-workspace default panels number inside their own workspace, so
-// two bare numbers on one strip can read as one series when they are not.
-// Only tabs OUTSIDE the selected workspace carry the prefix: the selected
-// workspace's own numbers stay bare, and a workspace switch flips which
-// side is prefixed (accepted trade-off, the pane badge names the leaf's
-// workspace either way). Custom names never get a prefix: the user named
-// the panel, the name is the identity. A foreign workspace with no
-// matching state.workspaces row keeps the bare number (its row resolves
-// through tabsById, but the display name needs the workspace record).
-function foreignWorkspacePrefix(tabId) {
-  if (!treeIsMixed()) return "";
+// ---- default-label workspace prefix ---------------------------------
+// Default panels number inside their own workspace, and a bare number
+// names nothing: the worktree name rides every default label so two
+// panels read "main 1", "feat/panels 1" instead of colliding "1"s.
+// The prefix comes from the ROW's workspace (not the selected one), so
+// it stays stable across a workspace switch. Custom names never get a
+// prefix: the user named the panel, the name is the identity. A row
+// whose workspace record is missing keeps the bare number (the display
+// name needs the workspace record).
+function workspacePrefixForTab(tabId) {
   const row = paneTerminalTabById(tabId);
   const workspaceId = (row && row.workspace_id) || state.ws;
-  if (!workspaceId || workspaceId === state.ws) return "";
+  return workspacePrefixForWorkspaceId(workspaceId);
+}
+
+// The prefix for a known workspace id, shared by the row-lookup path and
+// the direct-row callers (hover, title) that carry the id themselves.
+function workspacePrefixForWorkspaceId(workspaceId) {
+  if (!workspaceId) return "";
   const workspace = (state.workspaces || []).find(
     (candidate) => candidate.workspace_id === workspaceId,
   );
@@ -4041,8 +4066,11 @@ function foreignWorkspacePrefix(tabId) {
 }
 
 // The name every panel-facing surface should speak: the visible strip
-// label, prefix included (D15). Hover title, document title, and the
-// strip itself must never drift apart on a foreign default panel.
+// label, prefix included. Hover title, document title, and the strip
+// itself must never drift apart on a default panel. The row's own
+// workspace_id wins over the id-by-tabId lookup: hover and title callers
+// pass rows straight from the backend (they may never exist in state
+// yet), and a state.ws fallback would stamp the wrong worktree on them.
 function panelDisplayName(tab, index, tabs = state.tabs || []) {
   return panelVisibleLabel(tab, index, tabs);
 }
@@ -4050,7 +4078,9 @@ function panelDisplayName(tab, index, tabs = state.tabs || []) {
 function panelVisibleLabel(tab, index, tabs = state.tabs || []) {
   const label = String((tab && tab.label) || "").trim();
   if (isDefaultPanelTitle(label)) {
-    const prefix = foreignWorkspacePrefix(tab && tab.tab_id);
+    const prefix = (tab && tab.workspace_id)
+      ? workspacePrefixForWorkspaceId(tab.workspace_id)
+      : workspacePrefixForTab(tab && tab.tab_id);
     return prefix ? `${prefix}${panelNumberLabel(tab, index, tabs)}` : panelNumberLabel(tab, index, tabs);
   }
   return label;
@@ -4988,7 +5018,7 @@ window.HerdrWorkspacePanes = {
   paneTabsForTree,
   paneWorkspaceBadgeHtml,
   workspaceIdForTab,
-  foreignWorkspacePrefix,
+  foreignWorkspacePrefix: workspacePrefixForTab,
   panelVisibleLabel,
   panelDisplayName,
   panelNumberLabel,
