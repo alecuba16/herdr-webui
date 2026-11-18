@@ -1991,12 +1991,12 @@ function announcePaneChanges(text) {
 // carries the identity already).
 function renderLabelRail(container, entry, subject) {
   let rail = [...(container.children || [])].find((child) => hasClass(child, "pane-label-rail")) || null;
-  // Rail chips name view-holding panels only (locked model): an empty
-  // panel owns no view, and a dead placeholder is boot chrome. Such
-  // panels keep no chip: they heal into the empty-leaf hint or the
-  // dashboard, not the rail. Groups always speak (a split is two
-  // live views by construction).
-  const chipPanels = paneLeaves(entry).filter((leaf) => leafBusyViews(leaf) > 0);
+  // Every LIVE leaf gets a chip: the sweep folds abandoned empties and
+  // closeActivePane drops closed panels, so what sits in the tree is
+  // reachable by right. A view-less leaf (fresh mint, armed empty) is
+  // still a subject the user must be able to switch back to; filtering
+  // it would orphan it behind a rail that refuses to render.
+  const chipPanels = paneLeaves(entry);
   const panels = chipPanels;
   const groups = (entry.groups || []).filter((g) => groupMemberCount(g, entry) >= 2);
   const needRail = panels.length + groups.length > 1;

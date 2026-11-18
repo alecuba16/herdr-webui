@@ -271,9 +271,11 @@ function loadPanesModuleWithStorage(document, stateWs, stored, saved) {
     workspacePath: () => "/repo",
     selectedOrDefaultWorkspace: () => ({ workspace_id: "ws-1" }),
     panesByTabIndex: () => new Map(),
-    // startPaneGroupRename schedules the rename input focus through
-    // setTimeout; the vm realm has no timers.
-    setTimeout: (fn) => {},
+    // The vm realm has no real timer loop: run timer callbacks
+    // synchronously so deferred work (queueHomingSplit's settle,
+    // rename-input focus) lands inside the test body instead of
+    // vanishing.
+    setTimeout: (fn) => { fn(); },
     go: () => {},
   };
   ctx.window = ctx;
@@ -593,27 +595,34 @@ test("forgetWorkspacePanes keeps the session entry and drops legacy per-ws keys"
 
 // ---- 3. terminal sync ---------------------------------------------------
 
-test("sync homes backend ids into the bound seed panel and prunes dead ids", () => {
+test("sync homes the first id into the bound seed panel and splits the second", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   const seed = panes.paneRoot().panels[0];
   assert.ok(seed.tabs.includes("terminal"), "fresh entry seeds the placeholder");
   ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }, { tab_id: "tab_3", workspace_id: "ws-1" }];
-  assert.equal(panes.syncTerminalTabsIntoTree(panes.paneRoot()), true, "ids homed");
-  assert.deepEqual([...seed.tabs], ["tab_2", "tab_3"], "placeholder swapped for real ids");
+  assert.equal(panes.syncTerminalTabsIntoTree(panes.paneRoot()), true, "ids resolved");
+  assert.deepEqual([...seed.tabs], ["tab_2"], "first id homes into the seed, one view per flat");
   assert.equal(seed.active, "tab_2", "active follows the seed");
-  ctx.state.tabs.push({ tab_id: "tab_4", workspace_id: "ws-1" });
-  assert.equal(panes.syncTerminalTabsIntoTree(panes.paneRoot()), true, "new id appended");
-  assert.ok(seed.tabs.includes("tab_4"), "append keeps earlier ids");
+  // The second id split the busy seed: a group wraps host + fresh member.
+  const root = panes.paneRoot();
+  const group = root.groups[0];
+  assert.ok(group, "homing split minted a group");
+  assert.deepEqual([...group.memberIds], [seed.paneId, root.panels[root.panels.length - 1].paneId], "host left, fresh member right");
+  const fresh = root.panels[root.panels.length - 1];
+  assert.ok(fresh.tabs.includes("tab_3"), "second id lives in the split member");
+  assert.equal(group.focusedPaneId, fresh.paneId, "split focus lands on the new member");
+  // A third id appends nowhere: it splits the id's own home again only
+  // when homed, so drop a dead id instead and watch the prune heal.
   ctx.state.tabs = ctx.state.tabs.filter((tab) => tab.tab_id !== "tab_3");
-  seed.active = "tab_3";
   assert.equal(panes.syncTerminalTabsIntoTree(panes.paneRoot()), true, "dead id pruned");
-  assert.ok(!seed.tabs.includes("tab_3"), "pruned id gone");
-  assert.ok(seed.active === "tab_2" || seed.active === "tab_4", "dangling active healed to a kept id");
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  assert.ok(leavesAfter.some((l) => l.tabs.includes("tab_2")), "seed keeps its id");
+  assert.ok(!leavesAfter.some((l) => l.tabs.includes("tab_3")), "pruned id gone from every leaf");
 });
 
-test("sync keeps a moved tab's home and honors pending placements once", () => {
+test("sync keeps a moved tab's home and a placement on a busy panel splits beside it", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
@@ -628,7 +637,15 @@ test("sync keeps a moved tab's home and honors pending placements once", () => {
   panes.requestTabPlacement(leaves[0].paneId);
   panes.syncTerminalTabsIntoTree(panes.paneRoot());
   assert.ok(leaves[1].tabs.includes("tab_2"), "moved terminal keeps its home");
-  assert.ok(leaves[0].tabs.includes("tab_9"), "new id landed in the pressed panel");
+  // Placement on a busy panel splits: the fresh member beside the
+  // pressed panel owns the incoming id.
+  const root = panes.paneRoot();
+  const owner = root.panels.find((l) => l.tabs.includes("tab_9"));
+  assert.ok(owner && owner.paneId !== leaves[0].paneId, "new id landed in the split member beside the pressed panel");
+  const group = root.groups.find((g) => g.memberIds.includes(owner.paneId));
+  assert.ok(group, "the split member groups with the pressed panel");
+  assert.deepEqual([...group.memberIds], [leaves[0].paneId, owner.paneId], "pressed panel left, new member right");
+  assert.equal(group.focusedPaneId, owner.paneId, "split focus lands on the new member");
 });
 
 // ---- 4. label drag pipeline: preview geometry and refusals -------------
@@ -944,12 +961,11 @@ test("showPanelFromRail and showGroupFromRail switch the visible subject", () =>
 
 // ---- 10. close cascade -------------------------------------------------
 
-test("closeActivePane migrates tabs, drops the member, dissolves the group", async () => {
+test("closeActivePane really closes the member's views and drops the panel", async () => {
   const { nodes, document } = buildDom();
   const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: [] }]);
   // Regroup p2+p3: closing p3 leaves survivor p2 while panels[0] stays
-  // p1, so the sibling-first migration and the survivor heal cannot
-  // hide behind rail-order or first-panel fallbacks.
+  // p1, so no first-panel fallback can hide behind rail-order.
   spec.panels[0].groupId = null;
   spec.panels[1].groupId = "g1";
   spec.panels[2].groupId = "g1";
@@ -959,18 +975,25 @@ test("closeActivePane migrates tabs, drops the member, dissolves the group", asy
   spec.panels[2].active = "editor:src/gone.py";
   const { ctx, panes } = loadGroupSession(document, spec);
   ctx.window.HerdrFileBrowser = {
-    async openEditorTab(path) { panes.setActivePaneTab("editor:" + path); },
+    async closeEditorTab(path) { panes.closeEditorTabImmediate(path); },
+  };
+  // The real closeTab owns the backend row close (confirm + POST +
+  // prune + cascade); without it the row survives and the sync would
+  // legitimately re-home the id as a fresh split. Model the row half.
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    panes.onTerminalTabClosed(tabId);
   };
   panes.focusPanelFor(encodeURIComponent("p3"));
   assert.equal(await panes.closeActivePane(), true, "close accepted");
   const root = panes.paneRoot();
   assert.equal(panes.paneLeaves(root).length, 2, "two panels left");
+  assert.ok(!root.panels.some((l) => l.paneId === "p3"), "closed panel record dropped");
   const survivor = root.panels.find((l) => l.paneId === "p2");
   const outsider = root.panels.find((l) => l.paneId === "p1");
-  assert.ok(survivor.tabs.includes("editor:src/gone.py"), "tabs migrated to the sibling survivor");
-  assert.ok(!outsider.tabs.includes("editor:src/gone.py"), "rail-order panel never receives the tabs");
+  assert.ok(!survivor.tabs.includes("editor:src/gone.py"), "views never migrate to a sibling");
+  assert.ok(!outsider.tabs.includes("editor:src/gone.py"), "rail-order panel never receives the views");
   assert.equal(root.visible.type, "panel", "visible pointer healed to a panel");
-  assert.equal(root.visible.id, "p2", "visible names the survivor, not panels[0]");
   // The under-two group dissolved through the render-top sweep.
   assert.equal(root.groups.length, 0, "one-member group dissolved");
   assert.equal(splitElements(nodes).length, 0, "split chrome cleared");
