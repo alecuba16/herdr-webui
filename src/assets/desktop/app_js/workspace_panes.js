@@ -1991,7 +1991,13 @@ function announcePaneChanges(text) {
 // carries the identity already).
 function renderLabelRail(container, entry, subject) {
   let rail = [...(container.children || [])].find((child) => hasClass(child, "pane-label-rail")) || null;
-  const panels = paneLeaves(entry);
+  // Rail chips name view-holding panels only (locked model): an empty
+  // panel owns no view, and a dead placeholder is boot chrome. Such
+  // panels keep no chip: they heal into the empty-leaf hint or the
+  // dashboard, not the rail. Groups always speak (a split is two
+  // live views by construction).
+  const chipPanels = paneLeaves(entry).filter((leaf) => leafBusyViews(leaf) > 0);
+  const panels = chipPanels;
   const groups = (entry.groups || []).filter((g) => groupMemberCount(g, entry) >= 2);
   const needRail = panels.length + groups.length > 1;
   if (!needRail) {
@@ -2421,40 +2427,97 @@ function autoClosePreStateFor(root, leaf) {
 function panePanelChipHtml(leaf) {
   const root = paneRootFor();
   if (!leaf) return "";
-  // Split-only: the rail already names every independent panel, so a
-  // flat view whose strip also carried the chip read the same identity
-  // twice (chip + tab label). Inside the visible split the chip stays:
-  // it names the member and carries the re-position / rail-exit drag.
+  // Merged-header era: the chip IS the member's merged header. The
+  // split-visibility gate stays (flats and hidden groups carry no
+  // chip); the returned markup is the one fused element the split
+  // renders, so external probes read the same html the strip shows.
   const group = groupForLeaf(root, leaf);
   if (!group || !visibleSubjectIsGroup(root, group.groupId)) return "";
+  return paneMergedHeaderHtml(leaf, paneTabsForTree(leaf), paneActiveTabOf(leaf));
+}
+
+// The member identity every split surface speaks: a set name is the
+// identity alone; a default panel carries its worktree name plus
+// number so two panels of one worktree never read identical in a
+// split. Shared by the merged header and the legacy chip callers.
+function paneMemberHeaderLabel(leaf) {
+  const root = paneRootFor();
   const wsId = leafWorkspaceId(leaf);
   const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
   const wsName = workspace
     ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
     : (wsId || "panel");
-  // Panel identity on the chip: a set name is the identity alone (the
-  // workspace rides the title); a default panel carries its worktree
-  // name plus number so two panels of the same worktree never read
-  // identical in a group view.
   const name = leaf.name ? String(leaf.name).trim() : "";
-  let label;
-  if (name) {
-    label = name;
-  } else {
-    // The active tab decides the number; an editor/git active tab is
-    // not a terminal row, so the first terminal tab of the leaf takes
-    // over (the number still identifies the panel behind the strip).
-    const tabs = leaf.tabs || [];
-    const activeTab = paneActiveTabOf(leaf);
-    const candidate = activeTab && paneTerminalTabById(activeTab) ? activeTab : tabs.find((id) => paneTerminalTabById(id)) || null;
-    const row = candidate ? paneTerminalTabById(candidate) : null;
-    const number = row ? String(row.number || "") : "";
-    label = number ? `${wsName} ${number}` : wsName;
-  }
-  const title = name ? `${wsName}: ${name}` : `Focus panel: ${label}`;
+  if (name) return name;
+  // The active tab decides the number; an editor/git active tab is
+  // not a terminal row, so the first terminal tab of the leaf takes
+  // over (the number still identifies the panel behind the view).
+  const tabs = leaf.tabs || [];
+  const activeTab = paneActiveTabOf(leaf);
+  const candidate = activeTab && paneTerminalTabById(activeTab) ? activeTab : tabs.find((id) => paneTerminalTabById(id)) || null;
+  const row = candidate ? paneTerminalTabById(candidate) : null;
+  const number = row ? String(row.number || "") : "";
+  return number ? `${wsName} ${number}` : wsName;
+}
+
+// The merged member header (locked model): ONE element per split
+// member. The member identity (label + accent) and its single view
+// ride one button: click focuses the member (the view is the panel's
+// only content, so the focus IS the view activation), drag repositions
+// or exits to the rail, and close UNGROUPS (exit-to-rail, not close).
+// Degraded multi-tab blobs render the extra views as plain tabs after
+// the header rather than dropping a live view.
+function paneMergedHeaderHtml(leaf, tabs, activeTab) {
+  const label = paneMemberHeaderLabel(leaf);
   const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
   const dragAttrs = ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeAttr(encodedPane)}')" ondragend="paneMemberDragEnd()"`;
-  return `<button class="pane-panel-chip" title="${escapeAttr(title)}" aria-label="Focus panel: ${escapeAttr(label)}" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs} onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
+  const views = tabs || [];
+  const single = views.length === 1 ? views[0] : null;
+  // The view label rides the header only when the member label does
+  // not already name it: terminal numbers are IN the member label
+  // (wsName + number), so only editor and git views append theirs.
+  let viewHtml = "";
+  if (single && isEditorTab(single)) {
+    viewHtml = `<span class="pane-member-view" title="${escapeAttr(editorTabPath(single))}">${escapeHtml(editorTabLabel(editorTabPath(single)))}</span>`;
+  } else if (single && isGitTab(single)) {
+    viewHtml = `<span class="pane-member-view" title="${escapeAttr(gitTabTitle(gitTabViewKey(single)))}">${escapeHtml(gitTabLabel(gitTabViewKey(single)))}</span>`;
+  }
+  const header =
+    `<button class="pane-member-header pane-panel-chip" role="tab" aria-label="Focus panel: ${escapeAttr(label)}" title="Focus panel: ${escapeAttr(label)} (double-click or press F2 to rename)" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs}` +
+    ` onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')" ondblclick="startPanelChipRename('${escapeAttr(encodedPane)}')" onkeydown="memberHeaderKey(event,'${escapeAttr(encodedPane)}')">` +
+    `<span class="pane-label-chip-text">${escapeHtml(label)}</span>${viewHtml}` +
+    `<span class="pane-tab-close" role="button" tabindex="0" title="Leave split" aria-label="Leave split" onclick="event.stopPropagation();ungroupPaneMember('${escapeAttr(encodedPane)}')">✕</span>` +
+    `</button>`;
+  const extra = views.length > 1
+    ? views.map((tabId) => {
+        if (isEditorTab(tabId)) return paneEditorTabButtonHtml(tabId, tabId === activeTab);
+        if (isGitTab(tabId)) return paneGitTabButtonHtml(tabId, tabId === activeTab);
+        return paneTerminalTabButtonHtml(paneTerminalTabById(tabId), tabId === activeTab);
+      }).join("")
+    : "";
+  return header + extra;
+}
+
+// Merged-header close: the member leaves the split through the
+// ungroup op (exit-to-rail), never a close. The panel and its view
+// survive as an independent rail panel.
+function ungroupPaneMember(encodedPaneId) {
+  const root = paneRootFor();
+  const paneId = decodeURIComponentSafe(encodedPaneId);
+  const leaf = paneId ? paneForPaneId(root, paneId) : activeLeaf(root);
+  if (!leaf) return false;
+  return ungroupMember(leaf);
+}
+
+// Merged-header keyboard: F2 renames the panel (same affordance as
+// the rail chip). The close span keeps click-only activation, matching
+// the existing tab-close spans' contract.
+function memberHeaderKey(e, encodedPaneId) {
+  if (!e) return;
+  if (e.key === "F2") {
+    if (e.preventDefault) e.preventDefault();
+    startPanelChipRename(encodedPaneId);
+  }
 }
 
 // Route write from a panel (design: the location bar always mirrors the
@@ -2576,25 +2639,45 @@ function clearPanelDropPreview() {
 }
 
 function renderLeafInto(pane, leaf) {
+  // Stripless flats: only a member of the VISIBLE split renders a
+  // strip, and its strip is ONE merged header (chip label + view tab
+  // + close fused, per the locked model). A flat panel names itself
+  // through the rail chip and the bar; a strip there duplicated the
+  // identity and broke the one-view contract.
+  const root = paneRootFor();
+  const group = groupForLeaf(root, leaf);
+  const inSplit = !!(group && visibleSubjectIsGroup(root, group.groupId));
   const strip = pane.querySelector(".pane-tab-strip");
   if (!strip) return;
-  wirePaneStripDrag(strip);
+  // The current-workspace marker rides the pane element, not the
+  // strip: flats keep the marker even with the strip hidden.
   markCurrentWorkspacePane(pane, leaf);
+  if (!inSplit) {
+    // Flat pane: no strip at all. Existing strips from pre-rework
+    // sessions clear once here; autoClose markers live on the leaf
+    // record, not the DOM, so the sweep keeps its state. The hidden
+    // attr re-asserts every pass because unhidePaneStrips (dashboard
+    // and empty-leaf unmounts) force-shows every strip; the signature
+    // guard above only guards the innerHTML rebuild.
+    if (strip.__herdrPaneSignature !== "") {
+      strip.__herdrPaneSignature = "";
+      strip.innerHTML = "";
+    }
+    if (strip.setAttribute) strip.setAttribute("hidden", "hidden");
+    return;
+  }
+  wirePaneStripDrag(strip);
   const activeTab = paneActiveTab(leaf);
-  // Chip on the leading edge, badge retired: the collector names each
-  // panel through its chip when more than one panel exists, and the
-  // D4 mixed-tree badge duplicated that job worse (per-tab rows, no
-  // focus affordance).
-  const stripHtml = panePanelChipHtml(leaf) + paneTabsForTree(leaf)
-    .map((tabId) => {
-      if (isEditorTab(tabId)) return paneEditorTabButtonHtml(tabId, tabId === activeTab);
-      if (isGitTab(tabId)) return paneGitTabButtonHtml(tabId, tabId === activeTab);
-      return paneTerminalTabButtonHtml(paneTerminalTabById(tabId), tabId === activeTab);
-    })
-    .join("");
+  // The merged header: the member chip's identity and the view tab's
+  // controls ride ONE element (label + accent + view tab + close).
+  // paneTabsForTree yields at most one view under the invariant; a
+  // degraded multi-tab blob still renders each tab rather than
+  // dropping a live view.
+  const stripHtml = paneMergedHeaderHtml(leaf, paneTabsForTree(leaf), activeTab);
   if (strip.__herdrPaneSignature !== stripHtml) {
     strip.__herdrPaneSignature = stripHtml;
     strip.innerHTML = stripHtml;
+    if (strip.removeAttribute) strip.removeAttribute("hidden");
   }
 }
 
@@ -2850,11 +2933,15 @@ function paneNewTabControlHtml(leaf) {
 
 // Close only exists when another panel could take the route: one panel
 // keeps it hidden (closing the last panel is closing the workspace).
+// Stripless model: this is a REAL close of the panel (the panel record
+// and its view go), never a merge into a neighbor. A split member
+// closed from its bar ungroups (the merged header's own ✕ carries
+// the split-exit); this control closes the panel outright.
 function paneCloseControlHtml(leaf) {
   const root = paneRootFor();
   if (paneLeaves(root).length < 2) return "";
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  return `<button class="pane-strip-button" title="Close pane" aria-label="Close pane and move tabs to the other pane" onclick="event.preventDefault();closePaneFor('${escapeAttr(encoded)}')">✕</button>`;
+  return `<button class="pane-strip-button" title="Close panel" aria-label="Close panel" onclick="event.preventDefault();closePaneFor('${escapeAttr(encoded)}')">✕</button>`;
 }
 
 // ---- pane menu (Phase 5) -----------------------------------------------
@@ -2864,19 +2951,16 @@ function paneCloseControlHtml(leaf) {
 let paneMenu = null;
 
 function paneMenuItemsFor(leaf, root) {
-  const activeTab = leaf.active || (leaf.tabs || [])[0] || null;
-  const isTerm = !!activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab);
   const items = [];
-  if (isTerm) {
-    const tab = paneTerminalTabById(activeTab);
-    if (tab) {
-      items.push({
-        id: "rename-tab",
-        label: "Rename panel",
-        action: () => { focusLeaf(root, leaf); startTabRename(tab.tab_id, panelRenameInitialLabel(tab)); },
-      });
-    }
-  }
+  // Rename always names the PANEL (leaf.name), never the tab row: the
+  // stripless flat carries no tab strip for a tab-rename input, and
+  // the merged header + rail chip speak the panel identity. The rail
+  // chip swap (startPanelChipRename) is the one rename surface left.
+  items.push({
+    id: "rename-pane",
+    label: "Rename panel",
+    action: () => { focusLeaf(root, leaf); startPanelChipRename(encodeURIComponent(leaf.paneId)); },
+  });
   if (paneLeaves(root).length > 1) {
     items.push({
       id: "close-pane",
@@ -3851,7 +3935,7 @@ function queueHomingSplit(homePaneId, wsId, tabId) {
   const key = String(tabId);
   if (pendingHomingSplits.has(key)) return;
   pendingHomingSplits.add(key);
-  setTimeout(async () => {
+  const run = async () => {
     try {
       const root = paneRootFor();
       // Landed elsewhere already (placement race, broadcast): done.
@@ -3872,7 +3956,12 @@ function queueHomingSplit(homePaneId, wsId, tabId) {
     } finally {
       pendingHomingSplits.delete(key);
     }
-  }, 0);
+  };
+  // Sandbox harnesses (node --test without a timer global) still need
+  // the invariant: fire the split now instead of deferring. The browser
+  // keeps the deferred path so the sync render pass never awaits.
+  if (typeof setTimeout !== "function") { void run(); return; }
+  setTimeout(run, 0);
 }
 
 // Member re-position inside the visible group (strip chip drag): the
@@ -4291,95 +4380,73 @@ async function openPanelInWorkspace(workspaceId, paneId) {
   }
 }
 
-// Closes the acting panel. The closed panel's tabs migrate to the
-// nearest same-workspace panel instead of dying; with no same-ws
-// panel the close is the workspace's last panel and the workspace
-// cascade fires. The visible pointer and focus heal through
-// visibleSubject/activeLeaf.
+// Closes the acting panel for real (stripless model): the panel record
+// and every view it holds go, nothing merges into a neighbor. Each view
+// closes through its own confirmation path first (terminal askQuestion,
+// editor dirty confirm; git closes silent), so a cancel stops the whole
+// close with the tree intact. After the views die, the panel drops via
+// dropLeafFromTree; the last panel of a workspace keeps the workspace
+// cascade (closeTab owns it for terminals, forgetWorkspacePanes for the
+// record). Focus/visible healing stays with the sweep and visibleSubject.
 async function closeActivePane() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
-  const leaves = paneLeaves(root);
   const leaf = activeLeaf(root);
   if (!leaf) return false;
-  const wsId = leafWorkspaceId(leaf);
+  const leaves = paneLeaves(root);
   // Single-panel session: closing it would leave nothing to render.
   if (leaves.length <= 1) return false;
-  // Migration only inside the same workspace: a panel's tabs must not
-  // leak into another workspace's panel. The group sibling wins over
-  // any other same-ws panel: closing a split member keeps the center on
-  // its own split family, not a stranger rail neighbor.
-  const sibling = (() => {
-    const group = groupForLeaf(root, leaf);
-    if (!group) return null;
-    for (const id of group.memberIds) {
-      if (id === leaf.paneId) continue;
-      const candidate = paneLeaves(root).find((p) => p.paneId === id);
-      if (candidate && leafWorkspaceId(candidate) === wsId) return candidate;
+  // View-by-view close, each through its own confirm path. The closes
+  // re-render; the doomed leaf's identity stays stable while its tabs
+  // drain one by one.
+  for (const tabId of [...leaf.tabs]) {
+    if (tabId === TERMINAL_TAB_PLACEHOLDER) continue;
+    const doomed = paneForPaneId(paneRootFor(), leaf.paneId);
+    if (!doomed || !(doomed.tabs || []).includes(tabId)) continue;
+    if (isEditorTab(tabId)) {
+      await closeEditorTab(encodeURIComponent(editorTabPath(tabId)));
+    } else if (isGitTab(tabId)) {
+      closeGitTab(gitTabViewKey(tabId));
+    } else {
+      // Terminal rows own the backend panel: a real close rides the
+      // tab close (confirm + POST + prune + sweep), exactly like the
+      // tab strip ✕. closeTab owns the in-flight guard and the
+      // workspace cascade for the workspace's last terminal. A dead
+      // row (sync pruned it) has no backend panel left: prune the id
+      // here so the panel can still drop.
+      if (typeof closeTab === "function" && terminalTabKnown(tabId)) {
+        await closeTab(tabId);
+      } else {
+        pruneClosedTabFromLeaf(tabId);
+      }
     }
-    return null;
-  })();
-  const migration = sibling
-    || paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId)
-    || null;
-  const liveRouteTab = state.tab != null ? String(state.tab) : null;
-  // The doomed tabs' merge into the survivor travels with the drop as a
-  // preLocal hook, not as a mutation here: run here it would also run in
-  // server mode before the panel.close response, the render's one-owner
-  // repair would strip the sibling during the flight, and its
-  // panel.update push would land after the close and wipe the
-  // server-side merge.
-  const mergeIntoSurvivor = () => {
-    if (!migration) return;
-    for (const tabId of [...leaf.tabs])
-      if (!migration.tabs.includes(tabId)) migration.tabs.push(tabId);
-    disarmLeafAutoClose(migration);
-    if (!migration.active || !migration.tabs.includes(migration.active))
-      migration.active = (liveRouteTab && migration.tabs.includes(liveRouteTab) ? liveRouteTab : migration.tabs[0]) || null;
-  };
-  // Cascade rule: the last panel of a workspace closing takes the
-  // workspace with it (its tabs and sidebar entry). Any remaining
-  // same-ws panel would have taken the tabs above; reaching here with
-  // a bound panel means this panel was the last.
-  const lastOfWs = !!wsId && !paneLeaves(root).some((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId);
-  // Subject protocol (same as createGroupFromDrop's __pending__ write):
-  // the op response owns the post-close subject, but the adoption's
-  // keepLocalVisible overlay prefers the local pointer when it still
-  // names a live panel. A stale stored pointer (boot overlaid it) would
-  // survive the close and steal the center from the survivor, so the
-  // survivor is pre-written here and the overlay keeps the intended
-  // subject. Only when the close dissolves the visible group: a plain
-  // panel subject that was never the doomed member keeps its subject.
-  const group = groupForLeaf(root, leaf);
-  const visibleWasDoomedGroup = !!(root.visible && root.visible.type === "group" && group && root.visible.id === group.groupId);
-  if (visibleWasDoomedGroup && migration) root.visible = { type: "panel", id: migration.paneId };
-  const dropped = dropLeafFromTree(leaf, { preLocal: mergeIntoSurvivor });
+    // A canceled confirm leaves the view standing: the panel close
+    // stops here, tree untouched. The leaf itself vanishing mid-loop
+    // (sweep or workspace cascade) is the close finishing another way.
+    const after = paneRootFor();
+    const drained = paneForPaneId(after, leaf.paneId);
+    if (!drained) return true;
+    if ((drained.tabs || []).includes(tabId)) return false;
+  }
+  // Placeholder-only or fully drained: drop the panel record. The
+  // workspace cascade (closeTab on the workspace's last terminal) may
+  // have removed the leaf already through forgetWorkspacePanes: that
+  // outcome IS the close, report success. A panel with only placeholder
+  // views still needs the record drop; the sweep below owns the group
+  // surgery and the subject heal.
+  if (!paneForPaneId(paneRootFor(), leaf.paneId)) return true;
+  const dropped = dropLeafFromTree(leaf);
+  // Server mode: the op owns the splice; the sweep (group dissolve,
+  // subject heal) only runs once the adoption landed. REJECTED means the
+  // server kept the panel: report the close refused, nothing swept.
+  if (dropped && typeof dropped.then === "function") {
+    const settled = await dropped;
+    if (settled === PANES_OP_REJECTED) return false;
+    if (sweepAbandonedEmptyLeaves()) renderWorkspacePanes();
+    return true;
+  }
   if (!dropped) return false;
-  if (lastOfWs && wsId && typeof closeWorkspaceById === "function") {
-    // Fire-and-forget: closeWorkspaceById owns its own refresh and
-    // error surfacing. The panel is already gone; a failed close
-    // leaves the terminal rows to the sync's prune.
-    void closeWorkspaceById(wsId);
-  }
-  if (migration) {
-    // The survivor's post-merge active only exists after the op owns
-    // the tree: in server mode the adoption replaces the entry, so
-    // routing here would read pre-merge tabs and mount editor surfaces
-    // into the dying panel. Local mode ran the twin synchronously, so
-    // the survivor leaf is already final there.
-    const routeToSurvivorActive = () => {
-      const survivor = migration ? paneForPaneId(paneRootFor(), migration.paneId) : null;
-      if (!survivor || !survivor.tabs.length) return;
-      const active = survivor.tabs.includes(survivor.active) ? survivor.active : survivor.tabs[0];
-      if (isEditorTab(active)) void activateEditorTab(editorTabPath(active));
-      else if (isGitTab(active)) void openGitTab(gitTabViewKey(active));
-      else if (typeof go === "function" && state.tab !== active)
-        go(workspaceIdForTab(active), active);
-    };
-    if (dropped && typeof dropped.then === "function")
-      void dropped.then((res) => { if (res !== PANES_OP_REJECTED) routeToSurvivorActive(); });
-    else routeToSurvivorActive();
-  }
+  if (sweepAbandonedEmptyLeaves()) renderWorkspacePanes();
   return true;
 }
 
@@ -5650,6 +5717,9 @@ window.HerdrWorkspacePanes = {
   // Strip chip HTML (split-only) + member chip drag pipeline (group
   // view: re-position inside the split, rail drop ungroups).
   panePanelChipHtml,
+  paneMergedHeaderHtml,
+  ungroupPaneMember,
+  memberHeaderKey,
   paneMemberDragStart,
   paneMemberDragEnd,
   paneRailMemberDrop,

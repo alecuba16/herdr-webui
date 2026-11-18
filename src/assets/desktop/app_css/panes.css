@@ -1018,3 +1018,58 @@
   height: 0;
   overflow: hidden;
 }
+
+/* Merged member header (locked model): ONE element per split member
+   fusing the member identity (label + accent slab) with its single
+   view. The .pane-panel-chip class carries the accent slab look; this
+   rule only adds the tab-row metrics so the fused header reads like a
+   tab: fixed height, tab-like radius, and the close affordance riding
+   inside. Flats render no strip at all, so this class only ever paints
+   inside a split. */
+.pane-member-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 88px;
+  max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 54px);
+  height: 30px;
+  padding: 0 10px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+/* Hover lifts the header like a tab so the fused element reads as one
+   interactive control, not a chip with a tab glued on. */
+.pane-member-header:hover {
+  background: var(--control-hover);
+  color: var(--fg);
+}
+
+/* The fused view label rides between the member label and the close;
+   it ellipsizes so a long path never pushes the ✕ out of the header. */
+.pane-member-header .pane-member-view {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+/* The accent slab stays readable inside the fused header: the chip
+   base sets border-left + background, but the tab-row height is
+   taller than the old chip line, so the padding balances. */
+.pane-member-header.pane-panel-chip {
+  padding: 0 10px 0 6px;
+  max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 74px);
+}
+
+/* Close inside the merged header keeps the tab-close affordance; the
+   ungroup exit is a leave, not a kill, so no danger tint on hover: a
+   neutral hover avoids selling the exit as a destructive close. */
+.pane-member-header .pane-tab-close {
+  flex: 0 0 auto;
+}
+
