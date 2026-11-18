@@ -747,21 +747,25 @@ test("a single panel subject renders one flat pane with no wrapper", () => {
 
 test("member tab dragged out ungroups and dissolves a two-member group", () => {
   const { nodes, document } = buildDom();
-  const spec = seedTwoMemberGroup(document);
-  spec.panels[1].tabs = ["editor:src/x.py"];
-  spec.panels[1].active = "editor:src/x.py";
+  const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: ["editor:src/x.py"] }]);
+  // Regroup p2+p3 so the survivor (p2) differs from panels[0] (p1):
+  // the heal cannot hide behind the first-panel fallback.
+  spec.panels[0].groupId = null;
+  spec.panels[1].groupId = "g1";
+  spec.panels[2].groupId = "g1";
+  spec.groups[0].memberIds = ["p2", "p3"];
+  spec.groups[0].layout = { kind: "row", sizes: [1, 1], splitId: "s1", children: ["p2", "p3"] };
   const { ctx, panes } = loadGroupSession(document, spec);
   assert.equal(entryOf(panes).visible.type, "group", "group starts visible");
-  panes.paneTabDragStart && 0; // paneTabDragStart lives on the context, not the registry
   ctx.paneTabDragStart({ target: { dataset: { tabId: "editor:src/x.py" }, classList: { add() {}, remove() {} } }, dataTransfer: { setData() {}, effectAllowed: "move" } });
   assert.equal(panes.paneTabUnsplitHover({ dataTransfer: { getData: () => "editor:src/x.py" } }), true, "hover qualifies the ungroup");
   assert.equal(panes.paneTabUnsplitDrop({ dataTransfer: { getData: () => "editor:src/x.py" } }), true, "drop reported");
   const entry = entryOf(panes);
   assert.equal(entry.groups.length, 0, "two-member group dissolves when one leaves");
   const leaves = panes.paneLeaves(entry);
-  assert.ok(leaves.every((l) => l.groupId == null), "both panels ungrouped");
+  assert.ok(leaves.every((l) => l.groupId == null), "all panels ungrouped");
   assert.equal(entry.visible.type, "panel", "subject heals to a panel");
-  assert.ok(leaves.some((l) => l.paneId === "p1" && entry.visible.id === "p1"), "the remaining member takes the subject");
+  assert.equal(entry.visible.id, "p2", "the surviving member takes the subject, not panels[0]");
   assert.equal(splitElements(nodes).length, 0, "split chrome cleared after the dissolve");
   // A tab whose panel is ungrouped no longer qualifies.
   ctx.paneTabDragStart({ target: { dataset: { tabId: "editor:src/x.py" }, classList: { add() {}, remove() {} } }, dataTransfer: { setData() {}, effectAllowed: "move" } });
@@ -933,24 +937,37 @@ test("showPanelFromRail and showGroupFromRail switch the visible subject", () =>
 
 test("closeActivePane migrates tabs, drops the member, dissolves the group", async () => {
   const { nodes, document } = buildDom();
-  const spec = seedTwoMemberGroup(document);
-  spec.panels[1].tabs = ["editor:src/gone.py"];
-  spec.panels[1].active = "editor:src/gone.py";
+  const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: [] }]);
+  // Regroup p2+p3: closing p3 leaves survivor p2 while panels[0] stays
+  // p1, so the sibling-first migration and the survivor heal cannot
+  // hide behind rail-order or first-panel fallbacks.
+  spec.panels[0].groupId = null;
+  spec.panels[1].groupId = "g1";
+  spec.panels[2].groupId = "g1";
+  spec.groups[0].memberIds = ["p2", "p3"];
+  spec.groups[0].layout = { kind: "row", sizes: [1, 1], splitId: "s1", children: ["p2", "p3"] };
+  spec.panels[2].tabs = ["editor:src/gone.py"];
+  spec.panels[2].active = "editor:src/gone.py";
   const { ctx, panes } = loadGroupSession(document, spec);
   ctx.window.HerdrFileBrowser = {
     async openEditorTab(path) { panes.setActivePaneTab("editor:" + path); },
   };
-  panes.focusPanelFor(encodeURIComponent("p2"));
+  panes.focusPanelFor(encodeURIComponent("p3"));
   assert.equal(await panes.closeActivePane(), true, "close accepted");
-  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 1, "one panel left");
-  const survivor = panes.paneLeaves(panes.paneRoot())[0];
-  assert.ok(survivor.tabs.includes("editor:src/gone.py"), "tabs migrated to the survivor");
-  assert.equal(panes.paneRoot().visible.type, "panel", "visible pointer healed to a panel");
-  assert.equal(panes.paneRoot().visible.id, survivor.paneId, "visible names the survivor");
+  const root = panes.paneRoot();
+  assert.equal(panes.paneLeaves(root).length, 2, "two panels left");
+  const survivor = root.panels.find((l) => l.paneId === "p2");
+  const outsider = root.panels.find((l) => l.paneId === "p1");
+  assert.ok(survivor.tabs.includes("editor:src/gone.py"), "tabs migrated to the sibling survivor");
+  assert.ok(!outsider.tabs.includes("editor:src/gone.py"), "rail-order panel never receives the tabs");
+  assert.equal(root.visible.type, "panel", "visible pointer healed to a panel");
+  assert.equal(root.visible.id, "p2", "visible names the survivor, not panels[0]");
   // The under-two group dissolved through the render-top sweep.
-  assert.equal(panes.paneRoot().groups.length, 0, "one-member group dissolved");
+  assert.equal(root.groups.length, 0, "one-member group dissolved");
   assert.equal(splitElements(nodes).length, 0, "split chrome cleared");
-  // The last panel refuses the close.
+  // Closing down to one panel still refuses the last close.
+  assert.equal(await panes.closeActivePane(), true, "second close drops the next active panel");
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 1, "one panel left");
   assert.equal(await panes.closeActivePane(), false, "last panel refuses");
   assert.equal(panes.paneLeaves(panes.paneRoot()).length, 1, "still one panel");
 });

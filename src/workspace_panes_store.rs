@@ -487,6 +487,19 @@ fn dissolve_undersized_groups(entry: &mut PanesEntry) {
     for group_id in group_ids {
         if let Some(at) = entry.groups.iter().position(|g| g.group_id == group_id) {
             let group = entry.groups.remove(at);
+            // Surviving member heals the visible pointer while the
+            // record still names it: dissolve runs on close/ungroup
+            // paths where the group was the subject, and the survivor
+            // is a live panel so heal_visible keeps it.
+            if entry.visible.kind == "group" && entry.visible.id == group.group_id {
+                let survivor = live_members(entry, &group)
+                    .first()
+                    .map(|id| ("panel".to_string(), id.clone()));
+                if let Some((kind, id)) = survivor {
+                    entry.visible.kind = kind;
+                    entry.visible.id = id;
+                }
+            }
             for id in &group.member_ids {
                 if let Some(panel) = entry.panels.iter_mut().find(|p| &p.pane_id == id) {
                     panel.group_id = None;
@@ -963,6 +976,51 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             // the remove there is no record left to read the groupId
             // from.
             let group_id = entry.panels[at].group_id.clone();
+            // Same-workspace sibling merge, before the splice: the doomed
+            // member's tabs move to its group sibling while both panels
+            // are still readable. Option equality is the ws gate, tabs
+            // never leak into another workspace's panel.
+            if let Some(group_id) = group_id.as_deref() {
+                let doomed_ws = entry.panels[at].ws_id.clone();
+                let doomed_tabs = entry.panels[at].tabs.clone();
+                let doomed_active = entry.panels[at].active.clone();
+                let survivor_id = entry
+                    .groups
+                    .iter()
+                    .find(|g| g.group_id == group_id)
+                    .and_then(|g| {
+                        g.member_ids
+                            .iter()
+                            .filter(|id| **id != pane_id)
+                            .find(|id| {
+                                entry
+                                    .panels
+                                    .iter()
+                                    .find(|p| &p.pane_id == *id)
+                                    .is_some_and(|p| p.ws_id == doomed_ws)
+                            })
+                            .cloned()
+                    });
+                if let Some(survivor_id) = survivor_id {
+                    if let Some(survivor_at) = panel_index(entry, &survivor_id) {
+                        let survivor = &mut entry.panels[survivor_at];
+                        for tab in doomed_tabs {
+                            if !survivor.tabs.contains(&tab) {
+                                survivor.tabs.push(tab);
+                            }
+                        }
+                        let active_live = survivor
+                            .active
+                            .as_ref()
+                            .is_some_and(|tab| survivor.tabs.contains(tab));
+                        if !active_live {
+                            survivor.active = doomed_active
+                                .filter(|tab| survivor.tabs.contains(tab))
+                                .or_else(|| survivor.tabs.first().cloned());
+                        }
+                    }
+                }
+            }
             entry.panels.remove(at);
             if let Some(group_id) = group_id {
                 if let Some(group) = entry.groups.iter_mut().find(|g| g.group_id == group_id) {
@@ -1433,6 +1491,126 @@ mod tests {
         assert_eq!(entry.groups.len(), 1);
         assert_eq!(entry.groups[0].member_ids, vec!["p2", "p3"]);
         assert_eq!(entry.groups[0].group_id, recreated_id);
+    }
+
+    #[test]
+    fn panel_close_merges_doomed_tabs_into_same_ws_sibling() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        for (at, ws) in [(0, "ws_1"), (1, "ws_1"), (2, "ws_2")] {
+            entry.panels[at].ws_id = Some(ws.into());
+        }
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        assert_eq!(entry.groups[0].member_ids, vec!["p1", "p2"]);
+        entry.visible = VisiblePointer {
+            kind: "group".to_string(),
+            id: "g1".to_string(),
+        };
+        entry.panels[0].tabs = vec!["t1".into(), "t2".into()];
+        entry.panels[0].active = Some("t2".into());
+        entry.panels[1].tabs = vec!["t2".into(), "t3".into()];
+        entry.panels[1].active = Some("t3".into());
+        let mut close = req("panel.close");
+        close.pane_id = Some("p1".into());
+        apply_op(&mut entry, &close).unwrap();
+        // Doomed tabs migrated to the same-ws sibling, deduped, the
+        // survivor's live active pointer kept.
+        assert_eq!(entry.panels[0].pane_id, "p2");
+        assert_eq!(entry.panels[0].tabs, vec!["t2", "t3", "t1"]);
+        assert_eq!(entry.panels[0].active.as_deref(), Some("t3"));
+        // Group dissolved under two, the survivor owns the subject.
+        assert!(entry.groups.is_empty());
+        assert_eq!(entry.panels[0].group_id, None);
+        assert_eq!(entry.visible.kind, "panel");
+        assert_eq!(entry.visible.id, "p2");
+        // The other-workspace panel stayed out of the merge.
+        assert!(entry.panels[1].tabs.is_empty());
+    }
+
+    #[test]
+    fn panel_close_refuses_cross_ws_tab_merge() {
+        let mut entry = entry_with_panels(&["p1", "p2"]);
+        entry.panels[0].ws_id = Some("ws_a".into());
+        entry.panels[1].ws_id = Some("ws_b".into());
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        entry.visible = VisiblePointer {
+            kind: "group".to_string(),
+            id: "g1".to_string(),
+        };
+        entry.panels[0].tabs = vec!["t1".into()];
+        entry.panels[0].active = Some("t1".into());
+        let mut close = req("panel.close");
+        close.pane_id = Some("p1".into());
+        apply_op(&mut entry, &close).unwrap();
+        // The ws gate refused the merge: tabs die with the doomed
+        // panel, the dissolve still heals to the survivor.
+        assert!(entry.panels[0].tabs.is_empty());
+        assert_eq!(entry.panels[0].active, None);
+        assert!(entry.groups.is_empty());
+        assert_eq!(entry.visible.kind, "panel");
+        assert_eq!(entry.visible.id, "p2");
+    }
+
+    #[test]
+    fn panel_close_active_pointer_falls_back_to_migrated_tab() {
+        let mut entry = entry_with_panels(&["p1", "p2"]);
+        entry.panels[0].ws_id = Some("ws_1".into());
+        entry.panels[1].ws_id = Some("ws_1".into());
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        entry.panels[0].tabs = vec!["t1".into()];
+        entry.panels[0].active = Some("t1".into());
+        // Stale survivor pointer: the merge hands it the doomed tab.
+        entry.panels[1].tabs = vec!["t2".into()];
+        entry.panels[1].active = Some("stale".into());
+        let mut close = req("panel.close");
+        close.pane_id = Some("p1".into());
+        apply_op(&mut entry, &close).unwrap();
+        assert_eq!(entry.panels[0].tabs, vec!["t2", "t1"]);
+        assert_eq!(entry.panels[0].active.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn group_ungroup_heals_subject_to_surviving_member() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p3".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("column".into());
+        grow.host_pane_id = Some("p2".into());
+        apply_op(&mut entry, &grow).unwrap();
+        entry.visible = VisiblePointer {
+            kind: "group".to_string(),
+            id: "g1".to_string(),
+        };
+        // Three members: one ungroup keeps the group standing.
+        let mut ungroup = req("group.ungroup");
+        ungroup.pane_id = Some("p1".into());
+        apply_op(&mut entry, &ungroup).unwrap();
+        assert_eq!(entry.groups.len(), 1);
+        assert_eq!(entry.visible.kind, "group");
+        // The next ungroup dissolves and the survivor takes the subject.
+        let mut second = req("group.ungroup");
+        second.pane_id = Some("p3".into());
+        apply_op(&mut entry, &second).unwrap();
+        assert!(entry.groups.is_empty());
+        assert_eq!(entry.visible.kind, "panel");
+        assert_eq!(entry.visible.id, "p2");
     }
 
     #[test]

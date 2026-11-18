@@ -235,6 +235,12 @@ function makeServerApi(startingEntry) {
           if (group) {
             group.memberIds = group.memberIds.filter((id) => id !== op.paneId);
             if (group.memberIds.length < 2) {
+              // Server contract: the dissolve heals the visible pointer
+              // to the surviving member, not the panels[0] fallback.
+              if (entry.visible && entry.visible.type === "group" && entry.visible.id === groupId) {
+                const survivor = entry.panels.find((p) => group.memberIds.includes(p.paneId));
+                if (survivor) entry.visible = { type: "panel", id: survivor.paneId };
+              }
               for (const id of group.memberIds) {
                 const member = entry.panels.find((p) => p.paneId === id);
                 if (member) member.groupId = null;
@@ -266,7 +272,41 @@ function makeServerApi(startingEntry) {
         const paneId = `p${entry.panels.length + 1}`;
         entry.panels.push({ kind: "pane", paneId, tabs: [], active: null, wsId: op.wsId || null, groupId: null, name: null });
       } else if (op.op === "panel.close") {
+        // Server contract: a grouped close merges its tabs into the
+        // same-ws sibling, then the under-two dissolve heals the
+        // visible pointer to the survivor.
+        const doomed = entry.panels.find((p) => p.paneId === op.paneId);
+        const groupId = doomed && doomed.groupId;
+        if (doomed && groupId) {
+          const group = entry.groups.find((g) => g.groupId === groupId);
+          const siblingId = group
+            ? group.memberIds.find((id) => id !== op.paneId && entry.panels.find((p) => p.paneId === id && p.wsId === doomed.wsId))
+            : null;
+          const sibling = siblingId ? entry.panels.find((p) => p.paneId === siblingId) : null;
+          if (sibling) {
+            for (const tabId of doomed.tabs) if (!sibling.tabs.includes(tabId)) sibling.tabs.push(tabId);
+            if (!sibling.active || !sibling.tabs.includes(sibling.active))
+              sibling.active = (doomed.active && sibling.tabs.includes(doomed.active)) || sibling.tabs[0] || null;
+          }
+        }
         entry.panels = entry.panels.filter((p) => p.paneId !== op.paneId);
+        if (groupId) {
+          const group = entry.groups.find((g) => g.groupId === groupId);
+          if (group) {
+            group.memberIds = group.memberIds.filter((id) => id !== op.paneId);
+            if (group.memberIds.length < 2) {
+              if (entry.visible && entry.visible.type === "group" && entry.visible.id === groupId) {
+                const survivor = entry.panels.find((p) => group.memberIds.includes(p.paneId));
+                if (survivor) entry.visible = { type: "panel", id: survivor.paneId };
+              }
+              for (const id of group.memberIds) {
+                const member = entry.panels.find((p) => p.paneId === id);
+                if (member) member.groupId = null;
+              }
+              entry.groups = entry.groups.filter((g) => g.groupId !== groupId);
+            }
+          }
+        }
       } else if (op.op === "subject.set") {
         entry.visible = { type: op.visible.type, id: op.visible.id };
       }
@@ -951,4 +991,38 @@ test("adoption preserves the local focus pointer", async () => {
   remote.panels[0].name = "remote rename";
   assert.equal(panes.applyRemoteEntry(remote), true);
   assert.equal(panes.paneRoot().activePaneId, "p1", "local focus survived the adoption");
+});
+
+test("close inside a split adopts the server merge and the survivor heal", async () => {
+  const { document } = buildDom();
+  const starting = serverEntry();
+  starting.panels.push({ kind: "pane", paneId: "p3", tabs: ["editor:src/gone.py"], active: "editor:src/gone.py", wsId: "ws-1", groupId: null, name: null });
+  starting.groups = [
+    { groupId: "g1", name: null, memberIds: ["p2", "p3"], layout: { kind: "row", sizes: [1, 1], children: ["p2", "p3"] } },
+  ];
+  starting.panels[1].groupId = "g1";
+  starting.panels[2].groupId = "g1";
+  starting.visible = { type: "group", id: "g1" };
+  const script = makeServerApi(starting);
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const panes = ctx.HerdrWorkspacePanes;
+  assert.equal(panes.paneRoot().visible.type, "group", "group subject adopted");
+  assert.equal(await panes.closePaneFor("p3"), true, "close accepted");
+  // The op adoption is async (fire-and-forget dispatch): let the
+  // response land before reading the adopted entry.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const after = panes.paneRoot();
+  const survivor = after.panels.find((p) => p.paneId === "p2");
+  assert.ok(survivor, "survivor stands");
+  assert.ok(survivor.tabs.includes("editor:src/gone.py"), "doomed tabs merged into the sibling");
+  assert.equal(after.groups.length, 0, "group dissolved under two members");
+  assert.equal(after.visible.type, "panel", "subject healed to a panel");
+  assert.equal(after.visible.id, "p2", "the survivor takes the subject, not panels[0]");
 });

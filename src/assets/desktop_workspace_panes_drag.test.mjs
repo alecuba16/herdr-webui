@@ -1142,6 +1142,7 @@ test("rail member drop ungroups the member back to an independent panel", () => 
   // Two members minus one dissolves the group (ephemeral contract).
   assert.equal(entry.groups.length, 0, "the undersized group dissolved");
   assert.equal(entry.visible.type, "panel", "the subject healed to a panel");
+  assert.equal(entry.visible.id, "p3", "the surviving member takes the subject");
   assert.equal(ctx.paneMemberDragKind(), null, "the drop clears the drag state");
 });
 

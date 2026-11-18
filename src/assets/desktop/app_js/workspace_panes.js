@@ -312,9 +312,16 @@ function visibleSubject(entry) {
   const vis = entry.visible;
   if (vis && vis.type === "group") {
     // Pass THIS entry: the member count must resolve against the entry
-    // being read, not the lazily-minted store default (load path).
+    // being read, not the lazily-minted store default (load path); the
+    // same rule covers the survivor read below it.
     const group = groupById(entry, vis.id);
     if (group && groupMemberCount(group, entry) >= 2) return { kind: "group", group };
+    // Standing under-2 record (close just spliced a member): the
+    // survivor is the subject, not panels[0] from the fallback.
+    if (group) {
+      const survivor = groupMembers(group, entry)[0];
+      if (survivor) return { kind: "panel", leaf: survivor };
+    }
   }
   const panel = (vis && vis.type === "panel" && entry.panels.find((p) => p.paneId === vis.id)) || entry.panels[0];
   return { kind: "panel", leaf: panel };
@@ -3133,18 +3140,25 @@ function localUngroupMember(leaf) {
   const root = paneRootFor();
   const group = groupForLeaf(root, leaf);
   if (!group) return false;
+  // Survivor and subject reads BEFORE the member splice: the member
+  // list dies with the record on a dissolve, and the heal needs the
+  // surviving sibling, not the panels[0] fallback.
+  const survivor = groupMembers(group, root).find((member) => member !== leaf) || null;
+  const wasVisible = !!(root.visible && root.visible.type === "group" && root.visible.id === group.groupId);
   const at = group.memberIds.indexOf(leaf.paneId);
   if (at >= 0) group.memberIds.splice(at, 1);
   leaf.groupId = null;
-  if (groupMemberCount(group) < 2) {
-    for (const member of groupMembers(group)) member.groupId = null;
+  if (groupMemberCount(group, root) < 2) {
+    for (const member of groupMembers(group, root)) member.groupId = null;
     const atRec = root.groups.indexOf(group);
     if (atRec >= 0) root.groups.splice(atRec, 1);
+    // The dissolve hands the subject to the surviving member when the
+    // pointer named this group; visibleSubject below re-derives the
+    // same pointer from the healed panel id.
+    if (survivor && wasVisible) root.visible = { type: "panel", id: survivor.paneId };
   } else {
     group.layout = memberLayoutWithout(group.layout, leaf.paneId);
   }
-  // The visible pointer survives through visibleSubject's heal: a
-  // dissolved group hands the subject to this panel.
   const subject = visibleSubject(root);
   root.visible = subject && subject.kind === "group"
     ? { type: "group", id: subject.group.groupId }
@@ -4014,8 +4028,22 @@ async function closeActivePane() {
   // Single-panel session: closing it would leave nothing to render.
   if (leaves.length <= 1) return false;
   // Migration only inside the same workspace: a panel's tabs must not
-  // leak into another workspace's panel.
-  const migration = paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId) || null;
+  // leak into another workspace's panel. The group sibling wins over
+  // any other same-ws panel: closing a split member keeps the center on
+  // its own split family, not a stranger rail neighbor.
+  const sibling = (() => {
+    const group = groupForLeaf(root, leaf);
+    if (!group) return null;
+    for (const id of group.memberIds) {
+      if (id === leaf.paneId) continue;
+      const candidate = paneLeaves(root).find((p) => p.paneId === id);
+      if (candidate && leafWorkspaceId(candidate) === wsId) return candidate;
+    }
+    return null;
+  })();
+  const migration = sibling
+    || paneLeaves(root).find((candidate) => candidate !== leaf && leafWorkspaceId(candidate) === wsId)
+    || null;
   const liveRouteTab = state.tab != null ? String(state.tab) : null;
   if (migration) {
     for (const tabId of [...leaf.tabs])
@@ -4119,9 +4147,16 @@ function sweepAbandonedEmptyLeaves() {
   // Group dissolve: a group under two members is not a group anymore.
   for (const group of [...(paneRootFor().groups || [])]) {
     if (groupMemberCount(group) >= 2) continue;
+    // Survivor read BEFORE the record splice: the member list dies
+    // with the record, and the heal below needs the surviving member,
+    // not the panels[0] fallback.
+    const survivor = groupMembers(group)[0] || null;
+    const rootNow = paneRootFor();
+    const wasVisible = !!(rootNow.visible && rootNow.visible.type === "group" && rootNow.visible.id === group.groupId);
     for (const member of groupMembers(group)) member.groupId = null;
     const at = paneRootFor().groups.indexOf(group);
     if (at >= 0) paneRootFor().groups.splice(at, 1);
+    if (wasVisible && survivor) rootNow.visible = { type: "panel", id: survivor.paneId };
     changed = true;
   }
   // Visible heal: a dropped panel or dissolved group can leave the
