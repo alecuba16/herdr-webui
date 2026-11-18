@@ -316,14 +316,18 @@ function visibleSubject(entry) {
     const group = groupById(entry, vis.id);
     if (group && groupMemberCount(group, entry) >= 2) return { kind: "group", group };
   }
-  const panel = (vis && vis.type === "panel" && entry.panels.find((p) => p.paneId === vis.id)) || entry.panels.find((p) => !p.groupId) || entry.panels[0];
+  const panel = (vis && vis.type === "panel" && entry.panels.find((p) => p.paneId === vis.id)) || entry.panels[0];
   return { kind: "panel", leaf: panel };
 }
 
-// Switch the visible subject. Any subject change renders once; the
-// caller owns the route write (go() refreshes on its own).
+// Subject switch, ephemeral-group contract: a group exists ONLY as the
+// visible split view. Leaving it (any panel subject, or an implicit
+// fallback) dissolves the group record and frees its members. The one
+// group the app can hold is the visible one, so subject.set to a panel
+// is the destroy signal; nothing else may keep a group alive.
 function setVisibleSubject(type, id) {
   const entry = panesStateFor();
+  if (type !== "group") dissolveGroupInvisibleTo(entry, id);
   const subject = type === "group" ? { type: "group", id } : { type: "panel", id };
   const prev = visibleSubject(entry);
   entry.visible = subject;
@@ -339,6 +343,30 @@ function setVisibleSubject(type, id) {
   }
   renderWorkspacePanes();
   return prev;
+}
+
+// Dissolve every group that is not the named group: the rail shows ALL
+// panels, and a group only lives while it is the visible split, so a
+// subject switch to any panel destroys the group record and clears the
+// members' groupId (their chips return to the rail as plain panels).
+function dissolveGroupInvisibleTo(entry, keepGroupId) {
+  if (!entry || !Array.isArray(entry.groups)) return;
+  const groups = entry.groups.filter((g) => g && g.groupId !== keepGroupId);
+  if (!groups.length) return;
+  for (const group of groups) {
+    for (const member of groupMembers(group, entry)) member.groupId = null;
+  }
+  entry.groups = entry.groups.filter((g) => g && g.groupId === keepGroupId);
+}
+
+// Ephemeral-group choke point for repaired entries (load, adoption):
+// keep exactly the group the visible pointer names, drop every other
+// group record and free its members. The entry-visible read must come
+// BEFORE any caller heals the pointer, so both callers pass through
+// unchanged state.
+function dissolveGroupsExceptVisible(entry) {
+  const keepId = entry && entry.visible && entry.visible.type === "group" ? entry.visible.id : null;
+  dissolveGroupInvisibleTo(entry, keepId);
 }
 
 // ---- panel model (one-visible-view redo) ----------------------------
@@ -611,8 +639,14 @@ function normalizePanelEntry(entry) {
   if (!entry.panels.length) return null;
   if (!Array.isArray(entry.groups)) entry.groups = [];
   entry.groups = entry.groups.map((g) => normalizeGroupRecord(g, entry)).filter(Boolean);
+  // Ephemeral-group rule: a group only exists as the VISIBLE split.
+  // A repaired entry keeps exactly the group its visible pointer names;
+  // every other group record is stale (pre-redo blob, subject switch
+  // that never ran the dissolve) and dies here, freeing its members
+  // back to plain panel chips.
+  dissolveGroupsExceptVisible(entry);
   // The visible pointer survives only when it names a live subject;
-  // anything else heals to the first ungrouped panel (or first panel).
+  // anything else heals to the first panel (all panels are subjects now).
   const subject = visibleSubject(entry);
   entry.visible = subject && subject.kind === "group"
     ? { type: "group", id: subject.group.groupId }
@@ -728,6 +762,7 @@ function adoptServerPanesEntry(incoming, opts) {
   if (!incoming || typeof incoming !== "object" || !Array.isArray(incoming.panels)) return false;
   const prev = state.workspacePanes[SESSION_PANES_KEY] || null;
   const prevVisible = prev && prev.visible && typeof prev.visible === "object" ? prev.visible : null;
+  const prevFocus = prev && prev.activePaneId ? String(prev.activePaneId) : null;
   const runtimeMarks = new Map();
   const localFileTabs = new Map();
   if (prev && Array.isArray(prev.panels)) {
@@ -760,16 +795,31 @@ function adoptServerPanesEntry(incoming, opts) {
   } else if (vis && vis.type === "group" && (healed.groups || []).some((g) => g.groupId === vis.id)) {
     healed.visible = { type: "group", id: vis.id };
   }
+  // Focus is per-client (focus.set rides the shared entry but this
+  // client never sends it): the server's copy is some other writer's,
+  // so the local pointer is restored when its panel survived the swap.
+  if (prevFocus && healed.panels.some((p) => p.paneId === prevFocus)) {
+    healed.activePaneId = prevFocus;
+  }
+  // Ephemeral-group rule after the pointer overlay: a kept PANEL
+  // pointer means the server's group (another client's subject) is not
+  // this client's subject, so it dissolves here instead of hiding in
+  // the store. A kept GROUP pointer keeps its group; the render pass
+  // heals the visible pointer through visibleSubject.
+  dissolveGroupsExceptVisible(healed);
   return true;
 }
 
-// Send one intent op. Returns the adopted server entry on success, null
-// on failure. A structured 400 from the op route is an authoritative
+// Send one intent op. Returns the adopted server entry on success,
+// null on transport failure. Any structured 4xx is an authoritative
 // rejection (the server refused the intent, e.g. "panel is not
-// grouped"): no retry, no demotion — instead GET-adopt the current
-// server entry so the client resyncs to truth. Transport failures and
-// 5xx retry once, then drop the session to local mode so the local
-// mutation stands and no later adoption resurrects stale server state.
+// grouped" or a 422 business-rule refusal): no retry, no demotion,
+// no local twin — the caller must resync to server truth instead.
+// Transport failures and 5xx retry once, then drop the session to
+// local mode so the local mutation stands and no later adoption
+// resurrects stale server state.
+const PANES_OP_REJECTED = Symbol("panes op rejected");
+
 async function panesServerOpRaw(op) {
   const body = await api("/api/workspace-panes/op", {
     method: "POST",
@@ -781,17 +831,19 @@ async function panesServerOpRaw(op) {
   return entry;
 }
 
-// 400 resync: the server rejected the intent, so the client adopts the
+// 4xx resync: the server rejected the intent, so the client adopts the
 // server's current entry. Best-effort; a failed GET leaves the local
 // entry untouched (server mode stays, the next op or broadcast retries
-// the resync).
-async function panesServerResync() {
+// the resync). opts.skipRender defers the paint: the reject path can
+// fire inside a teardown loop (panel.close with skipRender), and a
+// mid-sweep render re-enters the sync ladder the loop exists to avoid.
+async function panesServerResync(opts) {
   try {
     const body = await api("/api/workspace-panes");
     const entry = body && typeof body === "object" ? body.entry || body : null;
     if (adoptServerPanesEntry(entry, { keepLocalVisible: true })) {
       saveWorkspacePanesStates();
-      renderWorkspacePanes();
+      if (!(opts && opts.skipRender)) renderWorkspacePanes();
       announcePaneChanges("Panel change rejected, re-synced from server");
       return true;
     }
@@ -799,7 +851,14 @@ async function panesServerResync() {
   return false;
 }
 
-async function panesServerOp(op) {
+function isAuthoritativeRejection(ex) {
+  // 400 validation, 404 missing target, 422 business rule: all three
+  // are the server answering "no" to this intent. Only these; a 401
+  // needs re-auth, 409+ and 5xx are not refusal shapes.
+  return !!ex && typeof ex === "object" && ex.status >= 400 && ex.status < 500 && ex.status !== 401;
+}
+
+async function panesServerOp(op, opts) {
   if (panesMode !== "server" || !panesServerReachable()) return null;
   try {
     const entry = await panesServerOpRaw(op);
@@ -812,10 +871,11 @@ async function panesServerOp(op) {
   } catch (ex) {
     // Authoritative rejection: the server owns the truth, retrying the
     // same intent cannot help and demoting to local mode would fork the
-    // session. Resync to the server entry instead.
-    if (ex && typeof ex === "object" && ex.status === 400) {
-      await panesServerResync();
-      return null;
+    // session. Resync to the server entry; the rejected symbol tells the
+    // fallback helper NOT to run the local twin over the resynced state.
+    if (isAuthoritativeRejection(ex)) {
+      await panesServerResync(opts);
+      return PANES_OP_REJECTED;
     }
     // Retry once, then the session falls back to local mode.
     try {
@@ -826,9 +886,9 @@ async function panesServerOp(op) {
         return entry;
       }
     } catch (ex2) {
-      if (ex2 && typeof ex2 === "object" && ex2.status === 400) {
-        await panesServerResync();
-        return null;
+      if (isAuthoritativeRejection(ex2)) {
+        await panesServerResync(opts);
+        return PANES_OP_REJECTED;
       }
     }
     panesMode = "local";
@@ -840,15 +900,17 @@ async function panesServerOp(op) {
 // local twin: local mode runs it plus the uniform save+render, and a
 // failed server op (null: retry exhausted, or the session dropped to
 // local mode) runs it plus the same save+render so the gesture never
-// lands dead. Pass null when the caller already applied the change
-// optimistically and settled it (rename, subject switch): the helper
-// then only fires the op and save+renders on failure. Non-async on
-// purpose: the local branch returns the twin's value synchronously,
-// only the server branch returns a promise. opts.skipRender is for the
-// teardown loops (prune sweep, ws sweep): a render inside the loop
-// re-enters the sync ladder mid-sweep and re-homes ids into freshly
-// minted leaves, so those callers save here and render once at their
-// own settle.
+// lands dead. A REJECTED result means the server refused the intent
+// and the client resynced: the local twin must NOT run (it would
+// recreate the refused mutation over server truth). Pass null when the
+// caller already applied the change optimistically and settled it
+// (rename, subject switch): the helper then only fires the op and
+// save+renders on failure. Non-async on purpose: the local branch
+// returns the twin's value synchronously, only the server branch
+// returns a promise. opts.skipRender is for the teardown loops (prune
+// sweep, ws sweep): a render inside the loop re-enters the sync ladder
+// mid-sweep and re-homes ids into freshly minted leaves, so those
+// callers save here and render once at their own settle.
 function panesOpWithFallback(opPayload, localMutation, opts) {
   const settle = () => {
     const out = localMutation ? localMutation() : undefined;
@@ -859,7 +921,13 @@ function panesOpWithFallback(opPayload, localMutation, opts) {
   if (panesMode !== "server" || !panesServerReachable()) {
     return localMutation ? settle() : undefined;
   }
-  return panesServerOp(opPayload).then((entry) => entry || settle());
+  // Rejection vs local-twin false: a refused intent must not be
+  // mistaken for the twin's own "nothing changed" answer, so callers
+  // needing the distinction compare against PANES_OP_REJECTED.
+  return panesServerOp(opPayload, opts).then((entry) => {
+    if (entry === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+    return entry || settle();
+  });
 }
 
 // Boot adoption. GET the server entry; on success switch to server
@@ -899,7 +967,11 @@ function applyRemoteWorkspacePanesEntry(incoming) {
   if (!incoming || typeof incoming !== "object" || !Array.isArray(incoming.panels)) return false;
   if (live && Array.isArray(live.panels) && entrySignaturesMatch(live, incoming)) return false;
   const beforePanels = live && Array.isArray(live.panels) ? live.panels.length : 0;
-  const beforeGroups = live && Array.isArray(live.groups) ? live.groups.length : 0;
+  // Group delta reads the INCOMING entry, not the pre-adopt local one:
+  // adoption dissolves groups this client cannot see (ephemeral rule,
+  // a panel subject dissolves every group), and counting those as
+  // "removed" would announce a change the server never made.
+  const beforeGroups = incoming.groups && Array.isArray(incoming.groups) ? incoming.groups.length : 0;
   const adopted = adoptServerPanesEntry(incoming, { keepLocalVisible: true });
   if (adopted) {
     saveWorkspacePanesStates();
@@ -1666,7 +1738,13 @@ function railPanelChipHtml(leaf, isActive) {
   if (state.editingPanelPaneId === leaf.paneId) {
     return `<input class="pane-group-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeAttr(encoded)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeAttr(encoded)}')">`;
   }
-  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondblclick="startPanelChipRename('${escapeAttr(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeAttr(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()">${escapeHtml(label)}</button>`;
+  // A grouped member chip never drags (its group IS the visible split;
+  // dragstart refuses it too): draggable="false" keeps the affordance
+  // honest, and the dragstart wiring is left off so nothing can trip a
+  // refused gesture behind the attribute.
+  const draggable = leaf.groupId ? "false" : "true";
+  const dragAttrs = leaf.groupId ? "" : ` ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()"`;
+  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="${draggable}" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondblclick="startPanelChipRename('${escapeAttr(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeAttr(encoded)}')"${dragAttrs}><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
 }
 
 function railGroupChipHtml(group, isActive) {
@@ -1894,14 +1972,20 @@ function announcePaneChanges(text) {
   }, 0);
 }
 
-// The rail paints when more than one subject choice exists: a single
-// ungrouped panel session renders nothing (the strip carries the
-// identity already). Groups always render a chip when not visible.
+// The rail lists EVERY panel chip plus, when a group is the visible
+// split, the group chip. Groups are ephemeral (only the visible one
+// exists), so the group chip never competes with hidden member chips:
+// members render as plain chips too, and the group chip is the split
+// view's own entry. The rail paints when more than one choice exists;
+// a single-panel session renders nothing (the strip carries the
+// identity already).
 function renderLabelRail(container, entry, subject) {
   let rail = [...(container.children || [])].find((child) => hasClass(child, "pane-label-rail")) || null;
-  const ungrouped = paneLeaves(entry).filter((leaf) => !leaf.groupId);
-  const groups = (entry.groups || []).filter((g) => groupMemberCount(g) >= 2);
-  const needRail = ungrouped.length + groups.length > 1;
+  const panels = paneLeaves(entry);
+  const group = subject && subject.kind === "group" && groupMemberCount(subject.group, entry) >= 2
+    ? subject.group
+    : null;
+  const needRail = panels.length + (group ? 1 : 0) > 1;
   if (!needRail) {
     if (rail) detachDomNode(rail);
     return;
@@ -1919,13 +2003,12 @@ function renderLabelRail(container, entry, subject) {
     else container.appendChild(rail);
   }
   let html = "";
-  for (const leaf of ungrouped) {
+  for (const leaf of panels) {
     const active = subject && subject.kind === "panel" && subject.leaf === leaf;
     html += railPanelChipHtml(leaf, active);
   }
-  for (const group of groups) {
-    const active = subject && subject.kind === "group" && subject.group === group;
-    html += railGroupChipHtml(group, active);
+  if (group) {
+    html += railGroupChipHtml(group, subject.kind === "group");
   }
   // Mid-edit protection, DOM-truth based: rebuild the rail exactly when
   // the editing state and the rail DOM disagree (open: state set, DOM
@@ -1938,7 +2021,7 @@ function renderLabelRail(container, entry, subject) {
   const editingState = !!(state.editingPanelPaneId || state.editingPaneGroup);
   const railShowsInput = [...(rail.children || [])].some((child) =>
     hasClass(child, "pane-group-rename-input"));
-  const resting = paneRailRestingHtml(ungrouped, groups, subject);
+  const resting = paneRailRestingHtml(panels, group, subject);
   if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== resting)) {
     rail.__herdrRailSignature = resting;
     rail.innerHTML = html;
@@ -1948,21 +2031,21 @@ function renderLabelRail(container, entry, subject) {
 // Resting rail markup: every chip as a button, no editing swap. Used
 // only for the signature compare so an open edit never counts as a
 // rail change.
-function paneRailRestingHtml(ungrouped, groups, subject) {
+function paneRailRestingHtml(panels, group, subject) {
   let html = "";
-  for (const leaf of ungrouped) {
+  for (const leaf of panels) {
     const active = subject && subject.kind === "panel" && subject.leaf === leaf;
     html += railPanelChipHtml(leaf, active);
   }
-  for (const group of groups) {
-    const active = subject && subject.kind === "group" && subject.group === group;
-    html += railGroupChipHtml(group, active);
+  if (group) {
+    html += railGroupChipHtml(group, subject.kind === "group");
   }
   return html;
 }
 
-// Subject switch from a rail chip: panel press hides any visible group
-// (it folds back to its chip) and shows the panel alone.
+// Subject switch from a rail chip: the panel press dissolves the
+// visible group (ephemeral rule: only the visible split view keeps a
+// group record) and shows the panel alone.
 function showPanelFromRail(encodedPaneId) {
   const entry = paneRootFor();
   const paneId = decodeURIComponent(String(encodedPaneId || ""));
@@ -2970,10 +3053,16 @@ function localUngroupMember(leaf) {
 
 // Layout surgery: drop paneId from the layout tree. A split that falls
 // under two children collapses to its survivor; the ROOT dropping to
-// one child returns that child (a paneId string or nested node).
+// one child returns that child (a paneId string or nested node). A
+// degraded FLAT array filters the id directly: without it the removed
+// member would sit in the layout until the next normalize rebuild.
 function memberLayoutWithout(node, paneId) {
   if (!node) return null;
   if (node === paneId) return null;
+  if (Array.isArray(node)) {
+    const kept = node.filter((child) => child !== paneId);
+    return kept.length ? kept : null;
+  }
   if (!Array.isArray(node.children)) return node;
   node.children = node.children
     .map((child) => memberLayoutWithout(child, paneId))
@@ -2994,7 +3083,15 @@ function paneLabelDragStart(event, encodedPaneId) {
   const paneId = decodeURIComponent(String(encodedPaneId || ""));
   const root = paneRootFor();
   const leaf = paneId ? paneForPaneId(root, paneId) : null;
-  if (!leaf) return;
+  // A grouped member never drags as a grouping payload: its group IS
+  // the visible split (ephemeral contract), so grouping it elsewhere
+  // is impossible; leaving the group is the tab-to-location-bar
+  // ungroup gesture. Refuse the dragstart so the chip cannot offer a
+  // dead drop target.
+  if (!leaf || leaf.groupId) {
+    if (event && event.preventDefault) event.preventDefault();
+    return;
+  }
   paneDragLabelPaneId = paneId;
   if (event && event.dataTransfer) {
     event.dataTransfer.setData("text/herdr-pane-label", paneId);
@@ -4007,12 +4104,14 @@ function newPanelForFocused() {
     // and the focus lands on the appended panel of the same ws (the
     // server appends, so it is the last panel bound like this).
     void panesServerOp({ op: "panel.create", wsId: wsId || undefined }).then((entry) => {
-      if (!entry) {
-        const fresh = mintPanelForWorkspace(wsId, anchor);
-        if (fresh) {
-          focusLeaf(paneRootFor(), fresh);
-          saveWorkspacePanesStates();
-          renderWorkspacePanes();
+      if (!entry || entry === PANES_OP_REJECTED) {
+        if (entry !== PANES_OP_REJECTED) {
+          const fresh = mintPanelForWorkspace(wsId, anchor);
+          if (fresh) {
+            focusLeaf(paneRootFor(), fresh);
+            saveWorkspacePanesStates();
+            renderWorkspacePanes();
+          }
         }
         return;
       }
@@ -4955,6 +5054,12 @@ window.HerdrWorkspacePanes = {
   adoptServerEntry: adoptServerPanesEntry,
   panesMode: () => panesMode,
   setPanesModeForTests: (mode) => { panesMode = mode === "server" ? "server" : "local"; },
+  // Op-layer unit hook: tests drive the rejection contract (a refused
+  // intent must resync, never run the local twin) without a DOM gesture.
+  panesOpWithFallbackForTests: (opPayload, localMutation, opts) => panesOpWithFallback(opPayload, localMutation, opts),
+  // The rejection sentinel: callers/tests compare against this instead
+  // of false, which a local twin can also legitimately return.
+  panesOpRejectedForTests: PANES_OP_REJECTED,
   // Close-aftermath facade for cross-module terminal closes: prunes
   // the id from its leaf, sweeps armed+empty leaves, paints once.
   // The sweep and its guards stay inside this module.

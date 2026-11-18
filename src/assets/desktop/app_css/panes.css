@@ -376,24 +376,25 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Rename input: the editing state swaps the group chip
- button for a plain input. Same metrics as the chip so the rail does
- not reflow on the swap; the input keeps its own border language
- (bordered control, not accent slab) so the edit reads as a field. */
+/* Rename input: the editing state swaps either rail chip
+   (panel or group) for a plain input. Same metrics as the chip so the
+   rail does not reflow on the swap; the input keeps its own border
+   language (bordered control, not accent slab) so the edit reads as a
+   field. */
 .pane-group-rename-input {
   appearance: none;
   background: var(--panel, #fff);
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: 999px;
   color: var(--text);
-  font-size: 13px;
+  font: inherit;
+  font-size: 12px;
   line-height: 1.4;
-  padding: 3px 6px;
-  margin-right: 4px;
+  padding: 3px 10px;
   width: 110px;
   align-self: center;
   flex: none;
-  box-sizing: content-box;
+  box-sizing: border-box;
   min-height: 24px;
 }
 
@@ -510,9 +511,10 @@
 }
 
 /* ---- label rail (one-visible-view model) ----
- * A horizontal row of chips above the visible subject: one per
- * ungrouped panel plus one per group ("Group N views"). Pressing a
- * chip switches the subject; dragging a panel chip into the view
+ * A horizontal row of chips above the visible subject: one chip for
+ * EVERY panel plus one group chip when a group is the visible
+ * subject (groups are ephemeral, only the visible one exists).
+ * Pressing a chip switches the subject; dragging a panel chip into the view
  * forms or grows a group. The rail renders only when more than one
  * subject choice exists. */
 .pane-label-rail {
@@ -524,6 +526,17 @@
   border-bottom: 1px solid var(--border);
   background: var(--panel2, var(--panel));
   overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* A rail chip is a pill, not a text line: the label sits in a span
+   so the flex item ellipsizes inside max-width instead of clipping
+   hard (text-overflow does not apply to the flex container). */
+.pane-label-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pane-label-chip {
@@ -602,13 +615,33 @@
 .pane-label-chip.pane-panel-group-chip.active {
   border-color: var(--pane-group);
   background: color-mix(in srgb, var(--pane-group), transparent 90%);
+  /* Light theme: #0f6210 on the state tints drops under AA at 12px
+     (4.28:1 hover, 3.71:1 pressed), so the tinted states darken the
+     text 25% toward black (5.94:1/5.15:1). Dark theme needs nothing:
+     #a6e3a1 stays above 6:1 even pressed. */
+  body.light & {
+    color: color-mix(in srgb, var(--pane-group), black 25%);
+  }
 }
 
-/* Pressed stays darker than hover (90%) and active so the three
-   states never collapse into one tint. */
 .pane-label-chip.pane-panel-group-chip:active,
 .pane-label-chip.pane-panel-group-chip.active:active {
   background: color-mix(in srgb, var(--pane-group), transparent 80%);
+  body.light & {
+    color: color-mix(in srgb, var(--pane-group), black 25%);
+  }
+}
+
+/* The pane a11y live region (JS appends #paneA11yLive into
+   #workspacePanes) must never paint: the container is a column
+   flex, an unstyled span would render the announcement as stray
+   text inside the pane area. */
+.pane-a11y-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 
 .pane-label-chip.pane-panel-group-chip:focus-visible {

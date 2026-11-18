@@ -568,9 +568,19 @@ test("subject switch parks the hidden members' aux, group return reuses it", asy
   assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "hidden sibling's surface parked");
   assert.equal(ws.closed, true, "park detaches the socket (no sockets for non-visible)");
   assert.equal(term.disposed, false, "wterm instance survives the subject switch");
-  // Restore: the group chip press brings the subject back, the parked
-  // surface re-attaches and re-parents, SAME wterm instance.
-  panes.showGroupFromRail("g1");
+  // Ephemeral contract: the subject switch DISSOLVED the group, so the
+  // return is a fresh grouping gesture, not a chip press. Re-group
+  // through the drop the same way a user would.
+  const entry2 = panes.panesStateFor();
+  const member = entry2.panels.find((l) => l.paneId === "p1");
+  const neighbor = entry2.panels.find((l) => l.paneId === "p2");
+  assert.ok(member && neighbor, "both former members still present");
+  const group = { groupId: "g1", name: null, memberIds: [member.paneId, neighbor.paneId], layout: { kind: "row", sizes: [1, 1], children: [member.paneId, neighbor.paneId] } };
+  entry2.groups.push(group);
+  member.groupId = "g1";
+  neighbor.groupId = "g1";
+  entry2.visible = { type: "group", id: "g1" };
+  panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(auxOf(ctx).length, 1, "group return re-mounts the aux surface");
   assert.equal(ctx.HerdrPaneTerminals.parked(), 0, "surface is live again");

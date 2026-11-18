@@ -446,6 +446,9 @@ test("broadcast frame adopts the entry through applyRemoteEntry", async () => {
   ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
   // A second client grouped p1 with a new p3; the local pointer (p2)
   // names an ungrouped panel and must survive the broadcast adoption.
+  // Ephemeral contract: the remote group is NOT this client's subject,
+  // so the adoption dissolves it instead of parking it hidden; the
+  // panels stay, freed to plain rail chips.
   const remote = serverEntry();
   remote.panels.push({ kind: "pane", paneId: "p3", tabs: [], active: null, wsId: "ws-1", groupId: "g1", name: null });
   remote.groups = [
@@ -456,9 +459,9 @@ test("broadcast frame adopts the entry through applyRemoteEntry", async () => {
   const adopted = ctx.HerdrWorkspacePanes.applyRemoteEntry(remote);
   assert.equal(adopted, true);
   const entry = ctx.HerdrWorkspacePanes.paneRoot();
-  assert.equal(entry.groups.length, 1);
-  assert.equal(entry.groups[0].name, "duo");
+  assert.equal(entry.groups.length, 0, "remote-only group dissolved: not this client's subject");
   assert.equal(entry.panels.length, 3, "the new server panel adopted");
+  assert.ok(entry.panels.every((p) => !p.groupId), "members freed to plain panels");
   // The local visible pointer (panel p2, still ungrouped) survives.
   assert.equal(entry.visible.type, "panel");
   assert.equal(entry.visible.id, "p2");
@@ -820,4 +823,132 @@ test("visibility regain re-adopts the drifted server entry (bindings.js bootFrom
     healed.visible.type === "panel" && healed.panels.some((p) => p.paneId === healed.visible.id),
     "the healed pointer names a live panel"
   );
+});
+
+test("subject switch to a panel sends subject.set and dissolves the group locally", async () => {
+  const { document } = buildDom();
+  // Server entry with a visible group g1 over p1+p2.
+  const starting = serverEntry();
+  starting.groups = [{ groupId: "g1", name: null, memberIds: ["p1", "p2"], layout: { kind: "row", sizes: [1, 1], children: ["p1", "p2"] } }];
+  starting.panels[0].groupId = "g1";
+  starting.panels[1].groupId = "g1";
+  starting.visible = { type: "group", id: "g1" };
+  const script = makeServerApi(starting);
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  assert.equal(ctx.HerdrWorkspacePanes.paneRoot().groups.length, 1, "group adopted");
+  // Panel press: the group dies immediately in the local entry.
+  assert.equal(ctx.HerdrWorkspacePanes.showPanelFromRail(encodeURIComponent("p1")), true);
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(entry.groups.length, 0, "subject switch dissolved the group");
+  assert.ok(entry.panels.every((p) => !p.groupId), "members freed");
+  const subjectSet = script.calls.find((c) => c.url === "/api/workspace-panes/op" && c.opt && JSON.parse(c.opt.body).op === "subject.set");
+  assert.ok(subjectSet, "subject.set op fired");
+});
+
+test("a 422-rejected intent resyncs and never runs the local twin", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  // Business-rule refusal: the op route answers 422 (panel already
+  // grouped on the server side, the race case from the review).
+  const realApi = script.api;
+  let refused = false;
+  const refusingApi = async (url, opt) => {
+    if (url === "/api/workspace-panes/op") {
+      const op = JSON.parse(opt.body);
+      if (op.op === "group.ungroup" && !refused) {
+        refused = true;
+        throw Object.assign(new Error("panel is not grouped"), { status: 422 });
+      }
+    }
+    return realApi(url, opt);
+  };
+  const ctx = loadPanesModule(document, "ws-1", refusingApi);
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const panes = ctx.HerdrWorkspacePanes;
+  // No group exists locally; the ungroup intent is refused. The local
+  // twin must NOT run over the resynced entry.
+  const leaf = panes.paneRoot().panels[0];
+  const before = JSON.stringify(panes.paneRoot());
+  const out = await panes.panesOpWithFallbackForTests(
+    { op: "group.ungroup", paneId: leaf.paneId },
+    () => "local-twin-ran",
+  );
+  assert.equal(out, panes.panesOpRejectedForTests, "rejected intent returns the rejection sentinel, not the twin value");
+  assert.ok(refused, "the op reached the refusing server");
+  assert.equal(JSON.stringify(panes.paneRoot()), before, "entry unchanged: resync state kept, no local twin");
+  assert.equal(panes.panesMode(), "server", "422 does not demote to local mode");
+});
+
+test("a 400 rejection is authoritative: resync, no twin, no demotion", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  // Transport-shaped 400 (malformed intent): same contract as 422, the
+  // entry stays server truth and the local twin never runs.
+  const realApi = script.api;
+  const refusingApi = async (url, opt) => {
+    if (url === "/api/workspace-panes/op") {
+      throw Object.assign(new Error("malformed intent"), { status: 400 });
+    }
+    return realApi(url, opt);
+  };
+  const ctx = loadPanesModule(document, "ws-1", refusingApi);
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const panes = ctx.HerdrWorkspacePanes;
+  const leaf = panes.paneRoot().panels[0];
+  const before = JSON.stringify(panes.paneRoot());
+  const out = await panes.panesOpWithFallbackForTests(
+    { op: "group.ungroup", paneId: leaf.paneId },
+    () => "local-twin-ran",
+  );
+  assert.equal(out, panes.panesOpRejectedForTests, "400 rejection returns the rejection sentinel");
+  assert.equal(JSON.stringify(panes.paneRoot()), before, "entry unchanged after 400 resync");
+  assert.equal(panes.panesMode(), "server", "400 does not demote to local mode");
+});
+
+test("a 401 auth failure is NOT authoritative: retry then local mode", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  // 401 is carved out of the rejection set: auth failures ride the
+  // retry ladder like a transport failure, ending in local mode with
+  // the local twin applied, not a resync.
+  const realApi = script.api;
+  const authApi = async (url, opt) => {
+    if (url === "/api/workspace-panes/op") {
+      throw Object.assign(new Error("unauthorized"), { status: 401 });
+    }
+    return realApi(url, opt);
+  };
+  const ctx = loadPanesModule(document, "ws-1", authApi);
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const panes = ctx.HerdrWorkspacePanes;
+  const leaf = panes.paneRoot().panels[0];
+  const out = await panes.panesOpWithFallbackForTests(
+    { op: "group.ungroup", paneId: leaf.paneId },
+    () => "local-twin-ran",
+  );
+  assert.equal(out, "local-twin-ran", "401 runs the local twin after the retry ladder");
+  assert.equal(panes.panesMode(), "local", "401 ends in local mode");
+});
+
+test("adoption preserves the local focus pointer", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.paneRoot().activePaneId = "p1";
+  // Another writer's frame arrives with a different (stale) focus. The
+  // remote differs structurally (name change) so the signature guard
+  // lets the adoption through.
+  const remote = serverEntry();
+  remote.activePaneId = "p2";
+  remote.panels[0].name = "remote rename";
+  assert.equal(panes.applyRemoteEntry(remote), true);
+  assert.equal(panes.paneRoot().activePaneId, "p1", "local focus survived the adoption");
 });

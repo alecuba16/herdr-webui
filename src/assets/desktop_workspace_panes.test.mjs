@@ -2459,9 +2459,9 @@ test("single-workspace trees and unknown foreign workspaces keep bare numbers", 
   panes.renderWorkspacePanes();
   const rail = nodes.container.querySelector(".pane-label-rail");
   assert.ok(rail, "foreign row mints its own panel (rail renders)");
-  const chipMatch = rail.__innerHTML.match(/<button[^>]*data-pane-id="([^"]+)"[^>]*>([^<]*)<\/button>/g) || [];
+  const chipMatch = rail.__innerHTML.match(/<button[^>]*data-pane-id="([^"]+)"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?<\/button>/g) || [];
   assert.ok(chipMatch.length >= 2, "rail lists the ws-gone panel beside the own one");
-  const foreignChip = chipMatch.find((html) => html.includes(">3</button>"));
+  const foreignChip = chipMatch.find((html) => html.includes(">3</span>"));
   assert.ok(foreignChip, "unknown workspace keeps the bare number");
   assert.ok(!foreignChip.includes("data-ws-prefix"), "no prefix when the workspace record is missing");
 });
@@ -2797,7 +2797,7 @@ test("the panel label rail keeps the foreign prefix on hidden panels", () => {
   // assertions read the rail markup and locate the foreign chip by
   // data-pane-id.
   const railHtml = rail.__innerHTML;
-  const foreignChipMatch = railHtml.match(new RegExp(`<button[^>]*data-pane-id="${leaves[1].paneId}"[^>]*>([^<]*)</button>`));
+  const foreignChipMatch = railHtml.match(new RegExp(`<button[^>]*data-pane-id="${leaves[1].paneId}"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?</button>`));
   assert.ok(foreignChipMatch, "hidden foreign panel keeps a rail chip");
   // railEntryLabelForPanel runs panelVisibleLabel on the panel's row,
   // the same prefix path paneTabButtonHtml uses: "feat 1" for a foreign

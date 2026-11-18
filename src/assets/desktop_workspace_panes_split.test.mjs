@@ -824,17 +824,40 @@ test("group chips render the default name, never drag, and carry the rename hook
   assert.ok(rail.__innerHTML.includes("showGroupFromRail"), "chip press shows the group");
   assert.ok(rail.__innerHTML.includes("startPaneGroupRename"), "double-click renames");
   assert.ok(rail.__innerHTML.includes('data-group-id="g1"'), "chip keyed by group id");
-  // Grouped panels never render their own chip while folded.
-  assert.ok(!rail.__innerHTML.includes('data-pane-id="p1"') && !rail.__innerHTML.includes('data-pane-id="p2"'), "grouped panels fold behind the group chip");
+  // Ephemeral contract: member chips STAY in the rail beside the group
+  // chip (all panels render); only the group chip is the split entry.
+  assert.ok(rail.__innerHTML.includes('data-pane-id="p1"') && rail.__innerHTML.includes('data-pane-id="p2"'), "member chips stay beside the group chip");
 });
 
-test("a lone group as the only subject renders no rail", () => {
+test("a lone group as the only subject still renders the rail", () => {
   const { nodes, document } = buildDom();
   const { ctx, panes } = loadGroupSession(document, seedTwoMemberGroup(document));
-  // Both panels sit in the group: one subject, nothing to switch to.
+  // Ephemeral contract: every panel is a subject choice (clicking a
+  // member chip dissolves the group and shows the panel), so even a
+  // lone-group session renders the rail: two member chips + the group
+  // chip.
   assert.equal(entryOf(panes).panels.length, 2, "session holds exactly the two members");
-  assert.ok(panes.paneLeaves(entryOf(panes)).every((l) => !!l.groupId), "no ungrouped panels");
-  assert.equal(railOf(nodes), null, "one subject renders no rail");
+  assert.ok(panes.paneLeaves(entryOf(panes)).every((l) => !!l.groupId), "both panels grouped");
+  const rail = railOf(nodes);
+  assert.ok(rail, "member chips are subject choices, rail renders");
+  const html = rail.__innerHTML;
+  assert.ok(html.includes('data-pane-id="p1"') && html.includes('data-pane-id="p2"'), "member chips render");
+  assert.ok(html.includes('data-group-id="g1"'), "group chip renders");
+  // A single-panel session with no group still renders no rail.
+  assert.ok(!html.includes('data-pane-id="p3"'), "no phantom panels");
+});
+
+// Ephemeral contract: a lone group with an ungrouped third panel
+// renders member chips + the group chip (rail lists ALL panels).
+test("group session rail lists member chips plus the group chip", () => {
+  const { nodes, document } = buildDom();
+  const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: [] }]);
+  const { ctx, panes } = loadGroupSession(document, spec);
+  const rail = railOf(nodes);
+  assert.ok(rail, "multiple subjects render the rail");
+  const html = rail.__innerHTML;
+  assert.ok(html.includes('data-pane-id="p1"') && html.includes('data-pane-id="p2"') && html.includes('data-pane-id="p3"'), "every panel renders its chip");
+  assert.ok(html.includes('data-group-id="g1"'), "the visible group renders its chip");
 });
 
 // ---- 8. group rename trio ---------------------------------------------
@@ -893,15 +916,14 @@ test("showPanelFromRail and showGroupFromRail switch the visible subject", () =>
   assert.equal(flat.dataset.paneId, "p3", "flat pane keyed by the panel");
   assert.equal(flat.parentNode, nodes.container, "flat pane sits directly under the container");
   const rail = railOf(nodes);
-  assert.ok(rail.__innerHTML.includes("Group 2 views"), "folded group renders its chip");
-  // The group record survives the fold.
-  assert.equal(entryOf(panes).groups.length, 1, "group record survives while folded");
-  // Group press restores the split.
-  const prev = panes.showGroupFromRail(encodeURIComponent(group.groupId));
-  assert.equal(entryOf(panes).visible.type, "group", "group subject restored");
-  assert.equal(splitElements(nodes).length, 1, "split layout back");
-  assert.equal(paneElements(nodes).length, 2, "member panes back");
-  assert.ok(prev, "switch returns the previous subject");
+  // Ephemeral contract: switching to a panel DISSOLVES the group; the
+  // rail holds only panel chips afterwards and no group chip remains.
+  assert.ok(rail.__innerHTML.includes('data-pane-id="p3"'), "pressed panel chip renders");
+  assert.ok(!rail.__innerHTML.includes("pane-panel-group-chip"), "dissolved group leaves no chip");
+  assert.equal(entryOf(panes).groups.length, 0, "group record dissolved on subject switch");
+  assert.ok(panes.paneLeaves(entryOf(panes)).every((l) => !l.groupId), "members freed to plain panels");
+  // Group press on the dissolved id refuses (no resurrect).
+  assert.equal(panes.showGroupFromRail(encodeURIComponent(group.groupId)), false, "dissolved group id refused");
   // Unknown ids refuse.
   assert.equal(panes.showPanelFromRail(encodeURIComponent("p404")), false, "unknown panel refused");
   assert.equal(panes.showGroupFromRail(encodeURIComponent("g404")), false, "unknown group refused");

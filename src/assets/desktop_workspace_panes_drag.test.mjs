@@ -962,7 +962,7 @@ test("rail chips carry the drag and press wiring in their HTML", () => {
   assert.ok(html.includes('aria-selected="true"'), "visible chip is selected (tablist pattern)");
 });
 
-test("rail renders a group chip and hides grouped labels", () => {
+test("rail renders the group chip beside member chips", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   seedPanels(ctx, 3);
@@ -971,10 +971,10 @@ test("rail renders a group chip and hides grouped labels", () => {
   const rail = railOf(document);
   assert.ok(rail, "rail still renders");
   const html = rail.__innerHTML;
-  // Grouped panels (p2, p3) fold behind the group chip; the ungrouped
-  // host (p1) keeps its label (notes point 5: the host keeps its label).
-  assert.ok(!html.includes('data-pane-id="p2"'), "grouped label folded behind the chip");
-  assert.ok(!html.includes('data-pane-id="p3"'), "grouped label folded behind the chip");
+  // Ephemeral contract: ALL panels keep their chips (members included);
+  // the group chip is the split view's own entry, rendered last.
+  assert.ok(html.includes('data-pane-id="p2"'), "member chip p2 stays in the rail");
+  assert.ok(html.includes('data-pane-id="p3"'), "member chip p3 stays in the rail");
   assert.ok(html.includes('data-pane-id="p1"'), "host panel keeps its rail label");
   // Group chip: default "Group N views" name, never draggable, press and
   // dblclick rename wired.
@@ -989,6 +989,23 @@ test("rail renders a group chip and hides grouped labels", () => {
   assert.ok(findPaneEl(document, "p2"), "member pane p2 rendered");
   assert.ok(findPaneEl(document, "p3"), "member pane p3 rendered");
   assert.ok(!findPaneEl(document, "p1"), "non-member pane left the container");
+});
+
+test("grouped member chips refuse the grouping drag", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  let prevented = false;
+  const event = {
+    dataTransfer: { setData() {}, effectAllowed: "uninitialized" },
+    target: null,
+    preventDefault() { prevented = true; },
+  };
+  panes.paneLabelDragStart(event, encodeURIComponent("p2"));
+  assert.equal(prevented, true, "grouped member dragstart refused");
+  assert.equal(ctx.paneLabelDragKind(), null, "no grouping payload in flight");
 });
 
 test("single ungrouped panel renders no rail", () => {

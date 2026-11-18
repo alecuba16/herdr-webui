@@ -147,7 +147,13 @@ fn panes_sidecar_path(session: &str) -> PathBuf {
     };
     let safe: String = session
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     base.join(format!("panes-{safe}.json"))
 }
@@ -292,8 +298,19 @@ fn layout_without(node: &Value, pane_id: &str) -> Option<Value> {
 /// paneId lands at the quadrant the client named, relative to the host
 /// pane under the pointer. Same-kind hosts extend, other-kind hosts
 /// nest.
-fn layout_with_panel_at(layout: &Value, pane_id: &str, axis: &str, first: bool, host_id: Option<&str>) -> Value {
+fn layout_with_panel_at(
+    layout: &Value,
+    pane_id: &str,
+    axis: &str,
+    first: bool,
+    host_id: Option<&str>,
+) -> Value {
+    // A one-child split violates the client contract (isPaneSplit needs
+    // >= 2 children): a single pane collapses to a bare leaf string.
     let flat_children = |ids: Vec<String>| -> Value {
+        if ids.len() == 1 {
+            return Value::String(ids.into_iter().next().expect("one id"));
+        }
         serde_json::json!({
             "kind": axis,
             "sizes": ids.iter().map(|_| serde_json::json!(1)).collect::<Vec<_>>(),
@@ -308,9 +325,7 @@ fn layout_with_panel_at(layout: &Value, pane_id: &str, axis: &str, first: bool, 
                 ids.push(id.to_string());
             }
         }
-        if ids.is_empty() {
-            ids.push(pane_id.to_string());
-        } else if first {
+        if first {
             ids.insert(0, pane_id.to_string());
         } else {
             ids.push(pane_id.to_string());
@@ -363,22 +378,22 @@ fn insert_at_host(node: &mut Value, host: &str, pane_id: &str, axis: &str, first
     for i in 0..children.len() {
         if children[i].as_str() == Some(host) {
             if kind == axis {
-                // Extend the same-axis parent at the host index.
+                // Extend the same-axis parent at the host index. Halving
+                // mirrors the client: the pair keeps the host's old
+                // total, so repeated grows never inflate the row.
                 let at = if first { i } else { i + 1 };
                 let share = sizes
                     .get(i)
                     .and_then(Value::as_f64)
-                    .map(|v| serde_json::json!(v))
-                    .unwrap_or(serde_json::json!(1));
+                    .filter(|v| *v > 0.0)
+                    .unwrap_or(1.0);
+                let half = share / 2.0;
                 children.insert(at, serde_json::json!(pane_id));
                 while sizes.len() < children.len() {
                     sizes.push(serde_json::json!(1));
                 }
-                sizes.insert(at, share.clone());
-                let other = if first { at + 1 } else { at - 1 };
-                if other < sizes.len() {
-                    sizes[other] = share;
-                }
+                sizes[i] = serde_json::json!(half);
+                sizes.insert(at, serde_json::json!(half));
                 node["children"] = Value::Array(children);
                 node["sizes"] = Value::Array(sizes);
             } else {
@@ -414,20 +429,14 @@ fn heal_visible(entry: &mut PanesEntry) {
     if !entry.panels.is_empty() {
         // Group pointer survives only with >= 2 live members.
         if entry.visible.kind == "group" {
-            if let Some(group) = entry
-                .groups
-                .iter()
-                .find(|g| g.group_id == entry.visible.id)
-            {
+            if let Some(group) = entry.groups.iter().find(|g| g.group_id == entry.visible.id) {
                 if live_members(entry, group).len() >= 2 {
                     return;
                 }
             }
         }
         // Panel pointer survives when it names a live panel.
-        if entry.visible.kind == "panel"
-            && panel_index(entry, &entry.visible.id).is_some()
-        {
+        if entry.visible.kind == "panel" && panel_index(entry, &entry.visible.id).is_some() {
             return;
         }
         let fallback = entry
@@ -488,7 +497,9 @@ fn normalize_entry(entry: &mut PanesEntry) {
         // identity under a fresh server-minted id, and the same
         // drop-dead-records philosophy already governs group members
         // (live_members) and stale visible pointers (heal_visible).
-        p.pane_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        p.pane_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             && !p.pane_id.is_empty()
             && seen.insert(p.pane_id.clone())
     });
@@ -537,16 +548,50 @@ fn normalize_entry(entry: &mut PanesEntry) {
     if entry.groups.len() > MAX_GROUPS {
         entry.groups.truncate(MAX_GROUPS);
     }
+    // Ephemeral groups: a group exists only as the visible split view.
+    // Every group but the one visible names dissolves, clearing member
+    // group_ids, so no hidden group survives any op or adoption.
+    if entry.visible.kind != "group" {
+        entry.groups.clear();
+        for panel in entry.panels.iter_mut() {
+            panel.group_id = None;
+        }
+    } else {
+        entry
+            .groups
+            .retain(|group| group.group_id == entry.visible.id);
+        for panel in entry.panels.iter_mut() {
+            if panel
+                .group_id
+                .as_deref()
+                .is_some_and(|id| id != entry.visible.id)
+            {
+                panel.group_id = None;
+            }
+        }
+    }
     // Id sequence heal: an adopted client entry carries no seq fields
     // (serde defaults them to 0), so the counters must clear the highest
     // minted id or the next panel.create/group.create collides with a
     // live id.
-    entry.next_pane_seq = entry
-        .next_pane_seq
-        .max(entry.panels.iter().filter_map(|p| p.pane_id.strip_prefix("p").and_then(|s| s.parse().ok())).max().unwrap_or(0) + 1);
-    entry.next_group_seq = entry
-        .next_group_seq
-        .max(entry.groups.iter().filter_map(|g| g.group_id.strip_prefix("g").and_then(|s| s.parse().ok())).max().unwrap_or(0) + 1);
+    entry.next_pane_seq = entry.next_pane_seq.max(
+        entry
+            .panels
+            .iter()
+            .filter_map(|p| p.pane_id.strip_prefix("p").and_then(|s| s.parse().ok()))
+            .max()
+            .unwrap_or(0)
+            + 1,
+    );
+    entry.next_group_seq = entry.next_group_seq.max(
+        entry
+            .groups
+            .iter()
+            .filter_map(|g| g.group_id.strip_prefix("g").and_then(|s| s.parse().ok()))
+            .max()
+            .unwrap_or(0)
+            + 1,
+    );
     heal_visible(entry);
 }
 
@@ -555,7 +600,9 @@ fn normalize_group(entry: &PanesEntry, mut group: GroupRecord) -> Option<GroupRe
         return None;
     }
     let mut seen: HashSet<String> = HashSet::new();
-    group.member_ids.retain(|id| panel_index(entry, id).is_some() && seen.insert(id.clone()));
+    group
+        .member_ids
+        .retain(|id| panel_index(entry, id).is_some() && seen.insert(id.clone()));
     if group.member_ids.len() < 2 {
         return None;
     }
@@ -594,7 +641,10 @@ async fn apply_panes(
 ) -> Result<Value, (StatusCode, String)> {
     let entry = {
         let mut store = state.panes_store.sessions.lock().map_err(|_| {
-            (StatusCode::SERVICE_UNAVAILABLE, "panes store unavailable".to_string())
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "panes store unavailable".to_string(),
+            )
         })?;
         let entry = store
             .entry(session.to_string())
@@ -686,7 +736,10 @@ async fn panes_get(
         .map(|entry| entry_public_json(&session, &entry));
     match snapshot {
         Ok(value) => Json(value).into_response(),
-        Err(_) => panes_json_error(StatusCode::SERVICE_UNAVAILABLE, "panes store unavailable".into()),
+        Err(_) => panes_json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "panes store unavailable".into(),
+        ),
     }
 }
 
@@ -780,10 +833,7 @@ async fn panes_op(
         return response;
     }
     let session = panes_session(&headers);
-    let result = apply_panes(&state, &session, move |entry| {
-        apply_op(entry, &body)
-    })
-    .await;
+    let result = apply_panes(&state, &session, move |entry| apply_op(entry, &body)).await;
     match result {
         Ok(value) => Json(value).into_response(),
         Err((status, message)) => panes_json_error(status, message),
@@ -835,11 +885,7 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 .pane_id
                 .clone()
                 .ok_or((StatusCode::BAD_REQUEST, "pane_id required".into()))?;
-            let Some(panel) = entry
-                .panels
-                .iter_mut()
-                .find(|p| p.pane_id == pane_id)
-            else {
+            let Some(panel) = entry.panels.iter_mut().find(|p| p.pane_id == pane_id) else {
                 return Err((StatusCode::NOT_FOUND, "panel not found".into()));
             };
             if let Some(tabs) = op.tabs.as_ref() {
@@ -872,11 +918,7 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 .clone()
                 .ok_or((StatusCode::BAD_REQUEST, "pane_id required".into()))?;
             let name = trim_name(op.name.as_deref())?;
-            let Some(panel) = entry
-                .panels
-                .iter_mut()
-                .find(|p| p.pane_id == pane_id)
-            else {
+            let Some(panel) = entry.panels.iter_mut().find(|p| p.pane_id == pane_id) else {
                 return Err((StatusCode::NOT_FOUND, "panel not found".into()));
             };
             panel.name = name;
@@ -903,8 +945,8 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             if let Some(group_id) = group_id {
                 if let Some(group) = entry.groups.iter_mut().find(|g| g.group_id == group_id) {
                     group.member_ids.retain(|id| id != &pane_id);
-                    group.layout = layout_without(&group.layout.clone(), &pane_id)
-                        .unwrap_or(Value::Null);
+                    group.layout =
+                        layout_without(&group.layout.clone(), &pane_id).unwrap_or(Value::Null);
                 }
             }
             // A group that lost a member to a close can drop under two.
@@ -939,14 +981,17 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                         .filter(|p| p.group_id.is_none())
                         .map(|p| p.pane_id.clone())
                         .collect();
-                    let at = rail
-                        .iter()
-                        .position(|id| id == &dragged)
-                        .ok_or((StatusCode::UNPROCESSABLE_ENTITY, "no neighbor to join".into()))?;
+                    let at = rail.iter().position(|id| id == &dragged).ok_or((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "no neighbor to join".into(),
+                    ))?;
                     rail.get(at + 1)
                         .or_else(|| at.checked_sub(1).and_then(|prev| rail.get(prev)))
                         .cloned()
-                        .ok_or((StatusCode::UNPROCESSABLE_ENTITY, "no neighbor to join".into()))?
+                        .ok_or((
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "no neighbor to join".into(),
+                        ))?
                 }
             };
             let neighbor_at = panel_index(entry, &neighbor)
@@ -960,9 +1005,15 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             let group_id = format!("g{}", entry.next_group_seq.max(1));
             entry.next_group_seq = entry.next_group_seq.max(1) + 1;
             let children: Vec<Value> = if op.dragged_first {
-                vec![Value::String(dragged.clone()), Value::String(neighbor.clone())]
+                vec![
+                    Value::String(dragged.clone()),
+                    Value::String(neighbor.clone()),
+                ]
             } else {
-                vec![Value::String(neighbor.clone()), Value::String(dragged.clone())]
+                vec![
+                    Value::String(neighbor.clone()),
+                    Value::String(dragged.clone()),
+                ]
             };
             let group = GroupRecord {
                 group_id: group_id.clone(),
@@ -1007,6 +1058,13 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             }
             let group_at = group_index(entry, &group_id)
                 .ok_or((StatusCode::NOT_FOUND, "group not found".into()))?;
+            // Ephemeral groups: only the visible split view can grow.
+            if entry.visible.kind != "group" || entry.visible.id != group_id {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "group is not the visible subject".into(),
+                ));
+            }
             entry.panels[dragged_at].group_id = Some(group_id.clone());
             let layout = entry.groups[group_at].layout.clone();
             entry.groups[group_at].member_ids.push(dragged.clone());
@@ -1026,19 +1084,19 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 .ok_or((StatusCode::BAD_REQUEST, "pane_id required".into()))?;
             let at = panel_index(entry, &pane_id)
                 .ok_or((StatusCode::NOT_FOUND, "panel not found".into()))?;
-            let group_id = entry.panels[at]
-                .group_id
-                .clone()
-                .ok_or((StatusCode::UNPROCESSABLE_ENTITY, "panel is not grouped".into()))?;
+            let group_id = entry.panels[at].group_id.clone().ok_or((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "panel is not grouped".into(),
+            ))?;
             let group_at = group_index(entry, &group_id)
                 .ok_or((StatusCode::NOT_FOUND, "group not found".into()))?;
             entry.panels[at].group_id = None;
-            entry.groups[group_at].member_ids.retain(|id| id != &pane_id);
-            entry.groups[group_at].layout = layout_without(
-                &entry.groups[group_at].layout.clone(),
-                &pane_id,
-            )
-            .unwrap_or(Value::Null);
+            entry.groups[group_at]
+                .member_ids
+                .retain(|id| id != &pane_id);
+            entry.groups[group_at].layout =
+                layout_without(&entry.groups[group_at].layout.clone(), &pane_id)
+                    .unwrap_or(Value::Null);
             dissolve_undersized_groups(entry);
             heal_visible(entry);
             Ok(())
@@ -1049,11 +1107,7 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 .clone()
                 .ok_or((StatusCode::BAD_REQUEST, "group_id required".into()))?;
             let name = trim_name(op.name.as_deref())?;
-            let Some(group) = entry
-                .groups
-                .iter_mut()
-                .find(|g| g.group_id == group_id)
-            else {
+            let Some(group) = entry.groups.iter_mut().find(|g| g.group_id == group_id) else {
                 return Err((StatusCode::NOT_FOUND, "group not found".into()));
             };
             group.name = name;
@@ -1073,7 +1127,10 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 .and_then(Value::as_str)
                 .ok_or((StatusCode::BAD_REQUEST, "visible id required".into()))?;
             if kind != "panel" && kind != "group" {
-                return Err((StatusCode::BAD_REQUEST, "type must be panel or group".into()));
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "type must be panel or group".into(),
+                ));
             }
             if kind == "panel" && panel_index(entry, id).is_none() {
                 return Err((StatusCode::NOT_FOUND, "panel not found".into()));
@@ -1085,6 +1142,18 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 kind: kind.to_string(),
                 id: id.to_string(),
             };
+            // Ephemeral groups: a panel subject means no split view, so
+            // every group dissolves now (normalize re-enforces anyway).
+            if kind == "panel" {
+                for group in entry.groups.drain(..) {
+                    for member in &group.member_ids {
+                        if let Some(panel) = entry.panels.iter_mut().find(|p| &p.pane_id == member)
+                        {
+                            panel.group_id = None;
+                        }
+                    }
+                }
+            }
             Ok(())
         }
         "focus.set" => {
@@ -1195,10 +1264,7 @@ mod tests {
         assert_eq!(entry.groups.len(), 1);
         let group = &entry.groups[0];
         assert_eq!(group.member_ids, vec!["p2", "p3"]);
-        assert_eq!(
-            group.layout["children"],
-            serde_json::json!(["p2", "p3"])
-        );
+        assert_eq!(group.layout["children"], serde_json::json!(["p2", "p3"]));
         assert_eq!(entry.panels[1].group_id.as_deref(), Some("g1"));
         assert_eq!(entry.panels[2].group_id.as_deref(), Some("g1"));
         assert_eq!(entry.visible.kind, "group");
@@ -1316,6 +1382,134 @@ mod tests {
     }
 
     #[test]
+    fn subject_set_to_panel_dissolves_group() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut set = req("subject.set");
+        set.visible = Some(serde_json::json!({ "type": "panel", "id": "p3" }));
+        apply_op(&mut entry, &set).unwrap();
+        // Ephemeral groups: switching the subject to a panel deletes the
+        // group record and clears every member's groupId.
+        assert!(entry.groups.is_empty());
+        assert!(entry.panels.iter().all(|p| p.group_id.is_none()));
+        assert_eq!(entry.visible.kind, "panel");
+        assert_eq!(entry.visible.id, "p3");
+    }
+
+    #[test]
+    fn group_grow_rejects_non_visible_group() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3", "p4"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        // Point the visible pointer at a panel WITHOUT normalize, so the
+        // group record still stands: the grow guard alone must refuse.
+        entry.visible = VisiblePointer {
+            kind: "panel".into(),
+            id: "p4".into(),
+        };
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p4".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("row".into());
+        let err = apply_op(&mut entry, &grow).unwrap_err();
+        assert_eq!(err.0, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn grow_on_degraded_layout_never_builds_one_child_split() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        // Two live members (p1, p2), layout degraded to Null: the grow
+        // rebuilds flat from the surviving ids and must never emit a
+        // one-child split node.
+        entry.groups[0].layout = Value::Null;
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p3".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("column".into());
+        apply_op(&mut entry, &grow).unwrap();
+        let layout = &entry.groups[0].layout;
+        let children = layout.get("children").and_then(Value::as_array);
+        assert!(
+            layout.is_string() || children.is_some_and(|c| c.len() >= 2),
+            "one-child split leaked: {layout}"
+        );
+    }
+
+    #[test]
+    fn group_grow_same_axis_halves_host_share() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p3".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("row".into());
+        grow.host_pane_id = Some("p1".into());
+        apply_op(&mut entry, &grow).unwrap();
+        let group = &entry.groups[0];
+        assert_eq!(
+            group.layout["children"],
+            serde_json::json!(["p1", "p3", "p2"])
+        );
+        // Client parity: the pair keeps the host's old total, each half.
+        let sizes = group.layout["sizes"].as_array().unwrap();
+        assert_eq!(sizes[0].as_f64(), Some(0.5));
+        assert_eq!(sizes[1].as_f64(), Some(0.5));
+        assert_eq!(sizes[2].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn normalize_dissolves_groups_not_named_by_visible() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3", "p4"]);
+        entry.groups = vec![
+            GroupRecord {
+                group_id: "g1".into(),
+                name: None,
+                member_ids: vec!["p1".into(), "p2".into()],
+                layout: serde_json::json!(["p1", "p2"]),
+            },
+            GroupRecord {
+                group_id: "g2".into(),
+                name: None,
+                member_ids: vec!["p3".into(), "p4".into()],
+                layout: serde_json::json!(["p3", "p4"]),
+            },
+        ];
+        entry.panels[0].group_id = Some("g1".into());
+        entry.panels[1].group_id = Some("g1".into());
+        entry.panels[2].group_id = Some("g2".into());
+        entry.panels[3].group_id = Some("g2".into());
+        entry.visible = VisiblePointer {
+            kind: "group".into(),
+            id: "g2".into(),
+        };
+        normalize_entry(&mut entry);
+        // Only the visible group survives; the other dissolved and its
+        // members cleared.
+        assert_eq!(entry.groups.len(), 1);
+        assert_eq!(entry.groups[0].group_id, "g2");
+        assert_eq!(entry.panels[0].group_id, None);
+        assert_eq!(entry.panels[1].group_id, None);
+        assert_eq!(entry.panels[2].group_id.as_deref(), Some("g2"));
+        assert_eq!(entry.panels[3].group_id.as_deref(), Some("g2"));
+    }
+
+    #[test]
     fn seed_detection_keeps_real_entries() {
         let seed = default_entry();
         assert!(entry_is_seed(&seed));
@@ -1339,9 +1533,6 @@ mod tests {
             "children": ["p1", { "kind": "column", "sizes": [1, 1], "children": ["p2", "p3"] }]
         });
         let out = layout_without(&nested, "p3").unwrap();
-        assert_eq!(
-            out["children"],
-            serde_json::json!(["p1", "p2"])
-        );
+        assert_eq!(out["children"], serde_json::json!(["p1", "p2"]));
     }
 }
