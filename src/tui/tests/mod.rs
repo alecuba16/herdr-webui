@@ -2767,23 +2767,26 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
     app.snapshot = fixture_snapshot();
     let ctrl_b = ctrl('b');
 
-    // NewTab creates a tab, then refresh() replaces the status with the
-    // backend summary (proof the refresh after create succeeded).
+    // NewTab creates a tab, then refresh() runs; the held notice
+    // (create/close report through set_status_notice) owns the line
+    // past the refresh, proving both the action and the hold.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(
-        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
-        "create tab must refresh against the fake backend"
+        app.status, "tab created in Repo",
+        "create tab keeps its notice past the refresh"
     );
+    assert!(app.status_hold_until.is_some(), "notice must arm the hold");
     assert!(app.error.is_none(), "create tab error: {:?}", app.error);
 
-    // CloseTab closes the active tab and refreshes.
+    // CloseTab closes the active tab and refreshes the same way.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(
-        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
-        "close tab must refresh against the fake backend"
+        app.status, "tab Shell closed",
+        "close tab keeps its notice past the refresh"
     );
+    assert!(app.status_hold_until.is_some(), "notice must arm the hold");
     assert!(app.error.is_none(), "close tab error: {:?}", app.error);
 
     // --- Error arms against a dead backend: create/close hit connection
@@ -2867,7 +2870,7 @@ fn close_last_tab_also_closes_the_workspace() {
     // Gap 7: webui closeTab closes the workspace explicitly when the
     // tab was the last one in it. The single-tab fixture exercises the
     // workspace.close arm: the fake backend answers both requests and
-    // the refreshed status proves the full round trip.
+    // the held close notice survives the refresh round trip.
     let (api_socket, _stop) = fake_backend_socket();
     let client = BackendClient::new(api_socket.clone(), api_socket.clone());
     let mut app = TuiApp::new(client, Duration::from_secs(1));
@@ -2875,8 +2878,8 @@ fn close_last_tab_also_closes_the_workspace() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(
-        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
-        "closing the last tab must refresh against the fake backend"
+        app.status, "tab Shell closed",
+        "closing the last tab keeps its notice past the refresh"
     );
     assert!(app.error.is_none(), "last-tab close error: {:?}", app.error);
     let _ = std::fs::remove_file(&api_socket);
@@ -2896,12 +2899,9 @@ fn close_last_tab_ignores_workspace_not_found() {
     app.snapshot = snapshot;
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
-    // Refresh succeeds against the fake backend, so the status is the
-    // backend summary; the point is that the not-found error is gone.
-    assert_eq!(
-        app.status,
-        "backend test · protocol 1 · 1 workspaces · 1 agents"
-    );
+    // Refresh succeeds against the fake backend; the held notice stays
+    // and the point is that the not-found error is gone.
+    assert_eq!(app.status, "tab Shell closed");
     assert!(
         !app.error
             .as_deref()
@@ -2928,12 +2928,9 @@ fn close_tab_ignores_tab_not_found() {
     app.snapshot = snapshot;
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
-    // Refresh succeeds against the fake backend, so the status is the
-    // backend summary: the full success flow ran despite the not-found.
-    assert_eq!(
-        app.status,
-        "backend test \u{b7} protocol 1 \u{b7} 1 workspaces \u{b7} 1 agents"
-    );
+    // Refresh succeeds against the fake backend; the held notice stays:
+    // the full success flow ran despite the not-found.
+    assert_eq!(app.status, "tab Shell closed");
     assert!(
         !app.error
             .as_deref()
@@ -3595,7 +3592,7 @@ fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
     // follows hits the closed stream and its error surfaces.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
-    assert_eq!(app.status, "tab created", "create still succeeds");
+    assert_eq!(app.status, "tab created in Repo", "create still succeeds");
     assert!(
         app.error.as_deref().is_some_and(|e| !e.is_empty()),
         "refresh after create must surface the backend error"
@@ -3604,7 +3601,7 @@ fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
     // Same shape for close: the tab.close is served, the refresh fails.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
-    assert_eq!(app.status, "tab closed", "close still succeeds");
+    assert_eq!(app.status, "tab Shell closed", "close still succeeds");
     assert!(
         app.error.as_deref().is_some_and(|e| !e.is_empty()),
         "refresh after close must surface the backend error"
@@ -8703,6 +8700,58 @@ fn workspace_tabs_render_inactive_tab_style() {
 }
 
 #[test]
+fn tab_marker_follows_the_focused_tile_on_splits() {
+    // On a split screen the pane strip's ▸ marker must track the
+    // focused tile, not the sidebar selection: the marker is the cue
+    // telling the user which panel close/rename/compose targets.
+    let mut app = app_with_snapshot();
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(
+        &crate::tui::tests::fixture_snapshot_value_two_panes(),
+    );
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    // Sidebar cursor parked on pane_1's agent row: view_pane overrides.
+    app.selected_workspace = 0;
+    app.selected_agent = 0;
+
+    let rendered = draw(&app, 120, 30);
+    // The only "Shell" text is ws_1's tab_1 in the pane strip; with the
+    // focus on ws_2's pane_2 the marker must not sit on it.
+    assert!(
+        !rendered.contains("▸ Shell"),
+        "the marker must not sit on the sidebar pane's tab while the focus is elsewhere: {rendered}"
+    );
+
+    // Focus back on pane_1: the marker returns to Shell in the strip.
+    app.split_focus = Some("pane_1".to_string());
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("▸ Shell"),
+        "the marker tracks the focused tile: {rendered}"
+    );
+
+    // Mixed-workspace split: the strip follows the focused tile's
+    // workspace (webui state.ws parity), so ws_2's tab list renders
+    // with its own marker instead of going markerless.
+    app.split_focus = Some("pane_2".to_string());
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("▸ Server"),
+        "the strip lists the focused tile's workspace and marks its tab: {rendered}"
+    );
+    assert!(
+        rendered.contains("Docs") || rendered.contains("Other"),
+        "the strip names the focused workspace: {rendered}"
+    );
+}
+
+#[test]
 fn git_log_title_shows_more_hint_and_file_scope() {
     // The log toolbar title arms: the +more hint when the log has more
     // pages, and the file name when the log is file-scoped.
@@ -11111,12 +11160,14 @@ fn tile_titles_carry_workspace_label_folder_and_chips() {
         "branch token renders"
     );
     // The main checkout shows its branch without the worktree chip
-    // (@ main renders once, no second [worktree]).
+    // (@ main renders once). The strip follows the focused tile's
+    // workspace (ws_2, the linked lane), so its [worktree] token
+    // rides next to the tile's own chip: two total, one per surface.
     assert!(drawn.contains("@ main"));
     assert_eq!(
         drawn.matches("[worktree]").count(),
-        1,
-        "only the linked lane carries the worktree chip"
+        2,
+        "tile chip plus the focused workspace's strip token"
     );
 }
 

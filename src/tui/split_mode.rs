@@ -103,6 +103,13 @@ impl TuiApp {
                 self.split_focus = leaves.first().map(|id| id.to_string());
             }
         }
+        // The tree collapsed to a single leaf (close pruned the
+        // sibling): zoom has nothing left to hide, drop it so the
+        // single-leaf view cannot render zoomed with a desynced
+        // focus (sidebar fallback) pointing elsewhere.
+        if self.split_zoomed && self.split_tree.leaves().len() < 2 {
+            self.split_zoomed = false;
+        }
         // Zoomed pane vanished: clear the toggle, the tree shows again.
         if self.split_zoomed {
             let focus = self.focused_pane_id();
@@ -576,6 +583,14 @@ impl TuiApp {
     /// Toggle zoom on the focused tile (Ctrl+B z).
     pub(crate) fn split_toggle_zoom(&mut self) {
         if self.split_focus.is_none() && self.snapshot.panes.is_empty() {
+            return;
+        }
+        // A lone leaf has no other tile to hide: zoom there would
+        // only desync focused_pane_id (no focus -> sidebar fallback)
+        // from the rendered leaf. Refuse and say why.
+        if self.split_tree.leaves().len() < 2 {
+            self.status = "nothing to zoom: single panel".to_string();
+            self.mark_dirty();
             return;
         }
         self.split_zoomed = !self.split_zoomed;

@@ -244,6 +244,36 @@ pub fn remove_leaf(tree: &SplitNode, pane_id: &str) -> Option<SplitNode> {
     pull(tree, pane_id)
 }
 
+/// Replace the pane of the leaf holding `old_pane` with `new_pane`,
+/// keeping shape and weights. Panel-walk counterpart of the webui
+/// one-home rule: a homeless id lands in the focused leaf, a missing
+/// `old_pane` leaves the tree unchanged (focus can lag one snapshot
+/// behind a backend pane swap).
+pub fn replace_leaf(tree: &SplitNode, old_pane: &str, new_pane: &str) -> SplitNode {
+    fn replace(node: &SplitNode, old_pane: &str, new_pane: &str) -> SplitNode {
+        match node {
+            SplitNode::Leaf { pane_id } if pane_id == old_pane => SplitNode::leaf(new_pane),
+            SplitNode::Leaf { pane_id } => SplitNode::leaf(pane_id.clone()),
+            SplitNode::Split {
+                dir,
+                weights,
+                children,
+            } => SplitNode::weighted(
+                *dir,
+                children
+                    .iter()
+                    .map(|child| replace(child, old_pane, new_pane))
+                    .collect(),
+                weights.clone(),
+            ),
+        }
+    }
+    if !tree.contains_pane(old_pane) {
+        return tree.clone();
+    }
+    replace(tree, old_pane, new_pane)
+}
+
 /// Swap the panes of two leaves in place; the tree shape never changes
 /// (move-mode default verb, i3 drop-on-container).
 pub fn swap_leaves(tree: &SplitNode, a: &str, b: &str) -> SplitNode {
@@ -639,6 +669,38 @@ mod tests {
             next,
             SplitNode::split(SplitDir::Row, vec![leaf("p1"), leaf("p2")])
         );
+    }
+
+    #[test]
+    fn replace_leaf_swaps_the_pane_in_place_keeping_shape_and_weights() {
+        // Panel walk on a split: the focused leaf exchanges panes, the
+        // tree shape and the resized weights must survive.
+        let tree = SplitNode::weighted(
+            SplitDir::Row,
+            vec![
+                leaf("p1"),
+                SplitNode::split(SplitDir::Col, vec![leaf("p2"), leaf("p3")]),
+            ],
+            vec![3, 5],
+        );
+        let next = replace_leaf(&tree, "p2", "p9");
+        assert_eq!(next.leaves(), vec!["p1", "p9", "p3"]);
+        let (root_dir, root_weights) = split_parts(&next).unwrap();
+        assert_eq!(root_dir, SplitDir::Row);
+        assert_eq!(root_weights, &vec![3, 5]);
+        let inner = split_children(&next).unwrap();
+        let (_, inner_weights) = split_parts(&inner[1]).unwrap();
+        assert_eq!(
+            inner_weights,
+            &vec![SPLIT_WEIGHT_SEED, SPLIT_WEIGHT_SEED],
+            "the untouched sibling split keeps its own weights"
+        );
+
+        // Missing pane: the tree stays untouched (stale focus must not
+        // strand the walk).
+        assert_eq!(replace_leaf(&tree, "gone", "p9"), tree);
+        // Replacing with the pane already there is a no-op.
+        assert_eq!(replace_leaf(&tree, "p1", "p1"), tree);
     }
 
     #[test]

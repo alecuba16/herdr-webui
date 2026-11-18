@@ -101,9 +101,54 @@ impl TuiApp {
         workspace_status(self, result);
     }
     /// Webui `nextPanel` / `prevPanel`: move the selected tab within the
-    /// selected workspace. The webui focuses the terminal of the next
-    /// panel; the TUI selects it so Enter attaches.
+    /// selected workspace. On a split screen (2+ tiles or zoom) the
+    /// focused tile is both the anchor and the target: the walk moves
+    /// `split_focus` onto the next panel's pane, so the chord stays
+    /// visible (it used to move only the hidden sidebar cursor).
     pub fn move_panel(&mut self, delta: isize) -> WorkspaceResult {
+        // Mixed-workspace splits: the walk owns the focused tile's
+        // workspace (webui selectRelativePanel walks state.ws's tabs
+        // while the routed panel anchors the index). Reading the
+        // sidebar workspace here made focused_pane_tab miss (the
+        // focused tile's tab is not in that list), so the chord
+        // silently scored from the sidebar cursor and replace_leaf
+        // evicted the viewed tile for a foreign pane. The view pane's
+        // workspace is the anchor; the sidebar cursor follows so the
+        // strip and the walk agree afterwards.
+        if crate::tui::render::split_active(self) {
+            if let Some((workspace_id, pane_id)) = self
+                .view_pane()
+                .map(|pane| (pane.workspace_id.clone(), pane.id.clone()))
+            {
+                if let Some(index) = self
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.id == workspace_id)
+                {
+                    self.selected_workspace = index;
+                }
+                if let Some(agent_index) = self
+                    .snapshot
+                    .agents
+                    .iter()
+                    .position(|agent| agent.pane_id == pane_id)
+                {
+                    self.selected_agent = agent_index;
+                } else {
+                    // Same park as create_tab: shell panes have no
+                    // agent row, so the cursor falls to the target
+                    // workspace's first agent instead of stranding on
+                    // the old workspace's rows.
+                    self.selected_agent = self
+                        .snapshot
+                        .agents
+                        .iter()
+                        .position(|agent| agent.workspace_id == workspace_id)
+                        .unwrap_or(0);
+                }
+            }
+        }
         let Some(workspace) = self
             .selected_workspace()
             .map(|ws| (ws.id.clone(), ws.active_tab_id.clone()))
@@ -116,20 +161,40 @@ impl TuiApp {
         if len == 0 {
             return Err("no panels in this workspace".to_string());
         }
+        // Anchor on the focused tile: view_pane() follows split_focus,
+        // so a sidebar anchor lands the next panel on an invisible cursor.
+        let split_view = crate::tui::render::split_active(self);
+        let focused_pane_tab = if split_view {
+            self.focused_pane_id()
+                .and_then(|pane_id| {
+                    self.snapshot
+                        .panes
+                        .iter()
+                        .find(|pane| pane.id == pane_id)
+                        .map(|pane| pane.tab_id.clone())
+                })
+                .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
+        } else {
+            None
+        };
         // The cursor tracks the pane the TUI actually selected (the
         // selected agent's tab), because the snapshot's active_tab_id
         // only follows a real backend focus, not the local selection.
         // Without this, moving twice from a non-active tab jumps back.
-        let current = self
-            .selected_agent_pane_id()
-            .and_then(|pane_id| {
-                self.snapshot
-                    .panes
-                    .iter()
-                    .find(|pane| pane.id == pane_id)
-                    .map(|pane| pane.tab_id.clone())
+        // On a split screen the focused tile wins, even when the sidebar
+        // cursor sits elsewhere (focus walker, cross-workspace tiles).
+        let current = focused_pane_tab
+            .or_else(|| {
+                self.selected_agent_pane_id()
+                    .and_then(|pane_id| {
+                        self.snapshot
+                            .panes
+                            .iter()
+                            .find(|pane| pane.id == pane_id)
+                            .map(|pane| pane.tab_id.clone())
+                    })
+                    .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
             })
-            .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
             .or_else(|| {
                 tabs.iter()
                     .position(|tab| Some(&tab.id) == active_tab_id.as_ref())
@@ -148,7 +213,7 @@ impl TuiApp {
             .snapshot
             .panes
             .iter()
-            .find(|pane| pane.tab_id == tab_id)
+            .find(|pane| pane.tab_id == tab_id && pane.workspace_id == workspace_id)
         {
             if let Some(index) = self
                 .snapshot
@@ -158,7 +223,34 @@ impl TuiApp {
             {
                 self.selected_agent = index;
             }
+            // Move the tile focus too: view_pane feeds Enter-attach, lens,
+            // and the tail, so without it the chord reads dead on splits.
+            if split_view {
+                if self.split_tree.contains_pane(&pane.id) {
+                    // One pane, one tile (webui one-home rule): the
+                    // pane keeps its existing home, focus moves to it.
+                    self.split_focus = Some(pane.id.clone());
+                } else {
+                    // Homeless pane takes the focused leaf (webui
+                    // active-leaf seeding), swapping panes instead of
+                    // duplicating tiles.
+                    // Under zoom the focus can sit off the lone leaf;
+                    // the swap then anchors on the first leaf, the
+                    // only rendered surface.
+                    let old = self
+                        .focused_pane_id()
+                        .filter(|id| self.split_tree.contains_pane(id))
+                        .or_else(|| self.split_tree.leaves().first().map(|id| id.to_string()))
+                        .unwrap_or_default();
+                    self.split_tree =
+                        crate::tui::split::replace_leaf(&self.split_tree, &old, &pane.id);
+                    self.split_focus = Some(pane.id.clone());
+                }
+            }
         }
+        // refresh_tail follows view_pane (the just-focused tile), so it
+        // loads the new panel's tail and resets scroll/buffers on the
+        // pane switch.
         self.refresh_tail();
         Ok(format!("panel {}/{}", next + 1, len))
     }
@@ -288,15 +380,40 @@ impl TuiApp {
         Ok(format!("workspace renamed to {label}"))
     }
 
-    /// Rename the active panel through `tab.rename`.
+    /// Rename the panel in view through `tab.rename` (webui
+    /// `startTabRename` targets the routed tab, not the backend-active
+    /// one). Falls back to the selected workspace's active tab for
+    /// callers without a view pane. The view tab must still sit in its
+    /// workspace's tab list: a stale pane (backend already dropped the
+    /// tab) must not submit a rename against a dead id, it errors
+    /// plainly instead of the backend's opaque refusal.
     pub fn rename_panel(&mut self, label: &str) -> WorkspaceResult {
         let label = label.trim();
         if label.is_empty() {
             return Err("type a panel name".to_string());
         }
-        let Some(tab_id) = self.active_tab_id() else {
+        let Some(tab_id) = self.view_tab_id().or_else(|| self.active_tab_id()) else {
             return Err("no active panel".to_string());
         };
+        let stale_view_tab = self.view_pane().is_some_and(|pane| {
+            pane.tab_id == tab_id
+                && !self
+                    .snapshot
+                    .workspace_tabs(&pane.workspace_id)
+                    .iter()
+                    .any(|tab| tab.id == tab_id)
+        });
+        if stale_view_tab {
+            return Err("panel in view is gone, reopen it first".to_string());
+        }
+        let tab_label = self
+            .snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| tab.label.clone())
+            .unwrap_or_default();
+        let renamed_from_empty = tab_label.is_empty();
         self.client
             .request(
                 "tab.rename",
@@ -304,7 +421,14 @@ impl TuiApp {
             )
             .map_err(|err| err.to_string())?;
         self.refresh().map_err(|err| err.to_string())?;
-        Ok(format!("panel renamed to {label}"))
+        // Name the target: with the fallback chain a wrong-target
+        // rename must be distinguishable from the right one in the
+        // footer, so the message says which panel moved to what name.
+        if renamed_from_empty {
+            Ok(format!("panel renamed to {label}"))
+        } else {
+            Ok(format!("panel {tab_label} renamed to {label}"))
+        }
     }
 
     /// Webui `removeWorktree` (prefix Delete/Backspace): remove the linked
@@ -1026,17 +1150,6 @@ impl TuiApp {
                 .first()
                 .map(|tab| tab.id.clone())
         })
-    }
-
-    /// Label of the active panel (desktop `panelRenameInitialLabel`
-    /// source; used to prefill the rename prompt).
-    pub fn active_panel_label(&self) -> Option<String> {
-        let tab_id = self.active_tab_id()?;
-        self.snapshot
-            .tabs
-            .iter()
-            .find(|tab| tab.id == tab_id)
-            .map(|tab| tab.label.clone())
     }
 }
 
