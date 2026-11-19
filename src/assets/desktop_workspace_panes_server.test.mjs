@@ -829,6 +829,25 @@ test("a transient op failure retries once, stays in server mode, and adopts", as
   assert.equal(ctx.HerdrWorkspacePanes.paneRoot().panels[0].name, "second op");
 });
 
+// Fix B pin: a stale "server" mode from a previous session must not
+// survive into a new boot; even an unreachable server leaves local mode.
+test("bootFromServer resets a stale server mode back to local first", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [{ tab_id: "t1", workspace_id: "ws-1" }];
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  // Transport failure (no reachable entry): local mode stays.
+  const unreachableApi = () => Promise.reject(new Error("network down"));
+  const ctx2 = loadPanesModule(document, "ws-1", unreachableApi);
+  ctx2.state.tabs = [{ tab_id: "t1", workspace_id: "ws-1" }];
+  ctx2.HerdrWorkspacePanes.setPanesModeForTests("server");
+  await ctx2.HerdrWorkspacePanes.bootFromServer();
+  assert.equal(ctx2.HerdrWorkspacePanes.panesMode(), "local");
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server", "successful boot re-promotes");
+});
+
 test("entrySignaturesMatch: visible and runtime marks are excluded, tabs order is not", async () => {
   const { document } = buildDom();
   const script = makeServerApi(serverEntry());
@@ -1240,4 +1259,72 @@ test("a strip drop onto a busy server member grows the group server-side", async
   assert.deepEqual([...fresh.tabs], ["t3"], "the dropped view landed in the fresh member");
   const p3 = entry.panels.find((p) => p.paneId === "p3");
   assert.deepEqual([...p3.tabs], [], "the source leaf emptied");
+});
+
+// A server-mode group.create drop is a PROMISE: the immediate
+// save+render after the drop would persist and paint a visible subject
+// carrying the "__pending__" placeholder id before the op lands. The
+// paint must wait for the settle, and localStorage must never hold the
+// placeholder while the op is in flight.
+test("a server group.create drop defers the paint to the op response", async () => {
+  const { nodes, document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  let settle;
+  const gate = new Promise((resolve) => { settle = resolve; });
+  const heldApi = async (url, opt) => {
+    // group.create stalls until the test releases it; every other call
+    // (the boot GET) passes through.
+    if (url === "/api/workspace-panes/op" && JSON.parse(opt.body).op === "group.create") {
+      await gate;
+      return script.api(url, opt);
+    }
+    return script.api(url, opt);
+  };
+  const ctx = loadPanesModule(document, "ws-1", heldApi);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  ctx.HerdrWorkspacePanes.renderWorkspacePanes();
+  const railHtmlBefore = nodes.container.querySelector(".pane-label-rail").__innerHTML;
+  const storageBefore = JSON.stringify(ctx.__storage);
+
+  // The same drop gesture as the adoption test: p1 onto p2's right.
+  ctx.HerdrWorkspacePanes.paneLabelDragStart(
+    { target: { classList: { add() {}, remove() {} } }, dataTransfer: { setData() {}, effectAllowed: "move" } },
+    encodeURIComponent("p1")
+  );
+  const pane2 = document.getElementById("workspacePanes").querySelector(".workspace-pane");
+  ctx.HerdrWorkspacePanes.paneContainerTabDrop({
+    target: pane2,
+    clientX: 30,
+    clientY: 15,
+    dataTransfer: { getData: () => "p1", dropEffect: "move" },
+    preventDefault() {},
+  });
+  // In flight: no group adopted yet, and neither the paint nor the
+  // save ran, so localStorage never held a visible.id "__pending__".
+  const inFlightEntry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(inFlightEntry.groups.length, 0, "no group while the op is in flight");
+  const storedNow = JSON.stringify(ctx.__storage);
+  assert.ok(!storedNow.includes('"__pending__"'), "no placeholder id persisted while in flight");
+  const railInFlight = nodes.container.querySelector(".pane-label-rail").__innerHTML;
+  assert.equal(railInFlight, railHtmlBefore, "no paint while the op is in flight");
+
+  // The settle owns the adoption: the response carries the real group
+  // and the paint follows.
+  settle();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(entry.groups.length, 1, "server group adopted on settle");
+  assert.ok(!entry.visible || entry.visible.id !== "__pending__", "the painted subject never keeps the placeholder id");
+  assert.notEqual(
+    nodes.container.querySelector(".pane-label-rail").__innerHTML,
+    railHtmlBefore,
+    "the paint ran after the settle"
+  );
+  assert.ok(!JSON.stringify(ctx.__storage).includes('"__pending__"'), "the settle repaint persists the real subject");
 });

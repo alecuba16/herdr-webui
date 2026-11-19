@@ -191,6 +191,16 @@ fn save_entry(session: &str, entry: &PanesEntry) -> io::Result<()> {
     atomic_write(&path, payload.as_bytes())
 }
 
+/// Best-effort cleanup for a removed session: drop the panes sidecar and
+/// evict the in-memory entry so a same-name relaunch starts fresh instead of
+/// resurrecting the old panels.
+pub fn cleanup_session_entry(store: &Arc<PanesStore>, session: &str) {
+    let _ = fs::remove_file(panes_sidecar_path(session));
+    if let Ok(mut sessions) = store.sessions.lock() {
+        sessions.remove(session);
+    }
+}
+
 fn default_entry() -> PanesEntry {
     PanesEntry {
         v: ENTRY_VERSION,

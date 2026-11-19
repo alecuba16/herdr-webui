@@ -74,6 +74,17 @@ function makeNode(id, className) {
       else node.children.splice(at, 0, child);
       return child;
     },
+    // renderLabelRail's mid-edit reconciliation swaps the live rename
+    // input back over the fresh copy the rebuild materialized; the
+    // stub must mirror the real DOM contract so node identity survives.
+    replaceChild(newChild, oldChild) {
+      const at = node.children.indexOf(oldChild);
+      if (at >= 0) node.children.splice(at, 1, newChild);
+      else node.children.push(newChild);
+      if (oldChild.parentNode === node) oldChild.parentNode = null;
+      newChild.parentNode = node;
+      return newChild;
+    },
     querySelector(selector) {
       const wantId = selector.startsWith("#") ? selector.slice(1) : null;
       const wantClass = selector.startsWith(".") ? selector.slice(1) : null;
@@ -155,6 +166,14 @@ function makeNode(id, className) {
       node.__innerHTML = String(value);
       for (const child of node.children) child.parentNode = null;
       node.children.length = 0;
+      // Browser parse-lite: a real innerHTML build materializes the
+      // rename input node, and the mid-edit rail reconciliation must
+      // find that fresh copy to swap the live input over it.
+      if (node.__innerHTML.includes('class="pane-group-rename-input"')) {
+        const parsed = makeNode("", "pane-group-rename-input");
+        parsed.parentNode = node;
+        node.children.push(parsed);
+      }
     },
   });
   Object.defineProperty(node, "parentElement", {
@@ -3094,4 +3113,101 @@ test("mixed tree renders the one-home foreign tab with its prefix", () => {
   assert.equal(foreignChipMatch[1], "feat 1", "rail chip spells the foreign prefix plus number");
   assert.ok(rail.__innerHTML.includes('title="Show panel feat 1"'), "rail chip title spells the origin");
   assert.ok(rail.__innerHTML.includes('aria-label="Show panel feat 1 (double-click or press F2 to rename)"'), "rail chip accessible name spells the origin");
+});
+
+// Mid-edit rail reconciliation: a remote adoption while the rename
+// input is open changes sibling chips, so the rail must rebuild even
+// with the edit live, but the LIVE input node (focus + selection) must
+// ride through the swap, not the fresh copy the rebuild parsed.
+test("remote adoption mid rail rename repaints sibling chips and keeps the open input", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = { tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 } };
+  panes.renderWorkspacePanes();
+  const second = mintSecondPanel(panes, "ws-1");
+  ctx.state.tabs.push({ tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 9 });
+  ctx.state.tabsById.tab_9 = { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 9 };
+  // Remote adoption shape: the sibling leaf mutates directly on the
+  // entry (another client's tab landed), no local gesture.
+  second.tabs.push("tab_9");
+  second.active = "tab_9";
+  panes.renderWorkspacePanes();
+  let rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail, "rail renders");
+  const beforeHtml = rail.__innerHTML;
+  assert.ok(beforeHtml.includes("main 1"), "seed chip shows its label pre-edit");
+  assert.ok(!beforeHtml.includes("tab_9"), "sibling not yet adopted pre-edit");
+
+  // Open the rail rename on the seed panel; the edit input is live.
+  // The module's focus-select pass rides setTimeout: a harness-global
+  // stub would shadow the host timer for the ASYNC tests too, so the
+  // stub lives on this test's ctx only and never fires.
+  ctx.setTimeout = () => {};
+  panes.startPanelChipRename(encodeURIComponent(panes.paneRoot().panels[0].paneId));
+  const input = rail.children.find((child) => child.classList.contains("pane-group-rename-input"));
+  assert.ok(input, "rename input open on the rail");
+  input.selectionStart = 2;
+  input.selectionEnd = 4;
+  input.setSelectionRange = (a, b) => { input.selectionStart = a; input.selectionEnd = b; };
+
+  // The mid-edit render must repaint the adopted sibling chip AND keep
+  // the same input node (focus survives the swap).
+  panes.renderWorkspacePanes();
+  assert.ok(rail.__innerHTML.includes("9"), "sibling chip repaints mid-edit (adoption visible)");
+  const liveAfter = rail.children.find((child) => child.classList.contains("pane-group-rename-input"));
+  assert.equal(liveAfter, input, "the live input node survived the mid-edit rebuild");
+  assert.equal(liveAfter.selectionStart, 2, "selection start restored");
+  assert.equal(liveAfter.selectionEnd, 4, "selection end restored");
+  // The fresh parsed copy was replaced, not left beside the live input.
+  const inputCount = rail.children.filter((child) => child.classList.contains("pane-group-rename-input")).length;
+  assert.equal(inputCount, 1, "exactly one rename input in the rail");
+});
+
+// Strip repaint on a background terminal close: the pruned id changes
+// the label count even when the panel survives (no sweep change) and
+// the closed tab was not the route tab, so nothing else would paint.
+test("closing a background terminal repaints its strip without a route change", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
+  ctx.state.tabs = [
+    { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 2 },
+    { tab_id: "tab_3", workspace_id: "ws-1", label: "build", number: 3 },
+  ];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 2 },
+    tab_3: { tab_id: "tab_3", workspace_id: "ws-1", label: "build", number: 3 },
+  };
+  ctx.state.tab = "tab_2";
+  panes.renderWorkspacePanes();
+  const entry = panes.paneRoot();
+  const second = mintSecondPanel(panes, "ws-1");
+  // Both terminal views in one leaf, the route tab (tab_2) active.
+  const seed = entry.panels.find((p) => p.paneId !== second.paneId);
+  seed.tabs.push("tab_3");
+  panes.renderWorkspacePanes();
+  // One visible view: group both panels so the seed member strip shows
+  // the two view tabs (splits only exist inside groups).
+  dropLabelOn(panes, nodes, second.paneId, 0.75, 0.5);
+  const seedStrip = () => nodes.container.querySelectorAll(".pane-tab-strip")
+    .find((s) => s.__innerHTML.includes(`data-pane-id="${seed.paneId}"`));
+  assert.ok(seedStrip(), "the seed member strip renders in the group");
+  assert.ok(seedStrip().__innerHTML.includes('data-tab-id="tab_3"'), "both views render in the member strip");
+  const signatureBefore = seedStrip().__herdrPaneSignature;
+
+  // Close the background tab (not the route tab): the panel survives,
+  // the sweep finds no empty leaf, but the label count changed.
+  assert.equal(panes.onTerminalTabClosed("tab_3"), true, "background id pruned from the leaf");
+  assert.equal(ctx.state.tab, "tab_2", "route tab untouched");
+  const seedAfter = panes.paneRoot().panels.find((p) => p.paneId === seed.paneId);
+  deepEqual([...seedAfter.tabs], ["tab_2"], "panel survives with its route view");
+  const stripAfter = seedStrip();
+  assert.ok(stripAfter, "the seed member strip survives the prune");
+  assert.notEqual(stripAfter.__herdrPaneSignature, signatureBefore, "strip signature changed (label count repainted)");
+  assert.ok(!stripAfter.__innerHTML.includes('data-tab-id="tab_3"'), "closed view no longer painted");
+  assert.ok(stripAfter.__innerHTML.includes(`data-pane-id="${seed.paneId}"`), "the surviving member header still painted");
 });

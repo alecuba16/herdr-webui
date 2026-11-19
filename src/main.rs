@@ -3304,6 +3304,10 @@ async fn cleanup_sessions(
     if let Ok(mut closed) = state.closed_builtin_sessions.lock() {
         for name in &removed {
             closed.remove(name);
+            // Also drop each removed session's panes sidecar and in-memory
+            // store entry, or a same-name relaunch would resurrect its old
+            // panels (the sidecar survives the socket-dir cleanup).
+            workspace_panes_store::cleanup_session_entry(&state.panes_store, name);
         }
         removed_count = removed.len();
     }

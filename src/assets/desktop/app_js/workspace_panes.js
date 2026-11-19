@@ -981,6 +981,10 @@ function panesOpWithFallback(opPayload, localMutation, opts) {
 // second client from clobbering real content. Any other failure keeps
 // local mode, where localStorage stays the truth as before.
 async function bootWorkspacePanesFromServer() {
+  // The mode is per-backend: a stale "server" value from the previous
+  // session would keep ops targeting the wrong store until a failed op
+  // demoted it, so reset before the fetch decides.
+  panesMode = "local";
   if (!panesServerReachable()) return;
   try {
     const body = await api("/api/workspace-panes");
@@ -2155,22 +2159,34 @@ function renderLabelRail(container, entry, subject) {
   for (const group of groups) {
     html += railGroupChipHtml(group, subject.kind === "group" && subject.group === group);
   }
-  // Mid-edit protection, DOM-truth based: rebuild the rail exactly when
-  // the editing state and the rail DOM disagree (open: state set, DOM
-  // still buttons; close: state clear, DOM still input). While they
-  // agree (edit open and input shown) NO rebuild runs, so a remote
-  // adoption that re-renders mid-edit cannot tear the rail down and
-  // destroy the input. The signature and the payload are the SAME
-  // build: one string walks both jobs, no second chip pass per paint.
-  // The guard tracks RAIL edits only: a grouped member's rename
-  // input lives in its merged header (no rail chip), so a header
-  // edit must not be read as a rail/input disagreement and rebuild
-  // the rail on every pass.
+  // The open rename input must survive repaints (an innerHTML swap
+  // kills focus mid-keystroke), but the rail cannot freeze: a remote
+  // adoption that changes sibling chips mid-edit still needs the fresh
+  // build. So rebuild the rail, then swap the LIVE input back in place of
+  // the fresh copy, restoring focus and selection. The guard tracks RAIL
+  // edits only: a grouped member's rename input lives in its merged
+  // header (no rail chip), so a header edit must not be read as a
+  // rail/input disagreement and rebuild the rail on every pass.
   const editingPanelLeaf = state.editingPanelPaneId ? paneForPaneId(entry, state.editingPanelPaneId) : null;
   const editingState = !!((editingPanelLeaf && !editingPanelLeaf.groupId) || state.editingPaneGroup);
   const railShowsInput = [...(rail.children || [])].some((child) =>
     hasClass(child, "pane-group-rename-input"));
-  if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== html)) {
+  if (railShowsInput === editingState && editingState && rail.__herdrRailSignature !== html) {
+    const input = [...(rail.children || [])].find((child) => hasClass(child, "pane-group-rename-input")) || null;
+    const selStart = input && typeof input.selectionStart === "number" ? input.selectionStart : null;
+    const selEnd = input && typeof input.selectionEnd === "number" ? input.selectionEnd : null;
+    rail.__herdrRailSignature = html;
+    rail.innerHTML = html;
+    const fresh = [...(rail.children || [])].find((child) => hasClass(child, "pane-group-rename-input")) || null;
+    if (input && fresh && fresh.parentNode && typeof fresh.parentNode.replaceChild === "function") {
+      fresh.parentNode.replaceChild(input, fresh);
+      if (typeof input.focus === "function") input.focus();
+      if (typeof selStart === "number" && typeof selEnd === "number"
+          && typeof input.setSelectionRange === "function") {
+        input.setSelectionRange(selStart, selEnd);
+      }
+    }
+  } else if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== html)) {
     rail.__herdrRailSignature = html;
     rail.innerHTML = html;
   }
@@ -3789,6 +3805,11 @@ function paneContainerTabDrop(event) {
   dropHostPaneId = null;
   paneLabelDragEnd();
   if (!landed) return;
+  // A thenable landed value means a server op owns the outcome: its
+  // settle owns save+render. REJECTED is not thenable and still paints
+  // here; a local paint on the promise path would persist and paint a
+  // visible subject with the "__pending__" placeholder id.
+  if (landed && typeof landed.then === "function") return;
   saveWorkspacePanesStates();
   renderWorkspacePanes();
 }
@@ -4871,7 +4892,11 @@ function pruneClosedTabFromLeaf(tabId) {
 // and the tree/DOM pair must never diverge between the two calls.
 function onTerminalTabClosed(tabId) {
   const pruned = pruneClosedTabFromLeaf(tabId);
-  if (sweepAbandonedEmptyLeaves()) renderWorkspacePanes();
+  // The pruned id changes the strip label count even when the panel
+  // survives (no sweep change); callers only paint when the closed tab
+  // was the route tab, and renderWorkspacePanes is signature-gated so
+  // one paint here is idempotent.
+  if (sweepAbandonedEmptyLeaves() || pruned) renderWorkspacePanes();
   return pruned;
 }
 

@@ -273,6 +273,7 @@ let lastShellWorkspace = null;
 // so these two values decide whether the tail needs a second paint.
 let lastPanePaintWs = null;
 let lastPanePaintGrid = null;
+let lastPanePaintSession = null;
 let noSleepState = { mode: "off", until_ms: null, error: null, supported: true };
 let noSleepPollTimer = null;
 let noSleepRequestSeq = 0;
@@ -3574,6 +3575,9 @@ async function closeCurrentSession() {
     // with no pin for it adopts the server's configured default backend.
     state.sessionBackend = retargetBackend;
     writeSessionBackend(state.session || "default", state.sessionBackend);
+    // wterm aux surfaces are per-session; retargeting after a close reuses
+    // the tab id key space, so drop the closed session's instances.
+    if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseAll();
     // The live events socket still subscribes to the closed session's
     // backend (bound in its URL query params). Cycle it so the reconnect
     // follows the retargeted pin instead of polling a dead subscription.
@@ -4230,6 +4234,15 @@ function goSession(name, backend = currentSessionBackend(), { closeManager = tru
   state.session = name || "default";
   state.sessionBackend = backend || "builtin";
   writeSessionBackend(state.session, state.sessionBackend);
+  // wterm aux surfaces and their sockets are per-session: tab ids are only
+  // unique per backend, so a switch reuses the key space and stale instances
+  // would collide with the target session's panes.
+  if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseAll();
+  // A session switch must re-adopt the new session's panes entry, exactly
+  // like the boot path (bindings.js runs bootFromServer after parseRoute
+  // pins the session). refresh() alone never re-fetches the shared entry,
+  // so the old session's chips kept rendering after a switch.
+  if (window.HerdrWorkspacePanes) void window.HerdrWorkspacePanes.bootFromServer();
   // Reopen restores the surface the user left in this session+backend pair:
   // land on the saved workspace/tab/pane instead of the bare session entry.
   // With no saved selection (fresh session, or the boot-clean rule) the
@@ -4293,6 +4306,10 @@ function handleSessionPopState() {
     lastShellWorkspace = null;
     syncShellModeButtons();
     if (window.HerdrRightSidebar) window.HerdrRightSidebar.apply();
+    // A session switch must re-adopt the new session's panes entry, like
+    // the boot path in bindings.js; refresh() alone never re-fetches the
+    // shared entry, so the old session's chips kept rendering on Back.
+    if (window.HerdrWorkspacePanes) void window.HerdrWorkspacePanes.bootFromServer();
   }
   // Re-subscribe the events socket only when what it is bound to actually
   // changed; Back within one session keeps the live subscription, and the
@@ -4666,13 +4683,19 @@ async function finishRefreshOnline(seq, routeWs, routeTab, routePane) {
     // the workspace (shell surface swap). Quiet polls now skip the repaint;
     // a moved grid or workspace still gets one.
     const paneGrid = `${state.termCols || 0}x${state.termRows || 0}`;
+    // Same ws id in a different session is a different pane tree, so the
+    // skip signature must include the session, not just ws + grid.
+    const paneSession = state.session || "default";
     if (
       window.HerdrWorkspacePanes &&
-      (state.ws !== lastPanePaintWs || paneGrid !== lastPanePaintGrid)
+      (state.ws !== lastPanePaintWs ||
+        paneGrid !== lastPanePaintGrid ||
+        paneSession !== lastPanePaintSession)
     ) {
       window.HerdrWorkspacePanes.renderWorkspacePanes();
       lastPanePaintWs = state.ws;
       lastPanePaintGrid = paneGrid;
+      lastPanePaintSession = paneSession;
     }
     syncRightSidebarRail();
   }
