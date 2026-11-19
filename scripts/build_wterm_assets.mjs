@@ -102,13 +102,21 @@ patchedJs = applyPatch(
 // herdr guard set on this input. The id/name pair also satisfies the Chrome
 // DevTools form-field audit ("A form field element should have an id or name
 // attribute"), which the live CDP audits track.
+// The id is NUMBERED per instance: split views mount several wterm
+// surfaces at once (the #terminalShell singleton plus one aux surface per
+// non-owner leaf), so a fixed id would duplicate across the page and the
+// browser console flags it. A global counter keeps every id unique while
+// the shared terminalImeInput prefix stays greppable; the first instance
+// still answers getElementById("terminalImeInput-1"), and label-based
+// consumers (right sidebar, git shortcuts) key off the event target's
+// id or the shell surface, not a fixed one.
 patchedJs = applyPatch(
   patchedJs,
   'this.textarea.setAttribute("autocapitalize","off"),',
   'this.textarea.setAttribute("autocapitalize","none");' +
     'this.textarea.setAttribute("writingsuggestions","false");' +
     'this.textarea.setAttribute("translate","no");' +
-    'this.textarea.setAttribute("id","terminalImeInput");' +
+    'this.textarea.setAttribute("id","terminalImeInput-"+(globalThis.__herdrImeSeq=(globalThis.__herdrImeSeq||0)+1));' +
     'this.textarea.setAttribute("name","terminalImeInput"),',
   "IME textarea keyboard guards",
 );

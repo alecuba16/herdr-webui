@@ -65,12 +65,19 @@ function makeNode(id, className) {
       return child;
     },
     querySelector(selector) {
+      // Numbered-id prefix support ("[id^=\"terminalImeInput-\"]"): the
+      // release path targets the wterm textarea family, not one id.
+      const prefixMatch = selector.match(/^\[id\^="(.+)"\]$/);
+      const wantTag = selector.match(/^([a-z]+)\[id\^="(.+)"\]$/);
       const wantId = selector.startsWith("#") ? selector.slice(1) : null;
       const wantClass = selector.startsWith(".") ? selector.slice(1) : null;
       const walk = (n) => {
         for (const child of n.children) {
           if (wantId && child.id === wantId) return child;
           if (wantClass && child.className.split(/\s+/).includes(wantClass)) return child;
+          const id = String(child.id || "");
+          if (prefixMatch && id.startsWith(prefixMatch[1])) return child;
+          if (wantTag && String(child.tagName || "").toLowerCase() === wantTag[1] && id.startsWith(wantTag[2])) return child;
           const found = walk(child);
           if (found) return found;
         }
@@ -261,8 +268,10 @@ test("collapsing the column hands a stuck panel focus to the terminal shell", ()
   const ensurePanel = makeDrawerPanelFactory(document, nodes, "gitUiPanel", "git-ui-panel");
   // the hosting path is what moves the panel into the column
   ctx.HerdrRightSidebar.openView("git", "ws-1", ensurePanel);
-  // the shell hosts the wterm textarea: the real landing zone for keys
-  const ime = makeNode("terminalImeInput", "");
+  // the shell hosts the wterm textarea: the real landing zone for keys.
+  // Numbered id: the release path targets the terminalImeInput- prefix.
+  const ime = makeNode("terminalImeInput-1", "");
+  ime.tagName = "TEXTAREA";
   nodes.terminalShell.appendChild(ime);
   // focus sits inside the git panel, like a click on a file row left it
   const row = makeNode("gitRow", "git-ui-file");

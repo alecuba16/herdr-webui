@@ -105,7 +105,10 @@
       const targetInTerminal = !!(
         event.target &&
         event.target.closest &&
-        (event.target.id === "terminalImeInput" ||
+        // The wterm textareas carry NUMBERED ids (terminalImeInput-1,
+        // -2, ...: split views mount several surfaces), so the guard
+        // matches the shared prefix instead of one fixed id.
+        (String(event.target.id || "").startsWith("terminalImeInput-") ||
           event.target.closest("#terminalShell"))
       );
       const targetInGitUi = !!(
