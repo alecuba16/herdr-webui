@@ -8,6 +8,10 @@
   merged header per member: the panel label plus accent, the view
   tab, and the ✕ ride one element (click focuses, double-click or F2
   renames, the ✕ leaves the split back to the rail, never a close).
+  The view span inside the header carries the worktree and the view
+  ("wt · view": row label, file basename, or Git view label) for
+  every member kind, so the origin stays visible even under a
+  custom panel name; the chip keeps pure identity.
   The rail chips every live leaf plus one chip per group record, so
   empty fresh-mint panels stay reachable and groups survive subject
   switches as reopenable chips.
