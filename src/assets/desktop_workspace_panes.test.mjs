@@ -2966,14 +2966,15 @@ test("merged member headers carry the worktree on the view span for every kind",
   const gitHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${editorLeaf.paneId}"`)) || "";
   assert.ok(gitHeader.includes('>main · gitchanges</span>'), "git view span carries worktree plus view label");
 
-  // A renamed chip stays pure identity: the origin still rides the
-  // span, never the chip text.
+  // A rename REPLACES the view span text: one span carries the name, no
+  // second text span mounts beside it, and the view half stays reachable
+  // through title and aria-label only.
   const renamed = leaves[0];
   renamed.name = "deploy-check";
   panes.renderWorkspacePanes();
   const renamedHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${renamed.paneId}"`)) || "";
-  assert.ok(renamedHeader.includes('<span class="pane-label-chip-text">deploy-check</span>'), "renamed chip keeps the custom name alone");
-  assert.ok(renamedHeader.includes('>main · build</span>'), "origin survives the rename on the span");
+  assert.ok(renamedHeader.includes('<span class="pane-label-chip-text" title="deploy-check">deploy-check</span>'), "renamed member renders one span with the name");
+  assert.ok(!renamedHeader.includes('>main · build</span>'), "view span text is replaced, not kept beside the name");
 });
 
 // A known-but-unresolved terminal row (older server without maps, or a
@@ -3164,6 +3165,35 @@ test("remote adoption mid rail rename repaints sibling chips and keeps the open 
   // The fresh parsed copy was replaced, not left beside the live input.
   const inputCount = rail.children.filter((child) => child.classList.contains("pane-group-rename-input")).length;
   assert.equal(inputCount, 1, "exactly one rename input in the rail");
+});
+
+// Escape while a panel rename is open is the way back: the draft dies,
+// the committed name survives untouched, and the input unmounts without
+// a commit (blur-commit must not fire after the cancel repaint).
+test("Escape during panel rename cancels and keeps the committed name", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 }];
+  ctx.state.tabsById = { tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 } };
+  panes.renderWorkspacePanes();
+  const leaf = panes.paneRoot().panels[0];
+  leaf.name = "committed-name";
+  mintSecondPanel(panes, "ws-1");
+  panes.renderWorkspacePanes();
+  ctx.setTimeout = () => {};
+  const encoded = encodeURIComponent(leaf.paneId);
+  panes.startPanelChipRename(encoded);
+  let rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail.children.some((child) => child.classList.contains("pane-group-rename-input")), "rename input open before Escape");
+  ctx.state.editingPanelValue = "thrown-away-draft";
+  panes.panelChipRenameKey({ key: "Escape", preventDefault() {} }, encoded);
+  rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(!rail.children.some((child) => child.classList.contains("pane-group-rename-input")), "input closed by the cancel");
+  assert.equal(panes.paneRoot().panels[0].name, "committed-name", "committed name survives the cancel");
+  assert.ok(!rail.__innerHTML.includes("thrown-away-draft"), "draft never renders");
+  assert.ok(rail.__innerHTML.includes("committed-name"), "rail still spells the committed name");
 });
 
 // Strip repaint on a background terminal close: the pruned id changes
