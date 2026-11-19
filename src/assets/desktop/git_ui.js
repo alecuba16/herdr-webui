@@ -1171,6 +1171,26 @@
     });
   }
 
+  // The sidebar column plus every fixed-position overlay: the markup the
+  // hosted render paths paint into the panel host when a center git tab
+  // owns the main view.
+  function renderSideAndOverlays() {
+    return renderSide() + renderOverlayMarkup();
+  }
+
+  function renderOverlayMarkup() {
+    return renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+  }
+
+  // Post-paint side restore shared by the hosted render paths; render()
+  // captures the side scroll before the innerHTML write that leads here.
+  function restoreSideAfterRender(panel) {
+    const side = panel.querySelector(".git-ui-side");
+    if (side) side.scrollTop = state.sideScrollTop || 0;
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
+    focusDiffSearchIfNeeded();
+  }
+
   function render() {
     if (!state.visible) return;
     saveSideEditorFromDom();
@@ -1188,11 +1208,8 @@
     // toasts) are position: fixed, so they render from the panel host.
     const container = gitMainContainer();
     if (container) {
-      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
-      const side = panel.querySelector(".git-ui-side");
-      if (side) side.scrollTop = state.sideScrollTop || 0;
-      if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
-      focusDiffSearchIfNeeded();
+      panel.innerHTML = renderSideAndOverlays();
+      restoreSideAfterRender(panel);
       renderMainIntoTab(version, container);
       return;
     }
@@ -1201,16 +1218,13 @@
     // break in the narrow column; a view toggle or status row opens the
     // center tab on demand. Overlays still render from the panel host.
     if (panelIsHosted()) {
-      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
-      const side = panel.querySelector(".git-ui-side");
-      if (side) side.scrollTop = state.sideScrollTop || 0;
-      if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
-      focusDiffSearchIfNeeded();
+      panel.innerHTML = renderSideAndOverlays();
+      restoreSideAfterRender(panel);
       return;
     }
     // Standalone harness fallback: one panel holds side + main + overlays,
     // the Phase 2 single-surface contract behavioral tests assert on.
-    panel.innerHTML = renderSide() + `<div class="git-ui-panel-main">${renderMain()}</div>` + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+    panel.innerHTML = renderSide() + `<div class="git-ui-panel-main">${renderMain()}</div>` + renderOverlayMarkup();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -1754,6 +1768,19 @@
       loadDiff().catch((e) => { view.error = e.message; render(); });
       if (panes && panes.openGitTab) void panes.openGitTab("changes");
     },
+    // Shared commit-preview mutation: a file from a commit preview
+    // (log/history "Committed files") focuses inside that commit's compare
+    // tab, not a working-tree diff tab.
+    enterCommittedFileView(view) {
+      const hash = view.selectedCommitPreview.hash;
+      if (!view.committedFile) pushNavigationSnapshot(view);
+      view.mode = "readonly-compare";
+      view.compareBase = `${hash}^`;
+      view.compareTarget = hash;
+      view.committedFile = { hash, from: view.tab === "history" ? "history" : "log" };
+      view.compareFilePaths = ((view.selectedCommitPreview.diff && view.selectedCommitPreview.diff.files) || []).map((file) => file.path);
+      view.tab = "changes";
+    },
     selectFile(file, kind) {
       const view = active();
       const path = decodeURIComponent(file);
@@ -1773,18 +1800,8 @@
       // file/scope change makes the loaded diff stale, so the open
       // refetches; re-focusing the same file keeps the loaded diff.
       if (panes && panes.openGitTab) {
-        // A file from a commit preview (log/history "Committed files")
-        // focuses inside that commit's compare tab, not a working-tree
-        // diff tab.
         if (kind === "C" && view.selectedCommitPreview && view.selectedCommitPreview.hash) {
-          const hash = view.selectedCommitPreview.hash;
-          if (!view.committedFile) pushNavigationSnapshot(view);
-          view.mode = "readonly-compare";
-          view.compareBase = `${hash}^`;
-          view.compareTarget = hash;
-          view.committedFile = { hash, from: view.tab === "history" ? "history" : "log" };
-          view.compareFilePaths = ((view.selectedCommitPreview.diff && view.selectedCommitPreview.diff.files) || []).map((file) => file.path);
-          view.tab = "changes";
+          this.enterCommittedFileView(view);
           scrollAfter(panes.openGitTab(mainViewKeyFor(view)));
           return;
         }
@@ -1800,14 +1817,7 @@
         return;
       }
       if (kind === "C" && view.selectedCommitPreview && view.selectedCommitPreview.hash) {
-        const hash = view.selectedCommitPreview.hash;
-        if (!view.committedFile) pushNavigationSnapshot(view);
-        view.mode = "readonly-compare";
-        view.compareBase = `${hash}^`;
-        view.compareTarget = hash;
-        view.committedFile = { hash, from: view.tab === "history" ? "history" : "log" };
-        view.compareFilePaths = ((view.selectedCommitPreview.diff && view.selectedCommitPreview.diff.files) || []).map((file) => file.path);
-        view.tab = "changes";
+        this.enterCommittedFileView(view);
         loadDiff().then(() => requestAnimationFrame(() => scrollToDiffFile(view.file))).catch((e) => { view.error = e.message; render(); });
         return;
       }
@@ -2399,23 +2409,11 @@
       if (!repo || !branch) return;
       const label = force ? "force delete" : "delete";
       if (!confirm(`${label} branch ${branch} in ${repo.path}?`)) return;
-      view.cleanupLoading = true;
-      view.cleanupError = "";
-      render();
-      if (typeof showBlocking === "function") showBlocking("Deleting branch...");
-      try {
+      await this.runCleanupItem(view, "Deleting branch...", async () => {
         await api("/api/git-ui/branch-delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, branch, force, confirmed: true }) });
         await this.notifyBranchChanged(repo.path);
         await this.scanCleanup();
-      } catch (err) {
-        view.cleanupError = err.message || String(err);
-        render();
-      } finally {
-        const latest = active();
-        if (latest) latest.cleanupLoading = false;
-        render();
-        if (typeof hideBlocking === "function") hideBlocking();
-      }
+      });
     },
     async deleteCleanupWorktree(repoIndex, worktreeIndex, force) {
       const view = active();
@@ -2424,15 +2422,24 @@
       if (!repo || !worktree || !worktree.path) return;
       const label = force ? "force remove" : "remove";
       if (!confirm(`${label} worktree ${worktree.path}?`)) return;
-      view.cleanupLoading = true;
-      view.cleanupError = "";
-      render();
-      if (typeof showBlocking === "function") showBlocking("Removing worktree...");
-      try {
+      await this.runCleanupItem(view, "Removing worktree...", async () => {
         await api("/api/git-ui/worktree-remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, path: worktree.path, force, confirmed: true }) });
         await this.notifyBranchChanged(repo.path);
         await this.notifyBranchChanged(worktree.path);
         await this.scanCleanup();
+      });
+    },
+    // Shared body of the cleanup item deleters: loading/error state on the
+    // view the confirm gate already resolved, blocking overlay, and the
+    // refresh render. Error joining stays plain message text here.
+    async runCleanupItem(view, blockingLabel, run) {
+      if (!view) return;
+      view.cleanupLoading = true;
+      view.cleanupError = "";
+      render();
+      if (typeof showBlocking === "function") showBlocking(blockingLabel);
+      try {
+        await run();
       } catch (err) {
         view.cleanupError = err.message || String(err);
         render();

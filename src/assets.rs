@@ -1386,8 +1386,10 @@ mod tests {
         assert!(DESKTOP_GIT_UI_JS.contains("showBlocking"));
         assert!(DESKTOP_GIT_UI_JS.contains("hideBlocking"));
         assert!(DESKTOP_GIT_UI_JS.contains(r#"showBlocking("Saving file"#));
-        assert!(DESKTOP_GIT_UI_JS.contains(r#"showBlocking("Deleting"#));
-        assert!(DESKTOP_GIT_UI_JS.contains(r#"showBlocking("Removing worktree"#));
+        // Cleanup deleters share runCleanupItem; the label travels as its
+        // argument, so the literals live at the call sites.
+        assert!(DESKTOP_GIT_UI_JS.contains(r#"runCleanupItem(view, "Deleting branch..."#));
+        assert!(DESKTOP_GIT_UI_JS.contains(r#"runCleanupItem(view, "Removing worktree..."#));
         // Defensive guards for test compatibility
         assert!(DESKTOP_GIT_UI_JS.contains(r#"typeof showBlocking === "function""#));
         assert!(DESKTOP_GIT_UI_JS.contains(r#"typeof hideBlocking === "function""#));

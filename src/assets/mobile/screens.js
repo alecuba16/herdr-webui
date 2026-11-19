@@ -252,16 +252,22 @@
       return items.map((item) => `<button class="mobile-drawer-item" data-screen="${item.screen}" onclick="HerdrMobile.openDrawerTarget('${item.screen}')"><span class="mobile-drawer-icon" aria-hidden="true">${escapeHtml(item.icon)}</span><span class="mobile-drawer-text"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.meta)}</small></span></button>`).join("");
     }
 
-    function dismissWorkingAgent(workspaceId, tabId, paneId, terminalId) {
-      const workingDismissals = getWorkingDismissals();
-      if (!workingDismissals) return;
-      const agent = state.agents.find(
+    // Working-agent lookup by its pane coordinates; a terminal id narrows
+    // to one terminal when the agent spans several.
+    function findWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+      return state.agents.find(
         (item) =>
           item.workspace_id === workspaceId &&
           item.tab_id === tabId &&
           item.pane_id === paneId &&
           (!terminalId || item.terminal_id === terminalId),
       );
+    }
+
+    function dismissWorkingAgent(workspaceId, tabId, paneId, terminalId) {
+      const workingDismissals = getWorkingDismissals();
+      if (!workingDismissals) return;
+      const agent = findWorkingAgent(workspaceId, tabId, paneId, terminalId);
       if (!agent) return;
       workingDismissals.dismiss(agent);
       render();
@@ -270,13 +276,7 @@
     function restoreWorkingAgent(workspaceId, tabId, paneId, terminalId) {
       const workingDismissals = getWorkingDismissals();
       if (!workingDismissals) return;
-      const agent = state.agents.find(
-        (item) =>
-          item.workspace_id === workspaceId &&
-          item.tab_id === tabId &&
-          item.pane_id === paneId &&
-          (!terminalId || item.terminal_id === terminalId),
-      );
+      const agent = findWorkingAgent(workspaceId, tabId, paneId, terminalId);
       if (!agent) return;
       workingDismissals.restore(agent);
       render();

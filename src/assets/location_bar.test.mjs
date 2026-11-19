@@ -28,6 +28,7 @@ const locationBarScript = new vm.Script(readFileSync(LOCATION_BAR_PATH, "utf8"),
   filename: LOCATION_BAR_PATH,
 });
 let drawerShortcutsScript = null;
+let drawerCoreScript = null;
 
 function stubNode(id) {
   return {
@@ -1253,11 +1254,15 @@ describe("location bar worktree popover", () => {
         // shortcut guard probes by id and must always hear "none".
         getElementById: () => null,
       },
-      HerdrAppHelpers: { escapeHtml: (value) => String(value) },
     });
     drawer.globalThis = drawer;
     drawer.window = drawer;
     // Compiled once per product file so coverage attributes to the real path.
+    if (!drawerCoreScript) {
+      const corePath = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+      drawerCoreScript = new vm.Script(readFileSync(corePath, "utf8"), { filename: corePath });
+    }
+    drawerCoreScript.runInContext(drawer);
     if (!drawerShortcutsScript) {
       const shortcutsPath = fileURLToPath(new URL("./desktop/git_ui/shortcuts.js", import.meta.url));
       drawerShortcutsScript = new vm.Script(readFileSync(shortcutsPath, "utf8"), { filename: shortcutsPath });

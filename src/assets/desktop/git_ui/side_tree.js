@@ -5,11 +5,19 @@
       const list = files || [];
       const collapsed = !!((view.collapsedSections || {})[title]);
       const action = sectionBulkAction(title, kind, list);
+      const [visibleList, largeNote] = largeSectionWindow(view, title, list);
+      return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list${treeStyle ? " git-ui-tree-list" : ""}" role="tree" aria-label="${esc(title)} files">${visibleList.length ? renderFileTree(visibleList, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}${largeNote}</div>`}</div>`;
+    }
+
+    // Large-section window shared by every collapsible file section: above
+    // the limit the section shows the first slice plus the expand control,
+    // unless the user already expanded this title.
+    function largeSectionWindow(view, title, list) {
       const limit = largeSectionFileLimit();
       const limited = limit > 0 && list.length > limit && !((view.expandedLargeSections || {})[title]);
       const visibleList = limited ? list.slice(0, limit) : list;
       const largeNote = limited ? `<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.expandLargeSection('${arg(title)}')"><strong>Show all ${esc(title.toLowerCase())} files</strong></button><p>Showing first ${limit} of ${list.length} files to keep browser responsive.</p></div>` : "";
-      return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list${treeStyle ? " git-ui-tree-list" : ""}" role="tree" aria-label="${esc(title)} files">${visibleList.length ? renderFileTree(visibleList, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}${largeNote}</div>`}</div>`;
+      return [visibleList, largeNote];
     }
 
     function sectionBulkAction(title, kind, files) {
@@ -200,10 +208,7 @@
     function stashFileSectionList(title, files, view) {
       const list = files || [];
       const collapsed = !!((view.collapsedSections || {})[title]);
-      const limit = largeSectionFileLimit();
-      const limited = limit > 0 && list.length > limit && !((view.expandedLargeSections || {})[title]);
-      const visibleList = limited ? list.slice(0, limit) : list;
-      const largeNote = limited ? `<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.expandLargeSection('${arg(title)}')"><strong>Show all ${esc(title.toLowerCase())} files</strong></button><p>Showing first ${limit} of ${list.length} files to keep browser responsive.</p></div>` : "";
+      const [visibleList, largeNote] = largeSectionWindow(view, title, list);
       const body = visibleList.length ? renderFileTree(visibleList, "C", view, { selectMethod: "selectStashFile", selectedPath: view.stashFile, selectedKind: "", metaForPath: null, statusForPath: null }) : `<div class="git-ui-empty-row">No files in this stash</div>`;
       return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button></div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${body}${largeNote}</div>`}</div>`;
     }

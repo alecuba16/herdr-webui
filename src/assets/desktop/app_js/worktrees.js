@@ -512,12 +512,7 @@ async function submitWorktreeCreate(input) {
       ),
     });
     closeFn();
-    const result = r.result || {};
-    go(
-      result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
+    navigateWorktreeResult(r);
   } catch (ex) {
     const message = ex.message || String(ex);
     hideBlocking();
@@ -540,6 +535,16 @@ async function confirmContinueWithoutPull(message) {
   // Shared message contract (HerdrAppHelpers.confirmWorktreePullBaseQuestion);
   // the modal asks through the shell's question card.
   return HerdrAppHelpers.confirmWorktreePullBaseQuestion(message, askQuestion) || false;
+}
+// Navigation answer of a worktree create: the workspace plus the tab and
+// root pane the server reports back, so the new view lands focused.
+function navigateWorktreeResult(r) {
+  const result = r.result || {};
+  go(
+    result.workspace.workspace_id,
+    result.tab && result.tab.tab_id,
+    result.root_pane && result.root_pane.pane_id,
+  );
 }
 function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];
@@ -962,12 +967,7 @@ async function createDiscoveredWorktree() {
       }),
     });
     closeWorktreeOpenModal();
-    const result = r.result || {};
-    go(
-      result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
+    navigateWorktreeResult(r);
   } catch (ex) {
     const message = ex.message || String(ex);
     hideBlocking();

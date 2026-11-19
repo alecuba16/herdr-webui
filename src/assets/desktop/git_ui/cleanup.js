@@ -95,22 +95,15 @@
       const items = [];
       for (const repo of (((view.cleanupResult || {}).repos) || [])) {
         if (repo.error) continue;
-        for (const branch of cleanupVisibleBranches(repo)) {
-          if (cleanupBranchSelectable(branch)) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
-        }
-        (repo.worktrees || []).forEach((worktree, index) => {
-          if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, branch: worktree.branch || null, key: `worktree|${repo.path}|${index}` });
-        });
+        pushCleanupRepoItems(items, repo);
       }
       return items;
     }
 
-    function cleanupRepoItems(repoIndex, type) {
-      const view = active() || {};
-      const repos = ((view.cleanupResult || {}).repos) || [];
-      const repo = repos[Number(repoIndex)];
-      if (!repo || repo.error) return [];
-      const items = [];
+    // Selectable cleanup items of one repo; the keys are the selection-map
+    // contract (type|repoPath|id), so branch and worktree handlers share
+    // them. type narrows to one group, falsy takes both.
+    function pushCleanupRepoItems(items, repo, type) {
       if (!type || type === "branch") {
         for (const branch of cleanupVisibleBranches(repo)) {
           if (cleanupBranchSelectable(branch)) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
@@ -121,6 +114,15 @@
           if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, branch: worktree.branch || null, key: `worktree|${repo.path}|${index}` });
         });
       }
+    }
+
+    function cleanupRepoItems(repoIndex, type) {
+      const view = active() || {};
+      const repos = ((view.cleanupResult || {}).repos) || [];
+      const repo = repos[Number(repoIndex)];
+      if (!repo || repo.error) return [];
+      const items = [];
+      pushCleanupRepoItems(items, repo, type);
       return items;
     }
 

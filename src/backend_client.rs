@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use interprocess::local_socket::traits::Stream as _;
-use interprocess::local_socket::Stream as LocalStream;
 use interprocess::TryClone as _;
 use serde_json::{json, Value};
+
+use crate::local_socket::{connect_local_stream, LocalStream};
 
 use crate::protocol::{read_message, write_message, ClientMessage, ServerMessage, TerminalFrame};
 
@@ -553,22 +554,6 @@ fn read_protocol<M: for<'de> serde::Deserialize<'de>>(
     stream: &mut LocalStream,
 ) -> Result<M, BackendClientError> {
     read_message(stream, MAX_TUI_TERMINAL_FRAME_SIZE).map_err(BackendClientError::Protocol)
-}
-
-fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericFilePath};
-        let name = path.to_fs_name::<GenericFilePath>()?;
-        LocalStream::connect(name)
-    }
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericNamespaced};
-        let name = path.to_string_lossy().to_string();
-        let name = name.to_ns_name::<GenericNamespaced>()?;
-        LocalStream::connect(name)
-    }
 }
 
 fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {

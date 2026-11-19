@@ -48,6 +48,7 @@ mod file_browser;
 mod git_bin;
 mod git_ui;
 mod jcode_transcript;
+mod local_socket;
 mod lsp;
 mod notes;
 mod password_hashing;
@@ -99,7 +100,6 @@ const MIN_BACKEND_VERSION: &str = "0.9.0";
 const MAX_TESTED_BACKEND_VERSION: &str = "0.9.5";
 const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
-type LocalStream = interprocess::local_socket::Stream;
 type BuiltinSessionRegistry =
     Arc<Mutex<HashMap<String, Arc<builtin_backend::BuiltinBackendHandle>>>>;
 /// Canonical names of built-in sessions the user explicitly closed. Close is
@@ -1155,6 +1155,7 @@ fn resolve_backend_mode(
 // BackendClient so server and client compute byte-identical paths). Local
 // wrappers keep the settings-dir injection server-side and the names the
 // tests use.
+use herdr_webui::local_socket::{connect_local_stream, LocalStream};
 use herdr_webui::socket_paths::{
     builtin_session_dir as builtin_session_dir_in, builtin_socket_paths_in, socket_path_fits,
     SOCKET_PATH_LIMIT,
@@ -2099,22 +2100,6 @@ fn known_sessions(state: &WebState, herdr_compatible: bool) -> Vec<serde_json::V
         sessions.extend(known_builtin_sessions(state));
     }
     sessions
-}
-
-fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericFilePath};
-        let name = path.to_fs_name::<GenericFilePath>()?;
-        LocalStream::connect(name)
-    }
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericNamespaced};
-        let name = path.to_string_lossy().to_string();
-        let name = name.to_ns_name::<GenericNamespaced>()?;
-        LocalStream::connect(name)
-    }
 }
 
 fn read_json_line<T: for<'de> Deserialize<'de>>(

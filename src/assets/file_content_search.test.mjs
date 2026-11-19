@@ -11,17 +11,22 @@ const LINE_CONTEXT_PATH = fileURLToPath(new URL("./shared/line_context.js", impo
 const lineContextScript = new vm.Script(readFileSync(LINE_CONTEXT_PATH, "utf8"), {
   filename: LINE_CONTEXT_PATH,
 });
+const CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const coreScript = new vm.Script(readFileSync(CORE_PATH, "utf8"), {
+  filename: CORE_PATH,
+});
 const CONTENT_SEARCH_PATH = fileURLToPath(new URL("./shared/file_content_search.js", import.meta.url));
 const contentSearchScript = new vm.Script(readFileSync(CONTENT_SEARCH_PATH, "utf8"), {
   filename: CONTENT_SEARCH_PATH,
 });
 
-function loadRenderer(withLineContext = true) {
+function loadRenderer() {
   const ctx = { window: null, globalThis: null, console, Map, Set, Promise, Object, Array, String, Number, JSON, Math, RegExp, encodeURIComponent, decodeURIComponent };
   ctx.window = ctx;
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  if (withLineContext) lineContextScript.runInContext(ctx);
+  coreScript.runInContext(ctx);
+  lineContextScript.runInContext(ctx);
   contentSearchScript.runInContext(ctx);
   return ctx.window.HerdrContentSearch;
 }

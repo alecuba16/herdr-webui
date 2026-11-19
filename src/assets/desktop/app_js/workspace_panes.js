@@ -1578,6 +1578,25 @@ function syncTerminalTabsIntoTree(root) {
 // mismatched children are removed, missing ones are created. The strips
 // stay signature-gated (innerHTML only on the strip itself).
 
+// Builds the Phase 3 leaf shell (.workspace-pane > .pane-tab-strip +
+// .pane-content) shared by every render path that materializes a missing
+// pane node.
+function createPaneElement(paneId) {
+  const pane = document.createElement("div");
+  pane.className = "workspace-pane";
+  pane.dataset.paneId = paneId;
+  pane.id = `pane-${paneId}`;
+  const strip = document.createElement("div");
+  strip.className = "pane-tab-strip";
+  strip.setAttribute("role", "tablist");
+  strip.setAttribute("aria-label", "Pane tabs");
+  pane.appendChild(strip);
+  const content = document.createElement("div");
+  content.className = "pane-content";
+  pane.appendChild(content);
+  return pane;
+}
+
 // Split wrappers reconcile by a persistent splitId, never by tree
 // index: an extend splice (tmux model) shifts sibling indices, and an
 // index-keyed wrapper would tear down and rebuild nested subtrees,
@@ -2277,18 +2296,7 @@ function renderWorkspacePanes() {
       // .workspace-pane directly stay valid.
       let pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
       if (!pane) {
-        pane = document.createElement("div");
-        pane.className = "workspace-pane";
-        pane.dataset.paneId = subject.leaf.paneId || "root";
-        pane.id = `pane-${subject.leaf.paneId || "root"}`;
-        const strip = document.createElement("div");
-        strip.className = "pane-tab-strip";
-        strip.setAttribute("role", "tablist");
-        strip.setAttribute("aria-label", "Pane tabs");
-        pane.appendChild(strip);
-        const content = document.createElement("div");
-        content.className = "pane-content";
-        pane.appendChild(content);
+        pane = createPaneElement(subject.leaf.paneId || "root");
         container.appendChild(pane);
       }
       renderLeaves.push(subject.leaf);
@@ -3892,6 +3900,25 @@ function adoptedFreshPanel(knownIds) {
   return gained.length === 1 ? gained[0] : null;
 }
 
+// Server mint prologue shared by splitFlatHost and splitGroupedHost:
+// panel.create mints the fresh member, the adopted panel must be exactly
+// one new id (else the gesture raced a broadcast). Returns the fresh leaf,
+// PANES_OP_REJECTED when the server refused, null when nothing landed
+// (already announced), or false when the op transport failed (the caller
+// falls back to its local twin).
+async function splitMintFresh(targetWs) {
+  const known = new Set(paneLeaves(paneRootFor()).map((l) => l.paneId));
+  const mint = await panesServerOp({ op: "panel.create", wsId: targetWs });
+  if (mint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+  if (!mint) return false;
+  const freshMint = adoptedFreshPanel(known);
+  if (!freshMint) {
+    announcePaneChanges("Could not place the new view");
+    return null;
+  }
+  return freshMint;
+}
+
 // Flat host. Server: panel.create mints the fresh member bound to the
 // host's workspace, then group.create wraps [host, fresh] with the
 // fresh member focused and the group visible (dragged = the fresh
@@ -3919,15 +3946,9 @@ async function splitFlatHost(leaf, applyView, wsIdOverride) {
     return settleSplitView(host, fresh, applyView);
   };
   if (panesMode !== "server" || !panesServerReachable()) return localTwin(null);
-  const known = new Set(paneLeaves(paneRootFor()).map((l) => l.paneId));
-  const mint = await panesServerOp({ op: "panel.create", wsId: targetWs });
-  if (mint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
-  if (!mint) return localTwin(null);
-  const freshMint = adoptedFreshPanel(known);
-  if (!freshMint) {
-    announcePaneChanges("Could not place the new view");
-    return null;
-  }
+  const freshMint = await splitMintFresh(targetWs);
+  if (freshMint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+  if (!freshMint) return freshMint === null ? null : localTwin(null);
   const create = await panesServerOp({
     op: "group.create",
     paneId: freshMint.paneId,
@@ -3979,15 +4000,9 @@ async function splitGroupedHost(leaf, group, applyView, wsIdOverride) {
     return settleSplitView(host, fresh, applyView);
   };
   if (panesMode !== "server" || !panesServerReachable()) return localTwin(null);
-  const known = new Set(paneLeaves(paneRootFor()).map((l) => l.paneId));
-  const mint = await panesServerOp({ op: "panel.create", wsId: targetWs });
-  if (mint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
-  if (!mint) return localTwin(null);
-  const freshMint = adoptedFreshPanel(known);
-  if (!freshMint) {
-    announcePaneChanges("Could not place the new view");
-    return null;
-  }
+  const freshMint = await splitMintFresh(targetWs);
+  if (freshMint === PANES_OP_REJECTED) return PANES_OP_REJECTED;
+  if (!freshMint) return freshMint === null ? null : localTwin(null);
   if (!visibleSubjectIsGroup(paneRootFor(), group.groupId)) {
     const vis = await panesServerOp({ op: "subject.set", visible: { type: "group", id: group.groupId } });
     if (vis === PANES_OP_REJECTED) {
@@ -4968,12 +4983,22 @@ function newPanelForFocused() {
 // split answer (gesture failed, server refused) lands nothing, the
 // caller proceeds with its module open over the ORIGINAL leaf.
 async function paneEnsureEditorTab(path) {
+  return paneEnsureTabId(editorTabId(path));
+}
+
+// Shared core of paneEnsureEditorTab and paneEnsureGitTab: owner lookup and
+// focus, free/busy landing of the tab id, PANES_OP_REJECTED propagation, and
+// the in-place degrade when a split fails. Returns the owner/fresh/leaf the
+// tab landed in, PANES_OP_REJECTED on server refusal, or null when no tree.
+async function paneEnsureTabId(tabId) {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return null;
-  const tabId = editorTabId(path);
-  // Same one-owner rule as git tabs: a strip click on a non-active pane
-  // focuses the owning leaf instead of duplicating the id into the
-  // active one.
+  // A tab id belongs to one leaf. An open request while another leaf
+  // owns the id (strip click on a non-active pane, drawer nav) must
+  // focus that leaf, not mint a second tab: a duplicate id desyncs the
+  // strip from the container mount and leaves one pane blank. The
+  // pointer move holds even when the module open bails later
+  // (closed drawer, load failure).
   const owner = paneForTab(root, tabId);
   if (owner) {
     owner.active = tabId;
@@ -4997,6 +5022,9 @@ async function paneEnsureEditorTab(path) {
     } else {
       // Busy leaf: split. The old view keeps its panel, the new view
       // lands RIGHT, focused. The split rendered already (settle tail).
+      // A falsy split answer (gesture failed, server refused) lands
+      // nothing, the caller proceeds with its module open over the
+      // ORIGINAL leaf.
       const fresh = await splitLeafWithFreshMember(leaf, (target) => landTabIntoLeaf(target, tabId));
       if (fresh === PANES_OP_REJECTED) return PANES_OP_REJECTED;
       if (fresh) return fresh;
@@ -5108,54 +5136,7 @@ async function closeEditorTab(encodedPath) {
 // tree owns identity; git_ui owns per-view state and renders renderMain
 // into the tab's container.
 async function paneEnsureGitTab(viewKey) {
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return null;
-  const tabId = gitTabId(viewKey);
-  // A tab id belongs to one leaf. An open request while another leaf
-  // owns the id (strip click on a non-active pane, drawer nav) must
-  // focus that leaf, not mint a second tab: a duplicate id desyncs the
-  // strip from the container mount and leaves one pane blank.
-  const owner = paneForTab(root, tabId);
-  if (owner) {
-    // Clicking a tab that lives in another pane focuses that pane and
-    // activates the tab there: the module mount follows the owner, and
-    // the pointer move holds even when the module open bails later
-    // (closed drawer, load failure).
-    owner.active = tabId;
-    focusLeaf(root, owner);
-    saveWorkspacePanesStates();
-    renderWorkspacePanes();
-    if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
-    return owner;
-  }
-  const leaf = activeLeaf(root);
-  if (!leaf) return null;
-  if (!leaf.tabs.includes(tabId)) {
-    if (!leafBusyViews(leaf)) {
-      // Free flat leaf (or placeholder-only): the first view lands in
-      // place, exactly as before.
-      leaf.tabs.push(tabId);
-      leaf.active = tabId;
-      disarmLeafAutoClose(leaf);
-      saveWorkspacePanesStates();
-      renderWorkspacePanes();
-    } else {
-      // Busy leaf: split, same contract as editor tabs.
-      const fresh = await splitLeafWithFreshMember(leaf, (target) => landTabIntoLeaf(target, tabId));
-      if (fresh === PANES_OP_REJECTED) return PANES_OP_REJECTED;
-      if (fresh) return fresh;
-      // Split failed: degrade to the old in-place landing (same reason
-      // as the editor path: the module mount needs a recorded id).
-      leaf.tabs.push(tabId);
-      leaf.active = tabId;
-      disarmLeafAutoClose(leaf);
-      saveWorkspacePanesStates();
-      renderWorkspacePanes();
-      return leaf;
-    }
-  }
-  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
-  return leaf;
+  return paneEnsureTabId(gitTabId(viewKey));
 }
 
 async function ensureGitUiModule() {
@@ -5343,18 +5324,7 @@ function mountEmptyLeafInPane(shown) {
   } else {
     pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
     if (!pane && subject) {
-      pane = document.createElement("div");
-      pane.className = "workspace-pane";
-      pane.dataset.paneId = subject.leaf.paneId || "root";
-      pane.id = `pane-${subject.leaf.paneId || "root"}`;
-      const strip = document.createElement("div");
-      strip.className = "pane-tab-strip";
-      strip.setAttribute("role", "tablist");
-      strip.setAttribute("aria-label", "Pane tabs");
-      pane.appendChild(strip);
-      const content = document.createElement("div");
-      content.className = "pane-content";
-      pane.appendChild(content);
+      pane = createPaneElement(subject.leaf.paneId || "root");
       container.appendChild(pane);
     }
   }

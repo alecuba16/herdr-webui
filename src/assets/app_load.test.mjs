@@ -2448,7 +2448,8 @@ describe("app bundle load", () => {
     // click parity), and only standalone harnesses keep the single-panel
     // side+main fallback.
     match(gitUiSource, /function renderMainIntoTab\(version, container\) \{/);
-    match(gitUiSource, /if \(panelIsHosted\(\)\) \{\n      panel\.innerHTML = renderSide\(\) \+ renderContextMenu\(\)/);
+    match(gitUiSource, /function renderSideAndOverlays\(\) \{[\s\S]{0,80}renderSide\(\) \+ renderOverlayMarkup\(\)/);
+    match(gitUiSource, /if \(panelIsHosted\(\)\) \{\n      panel\.innerHTML = renderSideAndOverlays\(\)/);
     ok(!/panelIsHosted\(\)[\s\S]{0,200}releaseToCenter/.test(gitUiSource), "no release handoff remains");
     // Internal state flips heal the pane tree: the stash guard in refresh,
     // the non-git fallback, and the folder switch all sync the strip so the
@@ -2728,7 +2729,10 @@ describe("app bundle load", () => {
     match(lineContextSource, /nextContextSize/);
     match(lineContextSource, /pushMergedChunk/);
     match(fileContentSearchSource, /lineChunks/);
-    match(fileContentSearchSource, /mergeChunk/);
+    // Chunk merging lives only in line_context.js; the renderer calls
+    // HerdrLineContext.pushMergedChunk with no local fallback.
+    match(fileContentSearchSource, /HerdrLineContext\.pushMergedChunk/);
+    ok(!fileContentSearchSource.includes("mergeChunk"));
     ok(!fileContentSearchSource.includes("function renderMatch"));
     ok(!fileContentSearchSource.includes("<article class=\"herdr-content-search-match"));
     ok(!fileContentSearchSource.includes("expandAll"));

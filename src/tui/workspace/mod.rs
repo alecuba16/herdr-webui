@@ -442,10 +442,8 @@ impl TuiApp {
         }
     }
 
-    /// Stage the selected row's path for the workspace name prompt
-    /// (prefix `N` pick mode). Validates on disk like the typed-path
-    /// flow (webui "workspace folder must exist") before chaining.
-    pub(crate) fn worktree_stage_picked(&mut self) -> WorkspaceResult {
+    /// Path of the row under the worktree cursor, failing when absent or empty.
+    fn selected_row_path(&self) -> Result<String, String> {
         let Some(row) = self
             .filtered_browser_rows()
             .get(self.worktree_selected)
@@ -460,6 +458,14 @@ impl TuiApp {
         if path.is_empty() {
             return Err("worktree path missing".to_string());
         }
+        Ok(path)
+    }
+
+    /// Stage the selected row's path for the workspace name prompt
+    /// (prefix `N` pick mode). Validates on disk like the typed-path
+    /// flow (webui "workspace folder must exist") before chaining.
+    pub(crate) fn worktree_stage_picked(&mut self) -> WorkspaceResult {
+        let path = self.selected_row_path()?;
         let expanded = validate_workspace_folder(&path)?;
         self.workspace_create_stage = Some(WorkspaceCreateStage::Path(expanded.clone()));
         self.worktree_pick_workspace = false;
@@ -483,13 +489,7 @@ impl TuiApp {
         else {
             return Err("no worktree selected".to_string());
         };
-        let path = match &row {
-            BrowserRow::ThisFolder { path } | BrowserRow::Folder { path, .. } => path.clone(),
-            BrowserRow::Worktree(worktree) => worktree.path.clone(),
-        };
-        if path.is_empty() {
-            return Err("worktree path missing".to_string());
-        }
+        let path = self.selected_row_path()?;
         let title = row.title();
         // The webui's worktree opens go through `/api/worktrees/open`,
         // which records the opened path into recents server-side

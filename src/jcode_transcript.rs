@@ -1717,15 +1717,7 @@ fn tool_result_text(block: &serde_json::Map<String, serde_json::Value>) -> (Stri
     /// Cap matches the reference's TOOL_OUTPUT_CHARS: the page carries
     /// the head of an output, the rest stays out of the payload.
     const MAX_OUTPUT_CHARS: usize = 4000;
-    let text = match block.get("content") {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .filter_map(|i| i.get("text").and_then(|t| t.as_str()))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
-    };
+    let text = tool_result_text_uncapped(block);
     if text.chars().count() <= MAX_OUTPUT_CHARS {
         (text, false)
     } else {

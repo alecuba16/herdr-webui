@@ -1,12 +1,5 @@
 (function () {
-  function esc(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
+  const esc = globalThis.HerdrAppHelpers.escapeAttr;
 
   function arg(value) {
     return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");

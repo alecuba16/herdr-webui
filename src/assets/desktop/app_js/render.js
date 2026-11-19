@@ -805,22 +805,16 @@ function workspaceDisplayTitle(w) {
   return workspaceBranch(w) || worktreeDisplayName(w) || w.label;
 }
 function spaceMeta(w) {
-  const wt = worktreeForWorkspace(w);
-  const parts = [`${w.pane_count} panes`];
-  if (isLinkedWorktree(w)) {
-    const label = worktreeCustomLabel(w, wt);
-    if (label)
-      parts.push(`<span class="chip label"><span class="chip-icon" aria-hidden="true">🏷</span>${escapeHtml(label)}</span>`);
-  } else {
-    const branch = workspaceBranch(w);
-    if (branch)
-      parts.push(`<span class="chip branch">${escapeHtml(branch)}</span>`);
-  }
-  return parts.join(" ");
+  return [`${w.pane_count} panes`, spaceChipsHtml(w)].filter(Boolean).join(" ");
 }
 function selectedSpaceMeta(w) {
-  const wt = worktreeForWorkspace(w),
-    parts = [];
+  return spaceChipsHtml(w);
+}
+// Label chip for linked worktrees, branch chip for plain workspaces; empty
+// when the source field is absent.
+function spaceChipsHtml(w) {
+  const wt = worktreeForWorkspace(w);
+  const parts = [];
   if (isLinkedWorktree(w)) {
     const label = worktreeCustomLabel(w, wt);
     if (label)

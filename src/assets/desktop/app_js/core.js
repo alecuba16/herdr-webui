@@ -1,59 +1,38 @@
-// Per-session storage keys. The backend pin used to be a single global
-// `herdr-session-backend` value, which leaked the last-used backend into
-// every other session: reopening session A after using external Herdr in
-// session B made A's first /api/versions request run against Herdr while
-// its URL said builtin. Each session now keeps its own backend pin, and
-// each session+backend pair keeps its own last selection (workspace/tab/
-// pane) so Back and session rows can restore the exact surface the user
-// left, per the no-auto-open-on-startup rule (fresh boot starts clean).
-function sessionBackendKey(session) {
-  return "herdr-session-backend:" + (session || "default");
-}
-function sessionStateKey(backend, session) {
-  return (
-    "herdr-session-state:" + (backend || "builtin") + ":" + (session || "default")
-  );
-}
-function readSessionBackend(session) {
-  try {
-    return localStorage.getItem(sessionBackendKey(session)) || "builtin";
-  } catch (e) {
-    return "builtin";
-  }
-}
-function writeSessionBackend(session, backend) {
-  try {
-    localStorage.setItem(sessionBackendKey(session), backend || "builtin");
-  } catch (e) {}
-}
-function forgetSessionState(session) {
-  try {
-    localStorage.removeItem(sessionBackendKey(session));
-    localStorage.removeItem(sessionStateKey("builtin", session));
-    localStorage.removeItem(sessionStateKey("external-herdr", session));
-  } catch (e) {}
-}
-// Saved per-session selection: {ws, tab, pane} raw backend ids (desktop
-// ids are unscoped, see the parseRoute note below).
-function saveSessionSelection(session, backend, { ws, tab, pane }) {
-  try {
-    localStorage.setItem(
-      sessionStateKey(backend, session),
-      JSON.stringify({ ws: ws || null, tab: tab || null, pane: pane || null }),
-    );
-  } catch (e) {}
-}
-function readSessionSelection(session, backend) {
-  try {
-    const raw = localStorage.getItem(sessionStateKey(backend, session));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    return { ws: parsed.ws || null, tab: parsed.tab || null, pane: parsed.pane || null };
-  } catch (e) {
-    return null;
-  }
-}
+// Per-session storage helpers come from shared/core.js (HerdrAppHelpers;
+// app_boot.js loads it before this bundle). The backend pin used to be a
+// single global `herdr-session-backend` value, which leaked the last-used
+// backend into every other session: reopening session A after using
+// external Herdr in session B made A's first /api/versions request run
+// against Herdr while its URL said builtin. Each session keeps its own
+// backend pin, and each session+backend pair keeps its own last selection
+// (workspace/tab/pane) so Back and session rows restore the exact surface
+// the user left, per the no-auto-open-on-startup rule (fresh boot starts
+// clean). Bound before `state` below: the state literal reads the default
+// session's pin at load time.
+const {
+  sessionBackendKey,
+  sessionStateKey,
+  readSessionBackend,
+  writeSessionBackend,
+  forgetSessionState,
+  saveSessionSelection,
+  readSessionSelection,
+  branchPathSlug,
+  normalizeAbsolutePath,
+  normalizeOrder,
+  normalizeThemeColors,
+  resolveTerminalFontFamily,
+  textValue,
+  resolveWorktreeSource: resolveWorktreeSourceHelper,
+  checkedOutWorktreeForBranch: checkedOutWorktreeForBranchHelper,
+  worktreeActivityLabel,
+  sortWorktreesByRecent,
+  validateWorktreeCreate: validateWorktreeCreateHelper,
+  buildWorktreeCreateBody,
+  createFaviconNotifier,
+  terminalPasteInput,
+  inputAttrs,
+} = globalThis.HerdrAppHelpers;
 let state = {
   session: "default",
   sessions: [],
@@ -217,43 +196,7 @@ const DEFAULT_WEBUI_SHORTCUTS = {
   notesNew: "Shift+KeyC",
   notesBack: "Shift+KeyZ",
 };
-const DEFAULT_GIT_SHORTCUTS = {
-  changes: "Digit1",
-  commit: "Digit2",
-  log: "Digit3",
-  stash: "Digit4",
-  commitAlt: "KeyC",
-  logAlt: "KeyL",
-  refresh: "KeyR",
-  stageAll: "KeyG",
-  stageFile: "KeyY",
-  unstageFile: "KeyU",
-  discardFile: "KeyD",
-  stashFile: "KeyZ",
-  history: "KeyH",
-  blame: "KeyM",
-  edit: "KeyE",
-  compare: "KeyO",
-  branch: "KeyV",
-  focusFile: "KeyI",
-  help: "Digit0",
-  // Newer actions avoid every key the WebUI and Git chord maps already
-  // use; the editor blocks cross-scope duplicates, so defaults must be
-  // collision-free out of the box.
-  cleanup: "Digit5",
-  pull: "F2",
-  push: "F3",
-  fetch: "F4",
-  pullRebase: "Shift+KeyT",
-  stashPush: "Shift+KeyK",
-  stashApply: "F5",
-  stashPop: "F6",
-  stashDrop: "Shift+KeyQ",
-  conflictOurs: "F7",
-  conflictBase: "F8",
-  conflictTheirs: "Shift+F9",
-  conflictMark: "Shift+KeyN",
-};
+const DEFAULT_GIT_SHORTCUTS = globalThis.HerdrAppHelpers.gitShortcutDefaults();
 // Bare keys, no prefix: these fire only while the file browser pane is the
 // active view, so they can stay single-key unlike the prefixed maps.
 const DEFAULT_FILE_BROWSER_SHORTCUTS = {
@@ -334,23 +277,6 @@ let noSleepState = { mode: "off", until_ms: null, error: null, supported: true }
 let noSleepPollTimer = null;
 let noSleepRequestSeq = 0;
 const inputEncoder = new TextEncoder();
-const {
-  branchPathSlug,
-  normalizeAbsolutePath,
-  normalizeOrder,
-  normalizeThemeColors,
-  resolveTerminalFontFamily,
-  textValue,
-  resolveWorktreeSource: resolveWorktreeSourceHelper,
-  checkedOutWorktreeForBranch: checkedOutWorktreeForBranchHelper,
-  worktreeActivityLabel,
-  sortWorktreesByRecent,
-  validateWorktreeCreate: validateWorktreeCreateHelper,
-  buildWorktreeCreateBody,
-  createFaviconNotifier,
-  terminalPasteInput,
-  inputAttrs,
-} = globalThis.HerdrAppHelpers;
 const browserFavicon = createFaviconNotifier(document);
 let browserFaviconError = false;
 // refreshSidebarToggleTitles (called by the appliers below) reads the
@@ -379,6 +305,16 @@ if (sidebarToggle)
     if (typeof globalThis.HerdrScheduleTerminalResize === "function")
       globalThis.HerdrScheduleTerminalResize();
   };
+// Shared reopen path for the right column: expanding out of terminal
+// mode opens the workspace's last hosted view so the column never
+// renders empty. Callers keep their own guards and resize scheduling.
+function openLastHostedShellView() {
+  const mode = typeof resolveHostedShellMode === "function" ? resolveHostedShellMode() : "files";
+  if (mode === "git") openWorkspaceGitUi(state.ws, { forceOpen: true });
+  else if (mode === "search") openWorkspaceSearchPanel(state.ws, { forceOpen: true });
+  else if (mode === "notes") openWorkspaceNotesPanel(state.ws, { forceOpen: true });
+  else openWorkspaceFileBrowser(state.ws, { forceOpen: true });
+}
 const rightSidebarToggle = el("rightSidebarToggle");
 if (rightSidebarToggle)
   rightSidebarToggle.onclick = () => {
@@ -390,11 +326,7 @@ if (rightSidebarToggle)
     // Expanding from terminal mode opens the workspace's last hosted
     // view (resolveHostedShellMode) so the column never renders empty.
     if (expanding && currentWorkspaceShellMode() === "terminal") {
-      const mode = typeof resolveHostedShellMode === "function" ? resolveHostedShellMode() : "files";
-      if (mode === "git") openWorkspaceGitUi(state.ws, { forceOpen: true });
-      else if (mode === "search") openWorkspaceSearchPanel(state.ws, { forceOpen: true });
-      else if (mode === "notes") openWorkspaceNotesPanel(state.ws, { forceOpen: true });
-      else openWorkspaceFileBrowser(state.ws, { forceOpen: true });
+      openLastHostedShellView();
       if (typeof globalThis.HerdrScheduleTerminalResize === "function")
         globalThis.HerdrScheduleTerminalResize();
       return;
@@ -435,11 +367,7 @@ function expandRightSidebarFromDrag() {
   // Same hosted-view contract as the click: a drag-expand out of terminal
   // mode opens the workspace's last view so the column never sits empty.
   if (currentWorkspaceShellMode() === "terminal") {
-    const mode = typeof resolveHostedShellMode === "function" ? resolveHostedShellMode() : "files";
-    if (mode === "git") openWorkspaceGitUi(state.ws, { forceOpen: true });
-    else if (mode === "search") openWorkspaceSearchPanel(state.ws, { forceOpen: true });
-    else if (mode === "notes") openWorkspaceNotesPanel(state.ws, { forceOpen: true });
-    else openWorkspaceFileBrowser(state.ws, { forceOpen: true });
+    openLastHostedShellView();
   }
   if (typeof globalThis.HerdrScheduleTerminalResize === "function")
     globalThis.HerdrScheduleTerminalResize();
@@ -1017,16 +945,10 @@ function shortcutKeyFromEvent(e) {
   return `${e.shiftKey ? "Shift+" : ""}${base}`;
 }
 
+// Shared display text from HerdrAppHelpers; the function form keeps the
+// bare cross-file calls in shortcuts.js/tour_steps.js working.
 function shortcutDisplay(value) {
-  return String(value || "")
-    .replace(/(^|\+)Key/g, "$1")
-    .replace(/(^|\+)Digit/g, "$1")
-    .replace("BracketLeft", "[")
-    .replace("BracketRight", "]")
-    .replace("Slash", "/")
-    .replace("Period", ".")
-    .replace("Comma", ",")
-    .replace("Shift+", "Shift+");
+  return HerdrAppHelpers.shortcutDisplay(value);
 }
 
 function shortcutMapFor(scope) {

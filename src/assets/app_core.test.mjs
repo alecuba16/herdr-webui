@@ -19,6 +19,14 @@ function productScript(relPath) {
   return productScript.cache.get(relPath);
 }
 
+// Shared modules consume HerdrAppHelpers as a required dependency, so the
+// harness mirrors the boot order: shared/core.js runs in the same context
+// before the module under test.
+function runSharedModule(relPath, target) {
+  productScript("./shared/core.js").runInNewContext(target);
+  return productScript(relPath).runInNewContext(target);
+}
+
 const require = createRequire(import.meta.url);
 const {
   branchPathSlug,
@@ -825,7 +833,7 @@ describe("HerdrFileTree search helpers", () => {
   function loadTree() {
     const context = { window: {} };
     productScript("./shared/file_icons.js").runInNewContext(context);
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     return context.window.HerdrFileTree;
   }
 
@@ -948,7 +956,7 @@ describe("HerdrEditor line number helpers", () => {
   async function createFallbackEditor(options) {
     const parent = { innerHTML: "", querySelector() { return null; } };
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, options || {}));
     await new Promise((resolve) => setTimeout(resolve, 0));
     return parent.innerHTML;
@@ -972,7 +980,7 @@ describe("HerdrEditor line number helpers", () => {
     const boot = () => {
       const parent = { innerHTML: "", querySelector() { return null; } };
       const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
-      productScript("./shared/editor.js").runInNewContext(context);
+      runSharedModule("./shared/editor.js", context);
       return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "big.log", content: "a\nb", readonly: true }, opts)) };
     };
 
@@ -1019,7 +1027,7 @@ describe("HerdrEditor line number helpers", () => {
       },
     };
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const editor = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: "a\nb", readonly: true });
     assert.equal(parent._herdrEditorApi, editor);
@@ -1075,7 +1083,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const api = context.window.HerdrEditor.create({
       parent,
@@ -1126,7 +1134,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const api = context.window.HerdrEditor.create({
       parent,
@@ -1163,7 +1171,7 @@ describe("HerdrEditor line number helpers", () => {
     const boot = () => {
       const parent = { innerHTML: "", querySelector() { return null; } };
       const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
-      productScript("./shared/editor.js").runInNewContext(context);
+      runSharedModule("./shared/editor.js", context);
       return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, opts)) };
     };
 
@@ -1237,7 +1245,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } },
       Promise, localStorage: { getItem() { return null; }, setItem() {} },
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     const api = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: text, readonly: true });
     assert.equal(typeof api.getValue, "function");
     const setText = (value) => { textareaNode.value = value; };
@@ -1282,7 +1290,7 @@ describe("HerdrEditor line number helpers", () => {
 
   it("supports match-case and regex range detection", () => {
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const helper = context.window.HerdrEditor;
     assert.equal(helper.findRanges("Alpha alpha alpha-42", "alpha", { matchCase: false, regex: false }).ranges.length, 3);
@@ -1345,7 +1353,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild() {} } },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const editor = context.window.HerdrEditor.create({ parent, path: "demo.js", content: "abc", readonly: true });
     let prevented = false;
@@ -1391,7 +1399,7 @@ describe("HerdrEditor line number helpers", () => {
       Promise,
       setTimeout(fn) { fn(); },
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     const query = {
       focused: false,
       selected: false,
@@ -1444,7 +1452,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.js", content: "const x = 1;", readonly: true, hideHeader: true, lineNumbers: true });
     assert.match(parent.innerHTML, /herdr-editor cm/);
@@ -1492,7 +1500,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.js", content: "let x = 1;", readonly: false, hideHeader: true, lineNumbers: true });
     assert.match(parent.innerHTML, /herdr-editor cm/);
@@ -1533,7 +1541,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild() { throw new Error("should not load CodeMirror dynamically"); } } },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.py", content: "print('x')", readonly: true, hideHeader: true, lineNumbers: true });
 
@@ -1582,7 +1590,7 @@ describe("HerdrEditor goto-line and position readout (A5)", () => {
       localStorage: { getItem: () => null, setItem: () => {} },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     return { context, readout, calls };
   }
 
@@ -1847,7 +1855,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -1906,7 +1914,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -1964,7 +1972,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2065,7 +2073,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2153,7 +2161,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2247,7 +2255,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2310,7 +2318,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2478,7 +2486,8 @@ describe("desktop file browser editor integration", () => {
     terminalShell.id = "terminalShell";
     workspacePanes.appendChild(terminalShell);
 
-    productScript("./shared/file_tree.js").runInNewContext(vm.createContext(context.window));
+    productScript("./shared/core.js").runInNewContext(context.window);
+    productScript("./shared/file_tree.js").runInNewContext(context.window);
     productScript("./desktop/app_js/workspace_panes.js").runInNewContext(vm.createContext(context.window));
     productScript("./desktop/file_browser.js").runInNewContext(vm.createContext(context.window));
     harness.context = context;

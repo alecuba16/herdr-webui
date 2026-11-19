@@ -1865,29 +1865,58 @@ fn merge_branch_changes(
     }
 }
 
-/// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
-/// directory walks and search visits never stall the async runtime.
-fn file_browser_tree_payload(
-    query: FileBrowserQuery,
-) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&query.cwd) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
+fn bad_request(err: String) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, err)
+}
+
+/// Resolves the query root and required file path, returning (rel, file, metadata).
+fn file_browser_resolved_file(
+    query: &FileBrowserQuery,
+) -> Result<(String, PathBuf, fs::Metadata), (StatusCode, String)> {
+    let cwd_raw = query.cwd.as_str();
+    let root = resolve_root(cwd_raw).map_err(bad_request)?;
     let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) => rel,
+        Ok(rel) if !rel.is_empty() => rel,
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let dir = match resolve_child(&root, &rel) {
-        Ok(dir) => dir,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
+    let file = resolve_child_path_with_policy(
+        &root,
+        cwd_raw,
+        query.path.as_deref().unwrap_or(rel.as_str()),
+        ResolvePolicy::ReadAllowHome,
+    )
+    .map_err(bad_request)?;
+    if !file.is_file() {
+        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
+    }
+    let metadata = fs::metadata(&file).map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+    Ok((rel, file, metadata))
+}
+
+/// Resolves the query root and directory path, returning (root, dir).
+fn file_browser_resolved_dir(
+    cwd: &str,
+    path: Option<&str>,
+) -> Result<(PathBuf, PathBuf), (StatusCode, String)> {
+    let root = resolve_root(cwd).map_err(bad_request)?;
+    let rel = clean_relative_path(path).map_err(bad_request)?;
+    let dir = resolve_child(&root, &rel).map_err(bad_request)?;
     if !dir.is_dir() {
         return Err((
             StatusCode::BAD_REQUEST,
             "path is not a directory".to_string(),
         ));
     }
+    Ok((root, dir))
+}
+
+/// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
+/// directory walks and search visits never stall the async runtime.
+fn file_browser_tree_payload(
+    query: FileBrowserQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let (root, dir) = file_browser_resolved_dir(&query.cwd, query.path.as_deref())?;
     let dirs_only = query.dirs_only.unwrap_or(false);
     let depth = if dirs_only {
         0
@@ -2078,27 +2107,7 @@ fn file_browser_partial_read_payload(
 fn file_browser_file_payload(
     query: FileBrowserQuery,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let cwd_raw = query.cwd.as_str();
-    let root = match resolve_root(cwd_raw) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let file = match resolve_child_path_with_policy(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str()), ResolvePolicy::ReadAllowHome) {
-        Ok(file) => file,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    if !file.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
-    }
-    let metadata = match fs::metadata(&file) {
-        Ok(metadata) => metadata,
-        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
-    };
+    let (rel, file, metadata) = file_browser_resolved_file(&query)?;
     // A6: cheap change detection. hash_only skips the content read and
     // returns just the hash/size the browser needs to notice an external
     // change when a tab regains focus.
@@ -2196,27 +2205,7 @@ async fn file_browser_file(
 fn file_browser_outline_payload(
     query: FileBrowserQuery,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let cwd_raw = query.cwd.as_str();
-    let root = match resolve_root(cwd_raw) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let file = match resolve_child_path_with_policy(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str()), ResolvePolicy::ReadAllowHome) {
-        Ok(file) => file,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    if !file.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
-    }
-    let metadata = match fs::metadata(&file) {
-        Ok(metadata) => metadata,
-        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
-    };
+    let (rel, file, metadata) = file_browser_resolved_file(&query)?;
     // Same cap as the read path: an oversized file cannot be outlined because
     // its full content would have to be parsed to know the headings.
     if metadata.len() > MAX_FILE_BYTES {
@@ -2361,24 +2350,7 @@ fn file_browser_content_search_payload(
     if search.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "query is required".to_string()));
     }
-    let root = match resolve_root(&query.cwd) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) => rel,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let dir = match resolve_child(&root, &rel) {
-        Ok(dir) => dir,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    if !dir.is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "path is not a directory".to_string(),
-        ));
-    }
+    let (root, dir) = file_browser_resolved_dir(&query.cwd, query.path.as_deref())?;
     let limit = query
         .limit
         .unwrap_or(DEFAULT_CONTENT_SEARCH_LIMIT)

@@ -202,13 +202,7 @@
     });
   }
 
-  function esc(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
+  const esc = globalThis.HerdrAppHelpers.escapeHtml;
 
   // ---- chat-lens markdown (Feature M) ----
   // The chat lens re-serializes every part row on each poll and swaps

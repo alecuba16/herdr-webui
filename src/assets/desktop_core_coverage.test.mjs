@@ -1911,6 +1911,8 @@ describe("search panel through the booted bundle", () => {
 
 const TREE_PATH = fileURLToPath(new URL("./shared/file_tree.js", import.meta.url));
 const treeScript = new vm.Script(readFileSync(TREE_PATH, "utf8"), { filename: TREE_PATH });
+const SHARED_CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const sharedCoreScript = new vm.Script(readFileSync(SHARED_CORE_PATH, "utf8"), { filename: SHARED_CORE_PATH });
 const ICONS_PATH = fileURLToPath(new URL("./shared/file_icons.js", import.meta.url));
 const iconScript = new vm.Script(readFileSync(ICONS_PATH, "utf8"), { filename: ICONS_PATH });
 const FB_PATH = fileURLToPath(new URL("./desktop/file_browser.js", import.meta.url));
@@ -2040,6 +2042,7 @@ function loadFileBrowser({ fetchImpl } = {}) {
   };
   context.window = context;
   context.globalThis = context;
+  sharedCoreScript.runInNewContext(context);
   treeScript.runInNewContext(context);
   iconScript.runInNewContext(context);
   fbScript.runInNewContext(context);
@@ -2718,6 +2721,7 @@ function loadPicker({ fetchImpl, defaultFolder } = {}) {
   ctx.window = ctx;
   ctx.globalThis = ctx;
   if (defaultFolder != null) ctx.defaultFolderPath = () => defaultFolder;
+  sharedCoreScript.runInContext(vm.createContext(ctx));
   treeScript.runInContext(vm.createContext(ctx));
   pickerScript.runInContext(vm.createContext(ctx));
   return { ctx, getElementById };

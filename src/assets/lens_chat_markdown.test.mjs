@@ -13,6 +13,8 @@ import vm from "node:vm";
 
 const PREVIEW_PATH = fileURLToPath(new URL("./shared/markdown_preview.js", import.meta.url));
 const previewScript = new vm.Script(readFileSync(PREVIEW_PATH, "utf8"), { filename: PREVIEW_PATH });
+const CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const coreScript = new vm.Script(readFileSync(CORE_PATH, "utf8"), { filename: CORE_PATH });
 
 // A marked stub whose output shape is recognizable for the assertions
 // (headers, bold, code, links, lists).
@@ -86,6 +88,7 @@ function loadPreview({ bundle } = {}) {
   };
   ctx.window = ctx;
   vm.createContext(ctx);
+  coreScript.runInContext(ctx);
   previewScript.runInContext(ctx);
   return { mod: ctx.window.HerdrMarkdownPreview, ctx, scripts, links };
 }

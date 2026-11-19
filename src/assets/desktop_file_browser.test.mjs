@@ -18,6 +18,10 @@ const treeScript = new vm.Script(
   readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"),
   { filename: fileURLToPath(new URL("./shared/file_tree.js", import.meta.url)) },
 );
+const coreScript = new vm.Script(
+  readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"),
+  { filename: fileURLToPath(new URL("./shared/core.js", import.meta.url)) },
+);
 
 function makeNode(id = "") {
   const node = {
@@ -365,6 +369,7 @@ function makeFilterDomContext() {
   // to be in the context before the module source runs. Reload the
   // module with the real tree in place, keeping the same harness nodes.
   iconScript.runInNewContext(context);
+  coreScript.runInNewContext(context);
   treeScript.runInNewContext(context);
   fileBrowserScript.runInNewContext(context);
   // Rows are markup strings in this harness, so row-class assertions run

@@ -8,13 +8,7 @@
   // they render with a size hint instead.
   const MAX_CLIENT_NUMBERED_PREVIEW_BYTES = 256 * 1024;
 
-  function esc(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
+  const esc = globalThis.HerdrAppHelpers.escapeHtml;
 
   function languageFor(path) {
     if (window.HerdrGitSyntax && window.HerdrGitSyntax.languageFor) return window.HerdrGitSyntax.languageFor(path);
