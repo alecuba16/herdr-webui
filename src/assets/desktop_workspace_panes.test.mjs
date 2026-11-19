@@ -1319,7 +1319,7 @@ test("workspaceIdForTab resolves the row's workspace and falls back on a missing
   assert.equal(panes.workspaceIdForTab(null), "ws-1", "empty id falls back to state.ws");
 });
 
-test("the bar + opens the picker with multiple workspaces and stays direct with one", () => {
+test("the bar + always opens the picker, one workspace included", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1331,8 +1331,9 @@ test("the bar + opens the picker with multiple workspaces and stays direct with 
   assert.ok(!strip.innerHTML.includes("pane-new-picker"), "strip carries no + control");
   assert.ok(!strip.innerHTML.includes("newTabForPane"), "strip carries no pane commands");
   let barControls = panes.paneBarControlsHtml();
-  assert.ok(!barControls.includes("pane-new-picker"), "single workspace keeps the direct create");
-  // A second workspace switches the + to the picker entry (D3).
+  assert.ok(barControls.includes("pane-new-picker"), "single workspace still opens the picker (change 5)");
+  // A second workspace keeps the picker entry (D3), still scoped to the
+  // bar's own leaf.
   ctx.state.workspaces.push({ workspace_id: "ws-2", label: "feat" });
   panes.renderWorkspacePanes();
   barControls = panes.paneBarControlsHtml();
@@ -1357,7 +1358,7 @@ test("bar controls carry no close and no menu: the rail chips own both", () => {
   let bar = panes.paneBarControlsHtml();
   assert.ok(!bar.includes("closePaneFor"), "bar carries no close");
   assert.ok(!bar.includes("togglePaneMenu"), "bar carries no menu");
-  assert.ok(bar.includes("newPanelForFocused"), "bar keeps the + create");
+  assert.ok(bar.includes("pane-new-picker"), "bar keeps the + picker (change 5)");
   // Multi-panel: still no close, the chips own it.
   mintSecondPanel(panes, null);
   panes.renderWorkspacePanes();
@@ -1591,7 +1592,7 @@ test("dragged terminal and editor tabs carry draggable attributes in strip html"
 // per-leaf split buttons and splitPaneFor left the model. The + new-tab
 // control survives on the bar.
 
-test("new-tab control mints directly with one workspace and opens the picker with more", () => {
+test("new-tab control opens the picker with one workspace and with more", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-20");
   const panes = ctx.HerdrWorkspacePanes;
@@ -1599,13 +1600,14 @@ test("new-tab control mints directly with one workspace and opens the picker wit
   ctx.state.tab = "tab_2";
   panes.renderWorkspacePanes();
 
-  // One workspace: + mints an empty panel for the focused panel's
-  // workspace (no picker for a one-row list). paneNewTabControlHtml is
-  // not exported: the bar html embeds it.
+  // Change 5: the + ALWAYS opens the picker, one workspace included;
+  // the row pick owns the workspace binding. The direct mint stays a
+  // programmatic helper only. paneNewTabControlHtml is not exported:
+  // the bar html embeds it.
   const singleBar = panes.paneBarControlsHtml();
-  assert.ok(singleBar.includes("newPanelForFocused"), "single-ws + mints an empty panel");
-  assert.ok(!singleBar.includes("pane-new-picker"), "no picker with one workspace");
-  // More than one workspace: + opens the picker scoped to the bar's
+  assert.ok(singleBar.includes("pane-new-picker"), "single-ws + opens the picker too");
+  assert.ok(!singleBar.includes("newPanelForFocused"), "no direct mint path in the bar");
+  // More than one workspace: the picker stays scoped to the bar's
   // own leaf.
   ctx.state.workspaces = [
     { workspace_id: "ws-20", label: "main" },

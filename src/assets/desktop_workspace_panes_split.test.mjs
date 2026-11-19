@@ -360,7 +360,8 @@ function dragStartEvent() {
 }
 
 // Common setup: one bound seed panel visible, n extra empty panels
-// minted through the bar's + command (newPanelForFocused).
+// minted through the programmatic + helper (newPanelForFocused, the
+// sync fixture primitive; the bar + opens the picker now).
 function sessionWithPanels(document, ws, extra) {
   const ctx = loadPanesModule(document, ws);
   const panes = ctx.HerdrWorkspacePanes;
@@ -1256,7 +1257,8 @@ test("bar controls carry + find markdown, never close menu split or maximize", (
   // The bar owns creation and view actions only. Close and menu live
   // on the rail chips now; none of the removed commands leak.
   const html = panes.paneBarControlsHtml();
-  assert.ok(html.includes("newPanelForFocused"), "bar carries the + control");
+  assert.ok(html.includes("pane-new-picker"), "bar carries the + picker (change 5)");
+  assert.ok(!html.includes("newPanelForFocused"), "no direct mint on the bar");
   assert.ok(!html.includes("togglePaneMenu"), "no pane menu (removed)");
   assert.ok(!html.includes("splitPaneRight"), "no split right command (removed)");
   assert.ok(!html.includes("splitPaneDown"), "no split down command (removed)");
@@ -1283,8 +1285,8 @@ test("the bar signature tracks the acting panel and the visible subject", () => 
   const after = panes.paneBarControlsSignature();
   assert.notEqual(after, before, "signature moved with the subject");
   assert.ok(after.includes("panel:p2"), "signature names the new subject");
-  // The bar's + targets the acting panel through the picker path (a
-  // second workspace makes the + a picker entry keyed by the panel).
+  // The bar's + is a picker entry now (change 5), always keyed by the
+  // acting panel.
   ctx.state.workspaces = [
     { workspace_id: "ws-1", label: "main" },
     { workspace_id: "ws-2", label: "feat" },

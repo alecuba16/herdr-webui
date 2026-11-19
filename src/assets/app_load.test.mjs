@@ -856,8 +856,10 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
 
     // Phase 5: the workspace-row panel field is gone (the pane strip owns
-    // panels), so the new-panel tooltip pins on the strip control instead.
-    ok(source.includes('title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel"'));
+    // panels), so the new-panel tooltip pins on the bar + control instead.
+    // Change 5: the + ALWAYS opens the workspace picker, so the hint rides
+    // the picker entry (single workspace included).
+    ok(source.includes('title="${escapeAttr(titleWithWebuiShortcut("New panel in a workspace", "newPanel"))}" aria-label="New panel in a workspace"'));
 
     const actions = ctx.selectedWorkspaceActionButtons({ workspace_id: "w1", worktree: { checkout_path: "/tmp/wt", is_linked_worktree: true } });
     ok(actions.includes('Ctrl+Q then Shift+X'));
@@ -1847,10 +1849,13 @@ describe("app bundle load", () => {
     const ctx = context();
     runSource(ctx);
     // Traced to the one visible view model: free splits are gone, so the
-    // pane-grid chords that still exist are newPanel (mints an empty
-    // focused panel) and closePane (drops the active panel). This pins
-    // the dispatch chain (prefix overlay, chord lookup, action toast)
-    // against the flat panel list, not just the shortcut map.
+    // pane-grid chords that still exist are newPanel (opens the workspace
+    // picker; the pick mints the panel) and closePane (drops the active
+    // panel). This pins the dispatch chain (prefix overlay, chord lookup,
+    // action toast) against the flat panel list, not just the shortcut
+    // map. This harness loads no picker module: the chord's fallback
+    // (direct mint family) and the programmatic + helper stay pinned
+    // here; the picker surface lives in its own vm suite.
     vm.runInContext(
       "state.workspaces = [{ workspace_id: 'ws1' }]; state.ws = 'ws1';" +
         "state.tabs = [{ tab_id: 't1', workspace_id: 'ws1' }]; state.tab = 't1';" +
@@ -1890,9 +1895,8 @@ describe("app bundle load", () => {
     const leafCount = () => vm.runInContext("HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRoot()).length", ctx);
 
     equal(leafCount(), 1, "single panel before any chord");
-    // Traced to the one visible view model: the newPanel chord routes
-    // through newTab() (a backend panel mint), not a free split, so the
-    // list does not grow synchronously on the chord. The equivalent
+    // The newPanel chord opens the workspace picker in production (change
+    // 5); no picker module rides this harness, so the equivalent
     // synchronous surface is the location-bar + helper newPanelForFocused:
     // it mints an empty focused panel in the current workspace.
     vm.runInContext("HerdrWorkspacePanes.newPanelForFocused();", ctx);
@@ -9132,6 +9136,41 @@ describe("workspace sidebar order", () => {
       ctx,
     );
     equal(updatedOrder, "ws_b|ws_c|ws_a");
+  });
+
+  it("the prefix-P chord opens the workspace picker end to end (change 5)", () => {
+    const ctx = context();
+    vm.runInContext(bundleSource, ctx);
+    vm.runInContext(
+      `state.ws = "ws_a";
+       state.workspaces = [
+         { workspace_id: "ws_a", label: "alpha" },
+         { workspace_id: "ws_b", label: "beta" },
+       ];`,
+      ctx,
+    );
+    // The chord must open the picker (never a direct mint), keyed to the
+    // focused leaf, anchored on the bar's + when the DOM offers it. The
+    // element() stub's querySelector answers a truthy node (the chord
+    // finds an anchor) and its appendChild is a no-op, so record the
+    // popover mount to read the rendered rows: the full chain runs
+    // chord -> picker module -> popover onto the body.
+    vm.runInContext(
+      `globalThis.__mounted = [];
+       const realAppend = document.body.appendChild.bind(document.body);
+       document.body.appendChild = (child) => { globalThis.__mounted.push(child); return realAppend(child); };`,
+      ctx,
+    );
+    const handled = vm.runInContext("runPrefixedShortcut({ code: 'KeyP', key: 'p', shiftKey: false })", ctx);
+    equal(handled, true, "the chord is consumed");
+    equal(vm.runInContext("HerdrPaneWorkspacePicker.isOpen()", ctx), true, "the picker opened instead of minting");
+    // The chord also shows its action toast, so pick the popover out of
+    // the mounts by its class.
+    const rowMatches = vm.runInContext(
+      "(globalThis.__mounted.filter((n) => n.className === 'pane-workspace-picker')[0].innerHTML.match(/class=\"pane-picker-row\"/g) || []).length",
+      ctx,
+    );
+    equal(rowMatches, 2, "one row per workspace, single pick included");
   });
 
   it("workspace cards expose the dblclick rename from the keyboard", () => {

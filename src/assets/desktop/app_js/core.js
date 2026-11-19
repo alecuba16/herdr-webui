@@ -796,7 +796,7 @@ function helpAndShortcutsBodyHtml() {
           <div class="shortcut-row"><kbd>${chord("sidebar")}</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
           <div class="shortcut-row"><kbd>${chord("rightSidebar")}</kbd><span>Show or hide the workspace views sidebar.</span></div>
           <div class="shortcut-row"><kbd>${chord("newWorkspace")}</kbd><span>Open or create workspace.</span></div>
-          <div class="shortcut-row"><kbd>${chord("newPanel")}</kbd><span>Create panel in current workspace.</span></div>
+          <div class="shortcut-row"><kbd>${chord("newPanel")}</kbd><span>Open the workspace picker and create the panel in the picked workspace.</span></div>
           <div class="shortcut-row"><kbd>${chord("openWorktrees")}</kbd><span>Open workspace/worktrees browser. Without an open workspace, it starts from the configured default folder.</span></div>
           <div class="shortcut-row"><kbd>${chord("createWorktree")}</kbd><span>Create worktree from current workspace.</span></div>
           <div class="shortcut-row"><kbd>${chord("closePanel")}</kbd><span>Close current panel.</span></div>

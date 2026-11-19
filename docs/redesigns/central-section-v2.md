@@ -6,8 +6,9 @@ section; the location bar and both sidebars stay as they are.
 
 ## Decisions locked by the user
 
-1. Every panel is always visible. Opening a workspace/worktree or pressing
-   `+` splits a new empty panel in beside the focused panel and focuses it.
+1. Every panel is always visible. Opening a workspace/worktree (or
+   picking a workspace from the `+` picker) splits a new empty panel in
+   beside the focused panel and focuses it.
 2. A label chip sits on the leading edge of each panel's tab strip, only
    when more than one panel exists. The chip is the drag handle
    (re-dock left/right/up/down) and the click-to-focus affordance. No
@@ -15,8 +16,9 @@ section; the location bar and both sidebars stay as they are.
 3. Sidebar workspace click: focuses that workspace's panel when one
    exists, else opens a fresh empty focused panel for it. The location bar
    always mirrors the focused panel.
-4. `+` on the location bar: creates a new empty panel bound to the focused
-   panel's workspace.
+4. `+` on the location bar: ALWAYS opens the workspace picker (one
+   workspace included); picking a row creates a new empty panel bound to
+   that workspace. The Ctrl+B then P chord follows the same contract.
 5. Empty panel: shows the workspace path + a hint. Only Enter opens the
    terminal; typing does nothing (keyboard keeps its current behavior).
 6. Right sidebar follows the selected panel (its workspace's shell mode).

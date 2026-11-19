@@ -939,6 +939,8 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     vm.runInContext("state.ws = 'ws1';", d.ctx);
     d.arm();
     d.press("Digit1");
+    // This harness loads no picker module: with a workspace the chord
+    // takes its fallback (change 5), the direct panel mint.
     assert.equal(vm.runInContext("window.__newTab", d.ctx), 1, "with a workspace the panel is created");
   });
 
@@ -1000,6 +1002,8 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     }
     assert.equal(vm.runInContext("window.__focusedTerminal", d.ctx), true);
     assert.equal(vm.runInContext("window.__closedPane", d.ctx), true);
+    // No picker module in this harness: newPanel exercises its fallback
+    // mint (change 5 opens the picker in production).
     assert.equal(vm.runInContext("window.__newTab", d.ctx), 1, "newPanel routes to the newTab panel mint");
     assert.equal(vm.runInContext("window.__splitRight", d.ctx), "untouched", "splitRight no longer dispatches");
     assert.equal(vm.runInContext("window.__splitDown", d.ctx), "untouched", "splitDown no longer dispatches");

@@ -3111,21 +3111,15 @@ function openPaneEditorFind(encodedPaneId) {
 }
 
 function paneNewTabControlHtml(leaf) {
-  // Collector model (locked decision): the + mints an EMPTY panel for
-  // the focused panel's workspace (auto-split beside it, focused, path
-  // + Enter hint inside). It does NOT create a backend terminal; Enter
-  // inside the fresh panel does. With no workspace open it falls
-  // through to the workspace/worktree flow (the same family as the
-  // dashboard's primary action), so the button is never dead.
-  // With more than one workspace open the + opens the workspace picker
-  // (D3): the new panel can bind to ANY workspace. One workspace keeps
-  // the direct mint (no picker for a one-row list).
+  // The + ALWAYS opens the workspace picker (locked change 5), one
+  // workspace included: the row pick owns both the binding (any
+  // workspace, not just the active one) and the placement (a busy pane
+  // splits with the fresh member bound to the pick). The bar only
+  // renders with a workspace open, so the picker always has rows.
+  // newPanelForFocused stays the programmatic mint (sync path, test
+  // fixtures); no button path mints directly anymore.
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  const multi = (state.workspaces || []).length > 1;
-  if (multi) {
-    return `<button class="pane-strip-button pane-new-picker" title="New panel in a workspace" aria-label="New panel in a workspace" aria-haspopup="dialog" onclick="event.preventDefault();HerdrPaneWorkspacePicker.openPicker(this,'${escapeHandlerArg(encoded)}','new-tab')">+</button>`;
-  }
-  return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newPanelForFocused()">+</button>`;
+  return `<button class="pane-strip-button pane-new-picker" title="${escapeAttr(titleWithWebuiShortcut("New panel in a workspace", "newPanel"))}" aria-label="New panel in a workspace" aria-haspopup="dialog" onclick="event.preventDefault();HerdrPaneWorkspacePicker.openPicker(this,'${escapeHandlerArg(encoded)}','new-tab')">+</button>`;
 }
 
 // ---- tab drag between panes (Phase 5) ----------------------------------
@@ -4907,9 +4901,11 @@ function paneRootFor() {
 }
 
 // Location-bar + (collector): mint an empty panel for the FOCUSED
-// panel's workspace, focus it. Returns the minted leaf, or null when
-// no entry exists yet (the dashboard owns the center; the caller
-// falls back to newTab()).
+// panel's workspace, focus it. Programmatic surface only now (sync
+// path, test fixtures): the + button and the newPanel chord both open
+// the workspace picker (change 5), the pick routes through
+// openPanelInWorkspace. Returns the minted leaf, or null when
+// no entry exists yet (server mode mints through the op instead).
 function newPanelForFocused() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return null;
@@ -5895,8 +5891,9 @@ window.HerdrWorkspacePanes = {
   mountDashboardInPane,
   mountEmptyLeafInPane,
   // Collector model helpers: chunk B/C (chips, sidebar resolution,
-  // location-bar +) build on these. newPanelForFocused mints an empty
-  // focused panel for the focused panel's workspace. dropLeafFromTree
+  // location-bar +) build on these. newPanelForFocused is the
+  // programmatic mint (sync path, test fixtures); the + button and the
+  // chord open the picker now (change 5). dropLeafFromTree
   // removes a panel whatever it holds (explicit close cascade + ws-close
   // teardown).
   newPanelForFocused,
