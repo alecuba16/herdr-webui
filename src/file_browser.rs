@@ -645,6 +645,54 @@ fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Resolve a client-supplied path against the request root. Relative paths
+/// keep the historic root.join semantics. Absolute paths are honored as-is:
+/// editor tabs and external entry points (search results, pane-tree tab ids)
+/// carry filesystem-absolute paths, and a cwd-less request (empty root) had
+/// its leading slash stripped by clean_relative_path, producing
+/// home/Users/... and a spurious 400. When the request carries a real root,
+/// the absolute target must stay confined under it, same as a relative path.
+fn resolve_child_path(root: &Path, cwd: &str, path: &str) -> Result<PathBuf, String> {
+    // Only ~ expansion needs the user-prefix helper: a relative path must
+    // stay relative so resolve_child's root.join keeps owning it (running
+    // it through expand_user_path_string would rebase it on $HOME and
+    // break out of the root).
+    let expanded = if path.starts_with("~/") || path == "~" {
+        expand_user_path_string(path)
+    } else {
+        path.to_string()
+    };
+    if !expanded.starts_with('/') {
+        return resolve_child(root, &expanded);
+    }
+    let cwd_empty = cwd.trim().is_empty();
+    let target = PathBuf::from(&expanded);
+    if cwd_empty {
+        let canonical = if target.exists() {
+            target.canonicalize().map_err(|err| err.to_string())?
+        } else {
+            let parent = target
+                .parent()
+                .ok_or_else(|| "invalid path".to_string())?
+                .canonicalize()
+                .map_err(|err| err.to_string())?;
+            parent.join(
+                target
+                    .file_name()
+                    .ok_or_else(|| "invalid path".to_string())?,
+            )
+        };
+        return Ok(canonical);
+    }
+    // Root confinement: an absolute path outside the request root is a
+    // refusal, matching resolve_child's escape rule.
+    if target.starts_with(root) {
+        resolve_child(root, &expanded)
+    } else {
+        Err("path escapes root".to_string())
+    }
+}
+
 /// Like `resolve_child`, but for write targets that may introduce new
 /// intermediate directories (file-browser new-file/new-directory flow):
 /// each intermediate component is created, canonicalized, and checked
@@ -1978,7 +2026,8 @@ fn file_browser_partial_read_payload(
 fn file_browser_file_payload(
     query: FileBrowserQuery,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&query.cwd) {
+    let cwd_raw = query.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -1987,7 +2036,7 @@ fn file_browser_file_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child(&root, &rel) {
+    let file = match resolve_child_path(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str())) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2095,7 +2144,8 @@ async fn file_browser_file(
 fn file_browser_outline_payload(
     query: FileBrowserQuery,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&query.cwd) {
+    let cwd_raw = query.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2104,7 +2154,7 @@ fn file_browser_outline_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child(&root, &rel) {
+    let file = match resolve_child_path(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str())) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2180,7 +2230,8 @@ fn numbered_lines_html(content: &str) -> (String, String) {
 fn file_browser_write_file_payload(
     body: FileBrowserWriteRequest,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&body.cwd) {
+    let cwd_raw = body.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2190,9 +2241,13 @@ fn file_browser_write_file_payload(
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let file = if body.create_parents {
-        resolve_child_create(&root, &rel)
+        if body.path.starts_with('/') {
+            resolve_child_path(&root, cwd_raw, &body.path)
+        } else {
+            resolve_child_create(&root, &rel)
+        }
     } else {
-        resolve_child(&root, &rel)
+        resolve_child_path(&root, cwd_raw, &body.path)
     };
     let file = match file {
         Ok(file) => file,
@@ -2337,7 +2392,8 @@ fn file_browser_content_search_file_payload(
     if search.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "query is required".to_string()));
     }
-    let root = match resolve_root(&query.cwd) {
+    let cwd_raw = query.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2346,7 +2402,7 @@ fn file_browser_content_search_file_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "file is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child(&root, &rel) {
+    let file = match resolve_child_path(&root, cwd_raw, query.file.as_deref().or(query.path.as_deref()).unwrap_or(rel.as_str())) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2405,11 +2461,12 @@ async fn file_browser_content_search_file(
 fn file_browser_rename_payload(
     body: FileBrowserRenameRequest,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&body.cwd) {
+    let cwd_raw = body.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let rel = match clean_relative_path(Some(&body.path)) {
+    let _rel = match clean_relative_path(Some(&body.path)) {
         Ok(rel) if !rel.is_empty() => rel,
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -2418,7 +2475,7 @@ fn file_browser_rename_payload(
         Ok(name) => name,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let source = match resolve_child(&root, &rel) {
+    let source = match resolve_child_path(&root, cwd_raw, body.path.as_str()) {
         Ok(path) => path,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2461,7 +2518,8 @@ async fn file_browser_rename(
 fn file_browser_delete_payload(
     body: FileBrowserDeleteRequest,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&body.cwd) {
+    let cwd_raw = body.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2470,7 +2528,7 @@ fn file_browser_delete_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let path = match resolve_child(&root, &rel) {
+    let path = match resolve_child_path(&root, cwd_raw, body.path.as_str()) {
         Ok(path) => path,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2526,6 +2584,88 @@ mod tests {
         assert!(clean_relative_path(Some("../secret")).is_err());
         assert!(clean_relative_path(Some("a/../secret")).is_err());
         assert_eq!(clean_relative_path(Some("/a/b")).unwrap(), "a/b");
+    }
+
+    #[test]
+    fn resolve_child_path_honors_abspath_without_cwd() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-resolve-abspath-{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("store.rs");
+        std::fs::write(&file, "x").unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let file = file.canonicalize().unwrap();
+
+        // A cwd-less request with an absolute path resolves the file
+        // directly (the editor tab / external entry point case).
+        assert_eq!(
+            resolve_child_path(&canonical_root, "", file.to_str().unwrap()).unwrap(),
+            file
+        );
+        // The same absolute path under a real root stays confined.
+        assert_eq!(
+            resolve_child_path(
+                &canonical_root,
+                canonical_root.to_str().unwrap(),
+                file.to_str().unwrap()
+            )
+            .unwrap(),
+            file
+        );
+        // An absolute path outside a real root is a refusal.
+        assert!(resolve_child_path(
+            &canonical_root,
+            canonical_root.to_str().unwrap(),
+            "/etc/hostname"
+        )
+        .is_err());
+        // Relative paths keep the root.join semantics.
+        assert_eq!(
+            resolve_child_path(&canonical_root, canonical_root.to_str().unwrap(), "store.rs")
+                .unwrap(),
+            file
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_payload_reads_abspath_with_empty_cwd() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-abspath-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("notes.md");
+        fs::write(&file, "# Hello\n").unwrap();
+
+        let payload = file_browser_file_payload(FileBrowserQuery {
+            cwd: String::new(),
+            path: Some(file.to_string_lossy().to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap();
+        assert_eq!(payload["content"].as_str().unwrap(), "# Hello\n");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

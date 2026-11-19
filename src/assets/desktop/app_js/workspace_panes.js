@@ -402,6 +402,14 @@ function findPaneElementById(element, paneId, className) {
 }
 
 let paneIdCounter = 0;
+
+// Editor opens currently inside the pane funnel (openEditorTab /
+// activateEditorTab). The rehydration pass in mountPaneTabContent reads
+// it to stay out of an in-flight open's way: a fresh open owns its own
+// fetch and mount, and firing rehydration mid-open would double-create
+// the editor. After a reload the set is empty, so a persisted editor
+// tab with no container rehydrates through the funnel exactly once.
+const editorOpensInFlight = new Set();
 // Every panel shares this id set: duplicates would break the DOM
 // reconcile (two panes keyed by one id) and paneForPaneId lookups.
 const usedPaneIds = new Set();
@@ -4934,6 +4942,7 @@ async function ensureFileBrowserModule() {
 async function openEditorTab(path, searchHighlight) {
   if (!path) return;
   const id = String(path);
+  editorOpensInFlight.add(id);
   const leaf = await paneEnsureEditorTab(id);
   // null covers the no-tree boot (dashboard): the old flow still opened
   // the file through the module. Only a server rejection bails.
@@ -4945,7 +4954,11 @@ async function openEditorTab(path, searchHighlight) {
     closeEditorTabImmediate(encodeURIComponent(id));
     return;
   }
-  await registry.openEditorTab(id, searchHighlight || null);
+  try {
+    await registry.openEditorTab(id, searchHighlight || null);
+  } finally {
+    editorOpensInFlight.delete(id);
+  }
 }
 
 function closeEditorTabImmediate(encodedPath) {
@@ -5117,10 +5130,15 @@ function closeGitTab(viewKey) {
 }
 
 async function activateEditorTab(path) {
+  editorOpensInFlight.add(path);
   const registry = await ensureFileBrowserModule();
-  if (registry && registry.openEditorTab) {
-    await registry.openEditorTab(path);
-    return;
+  try {
+    if (registry && registry.openEditorTab) {
+      await registry.openEditorTab(path);
+      return;
+    }
+  } finally {
+    editorOpensInFlight.delete(path);
   }
   closeEditorTabImmediate(encodeURIComponent(path));
 }
@@ -5416,6 +5434,32 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
       if (claimContainer.parentElement !== content) content.appendChild(claimContainer);
       if (claimContainer.style) claimContainer.style.display = "";
       hideStalePaneContainers(content, claimContainer);
+    } else if (activeTab && isEditorTab(activeTab)) {
+      // Reload rehydration: a persisted editor tab survives the tree but
+      // its container never existed in this document, so the claim found
+      // nothing and the pane rendered an empty slot. The in-flight set
+      // keeps the pass out of a live open's way (that open owns its own
+      // fetch and mount); after a reload the set is empty and the tab
+      // rehydrates through the funnel. One attempt per leaf and path; a
+      // refused fetch (deleted file) must not loop the render.
+      const rehydratePath = editorTabPath(activeTab);
+      const triedKey = "__herdrEditorRehydrated:" + rehydratePath;
+      if (rehydratePath && !leaf[triedKey] && !editorOpensInFlight.has(rehydratePath)) {
+        leaf[triedKey] = true;
+        editorOpensInFlight.add(rehydratePath);
+        void (async () => {
+          try {
+            const registry = await ensureFileBrowserModule();
+            if (registry && registry.openEditorTab) await registry.openEditorTab(rehydratePath);
+          } catch (_) {
+            // A failed fetch leaves the tab listed but contentless; the
+            // claim pass runs again on the next render and the one-shot
+            // flag keeps it from hammering the endpoint.
+          } finally {
+            editorOpensInFlight.delete(rehydratePath);
+          }
+        })();
+      }
     }
   }
   // One owner per render hosts #terminalShell (terminalShellOwnerLeaf:

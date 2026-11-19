@@ -20,6 +20,17 @@
   reachable, so the rail lists ungrouped leaves plus one chip per
   group record. Empty fresh-mint panels stay reachable and groups
   survive subject switches as reopenable chips.
+- The file endpoints honor absolute paths: an editor tab or external
+  entry point carrying a filesystem-absolute path (with an empty cwd)
+  resolved against the home directory and 400'd on a real file. Reads,
+  writes, outline, content search, rename, and delete now resolve the
+  absolute target directly, and a request that carries a real root
+  still confines the target under it.
+- Persisted editor tabs rehydrate after a reload: the tab survived in
+  the stored tree but its content container never existed in the fresh
+  document, so the pane rendered an empty slot. The claim pass now
+  routes such a tab through the owning module once (a live open is
+  never duplicated, a deleted file never loops the fetch).
 - Panel close is real close everywhere: the pane menu's close, the
   flat panel ✕, `prefix E`, and `prefix X` drain each view through
   its own confirmation path (terminal ask, dirty editor confirm,

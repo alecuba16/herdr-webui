@@ -2140,6 +2140,44 @@ test("an editor close mid-fetch does not resurrect the tab when the fetch lands"
   assert.equal(leaf.active, "tab_2", "the pointer stays on the terminal tab");
 });
 
+test("a persisted editor tab with no container rehydrates once on render", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  ctx.state.tab = "tab_2";
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const leaf = panes.activePane();
+
+  // The reload scenario: the tree already holds the editor tab (it came
+  // from the persisted entry) but no editor container exists in the
+  // document and nothing is in flight.
+  leaf.tabs.push("editor:src/demo.py");
+  leaf.active = "editor:src/demo.py";
+  const calls = [];
+  ctx.window.HerdrFileBrowser = {
+    async openEditorTab(path) {
+      calls.push(path);
+      panes.setActivePaneTab("editor:" + path);
+    },
+    editorFor() { return null; },
+  };
+
+  // First render after the adoption: the claim finds no container, so the
+  // rehydration pass routes the tab through the funnel.
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.length, 1, "the missing editor tab rehydrates once");
+  assert.equal(calls[0], "src/demo.py", "rehydration uses the tab's path");
+
+  // Later renders never refetch the same path (the one-shot flag), and a
+  // live open keeps the pass out of its way through the same set.
+  panes.renderWorkspacePanes();
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.length, 1, "renders after the rehydrate do not refetch");
+});
+
 // Helper: the .pane-content slot of the DOM pane keyed by leaf id. The fake
 // DOM's querySelector walks children, so the lookup mirrors the real DOM
 // contract (one pane element per leaf, keyed by data-pane-id).
