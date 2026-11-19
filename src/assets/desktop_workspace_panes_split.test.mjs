@@ -845,31 +845,30 @@ test("group chips render the default name, never drag, and carry the rename hook
   assert.ok(rail.__innerHTML.includes("showGroupFromRail"), "chip press shows the group");
   assert.ok(rail.__innerHTML.includes("startPaneGroupRename"), "double-click renames");
   assert.ok(rail.__innerHTML.includes('data-group-id="g1"'), "chip keyed by group id");
-  // Ephemeral contract: member chips STAY in the rail beside the group
-  // chip (all panels render); only the group chip is the split entry.
-  assert.ok(rail.__innerHTML.includes('data-pane-id="p1"') && rail.__innerHTML.includes('data-pane-id="p2"'), "member chips stay beside the group chip");
+  // Locked contract: a grouped member carries NO rail chip (its
+  // identity lives in the merged header); only the group chip remains.
+  assert.ok(!rail.__innerHTML.includes('data-pane-id="p1"') && !rail.__innerHTML.includes('data-pane-id="p2"'), "grouped members leave the rail");
+  assert.ok(rail.__innerHTML.includes('data-group-id="g1"'), "group chip keeps the split entry");
 });
 
 test("a lone group as the only subject still renders the rail", () => {
   const { nodes, document } = buildDom();
   const { ctx, panes } = loadGroupSession(document, seedTwoMemberGroup(document));
-  // Ephemeral contract: every panel is a subject choice (clicking a
-  // member chip dissolves the group and shows the panel), so even a
-  // lone-group session renders the rail: two member chips + the group
-  // chip.
+  // Locked contract: grouped members carry no rail chips, but a lone
+  // group still paints the rail: it is the drag-out exit target.
   assert.equal(entryOf(panes).panels.length, 2, "session holds exactly the two members");
   assert.ok(panes.paneLeaves(entryOf(panes)).every((l) => !!l.groupId), "both panels grouped");
   const rail = railOf(nodes);
-  assert.ok(rail, "member chips are subject choices, rail renders");
+  assert.ok(rail, "lone group keeps the rail as its exit target");
   const html = rail.__innerHTML;
-  assert.ok(html.includes('data-pane-id="p1"') && html.includes('data-pane-id="p2"'), "member chips render");
+  assert.ok(!html.includes('data-pane-id="p1"') && !html.includes('data-pane-id="p2"'), "grouped members carry no chips");
   assert.ok(html.includes('data-group-id="g1"'), "group chip renders");
   // A single-panel session with no group still renders no rail.
   assert.ok(!html.includes('data-pane-id="p3"'), "no phantom panels");
 });
 
-// Ephemeral contract: a lone group with an ungrouped third panel
-// renders member chips + the group chip (rail lists ALL panels).
+// Locked contract: a lone group with an ungrouped third panel renders
+// the ungrouped chip + the group chip (grouped members stay off).
 test("group session rail lists member chips plus the group chip", () => {
   const { nodes, document } = buildDom();
   const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: [] }]);
@@ -877,7 +876,8 @@ test("group session rail lists member chips plus the group chip", () => {
   const rail = railOf(nodes);
   assert.ok(rail, "multiple subjects render the rail");
   const html = rail.__innerHTML;
-  assert.ok(html.includes('data-pane-id="p1"') && html.includes('data-pane-id="p2"') && html.includes('data-pane-id="p3"'), "every panel renders its chip");
+  assert.ok(!html.includes('data-pane-id="p1"') && !html.includes('data-pane-id="p2"'), "grouped members stay off the rail");
+  assert.ok(html.includes('data-pane-id="p3"'), "ungrouped panel keeps its chip");
   assert.ok(html.includes('data-group-id="g1"'), "the visible group renders its chip");
 });
 
@@ -915,6 +915,35 @@ test("rename trio: start renders the input, commit persists, empty reverts, keys
   panes.paneGroupRenameKey({ key: "Escape" }, enc);
   assert.equal(group.name, null, "Escape leaves the name alone");
   assert.equal(ctx.state.editingPaneGroup, null, "Escape closes the edit session");
+});
+
+// Locked contract: a grouped member carries no rail chip, so its
+// rename input mounts in the merged header instead. The rail keeps
+// its signature (no phantom input inside it), commit stores the name,
+// and the header button returns.
+test("grouped member rename mounts the input in the merged header", () => {
+  const { nodes, document } = buildDom();
+  const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: [] }]);
+  const { ctx, panes } = loadGroupSession(document, spec);
+  const enc = encodeURIComponent("p1");
+  panes.startPanelChipRename(enc);
+  assert.equal(ctx.state.editingPanelPaneId, "p1", "edit session keyed by pane id");
+  const rail = railOf(nodes);
+  assert.ok(!rail.__innerHTML.includes("pane-group-rename-input"), "rail renders no input for a grouped member");
+  const p1 = [...document.querySelectorAll(".workspace-pane")].find((pane) => pane.dataset && pane.dataset.paneId === "p1") || null;
+  assert.ok(p1, "member pane renders");
+  const stripHtml = p1 ? stripOf(p1).__innerHTML : "";
+  assert.ok(stripHtml.includes("pane-member-header-input"), "merged header hosts the rename input");
+  // Commit through the shared key path: the draft stores, the session
+  // closes, the header button returns in place of the input.
+  ctx.state.editingPanelValue = "side";
+  panes.panelChipRenameKey({ key: "Enter", preventDefault() {} }, enc);
+  const leaf = panes.paneLeaves(panes.paneRoot()).find((l) => l.paneId === "p1");
+  assert.equal(leaf.name, "side", "Enter commit stores the member name");
+  assert.equal(ctx.state.editingPanelPaneId, null, "edit session closed");
+  const stripAfterHtml = stripOf(p1).__innerHTML;
+  assert.ok(stripAfterHtml.includes("pane-member-header"), "header button returns after commit");
+  assert.ok(!stripAfterHtml.includes("pane-member-header-input"), "input leaves the header after commit");
 });
 
 // ---- 9. subject switching ----------------------------------------------

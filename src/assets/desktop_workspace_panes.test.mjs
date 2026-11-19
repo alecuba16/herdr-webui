@@ -2476,10 +2476,12 @@ test("foreign default panels prefix the worktree name on a mixed tree", () => {
   assert.ok(foreignHeader, "foreign panel renders");
   assert.ok(foreignHeader.includes('<span class="pane-label-chip-text">feat/panels 1</span>'), "foreign member header carries the worktree name plus number");
   assert.ok(foreignHeader.includes('aria-label="Focus panel: feat/panels 1"'), "foreign accessible name spells the origin");
-  // The rail chips speak the same identity strings.
+  // Locked rail contract: grouped members carry no rail chips; the
+  // group chip is the split entry and the merged headers above carry
+  // the identity strings.
   const rail = nodes.container.querySelector(".pane-label-rail");
-  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">main 1</span>'), "own rail chip carries the prefix");
-  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feat/panels 1</span>'), "foreign rail chip carries the prefix");
+  assert.ok(!rail.__innerHTML.includes(`data-pane-id="${leaves[0].paneId}"`) && !rail.__innerHTML.includes(`data-pane-id="${leaves[1].paneId}"`), "grouped members leave the rail");
+  assert.ok(rail.__innerHTML.includes("pane-panel-group-chip"), "group chip keeps the split entry");
 });
 
 test("foreign prefixes flip with the selected workspace and skip custom names", () => {
@@ -2493,8 +2495,6 @@ test("foreign prefixes flip with the selected workspace and skip custom names", 
   ctx.state.tabs = [{ tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 }];
   ctx.state.tabsById = {
     tab_9: { tab_id: "tab_9", workspace_id: "ws-2", label: "shell", number: 1 },
-    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 },
-    tab_c: { tab_id: "tab_c", workspace_id: "ws-1", label: "build", number: 2 },
   };
   panes.renderWorkspacePanes();
   // v2 panel model: mint two more panels, splits only exist in groups.
@@ -2504,8 +2504,10 @@ test("foreign prefixes flip with the selected workspace and skip custom names", 
   const home = leaves.find((leaf) => leaf.tabs.includes("tab_9")) || leaves[0];
   const others = leaves.filter((leaf) => leaf !== home);
   // One fresh leaf keeps a default ws-1 row; the other carries a custom
-  // name (the name is the identity, never prefixed). Default leaves keep
-  // their row's prefix.
+  // name (the name is the identity, never prefixed). Default leaves
+  // keep their row's prefix. The ws-1 rows join tabsById only AFTER
+  // the panels hold them: a homeless id would auto-split the busy
+  // host (one view per flat panel) and group the pair off the rail.
   others[0].wsId = "ws-1";
   others[0].tabs = ["tab_2"];
   others[0].active = "tab_2";
@@ -2513,6 +2515,8 @@ test("foreign prefixes flip with the selected workspace and skip custom names", 
   others[1].tabs = ["tab_c"];
   others[1].active = "tab_c";
   others[1].name = "build";
+  ctx.state.tabsById.tab_2 = { tab_id: "tab_2", workspace_id: "ws-1", label: "shell", number: 1 };
+  ctx.state.tabsById.tab_c = { tab_id: "tab_c", workspace_id: "ws-1", label: "build", number: 2 };
   panes.renderWorkspacePanes();
 
   // Every default panel prefixes with its row's workspace; the custom
@@ -2619,15 +2623,15 @@ test("a slash branch name rides the prefix attribute through escapeAttr", () => 
   // together (splits only exist inside groups now).
   dropLabelOn(panes, nodes, leaves[1].paneId, 0.75, 0.5);
   panes.renderWorkspacePanes();
-  // The merged header and the rail chip carry the identity; the slash
-  // and spaces must survive the escapeAttr round trips on the chip
-  // text, the title, and the accessible name.
+  // The merged header carries the identity; the slash and spaces must
+  // survive the escapeAttr round trips on the chip text, the title,
+  // and the accessible name. (Grouped members carry no rail chip.)
   const foreignHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[1].paneId}"`)) || "";
   assert.ok(foreignHeader.includes('<span class="pane-label-chip-text">feature/slash-branch name 2</span>'), "slash branch rides the member header label");
   assert.ok(foreignHeader.includes('aria-label="Focus panel: feature/slash-branch name 2"'), "accessible name carries the full string");
   const rail = nodes.container.querySelector(".pane-label-rail");
-  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feature/slash-branch name 2</span>'), "slash branch rides the rail chip text");
-  assert.ok(rail.__innerHTML.includes('title="Show panel feature/slash-branch name 2"'), "rail title carries the full string through escapeAttr");
+  assert.ok(!rail.__innerHTML.includes(`data-pane-id="${leaves[1].paneId}"`), "grouped member carries no rail chip");
+  assert.ok(rail.__innerHTML.includes("pane-panel-group-chip"), "group chip keeps the split entry");
 });
 
 // A row the tree references but neither state.tabs nor tabsById resolves
@@ -2752,12 +2756,13 @@ test("a foreign workspace without a worktree prefixes with its label", () => {
 
   assert.equal(panes.foreignWorkspacePrefix("tab_9"), "feat ", "label is the prefix without a worktree");
   assert.equal(panes.panelVisibleLabel(ctx.state.tabsById.tab_9, 0), "feat 1");
-  // The rail chip speaks the same prefix-plus-number identity the old
-  // strip span carried.
+  // Locked rail contract: grouped members carry no rail chip; the
+  // merged header carries the prefix identity, the group chip keeps
+  // the split entry.
   const rail = nodes.container.querySelector(".pane-label-rail");
   assert.ok(rail, "rail renders with more than one panel");
-  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feat 1</span>'), "rail chip carries the label prefix");
-  assert.ok(rail.__innerHTML.includes('title="Show panel feat 1"'), "rail chip title names the origin");
+  assert.ok(!rail.__innerHTML.includes(`data-pane-id="${leaves[1].paneId}"`), "grouped member carries no rail chip");
+  assert.ok(rail.__innerHTML.includes("pane-panel-group-chip"), "group chip keeps the split entry");
 });
 
 // panelNumberLabel fallbacks, pinned directly: the tree may hold rows the

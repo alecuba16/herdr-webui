@@ -12,9 +12,14 @@
   ("wt · view": row label, file basename, or Git view label) for
   every member kind, so the origin stays visible even under a
   custom panel name; the chip keeps pure identity.
-  The rail chips every live leaf plus one chip per group record, so
-  empty fresh-mint panels stay reachable and groups survive subject
-  switches as reopenable chips.
+- Grouped members drop their rail chip while inside a group (the
+  merged header is their identity), and renaming them mounts the
+  input in the header. The chip returns on any exit: drag-out to the
+  rail, the ✕ ungroup, or the group dissolving below two members. A
+  lone group still paints the rail so the drag-out exit stays
+  reachable, so the rail lists ungrouped leaves plus one chip per
+  group record. Empty fresh-mint panels stay reachable and groups
+  survive subject switches as reopenable chips.
 - Panel close is real close everywhere: the pane menu's close, the
   flat panel ✕, `prefix E`, and `prefix X` drain each view through
   its own confirmation path (terminal ask, dirty editor confirm,

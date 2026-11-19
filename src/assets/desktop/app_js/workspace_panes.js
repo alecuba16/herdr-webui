@@ -391,11 +391,11 @@ function hasClass(node, name) {
 // Recursive pane lookup by paneId. querySelector with attribute selectors
 // is avoided on purpose: the node-test DOM stubs only support #id and
 // .class selectors, and split trees bury panes several levels deep.
-function findPaneElementById(element, paneId) {
+function findPaneElementById(element, paneId, className) {
   for (const child of element.children || []) {
-    if (hasClass(child, "workspace-pane") && child.dataset && child.dataset.paneId === paneId)
+    if (hasClass(child, className || "workspace-pane") && child.dataset && child.dataset.paneId === paneId)
       return child;
-    const found = findPaneElementById(child, paneId);
+    const found = findPaneElementById(child, paneId, className);
     if (found) return found;
   }
   return null;
@@ -1757,13 +1757,9 @@ function railPanelChipHtml(leaf, isActive) {
   if (state.editingPanelPaneId === leaf.paneId) {
     return `<input class="pane-group-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeAttr(encoded)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeAttr(encoded)}')">`;
   }
-  // A grouped member chip never drags (its group IS the visible split;
-  // dragstart refuses it too): draggable="false" keeps the affordance
-  // honest, and the dragstart wiring is left off so nothing can trip a
-  // refused gesture behind the attribute.
-  const draggable = leaf.groupId ? "false" : "true";
-  const dragAttrs = leaf.groupId ? "" : ` ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()"`;
-  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="${draggable}" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondblclick="startPanelChipRename('${escapeAttr(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeAttr(encoded)}')"${dragAttrs}><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
+  // Every rail chip is an ungrouped panel (grouped members carry no
+  // chip), so every chip drags: the label drag starts a split.
+  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondblclick="startPanelChipRename('${escapeAttr(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeAttr(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
 }
 
 function railGroupChipHtml(group, isActive) {
@@ -1941,11 +1937,16 @@ function moveRailChipFocus(delta) {
 }
 
 // Focus restore after a rename commit/cancel: the rail re-rendered, so
-// the chip is re-resolved by paneId/groupId and focused again. Falls
-// back to the visible subject's chip when the edited subject vanished.
+// the chip is re-resolved by paneId/groupId and focused again. A grouped
+// member has no rail chip at all; its merged header button is the focus
+// target. Falls back to the visible subject's chip when the edited
+// subject vanished.
 function focusRailChipAfterRename(kind, id) {
   setTimeout(() => {
-    const target = findRailChipElement(kind, id);
+    let target = findRailChipElement(kind, id);
+    if (!target && kind === "panel" && typeof document !== "undefined") {
+      target = findPaneElementById(el("workspacePanes") || document.body, id, "pane-member-header");
+    }
     if (target && typeof target.focus === "function") target.focus();
   }, 0);
 }
@@ -1991,22 +1992,28 @@ function announcePaneChanges(text) {
   }, 0);
 }
 
-// The rail lists EVERY panel chip plus one chip per group record:
-// groups persist, so a hidden group keeps its chip and clicking it
+// The rail lists every UNGROUPED panel chip plus one chip per group
+// record: a grouped member's identity lives in its merged header, so
+// its rail chip returns only on ungroup exit or group dissolve.
+// Groups persist, so a hidden group keeps its chip and clicking it
 // reopens the split. The rail paints when more than one choice exists;
 // a single-panel session with no groups renders nothing (the strip
 // carries the identity already).
 function renderLabelRail(container, entry, subject) {
   let rail = [...(container.children || [])].find((child) => hasClass(child, "pane-label-rail")) || null;
-  // Every LIVE leaf gets a chip: the sweep folds abandoned empties and
-  // closeActivePane drops closed panels, so what sits in the tree is
-  // reachable by right. A view-less leaf (fresh mint, armed empty) is
-  // still a subject the user must be able to switch back to; filtering
-  // it would orphan it behind a rail that refuses to render.
-  const chipPanels = paneLeaves(entry);
+  // Every LIVE ungrouped leaf gets a chip: the sweep folds abandoned
+  // empties and closeActivePane drops closed panels, so what sits in
+  // the tree is reachable by right. A view-less leaf (fresh mint,
+  // armed empty) is still a subject the user must be able to switch
+  // back to; filtering it would orphan it behind a rail that refuses
+  // to render.
+  const chipPanels = paneLeaves(entry).filter((leaf) => !leaf.groupId);
   const panels = chipPanels;
   const groups = (entry.groups || []).filter((g) => groupMemberCount(g, entry) >= 2);
-  const needRail = panels.length + groups.length > 1;
+  // A lone group still paints the rail: it is the drag-out exit
+  // target (a member dragged onto it ungroups), and hiding it would
+  // strand the gesture with no release target.
+  const needRail = panels.length + groups.length > 1 || groups.length > 0;
   if (!needRail) {
     if (rail) detachDomNode(rail);
     return;
@@ -2039,7 +2046,12 @@ function renderLabelRail(container, entry, subject) {
   // adoption that re-renders mid-edit cannot tear the rail down and
   // destroy the input. The signature and the payload are the SAME
   // build: one string walks both jobs, no second chip pass per paint.
-  const editingState = !!(state.editingPanelPaneId || state.editingPaneGroup);
+  // The guard tracks RAIL edits only: a grouped member's rename
+  // input lives in its merged header (no rail chip), so a header
+  // edit must not be read as a rail/input disagreement and rebuild
+  // the rail on every pass.
+  const editingPanelLeaf = state.editingPanelPaneId ? paneForPaneId(entry, state.editingPanelPaneId) : null;
+  const editingState = !!((editingPanelLeaf && !editingPanelLeaf.groupId) || state.editingPaneGroup);
   const railShowsInput = [...(rail.children || [])].some((child) =>
     hasClass(child, "pane-group-rename-input"));
   if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== html)) {
@@ -2490,6 +2502,12 @@ function paneMergedHeaderHtml(leaf, tabs, activeTab) {
   const label = paneMemberHeaderLabel(leaf);
   const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
   const dragAttrs = ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeAttr(encodedPane)}')" ondragend="paneMemberDragEnd()"`;
+  // Grouped members carry no rail chip, so the rename input mounts
+  // right here: the header button swaps to the same input the rail
+  // uses and commit/cancel restore focus to the header.
+  if (state.editingPanelPaneId === leaf.paneId) {
+    return `<input class="pane-group-rename-input pane-member-header-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeAttr(encodedPane)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeAttr(encodedPane)}')">`;
+  }
   const views = tabs || [];
   const single = views.length === 1 ? views[0] : null;
   // The worktree rides the view span for every kind (B): "wt · view"

@@ -971,11 +971,10 @@ test("rail renders the group chip beside member chips", () => {
   const rail = railOf(document);
   assert.ok(rail, "rail still renders");
   const html = rail.__innerHTML;
-  // Ephemeral contract retired: ALL panels keep their chips (members
-  // included); the group chip is the split view's own entry, rendered
-  // last, and PERSISTS when the subject moves away.
-  assert.ok(html.includes('data-pane-id="p2"'), "member chip p2 stays in the rail");
-  assert.ok(html.includes('data-pane-id="p3"'), "member chip p3 stays in the rail");
+  // Locked contract: grouped members carry NO rail chips (identity
+  // lives in the merged header); the group chip is the split view's
+  // own entry, rendered last, and PERSISTS when the subject moves away.
+  assert.ok(!html.includes('data-pane-id="p2"') && !html.includes('data-pane-id="p3"'), "grouped members leave the rail");
   assert.ok(html.includes('data-pane-id="p1"'), "host panel keeps its rail label");
   // The render pass also paints the group layout: both member panes
   // exist in the split wrapper.
