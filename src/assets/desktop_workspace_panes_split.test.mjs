@@ -813,16 +813,21 @@ test("a three-member group keeps two after one member leaves", () => {
 
 // ---- 7. rail render rules ---------------------------------------------
 
-test("the rail renders only with more than one subject and chips follow the rules", () => {
+test("the rail renders whenever the pane area is live, chips carry the close", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "tab_2");
   panes.renderWorkspacePanes();
-  assert.equal(railOf(nodes), null, "a single panel session renders no rail");
+  // Locked contract change: the rail always paints while the pane area
+  // is live. The chip is the only close/rename surface (the bar's ✕ and
+  // menu are gone), so a single panel without a rail would strand both.
+  let rail = railOf(nodes);
+  assert.ok(rail, "a single panel session renders the rail");
+  assert.ok(rail.__innerHTML.includes("closePanelFromChip"), "the lone chip carries its close x");
   panes.newPanelForFocused();
   panes.renderWorkspacePanes();
-  const rail = railOf(nodes);
+  rail = railOf(nodes);
   assert.ok(rail, "two ungrouped panels render the rail");
   assert.equal(rail.getAttribute("role"), "tablist", "rail is a tablist");
   assert.ok(rail.__innerHTML.includes("pane-label-chip"), "panel chips render");
@@ -1243,31 +1248,28 @@ test("an empty panel renders the New terminal affordance", () => {
 
 // ---- 16. bar controls contract ----------------------------------------
 
-test("bar controls carry + and menu, never split or maximize commands", () => {
+test("bar controls carry + find markdown, never close menu split or maximize", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");
   const panes = ctx.HerdrWorkspacePanes;
   bootstrapPanes(ctx, "tab_2");
-  // Single panel: + and menu, no close (closing the last panel is
-  // closing the workspace), and none of the removed commands.
+  // The bar owns creation and view actions only. Close and menu live
+  // on the rail chips now; none of the removed commands leak.
   const html = panes.paneBarControlsHtml();
   assert.ok(html.includes("newPanelForFocused"), "bar carries the + control");
-  assert.ok(html.includes("togglePaneMenu"), "bar carries the pane menu");
+  assert.ok(!html.includes("togglePaneMenu"), "no pane menu (removed)");
   assert.ok(!html.includes("splitPaneRight"), "no split right command (removed)");
   assert.ok(!html.includes("splitPaneDown"), "no split down command (removed)");
   assert.ok(!html.includes("maximizePaneFor"), "no maximize command (removed)");
   assert.ok(!html.includes("maximizeActivePane"), "no maximize shortcut (removed)");
-  assert.ok(!html.includes("closePaneFor"), "single panel hides the close control");
-  // A second panel reveals the close control.
+  assert.ok(!html.includes("closePaneFor"), "no close on the bar, single or multi panel");
   panes.newPanelForFocused();
   const htmlTwo = panes.paneBarControlsHtml();
-  assert.ok(htmlTwo.includes("closePaneFor"), "second panel reveals the close control");
-  // The pane menu carries rename/close, never split or maximize items.
-  const entry = panes.paneRoot();
-  const menuLeaf = panes.paneLeaves(entry)[0];
-  const items = panes.paneMenuItemsFor(menuLeaf, entry);
-  assert.ok(items.some((item) => item.id === "close-pane"), "menu offers close with two panels");
-  assert.ok(!items.some((item) => /split|maximize/.test(item.id)), "menu carries no split or maximize items");
+  assert.ok(!htmlTwo.includes("closePaneFor"), "second panel still keeps close off the bar");
+  // The pane menu machinery is gone: its builder and toggle carry no
+  // exports either.
+  assert.equal(typeof panes.paneMenuItemsFor, "undefined", "menu items builder deleted");
+  assert.equal(typeof panes.togglePaneMenu, "undefined", "menu toggle deleted");
 });
 
 test("the bar signature tracks the acting panel and the visible subject", () => {
@@ -1281,6 +1283,12 @@ test("the bar signature tracks the acting panel and the visible subject", () => 
   const after = panes.paneBarControlsSignature();
   assert.notEqual(after, before, "signature moved with the subject");
   assert.ok(after.includes("panel:p2"), "signature names the new subject");
+  // The bar's + targets the acting panel through the picker path (a
+  // second workspace makes the + a picker entry keyed by the panel).
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
   assert.ok(panes.paneBarControlsHtml().includes(encodeURIComponent("p2")), "commands target the acting panel");
   // Dashboard takeover suppresses the group.
   const dashboard = document.getElementById("projectDashboard");
@@ -1311,7 +1319,7 @@ test("registry exports the one-visible-view surface and drops removed commands",
     "paneLabelDragStart", "paneLabelDragEnd", "paneContainerTabDragOver", "paneContainerTabDrop",
     "showPanelFromRail", "showGroupFromRail",
     "startPaneGroupRename", "paneGroupRenameKey", "commitPaneGroupRename",
-    "paneBarControlsHtml", "paneBarControlsSignature", "paneMenuItemsFor", "togglePaneMenu",
+    "paneBarControlsHtml", "paneBarControlsSignature", "closePanelFromChip", "dissolveGroupToRail",
     "panelVisibleLabel", "panelDisplayName", "panelNumberLabel", "panelRenameInitialLabel",
     "workspaceIdForTab", "foreignWorkspacePrefix", "paneWorkspaceBadgeHtml",
     "activePane", "activePaneElement", "focusPanelFor", "writeRouteFromLeaf",

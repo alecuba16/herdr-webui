@@ -436,14 +436,6 @@ function runPrefixedShortcut(e) {
       closeActivePane();
       return true;
     },
-    togglePaneMenu: () => {
-      // The [⋮] rides the location bar and acts on the focused pane; the
-      // bar renders it only while the pane area is live.
-      const button = document.querySelector(".location-bar .pane-bar-controls .pane-menu-button");
-      if (!button) return false;
-      togglePaneMenu(button);
-      return true;
-    },
     sessions: () => {
       showSessionManager();
       return true;

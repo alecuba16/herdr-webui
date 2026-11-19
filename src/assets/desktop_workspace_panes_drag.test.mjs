@@ -1019,12 +1019,16 @@ test("grouped member chips refuse the grouping drag", () => {
   assert.equal(ctx.paneLabelDragKind(), null, "no grouping payload in flight");
 });
 
-test("single ungrouped panel renders no rail", () => {
+test("single ungrouped panel still renders the rail (chip owns close)", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   seedPanels(ctx, 1);
+  // Locked contract change: the rail always paints while the pane area
+  // is live. The chip is the panel's only close and rename surface, so
+  // a lone panel keeps its chip (with its ✕) on the rail.
   const rail = railOf(document);
-  assert.equal(rail, null, "one subject renders no rail chrome");
+  assert.ok(rail, "one subject still renders the rail");
+  assert.ok(rail.__innerHTML.includes("closePanelFromChip"), "the lone chip carries its close x");
 });
 
 // ---- 6b. strip chip contract (split-only) ------------------------------

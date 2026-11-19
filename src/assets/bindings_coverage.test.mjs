@@ -1027,11 +1027,10 @@ describe("bindings.js worktree modal wiring", () => {
 });
 
 describe("bindings.js Escape cascade", () => {
-  it("Escape walks no-sleep menu, pane menu, and the modal stack", () => {
+  it("Escape walks no-sleep menu and the modal stack", () => {
     const { ctx, getElement } = boot();
     vm.runInContext(
-      `closePaneMenu = function () { window.__paneMenuClosed = true; };
-      closeQuestion = function () { window.__questionClosed = true; };
+      `closeQuestion = function () { window.__questionClosed = true; };
       closeWorkspaceCreateModal = function () { window.__wsCreateClosed = true; };
       closeWorktreeOpenModal = function () { window.__wtOpenClosed = true; };
       closeWorktreeCreateModal = function () { window.__wtCreateClosed = true; };
@@ -1039,19 +1038,9 @@ describe("bindings.js Escape cascade", () => {
       hideSessionManager = function () { window.__sessionsHidden = true; };`,
       ctx,
     );
-    // No open modal: Escape is a no-op. The auto-creating getElementById
-    // would invent a paneMenu and fire the real close, so null it first.
-    const menuBackup = ctx.document.getElementById;
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? null : menuBackup(id));
+    // No open modal: Escape is a no-op.
     ctx.document.fire("keydown", fakeEvent({ key: "Escape" }));
-    assert.equal(ctx.window.__paneMenuClosed, undefined);
-    // Pane menu first.
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? getElement("paneMenu") : menuBackup(id));
-    ctx.document.fire("keydown", fakeEvent({ key: "Escape" }));
-    assert.equal(ctx.window.__paneMenuClosed, true);
-    // every later step must skip the pane-menu branch again: the auto-
-    // creating getElementById would re-enter closePaneMenu forever
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? null : menuBackup(id));
+    assert.equal(ctx.window.__questionClosed, undefined);
     // Question modal.
     getElement("questionModal").style.display = "grid";
     ctx.document.fire("keydown", fakeEvent({ key: "Escape" }));
@@ -1103,31 +1092,6 @@ describe("bindings.js Escape cascade", () => {
     assert.equal(menu.hidden, true);
     assert.equal(control.attributes["aria-expanded"], "false");
     assert.equal(control.focused, true);
-  });
-
-  it("mousedown outside an open pane menu closes it", () => {
-    const { ctx, getElement } = boot();
-    vm.runInContext("closePaneMenu = function () { window.__paneMenuClosed = true; };", ctx);
-    const menuBackup = ctx.document.getElementById;
-    const paneMenu = getElement("paneMenu");
-    paneMenu.contains = () => false;
-    // the outside target must answer null to the .pane-menu-button
-    // lookup, the default this-returning closest would skip the close
-    getElement("someButton").closest = () => null;
-    getElement("insideMenu").closest = () => null;
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? paneMenu : menuBackup(id));
-    ctx.document.fire("mousedown", fakeEvent({ target: getElement("someButton") }));
-    assert.equal(ctx.window.__paneMenuClosed, true);
-    // Click on the pane menu button itself: no close.
-    ctx.window.__paneMenuClosed = false;
-    const menuButton = getElement("somePaneMenuButton");
-    menuButton.closest = () => menuButton;
-    ctx.document.fire("mousedown", fakeEvent({ target: menuButton }));
-    assert.notEqual(ctx.window.__paneMenuClosed, true);
-    // Inside the menu: no close.
-    paneMenu.contains = () => true;
-    ctx.document.fire("mousedown", fakeEvent({ target: getElement("insideMenu") }));
-    assert.notEqual(ctx.window.__paneMenuClosed, true);
   });
 });
 

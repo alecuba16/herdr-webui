@@ -969,8 +969,10 @@ test("closePaneFor drops the closing member, dissolves the group, and refuses th
   assert.equal(nodes.container.querySelectorAll(".workspace-pane").length, 1, "one pane in the DOM");
   assert.equal(nodes.container.querySelectorAll(".pane-row").length, 0, "split element removed");
 
-  // Closing the last panel is refused: the session never drops below one.
-  assert.equal(await panes.closeActivePane(), false, "last panel refuses to close");
+  // Closing the last panel through the leaf path still refuses (the
+  // entry keeps its one-panel minimum); the CHIP close is the gesture
+  // that resets to the seed.
+  assert.equal(await panes.closeActivePane(), false, "leaf close path keeps refusing the last panel");
 });
 
 test("closePaneFor with a stale pane id is a no-op, not an active-leaf close", async () => {
@@ -1344,176 +1346,134 @@ test("the bar + opens the picker with multiple workspaces and stays direct with 
 // shortcut). The seam checks move to the surviving surface: the strip
 // controls and the menu actions.
 
-test("bar controls render for a multi-panel session with close gated on panel count", () => {
+test("bar controls carry no close and no menu: the rail chips own both", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-10");
   const panes = ctx.HerdrWorkspacePanes;
   panes.renderWorkspacePanes();
-  // Single panel: no close button (closing the last panel is closing
-  // the workspace), menu control always present.
+  // Single panel: the bar keeps creation and view actions only. Close
+  // and the pane menu live on the rail chip (every chip carries a ✕,
+  // menu machinery is deleted).
   let bar = panes.paneBarControlsHtml();
-  assert.ok(bar.includes("pane-menu-button"), "bar carries the [⋮] control");
-  assert.ok(!bar.includes("Close pane"), "single panel hides the close button");
-  // Multi-panel: close renders.
+  assert.ok(!bar.includes("closePaneFor"), "bar carries no close");
+  assert.ok(!bar.includes("togglePaneMenu"), "bar carries no menu");
+  assert.ok(bar.includes("newPanelForFocused"), "bar keeps the + create");
+  // Multi-panel: still no close, the chips own it.
   mintSecondPanel(panes, null);
   panes.renderWorkspacePanes();
   bar = panes.paneBarControlsHtml();
-  assert.ok(bar.includes("Close pane"), "multi-panel bar offers close");
+  assert.ok(!bar.includes("closePaneFor"), "multi-panel bar still carries no close");
 });
 
-// ---- pane menu (Phase 5) ---------------------------------------------
-// The collector menu offers rename (terminal-active panels) and close
-// (multi-panel sessions). Maximize left the model: one visible subject
-// replaced the tree maximize, its exports and shortcuts are gone.
+test("rail chips carry a close x: panel chips close, group chips dissolve", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-11");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-11" }];
+  ctx.state.tab = "tab_2";
+  panes.renderWorkspacePanes();
+  const entry = panes.paneRoot();
+  const second = mintSecondPanel(panes, "ws-11");
+  panes.renderWorkspacePanes();
+  // Every panel chip carries its own ✕ wired to closePanelFromChip.
+  // The fake DOM keeps markup only, so the assertions read the rail
+  // HTML string, one chip per ungrouped panel.
+  const rail = nodes.container.querySelector(".pane-label-rail");
+  assert.ok(rail, "rail renders");
+  // Buttons never nest, so a non-greedy match to the first </button>
+  // captures the whole chip including its nested close span.
+  const panelChipMatches = [...rail.__innerHTML.matchAll(/<button[^>]*class="pane-label-chip[^"]*"[^>]*data-pane-id="[^"]+"[^>]*>.*?<\/button>/gs)];
+  assert.equal(panelChipMatches.length, 2, "one chip per ungrouped panel");
+  for (const match of panelChipMatches) {
+    const chipHtml = match[0];
+    assert.ok(chipHtml.includes("pane-tab-close"), "chip carries the close x");
+    assert.ok(chipHtml.includes("closePanelFromChip"), "chip close wires closePanelFromChip");
+  }
+  // Group the pair: the group chip's ✕ dissolves (dissolveGroupToRail),
+  // never a panel close.
+  dropLabelOn(panes, nodes, second.paneId, 0.05, 0.1);
+  assert.equal(subjectOf(panes).kind, "group", "group formed");
+  const groupChipMatch = rail.__innerHTML.match(/<button[^>]*class="pane-label-chip pane-panel-group-chip[^"]*"[^>]*>.*?<\/button>/s);
+  assert.ok(groupChipMatch, "group chip renders");
+  assert.ok(groupChipMatch[0].includes("pane-tab-close"), "group chip carries the dissolve x");
+  assert.ok(groupChipMatch[0].includes("dissolveGroupToRail"), "group chip x dissolves, never closes");
+  assert.ok(!groupChipMatch[0].includes("closePanelFromChip"), "group chip x is not a panel close");
+});
 
-test("pane menu offers panel rename for every leaf and close per panel count", () => {
-  const { document } = buildDom();
+test("rail chip close drops a panel; the last panel closes to the seed", async () => {
+  const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-12");
   const panes = ctx.HerdrWorkspacePanes;
-  ctx.state.tabs = [{ tab_id: "tab_7" }];
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-12" }];
+  ctx.state.tab = "tab_2";
+  // Model the real close: the backend row close (confirm + POST) drops
+  // the id from every known-set (tabs AND tabsById), then the facade
+  // prunes and repaints. Leaving the row in tabsById would re-home it
+  // on the render inside the close (the sync's homeless-id pass).
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    if (ctx.state.tabsById) delete ctx.state.tabsById[tabId];
+    panes.onTerminalTabClosed(tabId);
+  };
   panes.renderWorkspacePanes();
-  mintSecondPanel(panes, null);
-  const root = panes.paneRoot();
-  const leaves = panes.paneLeaves(root);
+  const entry = panes.paneRoot();
+  const survivorId = entry.panels[0].paneId;
+  const second = mintSecondPanel(panes, "ws-12");
+  second.tabs.push("tab_3");
+  second.active = "tab_3";
+  ctx.state.tabsById = { tab_3: { tab_id: "tab_3", workspace_id: "ws-12" } };
+  panes.renderWorkspacePanes();
 
-  // Terminal leaf: rename names the PANEL (leaf.name) through the rail
-  // chip, whatever the view kind.
-  const seededLeaf = { ...leaves[0], tabs: ["tab_7"], active: "tab_7" };
-  const termItems = ctx.paneMenuItemsFor(seededLeaf, root);
-  assert.ok(termItems.some((item) => item.id === "rename-pane"), "terminal menu offers rename");
-  assert.ok(!termItems.some((item) => item.id === "rename-tab"), "the tab-rename id is gone");
-  assert.ok(termItems.some((item) => item.id === "close-pane"), "multi-panel menu offers close");
+  // Chip close with two panels: the focused drop path (closeActivePane).
+  const closeResult = await panes.closePanelFromChip(second.paneId);
+  assert.equal(closeResult, true, "chip close accepted");
+  let after = panes.paneRoot();
+  deepEqual(after.panels.map((p) => p.paneId), [survivorId], "chip close dropped the panel");
 
-  // Editor leaf: rename stays (it names the panel now, not the tab).
-  const editItems = ctx.paneMenuItemsFor({ ...leaves[1], tabs: ["editor:src/main.py"], active: "editor:src/main.py" }, root);
-  assert.ok(editItems.some((item) => item.id === "rename-pane"), "editor menu keeps the panel rename");
-  assert.ok(editItems.some((item) => item.id === "close-pane"), "editor menu keeps close");
-
-  // Single-panel session: close hides entirely (closing the last
-  // panel is closing the workspace); rename still names the panel.
-  const freshCtx = loadPanesModule(buildDom().document, "ws-13");
-  const freshRoot = freshCtx.HerdrWorkspacePanes.paneRoot();
-  const freshItems = freshCtx.paneMenuItemsFor(freshRoot.panels[0], freshRoot);
-  assert.ok(!freshItems.some((item) => item.id === "close-pane"), "single-panel menu hides close");
-  assert.ok(freshItems.some((item) => item.id === "rename-pane"), "single-panel menu still renames");
+  // Chip close on the LAST panel: the seed reset, not a refusal. The
+  // terminal row close already pruned the id, so the drain is trivial.
+  assert.equal(await panes.closePanelFromChip(survivorId), true, "last panel close accepted");
+  after = panes.paneRoot();
+  assert.equal(after.panels.length, 1, "entry resets to the seed panel");
+  assert.equal(after.panels[0].paneId, "p1", "seed pane id");
+  assert.deepEqual([...after.panels[0].tabs], ["terminal"], "seed placeholder tab");
+  assert.equal(after.visible.id, "p1", "visible pointer healed to the seed");
+  assert.equal(after.groups.length, 0, "no groups survive the reset");
 });
 
-test("pane menu keydown: arrows move focus and Escape returns to the button", () => {
-  const { document } = buildDom();
-  const ctx = loadPanesModule(document, "ws-16");
+test("group chip close dissolves the split to the rail, no panel closes", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-13");
   const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-13" }];
+  ctx.state.tab = "tab_2";
   panes.renderWorkspacePanes();
-  mintSecondPanel(panes, null);
-  panes.renderWorkspacePanes();
-  const container = document.getElementById("workspacePanes");
-  const pane = container.querySelector(".workspace-pane");
-  const button = makeNode("", "pane-strip-button pane-menu-button");
-  button.dataset.paneId = pane.dataset.paneId;
-  pane.appendChild(button);
-  ctx.togglePaneMenu(button);
-  const menu = document.getElementById("paneMenu");
-  assert.ok(menu, "menu opened");
-  // Fake DOM innerHTML never materializes children, so attach the menu
-  // items the same nodes the click handler would find.
-  const items = ["Rename panel", "Close pane"].map((label, index) => {
-    const item = makeNode("", "pane-menu-item");
-    item.dataset.index = String(index);
-    item.label = label;
-    menu.appendChild(item);
-    return item;
-  });
-  let focused = null;
-  for (const item of items) item.focus = () => { focused = item; };
-  button.focus = () => { focused = button; };
-  document.activeElement = items[0];
-  const keydown = (key) => ctx.paneMenuKeydown({ key, preventDefault() {}, stopPropagation() {} });
-  keydown("ArrowDown");
-  assert.equal(focused, items[1], "ArrowDown moves to the second item");
-  document.activeElement = items[1];
-  keydown("ArrowUp");
-  assert.equal(focused, items[0], "ArrowUp wraps to the first item");
-  document.activeElement = items[1];
-  keydown("Home");
-  assert.equal(focused, items[0], "Home lands on the first item");
-  document.activeElement = items[0];
-  keydown("End");
-  assert.equal(focused, items[items.length - 1], "End lands on the last item");
-  keydown("Escape");
-  assert.equal(document.getElementById("paneMenu"), null, "Escape closes the menu");
-  assert.equal(focused, button, "Escape restores focus to the [⋮] button");
+  const entry = panes.paneRoot();
+  const first = entry.panels[0];
+  const second = mintSecondPanel(panes, "ws-13");
+  dropLabelOn(panes, nodes, second.paneId, 0.05, 0.1);
+  assert.equal(subjectOf(panes).kind, "group", "group formed");
+
+  assert.equal(await panes.dissolveGroupToRail(encodeURIComponent(subjectOf(panes).group.groupId)), true, "dissolve accepted");
+  const after = panes.paneRoot();
+  assert.equal(after.groups.length, 0, "group record dissolved");
+  assert.equal(after.panels.length, 2, "both panels survive on the rail");
+  assert.ok(after.panels.every((leaf) => !leaf.groupId), "every member ungrouped");
+  deepEqual([...first.tabs], ["tab_2"], "views untouched by the dissolve");
 });
 
-test("togglePaneMenu opens, re-click closes, and item actions dispatch", () => {
-  const { document } = buildDom();
-  const ctx = loadPanesModule(document, "ws-14");
-  const panes = ctx.HerdrWorkspacePanes;
-  panes.renderWorkspacePanes();
-  mintSecondPanel(panes, null);
-  panes.renderWorkspacePanes();
-  // The fake innerHTML never materializes strip buttons: build the
-  // [⋮] node the same way the reconcile builds panes, then attach it to
-  // a pane so closest() resolves the pane id.
-  const container = document.getElementById("workspacePanes");
-  const pane = container.querySelector(".workspace-pane");
-  const button = makeNode("", "pane-strip-button pane-menu-button");
-  pane.appendChild(button);
-  assert.ok(button, "strip carries the [⋮] button");
-
-  // First click opens the menu on document.body.
-  ctx.togglePaneMenu(button);
-  let menu = document.getElementById("paneMenu");
-  assert.ok(menu, "menu opened");
-  assert.equal(menu.attributes["role"], "menu", "menu role set");
-  assert.ok(menu.__innerHTML.includes("Close pane"), "menu lists close");
-
-  // Same button again closes (toggle semantics).
-  ctx.togglePaneMenu(button);
-  assert.equal(document.getElementById("paneMenu"), null, "re-click closes");
-
-  // Re-open and run the close-pane item action the same way the menu's
-  // click handler does: close, then dispatch. The minted panel is the
-  // active one, so the action closes it and the entry drops to one
-  // panel.
-  ctx.togglePaneMenu(button);
-  menu = document.getElementById("paneMenu");
-  assert.ok(menu, "menu re-opened");
-  const items = ctx.paneMenuItemsFor(panes.activePane(), panes.paneRoot());
-  const closeItem = items.find((item) => item.id === "close-pane");
-  assert.ok(closeItem, "close item present");
-  const before = panes.paneRoot().panels.length;
-  closeItem.action();
-  assert.equal(panes.paneRoot().panels.length, before - 1, "close item dropped a panel");
-});
-
-test("strip HTML includes the pane menu control and menu shortcut defaults", () => {
-  // Source-level pins: the [⋮] control rides every strip, the default
-  // shortcut map keeps togglePaneMenu, and the dispatch table wires it.
+test("strip HTML drops the pane menu: no button, no shortcut, no dispatch", () => {
+  // Source-level pins: the menu machinery is deleted, the default
+  // shortcut map has no togglePaneMenu, and no dispatch table wires it.
   const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
-  assert.ok(panesSource.includes("paneMenuControlHtml"), "strip renders the menu control");
-  assert.ok(panesSource.includes("function togglePaneMenu"), "toggle entry point exists");
-  assert.ok(panesSource.includes("function closePaneMenu"), "close entry point exists");
+  assert.ok(!panesSource.includes("paneMenuControlHtml"), "strip renders no menu control");
+  assert.ok(!panesSource.includes("function togglePaneMenu"), "toggle entry point deleted");
+  assert.ok(!panesSource.includes("function closePaneMenu"), "close entry point deleted");
+  assert.ok(!panesSource.includes("paneMenuItemsFor"), "menu items builder deleted");
   const coreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
-  assert.ok(coreSource.includes('togglePaneMenu: "F10"'), "menu shortcut default");
+  assert.ok(!coreSource.includes('togglePaneMenu: "F10"'), "menu shortcut default gone");
   const shortcutsSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
-  assert.ok(shortcutsSource.includes("togglePaneMenu: () =>"), "menu shortcut dispatch wired");
-});
-
-test("closePaneMenu restores focus through the live button, not a stale ref", () => {
-  // Pane strips are innerHTML-swapped on re-renders, so the button ref
-  // captured at open time can be detached by close time. Source-level pin:
-  // closePaneMenu re-queries the button by pane id before focusing. The
-  // behavioral check runs in the live CDP verify (real browser DOM).
-  const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
-  assert.ok(panesSource.includes("paneButtonByPaneId"), "close resolves the live button by pane id");
-  const closeBody = panesSource.slice(panesSource.indexOf("function closePaneMenu"), panesSource.indexOf("function closePaneMenu") + 1300);
-  assert.ok(closeBody.includes("paneButtonByPaneId(paneId)"), "closePaneMenu consults the re-query before the captured ref");
-  assert.ok(closeBody.includes("(paneId && paneButtonByPaneId(paneId)) || captured"), "captured ref is only the fallback");
-  // Pane destroyed while its menu was open: both the re-query and the
-  // captured ref are detached, so focus must fall through to a surviving
-  // pane's button instead of a dead node (silent no-op would strand
-  // focus on body).
-  assert.ok(closeBody.includes('paneButtonByPaneId("*")'), "destroyed-pane fallback resolves a surviving pane's button");
-  assert.ok(closeBody.includes("isConnected === false"), "fallback triggers on detached button only");
+  assert.ok(!shortcutsSource.includes("togglePaneMenu"), "menu shortcut dispatch gone");
 });
 
 // ---- Phase 5: tab drag between panes -----------------------------------
@@ -2624,9 +2584,9 @@ test("single-workspace trees and unknown foreign workspaces keep bare numbers", 
   panes.renderWorkspacePanes();
   const railAfterMint = nodes.container.querySelector(".pane-label-rail");
   assert.ok(railAfterMint, "foreign row mints its own panel (rail renders)");
-  const chipMatch = railAfterMint.__innerHTML.match(/<button[^>]*data-pane-id="([^"]+)"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?<\/button>/g) || [];
+  const chipMatch = railAfterMint.__innerHTML.match(/<button[^>]*data-pane-id="([^"]+)"[^>]*>/g) || [];
   assert.ok(chipMatch.length >= 2, "rail lists the ws-gone panel beside the own one");
-  const foreignChip = chipMatch.find((html) => html.includes(">3</span>"));
+  const foreignChip = chipMatch.find((html) => html.includes('title="Show panel 3"'));
   assert.ok(foreignChip, "unknown workspace keeps the bare number");
   assert.ok(!foreignChip.includes("data-ws-prefix"), "no prefix when the workspace record is missing");
 });
@@ -2644,14 +2604,10 @@ test("pane menu rename seeds empty for defaults and the name for customs", () =>
   // resolve it (the loadPanesModule stub starts with a fake).
   ctx.panelRenameInitialLabel = (tab) => panes.panelRenameInitialLabel(tab);
   panes.renderWorkspacePanes();
-  // The v2 model's pane menu always names the panel, never the tab:
-  // rename-pane wires startPanelChipRename, the one rename surface left.
-  const leaf = panes.activePane();
-  const items = panes.paneMenuItemsFor(leaf, panes.paneRoot());
-  const renameDefault = items.find((item) => item.id === "rename-pane");
-  assert.ok(renameDefault, "the pane menu offers panel rename");
-  assert.equal(renameDefault.label, "Rename panel");
-  assert.ok(!items.some((item) => item.id === "rename-tab"), "no tab-level rename id survives");
+  // The pane menu is gone: rename lives on the rail chip (double-click
+  // or F2, startPanelChipRename), the one rename surface left.
+  assert.equal(typeof ctx.paneMenuItemsFor, "undefined", "menu items builder is deleted");
+  assert.equal(typeof panes.paneMenuItemsFor, "undefined", "no menu exports on the module");
   // panelRenameInitialLabel is still the seed source, now read by the
   // panel-chip rename input: a default seeds "" (fresh name) and a
   // custom seeds its own name.
@@ -3060,12 +3016,12 @@ test("the panel label rail keeps the foreign prefix on hidden panels", () => {
   // assertions read the rail markup and locate the foreign chip by
   // data-pane-id.
   const railHtml = rail.__innerHTML;
-  const foreignChipMatch = railHtml.match(new RegExp(`<button[^>]*data-pane-id="${leaves[1].paneId}"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?</button>`));
+  const foreignChipMatch = railHtml.match(new RegExp(`<button[^>]*data-pane-id="${leaves[1].paneId}"[^>]*>`));
   assert.ok(foreignChipMatch, "hidden foreign panel keeps a rail chip");
   // railEntryLabelForPanel runs panelVisibleLabel on the panel's row,
   // the same prefix path paneTabButtonHtml uses: "feat 1" for a foreign
   // default panel, not a bare number that would collide with ws-1's "1".
-  assert.equal(foreignChipMatch[1], "feat 1", "rail chip spells the foreign prefix plus number");
+  assert.ok(railHtml.includes('<span class="pane-label-chip-text">feat 1</span>'), "rail chip spells the foreign prefix plus number");
   assert.ok(railHtml.includes(`title="Show panel feat 1"`), "rail chip title names the origin");
 });
 
@@ -3109,9 +3065,9 @@ test("mixed tree renders the one-home foreign tab with its prefix", () => {
   // same identity the old strip span carried.
   const rail = nodes.container.querySelector(".pane-label-rail");
   assert.ok(rail, "rail renders with more than one panel");
-  const foreignChipMatch = rail.__innerHTML.match(new RegExp(`<button[^>]*data-pane-id="${foreign.paneId}"[^>]*>(?:<span[^>]*>)?([^<]*)(?:<\/span>)?</button>`));
+  const foreignChipMatch = rail.__innerHTML.match(new RegExp(`<button[^>]*data-pane-id="${foreign.paneId}"[^>]*>`));
   assert.ok(foreignChipMatch, "foreign panel keeps a rail chip");
-  assert.equal(foreignChipMatch[1], "feat 1", "rail chip spells the foreign prefix plus number");
+  assert.ok(rail.__innerHTML.includes('<span class="pane-label-chip-text">feat 1</span>'), "rail chip spells the foreign prefix plus number");
   assert.ok(rail.__innerHTML.includes('title="Show panel feat 1"'), "rail chip title spells the origin");
   assert.ok(rail.__innerHTML.includes('aria-label="Show panel feat 1 (double-click or press F2 to rename)"'), "rail chip accessible name spells the origin");
 });

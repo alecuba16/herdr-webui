@@ -965,11 +965,7 @@ document.addEventListener(
       }
       return;
     }
-    if (document.getElementById("paneMenu")) {
-      e.preventDefault();
-      e.stopPropagation();
-      closePaneMenu();
-    } else if (pickerBackdropOpen()) {
+    if (pickerBackdropOpen()) {
       // The picker owns its own DOM (removed on close), so it is not in
       // the static-modal list below; close it through its API so focus
       // and any dragged position reset the same way the Close button
@@ -1010,20 +1006,6 @@ document.addEventListener(
       if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
       if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
     }
-  },
-  true,
-);
-// Phase 5 pane menu: a click outside [⋮]'s menu (or on its button,
-// which toggles on its own) closes it. Capture phase so the click never
-// reaches a tab or strip control under an open menu.
-document.addEventListener(
-  "mousedown",
-  (e) => {
-    const menu = document.getElementById("paneMenu");
-    if (!menu) return;
-    if (menu.contains && menu.contains(e.target)) return;
-    if (e.target && e.target.closest && e.target.closest(".pane-menu-button")) return;
-    closePaneMenu();
   },
   true,
 );

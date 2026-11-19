@@ -1007,10 +1007,15 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             let at = panel_index(entry, &pane_id)
                 .ok_or((StatusCode::NOT_FOUND, "panel not found".into()))?;
             if entry.panels.len() <= 1 {
-                return Err((
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "cannot close the last panel".into(),
-                ));
+                // Last panel closes to the seed, never to a zero-panel
+                // entry: normalize on the client refuses an empty
+                // panels array, and the seed-never-overwrites rule on
+                // the GET/POST path needs the seed shape to recognize a
+                // pristine entry. The client drained the views through
+                // their own close paths before the op arrived, so this
+                // is a layout reset, not a view loss.
+                *entry = default_entry();
+                return Ok(());
             }
             // Capture the doomed panel's group BEFORE the splice: after
             // the remove there is no record left to read the groupId
@@ -1393,11 +1398,25 @@ mod tests {
     }
 
     #[test]
-    fn panel_close_refuses_last_panel() {
+    fn panel_close_last_panel_resets_to_the_seed() {
+        // The client drains the last panel's views through their own
+        // close paths before panel.close arrives, so closing the last
+        // panel resets the entry to the pristine seed instead of
+        // refusing: zero-panel entries are unrepresentable (normalize
+        // refuses an empty panels array) and the seed-never-overwrites
+        // rule needs the seed shape.
         let mut entry = entry_with_panels(&["p1"]);
         let mut op = req("panel.close");
         op.pane_id = Some("p1".into());
-        assert!(apply_op(&mut entry, &op).is_err());
+        apply_op(&mut entry, &op).unwrap();
+        assert_eq!(entry.panels.len(), 1);
+        assert_eq!(entry.panels[0].pane_id, "p1");
+        assert!(entry.groups.is_empty());
+        assert_eq!(entry.visible.kind, "panel");
+        assert_eq!(entry.visible.id, "p1");
+        // The reset entry IS the seed: the seed-never-overwrites rule
+        // sees it as pristine again.
+        assert!(entry_is_seed(&entry));
     }
 
     #[test]

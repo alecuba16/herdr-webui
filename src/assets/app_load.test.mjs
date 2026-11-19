@@ -973,7 +973,10 @@ describe("app bundle load", () => {
     const html = ctx.helpAndShortcutsBodyHtml();
     match(html, /Activate the focused control: sidebar workspace close\/remove actions, agent Undo\/Dismiss, pane tab ✕, file tree rows, session lines, Git stash entries, Git log commits, and the zero-terminal New terminal card/);
     match(html, /On file tree folder rows, Enter\/Space expands or collapses the folder in place\./);
-    match(html, /Inside the menu, arrows move between items, Esc closes and returns focus to the \[⋮\] button/);
+    // The pane menu (F10, [⋮]) is deleted: its help row must not render.
+    ok(!/Inside the menu, arrows move between items/.test(html), "pane menu row is gone");
+    ok(!html.includes("[⋮]"), "no menu glyph anywhere in the help");
+    match(html, /Every label chip carries a ✕: it closes the panel \(the last panel closes to a fresh empty one\) and a group chip's ✕ dissolves the split back to the rail\./);
     match(html, /Cancel the confirmation dialog; Enter confirms it\./);
   });
 
@@ -1615,8 +1618,8 @@ describe("app bundle load", () => {
     // moveTabNextPane/maximizePane chords are removed from core.js;
     // the registry must NOT carry them (a stale id would render a dead
     // chord row). Every other id keeps its derived row.
-    for (const id of ["search", "help", "settings", "sidebar", "rightSidebar", "newWorkspace", "newPanel", "openWorktrees", "createWorktree", "closePanel", "closeWorkspace", "nextAgent", "prevAgent", "focusTerminal", "closePane", "togglePaneMenu", "sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) ok(webuiIds.includes(id), `help renders a derived chord row for ${id}`);
-    for (const gone of ["splitRight", "splitDown", "moveTabNextPane", "maximizePane"]) ok(!webuiIds.includes(gone), `removed chord ${gone} stays out of the help rows`);
+    for (const id of ["search", "help", "settings", "sidebar", "rightSidebar", "newWorkspace", "newPanel", "openWorktrees", "createWorktree", "closePanel", "closeWorkspace", "nextAgent", "prevAgent", "focusTerminal", "closePane", "sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) ok(webuiIds.includes(id), `help renders a derived chord row for ${id}`);
+    for (const gone of ["splitRight", "splitDown", "moveTabNextPane", "maximizePane", "togglePaneMenu"]) ok(!webuiIds.includes(gone), `removed chord ${gone} stays out of the help rows`);
     // Remapping a key changes the rendered text on the next open.
     vm.runInContext('options.webuiShortcuts = Object.assign({}, options.webuiShortcuts, { settings: "F9" });', ctx);
     const remapped = ctx.helpAndShortcutsBodyHtml();

@@ -848,7 +848,6 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
       focusTerminal = () => { window.__focusedTerminal = true; };
       closeActivePane = () => { window.__closedPane = true; };
       activePaneElement = () => null;
-      togglePaneMenu = (btn) => { window.__paneMenu = btn; };
       isWorkingDismissed = () => false;
       selectedWorkspace = () => ({ workspace_id: "ws1" });
       selectedWorkspaceRepoPath = () => "/repo";
@@ -1006,15 +1005,6 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     assert.equal(vm.runInContext("window.__splitDown", d.ctx), "untouched", "splitDown no longer dispatches");
     assert.equal(vm.runInContext("window.__movedTab", d.ctx), "untouched", "moveTabNextPane no longer dispatches");
     assert.equal(vm.runInContext("window.__maximized", d.ctx), "untouched", "maximizePane no longer dispatches");
-  });
-
-  it("togglePaneMenu resolves the location bar menu button", () => {
-    const d = armedContext(`options.webuiShortcuts = { togglePaneMenu: "Digit1" };
-      window.__barButton = { click() {}, focus() {} };
-      document.querySelector = (sel) => (String(sel).includes("pane-menu-button") ? window.__barButton : null);`);
-    d.arm();
-    d.press("Digit1");
-    assert.equal(vm.runInContext("window.__paneMenu", d.ctx), vm.runInContext("window.__barButton", d.ctx), "the bar menu button toggles");
   });
 
   it("focus cycling walks focusable controls around the document", async () => {

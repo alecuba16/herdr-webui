@@ -1873,8 +1873,11 @@ function railPanelChipHtml(leaf, isActive) {
     return `<input class="pane-group-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeHandlerArg(encoded)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeHandlerArg(encoded)}')">`;
   }
   // Every rail chip is an ungrouped panel (grouped members carry no
-  // chip), so every chip drags: the label drag starts a split.
-  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeHandlerArg(encoded)}')" ondblclick="startPanelChipRename('${escapeHandlerArg(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeHandlerArg(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeHandlerArg(encoded)}')" ondragend="paneLabelDragEnd()"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
+  // chip), so every chip drags: the label drag starts a split. The
+  // chip owns the panel's close (the bar's ✕ is gone): it renders
+  // ungated, even on the last panel, and closePanelFromChip owns the
+  // confirm paths; closing the last panel lands on the empty pane area.
+  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeHandlerArg(encoded)}')" ondblclick="startPanelChipRename('${escapeHandlerArg(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeHandlerArg(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeHandlerArg(encoded)}')" ondragend="paneLabelDragEnd()"><span class="pane-label-chip-text">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closePanelFromChip('${escapeHandlerArg(encoded)}')">✕</span></button>`;
 }
 
 function railGroupChipHtml(group, isActive) {
@@ -1891,7 +1894,7 @@ function railGroupChipHtml(group, isActive) {
   const layoutControls = group.layout && isPaneSplit(group.layout)
     ? `pane-layout-${String(splitNodeId(group.layout)).replace(/\//g, "-")}`
     : "workspacePanes";
-  return `<button class="pane-label-chip pane-panel-group-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(group.groupId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="${escapeAttr(layoutControls)}" tabindex="${isActive ? "0" : "-1"}" draggable="false" data-group-id="${escapeAttr(group.groupId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.preventDefault();showGroupFromRail('${escapeHandlerArg(encoded)}')" ondblclick="startPaneGroupRename('${escapeHandlerArg(encoded)}')" onkeydown="railChipKeyDown(event,'group','${escapeHandlerArg(encoded)}')">${escapeHtml(name)}</button>`;
+  return `<button class="pane-label-chip pane-panel-group-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(group.groupId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="${escapeAttr(layoutControls)}" tabindex="${isActive ? "0" : "-1"}" draggable="false" data-group-id="${escapeAttr(group.groupId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.preventDefault();showGroupFromRail('${escapeHandlerArg(encoded)}')" ondblclick="startPaneGroupRename('${escapeHandlerArg(encoded)}')" onkeydown="railChipKeyDown(event,'group','${escapeHandlerArg(encoded)}')">${escapeHtml(name)}<span class="pane-tab-close" role="button" tabindex="0" title="Dissolve split to rail" aria-label="Dissolve split to rail" onclick="event.stopPropagation();dissolveGroupToRail('${escapeHandlerArg(encoded)}')">✕</span></button>`;
 }
 
 // Group rename (rail chip double-click): the name rides the group
@@ -2134,10 +2137,11 @@ function renderLabelRail(container, entry, subject) {
   const chipPanels = paneLeaves(entry).filter((leaf) => !leaf.groupId);
   const panels = chipPanels;
   const groups = (entry.groups || []).filter((g) => groupMemberCount(g, entry) >= 2);
-  // A lone group still paints the rail: it is the drag-out exit
-  // target (a member dragged onto it ungroups), and hiding it would
-  // strand the gesture with no release target.
-  const needRail = panels.length + groups.length > 1 || groups.length > 0;
+  // The rail always paints while the pane area renders: the chip is the
+  // panel's ONLY close and rename surface now (the bar controls lost
+  // both), so a single ungrouped panel without a rail would strand the
+  // ✕ and F2. The lone group chip below keeps its drag-out exit role.
+  const needRail = panels.length + groups.length > 0;
   if (!needRail) {
     if (rail) detachDomNode(rail);
     return;
@@ -2987,7 +2991,10 @@ function paneBarControlsHtml() {
   // The dashboard owns the pane area in the empty state: pane controls
   // would target dead chrome, the bar renders none.
   if (dashboardOwnsPaneArea()) return "";
-  return `<span class="pane-strip-controls pane-bar-controls">${paneNewTabControlHtml(leaf)}${paneCloseControlHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
+  // Close and the pane menu live on the rail chips now (every chip
+  // carries its own ✕): the bar keeps only the leaf-scoped creation
+  // and view actions.
+  return `<span class="pane-strip-controls pane-bar-controls">${paneNewTabControlHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}</span>`;
 }
 
 // Signature for the bar's render loop: every input that changes the
@@ -3103,10 +3110,6 @@ function openPaneEditorFind(encodedPaneId) {
     window.HerdrEditor.openFind(target);
 }
 
-function paneMenuControlHtml() {
-  return `<button class="pane-strip-button pane-menu-button" title="${escapeAttr(titleWithWebuiShortcut("Pane actions", "togglePaneMenu"))}" aria-label="Pane actions" aria-haspopup="menu" aria-expanded="false" onclick="event.preventDefault();togglePaneMenu(this)">⋮</button>`;
-}
-
 function paneNewTabControlHtml(leaf) {
   // Collector model (locked decision): the + mints an EMPTY panel for
   // the focused panel's workspace (auto-split beside it, focused, path
@@ -3123,193 +3126,6 @@ function paneNewTabControlHtml(leaf) {
     return `<button class="pane-strip-button pane-new-picker" title="New panel in a workspace" aria-label="New panel in a workspace" aria-haspopup="dialog" onclick="event.preventDefault();HerdrPaneWorkspacePicker.openPicker(this,'${escapeHandlerArg(encoded)}','new-tab')">+</button>`;
   }
   return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newPanelForFocused()">+</button>`;
-}
-
-// Close only exists when another panel could take the route: one panel
-// keeps it hidden (closing the last panel is closing the workspace).
-// Stripless model: this is a REAL close of the panel (the panel record
-// and its view go), never a merge into a neighbor. A split member
-// closed from its bar ungroups (the merged header's own ✕ carries
-// the split-exit); this control closes the panel outright.
-function paneCloseControlHtml(leaf) {
-  const root = paneRootFor();
-  if (paneLeaves(root).length < 2) return "";
-  const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  return `<button class="pane-strip-button" title="Close panel" aria-label="Close panel" onclick="event.preventDefault();closePaneFor('${escapeHandlerArg(encoded)}')">✕</button>`;
-}
-
-// ---- pane menu (Phase 5) -----------------------------------------------
-// One menu for the strip's [⋮]: actions depend on the pane's active tab
-// kind (terminal, editor, git). Transient by design: it lives outside the
-// re-rendered strip, so a strip reconcile never destroys it mid-click.
-let paneMenu = null;
-
-function paneMenuItemsFor(leaf, root) {
-  const items = [];
-  // Rename always names the PANEL (leaf.name), never the tab row: the
-  // stripless flat carries no tab strip for a tab-rename input, and
-  // the merged header + rail chip speak the panel identity. The rail
-  // chip swap (startPanelChipRename) is the one rename surface left.
-  items.push({
-    id: "rename-pane",
-    label: "Rename panel",
-    action: () => { focusLeaf(root, leaf); startPanelChipRename(encodeURIComponent(leaf.paneId)); },
-  });
-  if (paneLeaves(root).length > 1) {
-    items.push({
-      id: "close-pane",
-      label: "Close pane",
-      action: () => { focusLeaf(root, leaf); void closeActivePane(); },
-    });
-  }
-  return items;
-}
-
-function paneMenuHtml(items) {
-  return items
-    .map(
-      (item, index) =>
-        `<button type="button" class="pane-menu-item" role="menuitem" data-index="${index}">${escapeHtml(item.label)}</button>`
-    )
-    .join("");
-}
-
-// Menu-list key handling: ArrowUp/Down/Home/End move focus between
-// items, Escape closes. Escape focus restore lives in closePaneMenu, not
-// here: the document-level capture Escape cascade (bindings.js) closes the
-// menu before this bubble-phase listener can run, and its stopPropagation
-// prevents this handler entirely. Enter is left to the native button
-// behavior.
-function paneMenuKeydown(event) {
-  const menu = document.getElementById("paneMenu");
-  if (!menu) return;
-  const items = [...menu.querySelectorAll(".pane-menu-item")];
-  if (!items.length) return;
-  if (event.key === "Escape") {
-    event.preventDefault();
-    event.stopPropagation();
-    closePaneMenu();
-    return;
-  }
-  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-  event.preventDefault();
-  const current = items.indexOf(document.activeElement);
-  let next = 0;
-  if (event.key === "ArrowDown") next = (current + 1 + items.length) % items.length;
-  else if (event.key === "ArrowUp") next = (current - 1 + items.length) % items.length;
-  else if (event.key === "Home") next = 0;
-  else next = items.length - 1;
-  if (items[next] && typeof items[next].focus === "function") items[next].focus();
-}
-
-function togglePaneMenu(button) {
-  const existing = document.getElementById("paneMenu");
-  if (existing) {
-    closePaneMenu();
-    // Re-clicking the same button just closes; a different button
-    // re-opens for its pane below.
-    if (existing.dataset.paneMenuButton === paneMenuButtonKey(button)) return;
-  }
-  const container = el("workspacePanes");
-  const root = paneRoot();
-  if (!container || !paneTreeRenderable(root)) return;
-  const pane = button.closest ? button.closest(".workspace-pane") : null;
-  const paneId = pane && pane.dataset ? pane.dataset.paneId : null;
-  const leaf = paneId ? paneForPaneId(root, paneId) : activeLeaf(root);
-  if (!leaf) return;
-  const menu = document.createElement("div");
-  menu.id = "paneMenu";
-  menu.className = "pane-menu";
-  menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "Pane actions");
-  menu.dataset.paneMenuButton = paneMenuButtonKey(button);
-  const items = paneMenuItemsFor(leaf, root);
-  paneMenu = { items, paneId: leaf.paneId, button };
-  menu.innerHTML = paneMenuHtml(items);
-  menu.addEventListener("click", (event) => {
-    const target = event.target.closest ? event.target.closest(".pane-menu-item") : null;
-    if (!target) return;
-    event.preventDefault();
-    const item = items[Number(target.dataset.index)];
-    if (!item) return;
-    closePaneMenu();
-    item.action();
-  });
-  menu.addEventListener("keydown", paneMenuKeydown);
-  document.body.appendChild(menu);
-  positionPaneMenu(menu, button);
-  if (button.setAttribute) button.setAttribute("aria-expanded", "true");
-  const firstItem = menu.querySelector ? menu.querySelector(".pane-menu-item") : null;
-  if (firstItem && typeof firstItem.focus === "function") firstItem.focus();
-}
-
-// Buttons live in re-rendered strips: key them by paneId so a stale
-// strip render (same pane, new node) still counts as the same toggle.
-function paneMenuButtonKey(button) {
-  const pane = button.closest ? button.closest(".workspace-pane") : null;
-  return (pane && pane.dataset && pane.dataset.paneId) || "root";
-}
-
-function positionPaneMenu(menu, button) {
-  const rect = button.getBoundingClientRect ? button.getBoundingClientRect() : null;
-  if (!rect) return;
-  menu.style.left = `${Math.max(8, rect.left)}px`;
-  menu.style.top = `${rect.bottom + 4}px`;
-  // A strip near the viewport bottom would push the menu off-screen.
-  // Measure after the first paint position lands, then flip it up when
-  // the drop exceeds the viewport, keeping an 8px margin.
-  if (typeof document.documentElement === "undefined" || !document.documentElement) return;
-  const viewportBottom = (typeof window !== "undefined" && typeof window.innerHeight === "number")
-    ? window.innerHeight
-    : document.documentElement.clientHeight;
-  const height = menu.offsetHeight || 0;
-  if (height && rect.bottom + 4 + height > viewportBottom - 8) {
-    const flippedTop = rect.top - height - 4;
-    menu.style.top = `${Math.max(8, flippedTop)}px`;
-  }
-}
-
-function closePaneMenu() {
-  const menu = document.getElementById("paneMenu");
-  // pane strips re-render on layout changes; the captured button ref can be
-  // detached by then, so resolve the live node by paneId. aria-expanded and
-  // focus go to that node, never to the stale one.
-  const paneId = paneMenu && paneMenu.paneId;
-  const captured = paneMenu && paneMenu.button;
-  let button = (paneId && paneButtonByPaneId(paneId)) || captured;
-  if (menu) detachDomNode(menu);
-  if (button && button.setAttribute) button.setAttribute("aria-expanded", "false");
-  paneMenu = null;
-  // Focus restore belongs here, not in paneMenuKeydown: every close path
-  // (Escape cascade, outside click, re-toggle) must return focus to the
-  // [⋮] button. Removing the menu drops focus on the closed item first,
-  // so the live button is resolved before paneMenu is cleared above.
-  // A pane closed while its menu was open leaves both the re-query and
-  // the captured ref detached. Focusing a dead node is a silent no-op that
-  // strands the user on body, so hand focus to the surviving pane's
-  // button instead.
-  if (button && button.isConnected === false) button = paneButtonByPaneId("*") || null;
-  if (button && typeof button.focus === "function") button.focus();
-}
-
-// The pane menu button lives in the location bar, which repaints on
-// focus moves; this resolves the live [⋮] for a pane so menu close
-// restores focus to a real node even after the bar re-rendered. Returns
-// null where the host document cannot query (unit-test fake DOMs), so
-// closePaneMenu falls back to the captured button ref.
-function paneButtonByPaneId(paneId) {
-  if (typeof document.querySelector !== "function" || typeof CSS === "undefined" || !CSS.escape) return null;
-  // The bar renders one controls group for the focused pane, so the
-  // pane selector must agree with it: when the requested pane is the
-  // active one its button is live, otherwise the bar is showing
-  // another pane's controls and no node can serve the request.
-  const root = paneRootFor();
-  const leaf = paneId === "*" ? activeLeaf(root) : paneForPaneId(root, paneId);
-  const active = activeLeaf(root);
-  if (!leaf || !active || leaf.paneId !== active.paneId) return null;
-  const bar = document.querySelector(".location-bar .pane-bar-controls");
-  const button = bar && bar.querySelector(".pane-menu-button");
-  return button || null;
 }
 
 // ---- tab drag between panes (Phase 5) ----------------------------------
@@ -4565,10 +4381,96 @@ function closePaneFor(encodedPaneId) {
   if (!paneTreeRenderable(root)) return false;
   const leaf = leafForPaneId(root, encodedPaneId);
   if (!leaf) return false;
-  if (paneLeaves(root).length < 2) return false;
   focusLeaf(root, leaf);
   root.activePaneId = leaf.paneId;
   return closeActivePane();
+}
+
+// Chip close: ungated by design (the chip ✕ renders even on the last
+// panel). A real close through closeActivePane needs a second leaf to
+// hand the route to, so the last panel drains through its own tab
+// closes: confirm paths included, the workspace cascade closes the
+// workspace's last terminal, and closeLastPanelToSeed resets the
+// record. The empty pane area (seed panel, or the dashboard when the
+// cascade took the workspace) is the accepted landing state.
+async function closePanelFromChip(encodedPaneId) {
+  const root = paneRootFor();
+  if (!paneTreeRenderable(root)) return false;
+  const paneId = decodeURIComponentSafe(encodedPaneId);
+  const leaf = paneId ? paneForPaneId(root, paneId) : activeLeaf(root);
+  if (!leaf) return false;
+  if (paneLeaves(root).length >= 2) {
+    focusLeaf(root, leaf);
+    root.activePaneId = leaf.paneId;
+    return closeActivePane();
+  }
+  for (const tabId of [...(leaf.tabs || [])]) {
+    if (tabId === TERMINAL_TAB_PLACEHOLDER) continue;
+    const doomed = paneForPaneId(paneRootFor(), leaf.paneId);
+    if (!doomed || !(doomed.tabs || []).includes(tabId)) continue;
+    if (isEditorTab(tabId)) {
+      await closeEditorTab(encodeURIComponent(editorTabPath(tabId)));
+    } else if (isGitTab(tabId)) {
+      closeGitTab(gitTabViewKey(tabId));
+    } else if (typeof closeTab === "function" && terminalTabKnown(tabId)) {
+      await closeTab(tabId);
+    } else {
+      pruneClosedTabFromLeaf(tabId);
+    }
+    const after = paneRootFor();
+    const drained = paneForPaneId(after, leaf.paneId);
+    if (!drained) return true;
+    if ((drained.tabs || []).includes(tabId)) return false;
+  }
+  return closeLastPanelToSeed(leaf);
+}
+
+// Last-panel close lands on the pristine seed, never a zero-panel
+// entry: every render path assumes the one-panel minimum (normalize
+// refuses empty panels, panesStateFor re-mints, the server's
+// seed-never-overwrites rule needs the seed shape). Views are already
+// dead here: the drain above closed each through its own path, so the
+// reset is a layout reset, not a view loss. Same op as a normal drop
+// (the server treats a last-panel panel.close as the same seed reset);
+// local mode runs the reset as the fallback twin.
+function closeLastPanelToSeed(leaf) {
+  const entry = panesStateFor();
+  if (entry.panels.indexOf(leaf) < 0) return false;
+  const resetLocal = () => {
+    const live = panesStateFor();
+    if (!paneForPaneId(live, leaf.paneId)) return true;
+    live.panels = [newLeaf("p1")];
+    live.groups = [];
+    live.activePaneId = null;
+    live.visible = { type: "panel", id: "p1" };
+    live.at = Date.now();
+    saveWorkspacePanesStates();
+    renderWorkspacePanes();
+    return true;
+  };
+  return panesOpWithFallback({ op: "panel.close", paneId: leaf.paneId }, resetLocal);
+}
+
+// Group chip close: dissolve, never a panel close. Every member
+// ungroups back to the rail (server op per member with local fallback,
+// the same path as the merged-header ✕), so the gesture is reversible
+// and no view is lost.
+async function dissolveGroupToRail(encodedGroupId) {
+  const root = paneRootFor();
+  const groupId = decodeURIComponentSafe(encodedGroupId);
+  const group = groupId
+    ? (root.groups || []).find((g) => g.groupId === groupId) || null
+    : null;
+  if (!group) return false;
+  const memberIds = [...(group.memberIds || [])];
+  for (const paneId of memberIds) {
+    // groupId guard: ungrouping one member of a pair dissolves the
+    // whole group, so the remaining member is already on the rail and
+    // a second op would only produce a rejected-intent resync.
+    const leaf = paneForPaneId(paneRootFor(), paneId);
+    if (leaf && leaf.groupId) await ungroupPaneMember(encodeURIComponent(paneId));
+  }
+  return true;
 }
 
 // Strip + button: create the backend panel, then place its tab in the pane
@@ -5957,9 +5859,6 @@ window.HerdrWorkspacePanes = {
   activePane: () => activeLeaf(paneRootFor()),
   activePaneElement,
   closeActivePane,
-  // The [⋮] kind-aware pane menu.
-  togglePaneMenu,
-  closePaneMenu,
   // Tab drag between member strips.
   movePaneTabTo,
   paneDropIndexAt,
@@ -5986,10 +5885,11 @@ window.HerdrWorkspacePanes = {
   showGroupFromRail,
   rememberGroupFocus,
   closePaneFor,
+  closePanelFromChip,
+  dissolveGroupToRail,
   newTabForPane,
   requestTabPlacement,
   openPanelInWorkspace,
-  paneMenuItemsFor,
   syncTerminalTabsIntoTree,
   terminalShellOwnerLeaf,
   mountDashboardInPane,

@@ -683,50 +683,6 @@
   background: color-mix(in srgb, var(--pane-group), transparent 94%);
 }
 
-/* ---- pane actions menu (Phase 5) ----
- * The [⋮] strip button opens this overlay on document.body; it is
- * positioned from the button rect in JS. Fixed positioning keeps it on
- * screen when the pane strip scrolls horizontally. */
-.pane-menu {
-  position: fixed;
-  z-index: 60;
-  min-width: 180px;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-}
-
-.pane-menu-item {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  display: block;
-  width: 100%;
-  padding: 6px 10px;
-  text-align: left;
-  font: inherit;
-  font-size: 12px;
-  border-radius: 6px;
-}
-
-.pane-menu-item:hover {
-  background: var(--panel2, var(--panel));
-  color: var(--text);
-}
-
-.pane-menu-item:focus-visible {
-  background: var(--panel2, var(--panel));
-  color: var(--text);
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
 /* ---- tab drag between panes (Phase 5) ----
  * The caret is an absolutely positioned marker inside the strip; the
  * dragover handler writes its left offset from the hovered tab rects.
