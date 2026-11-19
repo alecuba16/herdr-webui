@@ -2913,6 +2913,38 @@ test("merged member headers carry the worktree on the view span for every kind",
   assert.ok(renamedHeader.includes('>main · build</span>'), "origin survives the rename on the span");
 });
 
+// A known-but-unresolved terminal row (older server without maps, or a
+// snapshot race: the id lives only in allTabs/panesById) still renders
+// the view span. The chip alone would hide which view the member holds,
+// and the raw id is the honest label until the row resolves.
+test("merged member headers render the raw id span for known unresolved rows", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "main" }];
+  ctx.worktreeDisplayName = (w) => w.label;
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "build", number: 1 }];
+  // tab_9 is KNOWN through allTabs only: no state.tabs row, no
+  // tabsById entry, exactly the stale-map shape the sync sees.
+  ctx.state.allTabs = [{ tab_id: "tab_9", workspace_id: "ws-1", label: "shell", number: 2 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "build", number: 1 },
+  };
+  panes.renderWorkspacePanes();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  const host = leaves.find((l) => l.tabs.includes("tab_2"));
+  const ghost = leaves.find((l) => l !== host) || mintSecondPanel(panes);
+  ghost.tabs = ["tab_9"];
+  ghost.active = "tab_9";
+  dropLabelOn(panes, nodes, ghost.paneId, 0.75, 0.5);
+  panes.renderWorkspacePanes();
+
+  const ghostHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${ghost.paneId}"`)) || "";
+  assert.ok(ghostHeader, "unresolved-row member renders a header");
+  assert.ok(ghostHeader.includes('>main · tab_9</span>'), "unresolved row renders the raw id in the span");
+  assert.ok(ghostHeader.includes('title="main · tab_9"'), "unresolved row title matches");
+});
+
 // Rename input wiring lives in app_load's suite (inputAttrs ships with
 // shared/core.js, which only that bundle loads). Here the seed is pinned
 // at the function level: a default panel seeds "" and a custom panel

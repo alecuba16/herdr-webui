@@ -924,6 +924,49 @@ test("a 422-rejected intent resyncs and never runs the local twin", async () => 
   assert.equal(panes.panesMode(), "server", "422 does not demote to local mode");
 });
 
+// moveActiveTabToNextPane (dormant command, pinned directly): the busy
+// target split must refuse cleanly when the server rejects the group
+// intent. panel.create succeeds (the server mints the member), then
+// group.create answers 422: the move returns false, the tab stays in
+// its source leaf, and the minted member never survives locally as a
+// stranded viewless leaf.
+test("moveActiveTabToNextPane: a rejected split refuses the move and nothing strands", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const realApi = script.api;
+  const refusingApi = async (url, opt) => {
+    if (url === "/api/workspace-panes/op") {
+      const op = JSON.parse(opt.body);
+      if (op.op === "group.create") {
+        throw Object.assign(new Error("cannot group"), { status: 422 });
+      }
+    }
+    return realApi(url, opt);
+  };
+  const ctx = loadPanesModule(document, "ws-1", refusingApi);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const panes = ctx.HerdrWorkspacePanes;
+  const source = panes.paneLeaves(panes.paneRoot()).find((l) => l.paneId === "p1");
+  source.tabs.push("editor:src/a.py");
+  source.active = "editor:src/a.py";
+  panes.focusPanelFor("p1");
+  const moved = await ctx.moveActiveTabToNextPane();
+  assert.equal(moved, false, "rejected group.create refuses the move");
+  const leavesAfter = panes.paneLeaves(panes.paneRoot());
+  const sourceAfter = leavesAfter.find((l) => l.paneId === "p1");
+  assert.ok(sourceAfter.tabs.includes("editor:src/a.py"), "the editor tab stayed in its source leaf");
+  assert.equal(sourceAfter.active, "editor:src/a.py", "source active pointer untouched");
+  assert.equal((panes.paneRoot().groups || []).length, 0, "no group survived the rejection");
+  const targetAfter = leavesAfter.find((l) => l.paneId === "p2");
+  assert.deepEqual([...targetAfter.tabs], ["t2"], "busy target kept exactly its own row");
+  assert.equal(panes.panesMode(), "server", "rejection resyncs without demoting");
+});
+
 test("a 400 rejection is authoritative: resync, no twin, no demotion", async () => {
   const { document } = buildDom();
   const script = makeServerApi(serverEntry());

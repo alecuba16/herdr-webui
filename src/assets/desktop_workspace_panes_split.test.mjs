@@ -1340,3 +1340,60 @@ test("movePaneTabTo matrix: cross-panel, reorder, refuse, default target", () =>
   assert.equal(panes.movePaneTabTo("git:changes", null, null), true, "git moves to the other panel");
   assert.ok(leaves[1].tabs.includes("git:changes"), "git landed");
 });
+
+// moveActiveTabToNextPane is fixed but dormant (the removed-command
+// list pins it out of the registry), so its split rule gets a direct
+// pin here: a busy target mints a fresh split member that lands the
+// tab (one view per member, the id leaves the source through the
+// v3.2 choke point), and a flat target takes the shared move path.
+test("moveActiveTabToNextPane: busy target splits, flat target moves", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "tab_2");
+  panes.newPanelForFocused();
+  ctx.window.HerdrFileBrowser = {
+    async openEditorTab(path) { panes.setActivePaneTab("editor:" + path); },
+  };
+  const leaves = () => panes.paneLeaves(panes.paneRoot());
+  // newPanelForFocused focuses the fresh mint; the seed panel (holding
+  // tab_2) is the NEXT leaf in tree order, so it is the move target.
+  const source = panes.activePane();
+  source.tabs.push("editor:src/moved.py");
+  source.active = "editor:src/moved.py";
+  const target = leaves().find((l) => l !== source);
+  // Busy target: the split engine mints a fresh member that lands
+  // the tab (old left, new right, focus fresh), never stacks it.
+  const before = leaves().length;
+  let moved = await ctx.moveActiveTabToNextPane();
+  assert.equal(moved, true, "move onto busy target returns true");
+  assert.equal(leaves().length, before + 1, "busy target split");
+  const host = target;
+  const freshMember = leaves().find((l) => l.groupId && l.paneId !== host.paneId);
+  assert.ok(freshMember, "fresh split member exists");
+  assert.ok(freshMember.tabs.includes("editor:src/moved.py"), "fresh member holds the moved tab");
+  assert.equal(freshMember.tabs.length, 1, "fresh member holds exactly one view");
+  assert.equal(leafTabsCount(host), 1, "busy host keeps its own single view");
+  assert.ok(!source.tabs.includes("editor:src/moved.py"), "source shed the tab through the splice");
+  assert.ok(!leaves().some((l) => l !== freshMember && l.tabs.includes("editor:src/moved.py")), "the id lives in exactly one leaf");
+
+  // Flat target: the move delegates to movePaneTabTo (splice, heal,
+  // arm, render). Mint a third panel so a flat neighbor exists, then
+  // move the editor from its split member onto the empty mint.
+  const nextMint = panes.newPanelForFocused();
+  const flatFrom = freshMember;
+  panes.focusPanelFor(flatFrom.paneId);
+  const flatTarget = leaves().find((l) => l !== flatFrom && !l.tabs.length);
+  assert.ok(flatTarget, "an empty flat target exists after the second mint");
+  moved = await ctx.moveActiveTabToNextPane();
+  assert.equal(moved, true, "move onto flat target returns true");
+  assert.ok(flatTarget.tabs.includes("editor:src/moved.py"), "flat target holds the tab");
+  assert.ok(!flatFrom.tabs.includes("editor:src/moved.py"), "split member shed the tab");
+  assert.equal(flatFrom.tabs.length, 0, "emptied source arms for auto-close");
+  assert.ok(flatFrom.autoCloseArmed, "emptied source carries the arm marker");
+  assert.ok(!leaves().some((l) => l !== flatTarget && l.tabs.includes("editor:src/moved.py")), "the id lives in exactly one leaf after the flat move");
+});
+
+function leafTabsCount(leaf) {
+  return (leaf.tabs || []).length;
+}

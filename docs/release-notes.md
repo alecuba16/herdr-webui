@@ -25,6 +25,14 @@
 - The pane menu Rename names the panel through the rail chip swap on
   every leaf (the tab rename entry is gone), and the merged header
   carries the same rename on double-click and F2.
+- The dormant move-tab command follows the one-view rule now: a busy
+  next pane gets a fresh split member that lands the tab (the source
+  sheds the id through the shared removal choke point, so it never
+  lives in two leaves), and a rejected server split refuses the move
+  with nothing stranded. The docs dropped the chord rows for split
+  right/down (`D`/`Shift+D`), move tab (`M`), and maximize
+  (`Shift+M`): no such chords or buttons exist in the WebUI, splits
+  are implicit, and maximize left with the stripless rework.
 
 ## 0.7.54 Release Notes
 - The terminal hub join race is closed: `start_attach` spawns the

@@ -230,7 +230,14 @@ function buildPanePassLookups(root) {
   if (state.tabsById) for (const id of Object.keys(state.tabsById)) known.add(id);
   if (state.panesById) for (const id of Object.keys(state.panesById)) known.add(id);
   for (const tab of state.allTabs || []) if (tab) known.add(tab.tab_id);
-  return { rows, known, panesByTab: null, treeMixed: treeIsMixedFor(root) };
+  // workspacesById: the member header resolves a workspace record per
+  // member per paint (chip and span both do); the Map keeps that a
+  // lookup instead of a scan without changing precedence anywhere.
+  const workspacesById = new Map();
+  for (const workspace of state.workspaces || []) {
+    if (workspace && !workspacesById.has(workspace.workspace_id)) workspacesById.set(workspace.workspace_id, workspace);
+  }
+  return { rows, known, workspacesById, panesByTab: null, treeMixed: treeIsMixedFor(root) };
 }
 
 function panesStateFor() {
@@ -2030,15 +2037,13 @@ function renderLabelRail(container, entry, subject) {
   // still buttons; close: state clear, DOM still input). While they
   // agree (edit open and input shown) NO rebuild runs, so a remote
   // adoption that re-renders mid-edit cannot tear the rail down and
-  // destroy the input. The signature still compares RESTING markup (no
-  // editing swap), so an open edit never counts as a rail change and
-  // the post-commit render repaints whatever the adoption changed.
+  // destroy the input. The signature and the payload are the SAME
+  // build: one string walks both jobs, no second chip pass per paint.
   const editingState = !!(state.editingPanelPaneId || state.editingPaneGroup);
   const railShowsInput = [...(rail.children || [])].some((child) =>
     hasClass(child, "pane-group-rename-input"));
-  const resting = paneRailRestingHtml(panels, groups, subject);
-  if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== resting)) {
-    rail.__herdrRailSignature = resting;
+  if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== html)) {
+    rail.__herdrRailSignature = html;
     rail.innerHTML = html;
   }
 }
@@ -2103,21 +2108,6 @@ function paneRailMemberDrop(event) {
   paneMemberDragEnd();
   if (!leaf) return;
   ungroupMember(leaf);
-}
-
-// Resting rail markup: every chip as a button, no editing swap. Used
-// only for the signature compare so an open edit never counts as a
-// rail change.
-function paneRailRestingHtml(panels, groups, subject) {
-  let html = "";
-  for (const leaf of panels) {
-    const active = subject && subject.kind === "panel" && subject.leaf === leaf;
-    html += railPanelChipHtml(leaf, active);
-  }
-  for (const group of groups) {
-    html += railGroupChipHtml(group, subject.kind === "group" && subject.group === group);
-  }
-  return html;
 }
 
 // Subject switch from a rail chip: the panel press shows the panel
@@ -2443,7 +2433,9 @@ function panePanelChipHtml(leaf) {
 function paneMemberHeaderLabel(leaf) {
   const root = paneRootFor();
   const wsId = leafWorkspaceId(leaf);
-  const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
+  const workspace = panePassLookups
+    ? (panePassLookups.workspacesById.get(wsId) || null)
+    : (wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) || null : null);
   const wsName = workspace
     ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
     : (wsId || "panel");
@@ -2470,7 +2462,9 @@ function paneMemberWorktreeName(leaf, tabId) {
     const row = paneTerminalTabById(tabId);
     if (row && row.workspace_id) wsId = row.workspace_id;
   }
-  const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
+  const workspace = panePassLookups
+    ? (panePassLookups.workspacesById.get(wsId) || null)
+    : ((state.workspaces || []).find((w) => w.workspace_id === wsId) || null);
   return workspace
     ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
     : (wsId || "panel");
@@ -2511,8 +2505,18 @@ function paneMergedHeaderHtml(leaf, tabs, activeTab) {
     } else if (isGitTab(single)) {
       viewHtml = paneMemberViewSpan(origin, gitTabTitle(gitTabViewKey(single)), gitTabLabel(gitTabViewKey(single)));
     } else {
+      // Known-but-unresolved rows (older servers without maps, or a
+      // snapshot race) still render a span: the chip names the panel,
+      // the span names the view, and a missing row must not silently
+      // drop the view half of the header. The raw id is the honest
+      // label until the row resolves.
       const row = paneTerminalTabById(single);
-      const rowLabel = row ? String(row.label || "").trim() || `tab ${row.number || ""}`.trim() : "";
+      let rowLabel = "";
+      if (row) {
+        rowLabel = String(row.label || "").trim() || `tab ${row.number || ""}`.trim();
+      } else if (terminalTabKnown(single)) {
+        rowLabel = String(single);
+      }
       if (rowLabel) viewHtml = paneMemberViewSpan(origin, rowLabel, rowLabel);
     }
   }
@@ -3451,8 +3455,11 @@ function paneWorkspaceDropHint(strip, workspaceId) {
   clearPaneWorkspaceDropHint();
   const workspace = (state.workspaces || []).find((w) => w.workspace_id === workspaceId);
   if (!workspace) return;
+  // Every panel-facing surface speaks worktreeDisplayName (branch or
+  // checkout basename); workspaceDisplayTitle is label-first and would
+  // name the same worktree differently here than in the chip beside it.
   const label =
-    (typeof workspaceDisplayTitle === "function" && workspaceDisplayTitle(workspace)) ||
+    (typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) ||
     workspace.label ||
     workspaceId;
   const hint = document.createElement("div");
@@ -4649,9 +4656,12 @@ function onTerminalTabClosed(tabId) {
 
 // Moves the active tab to the next leaf in tree order (wraps). Terminal
 // tabs refuse: exactly one #terminalShell surface exists and its tab
-// stays in the terminal leaf. The moved-to leaf takes focus and the tab
-// pointer.
-function moveActiveTabToNextPane() {
+// stays in the terminal leaf. A busy target SPLITS instead of taking
+// the tab: the one-view rule is absolute, so a flat target receiving
+// a second view would strand it (flats render no strip), and a split
+// target growing a second tab violates the member shape the same way.
+// The moved-to member takes focus and the tab pointer.
+async function moveActiveTabToNextPane() {
   const root = paneRootFor();
   if (!paneTreeRenderable(root)) return false;
   const leaves = paneLeaves(root);
@@ -4661,8 +4671,32 @@ function moveActiveTabToNextPane() {
   const tabId = leaf.active;
   if (!isEditorTab(tabId) && !isGitTab(tabId)) return false;
   const index = leaves.indexOf(leaf);
-  const target = leaves[(index + 1) % leaves.length];
+  let target = leaves[(index + 1) % leaves.length];
   if (!target || target === leaf) return false;
+  // One view per member: a busy target gets a fresh split sibling and
+  // the tab lands there (old left, new right, focus fresh), the same
+  // rule every other second-view path follows. A refused or failed
+  // split refuses the move (the tab stays put, nothing strands).
+  if (leafBusyViews(target) > 0) {
+    const fresh = await splitLeafWithFreshMember(target, (member) => landTabIntoLeaf(member, tabId));
+    if (!fresh || fresh === PANES_OP_REJECTED) return false;
+    // The split settle landed the tab in the fresh member; the source
+    // still owns its copy until the splice here. removeTabFromLeaf is
+    // the v3.2 choke point (splice + active heal + empty arm), the same
+    // path every tab departure takes, so the id never lives in two
+    // leaves and an emptied source still arms its auto-close.
+    removeTabFromLeaf(leaf, tabId, true);
+    if (panesMode === "server") {
+      void panesServerOp({
+        op: "panel.update",
+        paneId: leaf.paneId,
+        tabs: (leaf.tabs || []).slice(),
+        active: leaf.active || undefined,
+        wsId: leafWorkspaceId(leaf) || undefined,
+      });
+    }
+    return true;
+  }
   // Delegate to the shared move primitive (splice, activate, focus,
   // persist, module re-mount all live there; the v3.2 marker stays
   // with this gesture): the chord empties the source, so the source
