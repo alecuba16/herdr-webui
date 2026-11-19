@@ -2618,9 +2618,11 @@ function paneMergedHeaderHtml(leaf, tabs, activeTab) {
   const single = views.length === 1 ? views[0] : null;
   // The worktree rides the view span for every kind (B): "wt · view"
   // spells the member's origin even when a custom chip label would
-  // otherwise hide it, and the span itself is what names the view. The
-  // chip keeps pure identity (set name or wt + number) and never
-  // duplicates the origin: one place says where, one says what.
+  // otherwise hide it, and the span itself is what names the view. A
+  // DEFAULT chip label repeats that origin ("pane_controls_bar" chip
+  // next to a "pane_controls_bar · Shell" span), so it never renders:
+  // only a set name earns the chip-text span, the span stays the single
+  // voice for origin plus view.
   let viewHtml = "";
   if (single) {
     const origin = paneMemberWorktreeName(leaf, single);
@@ -2644,10 +2646,11 @@ function paneMergedHeaderHtml(leaf, tabs, activeTab) {
       if (rowLabel) viewHtml = paneMemberViewSpan(origin, rowLabel, rowLabel);
     }
   }
+  const identityHtml = leaf.name ? `<span class="pane-label-chip-text">${escapeHtml(label)}</span>` : "";
   const header =
     `<button class="pane-member-header pane-panel-chip" role="tab" id="pane-header-${escapeAttr(leaf.paneId || "")}" aria-selected="${activeTab === single ? "true" : "false"}" aria-label="Focus panel: ${escapeAttr(label)}" title="Focus panel: ${escapeAttr(label)} (double-click or press F2 to rename)" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs}` +
     ` onclick="event.preventDefault();focusPanelFor('${escapeHandlerArg(encodedPane)}')" ondblclick="startPanelChipRename('${escapeHandlerArg(encodedPane)}')" onkeydown="memberHeaderKey(event,'${escapeHandlerArg(encodedPane)}')">` +
-    `<span class="pane-label-chip-text">${escapeHtml(label)}</span>${viewHtml}` +
+    `${identityHtml}${viewHtml}` +
     `<span class="pane-tab-close" role="button" tabindex="0" title="Leave split" aria-label="Leave split" onclick="event.stopPropagation();ungroupPaneMember('${escapeHandlerArg(encodedPane)}')">✕</span>` +
     `</button>`;
   const extra = views.length > 1

@@ -2503,16 +2503,16 @@ test("foreign default panels prefix the worktree name on a mixed tree", () => {
   // chips spell the same labels.
   const ownHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[0].paneId}"`)) || "";
   const foreignHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[1].paneId}"`)) || "";
-  // Both default panels carry their worktree prefix now: the origin is
-  // part of the identity everywhere, not only on foreign panels.
+  // Default (unrenamed) members render no chip-text span: the view
+  // span alone carries the origin, so the identity lives in the
+  // accessible name and the view text, never duplicated visibly.
   assert.ok(ownHeader, "own panel renders");
-  assert.ok(ownHeader.includes('<span class="pane-label-chip-text">main 1</span>'), "own default member header carries its worktree prefix");
-  assert.ok(ownHeader.includes('aria-label="Focus panel: main 1"'), "own accessible name spells the origin");
-  // Foreign workspace: same prefix-plus-number identity in the merged
-  // header, with the worktree name and the full string as the
-  // accessible name.
+  assert.ok(!ownHeader.includes('pane-label-chip-text'), "own default member header carries no chip span");
+  assert.ok(ownHeader.includes('aria-label="Focus panel: main 1"'), "own accessible name still spells the origin");
+  // Foreign workspace: same rule, the accessible name keeps the full
+  // identity string while the visible header shows only the view span.
   assert.ok(foreignHeader, "foreign panel renders");
-  assert.ok(foreignHeader.includes('<span class="pane-label-chip-text">feat/panels 1</span>'), "foreign member header carries the worktree name plus number");
+  assert.ok(!foreignHeader.includes('pane-label-chip-text'), "foreign default member header carries no chip span");
   assert.ok(foreignHeader.includes('aria-label="Focus panel: feat/panels 1"'), "foreign accessible name spells the origin");
   // Locked rail contract: grouped members carry no rail chips; the
   // group chip is the split entry and the merged headers above carry
@@ -2661,11 +2661,12 @@ test("a slash branch name rides the prefix attribute through escapeAttr", () => 
   // together (splits only exist inside groups now).
   dropLabelOn(panes, nodes, leaves[1].paneId, 0.75, 0.5);
   panes.renderWorkspacePanes();
-  // The merged header carries the identity; the slash and spaces must
-  // survive the escapeAttr round trips on the chip text, the title,
-  // and the accessible name. (Grouped members carry no rail chip.)
+  // The merged header carries the identity in the accessible name; the
+  // slash and spaces survive the escapeAttr round trips there (default
+  // members render no visible chip span, the view span is the only
+  // visible text). (Grouped members carry no rail chip.)
   const foreignHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[1].paneId}"`)) || "";
-  assert.ok(foreignHeader.includes('<span class="pane-label-chip-text">feature/slash-branch name 2</span>'), "slash branch rides the member header label");
+  assert.ok(!foreignHeader.includes('pane-label-chip-text'), "default member renders no visible chip span");
   assert.ok(foreignHeader.includes('aria-label="Focus panel: feature/slash-branch name 2"'), "accessible name carries the full string");
   const rail = nodes.container.querySelector(".pane-label-rail");
   assert.ok(!rail.__innerHTML.includes(`data-pane-id="${leaves[1].paneId}"`), "grouped member carries no rail chip");
@@ -2878,7 +2879,7 @@ test("editor and git tabs stay unprefixed on a mixed tree", () => {
   // and git views ride the merged header as view spans (file basename /
   // git view label) with NO ws prefix, and their degraded-blob buttons
   // never touch the prefix machinery either.
-  assert.ok(foreign.includes('<span class="pane-label-chip-text">feat 2</span>'), "foreign default panel carries the prefix");
+  assert.ok(!foreign.includes('pane-label-chip-text'), "foreign default panel renders no visible chip span");
   // The degraded two-view blob renders the editor/git views as plain tab
   // buttons after the header: file basename and git view label, with NO
   // ws prefix (the prefix machinery only exists on terminal rows).
@@ -2923,9 +2924,9 @@ test("merged member headers carry the worktree on the view span for every kind",
   panes.renderWorkspacePanes();
 
   // Terminal member: the view span exists and names worktree + row
-  // label, the chip still speaks the numbered default identity.
+  // label; the default chip span is gone, the span is the whole header.
   const ownHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[0].paneId}"`)) || "";
-  assert.ok(ownHeader.includes('<span class="pane-label-chip-text">main 1</span>'), "terminal chip keeps the default identity");
+  assert.ok(!ownHeader.includes('pane-label-chip-text'), "terminal member renders no default chip span");
   assert.ok(ownHeader.includes('>main · build</span>'), "terminal view span carries worktree plus row label");
   assert.ok(ownHeader.includes('title="main · build"'), "terminal span title carries the same origin string");
 
