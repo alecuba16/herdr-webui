@@ -1590,6 +1590,12 @@ function createPaneElement(paneId) {
   strip.className = "pane-tab-strip";
   strip.setAttribute("role", "tablist");
   strip.setAttribute("aria-label", "Pane tabs");
+  // The strip drags as a split member (bare-chrome drags arm the
+  // re-position payload; children with their own drag wiring refuse
+  // the walk first in paneStripMemberDragStart).
+  strip.setAttribute("draggable", "true");
+  strip.setAttribute("ondragstart", "paneStripMemberDragStart(event)");
+  strip.setAttribute("ondragend", "paneMemberDragEnd()");
   pane.appendChild(strip);
   const content = document.createElement("div");
   content.className = "pane-content";
@@ -1698,6 +1704,12 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
         strip.className = "pane-tab-strip";
         strip.setAttribute("role", "tablist");
         strip.setAttribute("aria-label", "Pane tabs");
+        // Same strip-member drag attrs as createPaneElement: split
+        // members materialize through this factory inside group
+        // layouts.
+        strip.setAttribute("draggable", "true");
+        strip.setAttribute("ondragstart", "paneStripMemberDragStart(event)");
+        strip.setAttribute("ondragend", "paneMemberDragEnd()");
         mount.appendChild(strip);
         const content = document.createElement("div");
         content.className = "pane-content";
@@ -1765,6 +1777,33 @@ function ensureDivider(element, dividerFor, kind) {
   return divider;
 }
 
+// Strip-wide member dragstart: inside the visible split the whole
+// member strip arms the re-position drag, not just the merged header
+// button. The listener rides #workspacePanes (one wiring pass), so the
+// STRIP is resolved from the event target chain, never currentTarget.
+// Children that own their own drag refuse the walk first: pane tabs
+// drag to reorder and the merged header button arms the same member
+// payload itself. The same visible-group gate as the header keeps
+// flats and parked groups inert.
+function paneStripMemberDragStart(event) {
+  const drag = activeDragKind();
+  if (drag) return;
+  let strip = event && event.target;
+  while (strip && !hasClass(strip, "pane-tab-strip")) {
+    // Pane tabs and the merged header button own their own drags.
+    if (hasClass(strip, "pane-tab") || hasClass(strip, "pane-member-header")) return;
+    // The rename input replaces the header inside the strip; a text
+    // selection drag from it must never arm the member payload.
+    if (strip.tagName === "INPUT") return;
+    strip = strip.parentElement;
+  }
+  if (!strip) return;
+  const pane = strip.parentElement;
+  const paneId = pane && pane.dataset ? pane.dataset.paneId : null;
+  if (!paneId) return;
+  paneMemberDragStart(event, paneId);
+}
+
 // One-time drag wiring on the collector container for the label drag
 // (v4: the chip drag is gone; the tab drag owns the whole payload).
 // Signature-gated so every render pass costs one boolean check. The vm
@@ -1774,6 +1813,7 @@ function wirePanelChipDrag(container) {
   if (!container || container.__herdrPanelDragWired) return;
   if (typeof container.addEventListener !== "function") return;
   container.__herdrPanelDragWired = true;
+  container.addEventListener("dragstart", paneStripMemberDragStart);
   container.addEventListener("dragenter", (event) => {
     // Chrome only fires drop when the current target's last dragenter or
     // dragover was canceled. A fast release right after crossing an element
@@ -5908,6 +5948,7 @@ window.HerdrWorkspacePanes = {
   memberHeaderKey,
   paneMemberDragStart,
   paneMemberDragEnd,
+  paneStripMemberDragStart,
   paneRailMemberDrop,
   paneContainerTabDragOver,
   paneContainerTabDrop,

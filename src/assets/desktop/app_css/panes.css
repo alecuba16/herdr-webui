@@ -3,7 +3,13 @@
    sizes, and .pane-divider is the draggable gap between them. */
 
 /* ---- center panes ---- */
+/* The JS-positioned drop preview (.panel-drop-preview below), the
+   a11y live region, and rescued (parked) aux surfaces are absolute and
+   anchor here. Without this rule the containing block is main.main (which
+   includes the location bar), so coordinates computed against this
+   container's rect painted the preview a location-bar-height too low. */
 .workspace-panes {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;

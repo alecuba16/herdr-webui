@@ -3844,6 +3844,16 @@ describe("app bundle load", () => {
     match(panesCss, /\.pane-tab-label\[data-ws-prefix\]::after \{[^}]*content: "";[^}]*flex: 0 0 auto;[^}]*\}/);
   });
 
+  it("anchors the JS-positioned drop preview to the panes collector", () => {
+    // positionPanelDropPreview computes top/left against #workspacePanes's
+    // rect, so the absolute preview needs the collector itself as the
+    // containing block. Without the position rule the nearest positioned
+    // ancestor is main.main, which includes the location bar, and the
+    // square paints a location-bar-height below the quadrant it names.
+    const panesCss = readFileSync(new URL("./desktop/app_css/panes.css", import.meta.url), "utf8");
+    match(panesCss, /\.workspace-panes \{[^}]*position: relative;[^}]*\}/);
+  });
+
   it("hover titles spell the workspace of foreign panels", () => {
     const ctx = context();
     runSource(ctx);

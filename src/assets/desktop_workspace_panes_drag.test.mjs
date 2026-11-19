@@ -1225,6 +1225,90 @@ test("member chip html carries the drag wiring only in a group view", () => {
   assert.ok(!chipHtmlP1.includes("pane-panel-chip"), "a standalone panel renders no chip");
 });
 
+// ---- 7c. strip-wide member drag (whole header bar drags the member) ----
+// The merged header button stays the primary handle, but the rest of
+// the member strip arms the same re-position drag too. Children with
+// their own drag wiring (pane tabs, the header button, the rename
+// input) never ride the strip drag.
+
+test("bare strip dragstart arms the member drag for a visible-group member", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const p2El = findPaneEl(document, "p2");
+  const strip = p2El.querySelector(".pane-tab-strip");
+  assert.ok(strip, "the member strip rendered");
+  const event = dragEvent(strip, 0, 0);
+  panes.paneStripMemberDragStart(event);
+  assertDragKind(ctx.paneMemberDragKind(), "member", "p2", "bare strip drag arms the member state");
+  assert.equal(event.dataTransfer.getData("text/herdr-pane-member"), "p2", "payload carries the strip's paneId");
+  assert.equal(event.dataTransfer.effectAllowed, "move", "payload allows move");
+  panes.paneMemberDragEnd();
+  assert.equal(ctx.paneMemberDragKind(), null, "dragend clears the strip drag state");
+});
+
+test("strip dragstart refuses children that own their own drags", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const p2El = findPaneEl(document, "p2");
+  const strip = p2El.querySelector(".pane-tab-strip");
+  // Pane tab: drags as a tab (reorder), never as the member.
+  const tab = makeNode("tab", "pane-tab");
+  strip.appendChild(tab);
+  panes.paneStripMemberDragStart(dragEvent(tab, 0, 0));
+  assert.equal(ctx.paneMemberDragKind(), null, "a pane-tab target never arms the member drag");
+  // Merged header button: arms the member payload through its own
+  // wiring; the strip listener must not double-arm or overtake it.
+  const header = makeNode("header", "pane-member-header pane-panel-chip");
+  strip.appendChild(header);
+  panes.paneStripMemberDragStart(dragEvent(header, 0, 0));
+  assert.equal(ctx.paneMemberDragKind(), null, "the header's own dragstart owns the payload, not the strip pass");
+  // Rename input: a text-selection drag from the input never arms.
+  const input = makeNode("rename", "pane-member-header-input");
+  input.tagName = "INPUT";
+  strip.appendChild(input);
+  panes.paneStripMemberDragStart(dragEvent(input, 0, 0));
+  assert.equal(ctx.paneMemberDragKind(), null, "a rename-input drag never arms the member drag");
+});
+
+test("strip dragstart refuses a flat panel's strip and non-strip targets", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  // Flat panel (no visible group): the strip drag must stay inert.
+  const p1El = findPaneEl(document, "p1");
+  const strip = p1El.querySelector(".pane-tab-strip");
+  panes.paneStripMemberDragStart(dragEvent(strip, 0, 0));
+  assert.equal(ctx.paneMemberDragKind(), null, "a flat strip never arms the member drag");
+  // A drag started outside any strip (pane content) never arms.
+  panes.paneStripMemberDragStart(dragEvent(p1El, 0, 0));
+  assert.equal(ctx.paneMemberDragKind(), null, "a pane-content target never arms the member drag");
+});
+
+test("pane shells carry the strip drag wiring at creation", () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  // Both factories (flat createPaneElement and the split reconcile
+  // mount) stamp the strip drag attrs, so every strip can arm.
+  for (const paneId of ["p2", "p3"]) {
+    const paneEl = findPaneEl(document, paneId);
+    const strip = paneEl.querySelector(".pane-tab-strip");
+    assert.ok(strip, `strip rendered for ${paneId}`);
+    assert.equal(strip.getAttribute("draggable"), "true", `${paneId} strip is draggable`);
+    assert.ok(String(strip.getAttribute("ondragstart") || "").includes("paneStripMemberDragStart"), `${paneId} strip wires the dragstart`);
+    assert.ok(String(strip.getAttribute("ondragend") || "").includes("paneMemberDragEnd"), `${paneId} strip wires the dragend`);
+  }
+});
+
 // ---- 8. storage blob shape -------------------------------------------------
 
 test("saved blob holds the v2 session entry and strips runtime markers", () => {
