@@ -2460,6 +2460,31 @@ function paneMemberHeaderLabel(leaf) {
   return number ? `${wsName} ${number}` : wsName;
 }
 
+// The origin a member header speaks: the view's own workspace when the
+// view carries one (terminal rows own a workspace_id), else the leaf's
+// binding, else the selected workspace. Same precedence the strip
+// prefixes use (row first, state.ws last), so the two never disagree.
+function paneMemberWorktreeName(leaf, tabId) {
+  let wsId = leafWorkspaceId(leaf) || state.ws;
+  if (tabId && !isEditorTab(tabId) && !isGitTab(tabId)) {
+    const row = paneTerminalTabById(tabId);
+    if (row && row.workspace_id) wsId = row.workspace_id;
+  }
+  const workspace = wsId ? (state.workspaces || []).find((w) => w.workspace_id === wsId) : null;
+  return workspace
+    ? ((typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || wsId)
+    : (wsId || "panel");
+}
+
+// The view span of a merged member header: the worktree and the view
+// in one line, "wt · view". The title carries the full detail (path,
+// refs, row label) because the span ellipsizes.
+function paneMemberViewSpan(origin, fullTitle, viewLabel) {
+  const title = origin ? `${origin} · ${fullTitle}` : fullTitle;
+  const text = origin ? `${origin} · ${viewLabel}` : String(viewLabel);
+  return `<span class="pane-member-view" title="${escapeAttr(title)}">${escapeHtml(text)}</span>`;
+}
+
 // The merged member header (locked model): ONE element per split
 // member. The member identity (label + accent) and its single view
 // ride one button: click focuses the member (the view is the panel's
@@ -2473,14 +2498,23 @@ function paneMergedHeaderHtml(leaf, tabs, activeTab) {
   const dragAttrs = ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeAttr(encodedPane)}')" ondragend="paneMemberDragEnd()"`;
   const views = tabs || [];
   const single = views.length === 1 ? views[0] : null;
-  // The view label rides the header only when the member label does
-  // not already name it: terminal numbers are IN the member label
-  // (wsName + number), so only editor and git views append theirs.
+  // The worktree rides the view span for every kind (B): "wt · view"
+  // spells the member's origin even when a custom chip label would
+  // otherwise hide it, and the span itself is what names the view. The
+  // chip keeps pure identity (set name or wt + number) and never
+  // duplicates the origin: one place says where, one says what.
   let viewHtml = "";
-  if (single && isEditorTab(single)) {
-    viewHtml = `<span class="pane-member-view" title="${escapeAttr(editorTabPath(single))}">${escapeHtml(editorTabLabel(editorTabPath(single)))}</span>`;
-  } else if (single && isGitTab(single)) {
-    viewHtml = `<span class="pane-member-view" title="${escapeAttr(gitTabTitle(gitTabViewKey(single)))}">${escapeHtml(gitTabLabel(gitTabViewKey(single)))}</span>`;
+  if (single) {
+    const origin = paneMemberWorktreeName(leaf, single);
+    if (isEditorTab(single)) {
+      viewHtml = paneMemberViewSpan(origin, editorTabPath(single), editorTabLabel(editorTabPath(single)));
+    } else if (isGitTab(single)) {
+      viewHtml = paneMemberViewSpan(origin, gitTabTitle(gitTabViewKey(single)), gitTabLabel(gitTabViewKey(single)));
+    } else {
+      const row = paneTerminalTabById(single);
+      const rowLabel = row ? String(row.label || "").trim() || `tab ${row.number || ""}`.trim() : "";
+      if (rowLabel) viewHtml = paneMemberViewSpan(origin, rowLabel, rowLabel);
+    }
   }
   const header =
     `<button class="pane-member-header pane-panel-chip" role="tab" aria-label="Focus panel: ${escapeAttr(label)}" title="Focus panel: ${escapeAttr(label)} (double-click or press F2 to rename)" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs}` +

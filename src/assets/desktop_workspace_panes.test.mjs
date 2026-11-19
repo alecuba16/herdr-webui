@@ -2849,6 +2849,70 @@ test("editor and git tabs stay unprefixed on a mixed tree", () => {
   assert.ok(!editorAndGit.includes("data-ws-prefix"), "the editor/git strip carries no prefix attribute");
 });
 
+// The merged header's view span carries the worktree for EVERY kind
+// ("wt · view"): the terminal member used to render no span at all
+// (its identity folded into the chip label), and a renamed chip would
+// then hide the origin entirely. The span, not the chip, owns the
+// origin: terminal rows speak their row label, editor and git keep
+// their basenames, and the chip stays pure identity (set name or
+// wt + number).
+test("merged member headers carry the worktree on the view span for every kind", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.state.workspaces = [
+    { workspace_id: "ws-1", label: "main" },
+    { workspace_id: "ws-2", label: "feat" },
+  ];
+  ctx.worktreeDisplayName = (w) => w.label;
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1", label: "build", number: 1 }];
+  ctx.state.tabsById = {
+    tab_2: { tab_id: "tab_2", workspace_id: "ws-1", label: "build", number: 1 },
+  };
+  panes.renderWorkspacePanes();
+  // Second member: mint an empty panel (the editor/git view rides it
+  // through the same client-owned ids paneEnsureEditorTab uses).
+  mintSecondPanel(panes);
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  // One visible view: group both panels so both strips render
+  // (splits only exist inside groups now).
+  dropLabelOn(panes, nodes, leaves[1].paneId, 0.75, 0.5);
+  panes.renderWorkspacePanes();
+
+  // Terminal member: the view span exists and names worktree + row
+  // label, the chip still speaks the numbered default identity.
+  const ownHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${leaves[0].paneId}"`)) || "";
+  assert.ok(ownHeader.includes('<span class="pane-label-chip-text">main 1</span>'), "terminal chip keeps the default identity");
+  assert.ok(ownHeader.includes('>main · build</span>'), "terminal view span carries worktree plus row label");
+  assert.ok(ownHeader.includes('title="main · build"'), "terminal span title carries the same origin string");
+
+  // Editor member: the span grows the worktree before the basename,
+  // title keeps the full path after the origin.
+  const editorLeaf = leaves[1];
+  editorLeaf.tabs = ["editor:src/feature.py"];
+  editorLeaf.active = "editor:src/feature.py";
+  panes.renderWorkspacePanes();
+  const editorHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${editorLeaf.paneId}"`)) || "";
+  assert.ok(editorHeader.includes('>main · feature.py</span>'), "editor view span carries worktree plus basename");
+  assert.ok(editorHeader.includes('title="main · src/feature.py"'), "editor span title keeps the origin plus full path");
+
+  // Git member: same shape with the git view label.
+  editorLeaf.tabs = [panes.gitTabId("changes")];
+  editorLeaf.active = panes.gitTabId("changes");
+  panes.renderWorkspacePanes();
+  const gitHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${editorLeaf.paneId}"`)) || "";
+  assert.ok(gitHeader.includes('>main · gitchanges</span>'), "git view span carries worktree plus view label");
+
+  // A renamed chip stays pure identity: the origin still rides the
+  // span, never the chip text.
+  const renamed = leaves[0];
+  renamed.name = "deploy-check";
+  panes.renderWorkspacePanes();
+  const renamedHeader = stripHtmls(nodes).find((html) => html.includes(`data-pane-id="${renamed.paneId}"`)) || "";
+  assert.ok(renamedHeader.includes('<span class="pane-label-chip-text">deploy-check</span>'), "renamed chip keeps the custom name alone");
+  assert.ok(renamedHeader.includes('>main · build</span>'), "origin survives the rename on the span");
+});
+
 // Rename input wiring lives in app_load's suite (inputAttrs ships with
 // shared/core.js, which only that bundle loads). Here the seed is pinned
 // at the function level: a default panel seeds "" and a custom panel

@@ -1060,10 +1060,12 @@
 
 /* The accent slab stays readable inside the fused header: the chip
    base sets border-left + background, but the tab-row height is
-   taller than the old chip line, so the padding balances. */
+   taller than the old chip line, so the padding balances. The view
+   span also carries the worktree ("wt · view"), so the cap gives both
+   spans room before the ellipsis starts eating the origin. */
 .pane-member-header.pane-panel-chip {
   padding: 0 10px 0 6px;
-  max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 74px);
+  max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 140px);
 }
 
 /* Close inside the merged header keeps the tab-close affordance; the
