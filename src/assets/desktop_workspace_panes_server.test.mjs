@@ -271,6 +271,35 @@ function makeServerApi(startingEntry) {
       } else if (op.op === "panel.create") {
         const paneId = `p${entry.panels.length + 1}`;
         entry.panels.push({ kind: "pane", paneId, tabs: [], active: null, wsId: op.wsId || null, groupId: null, name: null });
+      } else if (op.op === "panel.update") {
+        // Server contract: the push overwrites the named panel's
+        // tabs/active/ws binding (terminal ids are client-pushed
+        // truth; the server stores the arrays verbatim).
+        const panel = entry.panels.find((p) => p.paneId === op.paneId);
+        if (panel) {
+          panel.tabs = Array.isArray(op.tabs) ? [...op.tabs] : [];
+          panel.active = op.active || (panel.tabs[0] != null ? panel.tabs[0] : null);
+          if (op.wsId != null) panel.wsId = op.wsId;
+        }
+      } else if (op.op === "group.grow") {
+        // Server contract: the dragged panel must be ungrouped, the
+        // group must be the visible subject, the member list gains the
+        // panel, and layout_with_panel_at seats it beside the host.
+        const dragged = entry.panels.find((p) => p.paneId === op.paneId);
+        const group = entry.groups.find((g) => g.groupId === op.groupId);
+        if (!dragged || !group || dragged.groupId) return { ...entry, session: "work" };
+        if (!entry.visible || entry.visible.type !== "group" || entry.visible.id !== op.groupId) {
+          return { ...entry, session: "work" };
+        }
+        dragged.groupId = group.groupId;
+        group.memberIds.push(op.paneId);
+        group.focusedPaneId = op.paneId;
+        const ids = Array.isArray(group.layout && group.layout.children)
+          ? group.layout.children.slice()
+          : [];
+        const at = op.hostPaneId && ids.includes(op.hostPaneId) ? ids.indexOf(op.hostPaneId) : ids.length;
+        ids.splice(op.draggedFirst ? at : at + 1, 0, op.paneId);
+        group.layout = { kind: op.axis || "row", sizes: ids.map(() => 1), children: ids };
       } else if (op.op === "panel.close") {
         // Server contract (real close): the splice drops the panel and
         // its tabs; no migration. The client drains each view through
@@ -1135,4 +1164,80 @@ test("close during panel.close flight pushes no panel.update for the sibling", a
   assert.equal(survivor.tabs.length, 0, "survivor keeps only its own views");
   assert.equal(after.groups.length, 0, "group dissolved under two members");
   assert.equal(after.visible.id, "p3", "the survivor takes the subject");
+});
+
+test("a strip drop onto a busy server member grows the group server-side", async () => {
+  const { nodes, document } = buildDom();
+  // Start from a two-member visible group: p1 and p2 grouped, p3 flat
+  // holding t3. Dropping t3 onto p1's busy strip must mint a fresh
+  // panel and grow the group through panel.create + group.grow ops,
+  // never stack t3 into p1.
+  const grouped = serverEntry();
+  grouped.panels.push({ kind: "pane", paneId: "p3", tabs: ["t3"], active: "t3", wsId: "ws-1", groupId: null, name: null });
+  grouped.groups.push({
+    groupId: "g1",
+    name: null,
+    memberIds: ["p1", "p2"],
+    layout: { kind: "row", sizes: [1, 1], children: ["p1", "p2"] },
+    focusedPaneId: "p1",
+  });
+  grouped.panels[0].groupId = "g1";
+  grouped.panels[1].groupId = "g1";
+  grouped.visible = { type: "group", id: "g1" };
+  const script = makeServerApi(grouped);
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+    { tab_id: "t3", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  ctx.HerdrWorkspacePanes.renderWorkspacePanes();
+  // Find p1's strip under the painted split.
+  const container = document.getElementById("workspacePanes");
+  const walk = (n) => {
+    for (const child of n.children || []) {
+      if (child.dataset && child.dataset.paneId === "p1") return child;
+      const found = walk(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const pane1 = walk(container);
+  assert.ok(pane1, "p1 pane painted in the split");
+  const strip = pane1.querySelector(".pane-tab-strip");
+  assert.ok(strip, "p1 strip painted");
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "t3" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  ctx.HerdrWorkspacePanes.paneStripDrop({
+    target: strip,
+    clientX: 4,
+    clientY: 4,
+    preventDefault() {},
+    dataTransfer: { _data: {}, setData(k, v) { this._data[k] = v; }, getData(k) { return this._data[k] || ""; } },
+  });
+  // The split engine is async (panel.create then group.grow awaits):
+  // settle the microtask chain.
+  for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  const ops = script.calls
+    .filter((c) => c.url === "/api/workspace-panes/op")
+    .map((c) => JSON.parse(c.opt.body));
+  assert.ok(ops.some((op) => op.op === "panel.create"), "panel.create minted the fresh member");
+  const grow = ops.find((op) => op.op === "group.grow");
+  assert.ok(grow, "group.grow posted");
+  assert.equal(grow.groupId, "g1");
+  assert.equal(grow.hostPaneId, "p1", "the busy target hosts the seat");
+  assert.equal(grow.axis, "row");
+  assert.equal(grow.draggedFirst, false);
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  const p1 = entry.panels.find((p) => p.paneId === "p1");
+  // vm-realm arrays fail the host deepStrictEqual: spread before compare.
+  assert.deepEqual([...p1.tabs], ["t1"], "the busy member never stacked a second view");
+  const group = entry.groups.find((g) => g.groupId === "g1");
+  assert.ok(group.memberIds.includes("p4"), "the fresh member joined the group");
+  const fresh = entry.panels.find((p) => p.paneId === "p4");
+  assert.ok(fresh, "the server minted the fresh member");
+  assert.deepEqual([...fresh.tabs], ["t3"], "the dropped view landed in the fresh member");
+  const p3 = entry.panels.find((p) => p.paneId === "p3");
+  assert.deepEqual([...p3.tabs], [], "the source leaf emptied");
 });

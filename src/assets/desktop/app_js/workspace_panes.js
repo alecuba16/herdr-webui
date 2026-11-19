@@ -4269,11 +4269,22 @@ function paneStripDrop(event) {
   // pure tree surgery. A same-pane drop is a reorder (renders itself);
   // a cross-pane strip drop arms its emptied source BEFORE the single
   // render so the sweep folds it in this same paint, not the next one.
+  // One view per flat panel (strip-drop edition): a drop into a BUSY
+  // member never stacks. The dropped id grows the split through the
+  // same engine the creators use, so the invariant holds here too.
+  // The identity rule only rejects the no-op self-drop (the id would
+  // move into the leaf that already holds it), not the legitimate
+  // arrival into a busy leaf.
   const rootBeforeMove = paneRootFor();
   const source = tabId ? paneForTab(rootBeforeMove, tabId) : null;
   const dropIndex = Number.isFinite(index) ? index : null;
   if (!source || source.paneId === paneId) {
     movePaneTabTo(tabId, paneId, dropIndex);
+    return;
+  }
+  const targetLeaf = paneId ? paneForPaneId(rootBeforeMove, paneId) : null;
+  if (targetLeaf && leafBusyViews(targetLeaf)) {
+    void movePaneTabViaSplit(tabId, targetLeaf);
     return;
   }
   // Decay fold stamp: the group shape before the move empties the
@@ -4367,6 +4378,69 @@ function movePaneTabTo(tabId, targetPaneId, index, opts) {
     // existing per-tab container into its slot (D7.4).
   }
   return true;
+}
+
+// One view per flat panel: a strip drop aiming at a BUSY leaf does not
+// stack. The dropped id leaves its source leaf, then grows the split
+// beside the busy target through the shared engine (parity with every
+// creator: paneEnsureEditorTab, the sync homing split, landTabIntoLeaf).
+// The busy target keeps every view it holds; the dropped id lands in a
+// fresh member and the group stays one-view-per-member.
+// Splice-then-split, never split-then-splice: the split engine renders
+// its own settle tail, so the id must leave its source BEFORE that
+// paint; landing it afterwards would keep the old owner leaf rendering
+// a view that no longer belongs to it, and a demoted local twin's
+// settle would render while the id still sits in its old home.
+// The engine answers REJECTED (server truth; the resync painted), null
+// (announced; the id already left, both halves stay live in place), or
+// the fresh member. null takes the no-migration path below: every view
+// must survive somewhere and no leaf ends stacked.
+async function movePaneTabViaSplit(tabId, targetLeaf) {
+  const root = paneRootFor();
+  const source = paneForTab(root, tabId);
+  if (!source || source === targetLeaf) return;
+  const at = source.tabs.indexOf(tabId);
+  if (at < 0) return;
+  source.autoClosePre = autoClosePreStateFor(root, source);
+  source.tabs.splice(at, 1);
+  source.active = source.tabs[0] || null;
+  // Server truth must learn the splice BEFORE any split op response
+  // adopts an entry: the adopted entry would carry the id in its old
+  // home and the settle's sync pass would hand it right back (one-owner
+  // rule, first owner wins). Same fire-and-forget push movePaneTabTo
+  // uses; a lost push re-derives on the next sync.
+  if (panesMode === "server") {
+    void panesServerOp({
+      op: "panel.update",
+      paneId: source.paneId,
+      tabs: (source.tabs || []).slice(),
+      active: source.active || undefined,
+      wsId: leafWorkspaceId(source) || undefined,
+    });
+  }
+  const fresh = await splitLeafWithFreshMember(targetLeaf, (candidate) => {
+    if (candidate === source) return false;
+    return landTabIntoLeaf(candidate, tabId);
+  });
+  if (fresh === PANES_OP_REJECTED) return;
+  if (fresh) {
+    // The settle already rendered and saved; the fresh member's delta
+    // (the landed view) reaches the server on the next sync pass push,
+    // same as every creator's split.
+    return;
+  }
+  // Split failed (announced): never lose the view. The id returns to
+  // its source at its old slot, the arm the splice earned stands (the
+  // source was emptied by this gesture), and no push runs: the leaves
+  // hold the same ids as before.
+  const back = paneForTab(paneRootFor(), tabId) ? null : paneForPaneId(paneRootFor(), source.paneId);
+  if (!back) return;
+  const backAt = Math.min(at, back.tabs.length);
+  back.tabs.splice(backAt, 0, tabId);
+  back.active = tabId;
+  armLeafAutoClose(back);
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
 }
 
 // Strips re-render on state changes; wire the drag listeners once per
@@ -5911,6 +5985,10 @@ window.HerdrWorkspacePanes = {
   adoptServerEntry: adoptServerPanesEntry,
   panesMode: () => panesMode,
   setPanesModeForTests: (mode) => { panesMode = mode === "server" ? "server" : "local"; },
+  // Harness leaves hand-pushed by test seeds bypass the mint, so their
+  // ids never reach usedPaneIds and a later mint can collide. Tests
+  // register the seeded ids through the same set the mint guards on.
+  registerPaneIdForTests: (paneId) => { if (paneId) usedPaneIds.add(String(paneId)); },
   // Op-layer unit hook: tests drive the rejection contract (a refused
   // intent must resync, never run the local twin) without a DOM gesture.
   panesOpWithFallbackForTests: (opPayload, localMutation, opts) => panesOpWithFallback(opPayload, localMutation, opts),

@@ -52,6 +52,12 @@
 - The dormant move-tab command is deleted outright (review-round
   hygiene): its chord was gone and nothing called it; the two tests
   that pinned its split rule are gone with it.
+- The strip-tab drop honors the one-view rule now: dropping a tab on
+  a busy member's strip grows the split through the shared engine
+  (fresh member beside the target, dropped view lands there, server
+  mode pushes the emptied source's delta before the split ops so no
+  response resurrects it), instead of stacking a second view into the
+  busy member.
 - Destructive file ops (write, rename, delete) refuse any target that
   escapes the request root, whatever the cwd: an empty or whitespace
   cwd roots them at the canonical home directory (macOS alias forms

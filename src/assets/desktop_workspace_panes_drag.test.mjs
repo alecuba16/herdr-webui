@@ -219,6 +219,11 @@ function seedPanels(ctx, count) {
   ctx.state.tabs = [];
   for (let i = 1; i <= count; i += 1) ctx.state.tabs.push({ tab_id: `tab_${i}`, workspace_id: ctx.state.ws });
   ctx.state.tab = "tab_1";
+  // Hand-pushed leaves bypass the mint, so their ids never registered
+  // in usedPaneIds: the next mint would collide (seedPanels pushes p2/p3
+  // while the counter still sits at p1, a fresh member would mint a
+  // SECOND p2). Register the seeded ids the way the mint does.
+  for (const leaf of leaves) panes.registerPaneIdForTests(leaf.paneId);
   panes.renderWorkspacePanes();
   return leaves;
 }
@@ -1238,4 +1243,113 @@ test("saved blob holds the v2 session entry and strips runtime markers", () => {
   const leaf = blob.__session__.panels[0];
   assert.equal(leaf.autoCloseArmed, undefined, "arms never persist");
   assert.equal(leaf.autoClosePre, undefined, "pre markers never persist");
+});
+
+// ---- 9. strip drops into a busy leaf split, never stack -------------------
+
+// The loader's setTimeout stub fires nothing, so paneStripDrop's async
+// split path needs a real timer flush: the engine is async (server op
+// awaits) and the local twin's settle renders from a microtask chain.
+async function flushSplitEngine(ctx, rounds = 8) {
+  const saved = ctx.setTimeout;
+  ctx.setTimeout = (fn) => { fn(); return 0; };
+  try {
+    for (let i = 0; i < rounds; i++) await Promise.resolve();
+  } finally {
+    ctx.setTimeout = saved;
+  }
+}
+
+// Tab drop event whose target chain climbs to the host pane's strip.
+function stripDropEvent(paneEl) {
+  const strip = paneEl.querySelector(".pane-tab-strip");
+  return {
+    target: strip,
+    clientX: 4,
+    clientY: 4,
+    preventDefault() {},
+    dataTransfer: { _data: {}, setData(k, v) { this._data[k] = v; }, getData(k) { return this._data[k] || ""; } },
+  };
+}
+
+test("a tab dropped on a BUSY flat member's strip splits instead of stacking", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  // p1 holds tab_1; drop tab_2 onto p1's strip: p1 is busy, the drop
+  // must grow a split, not push a second view into p1.
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_2" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  const p1El = findPaneEl(document, "p1");
+  panes.paneStripDrop(stripDropEvent(p1El));
+  await flushSplitEngine(ctx);
+  const root = panes.paneRoot();
+  const p1 = root.panels.find((l) => l.paneId === "p1");
+  const p2 = root.panels.find((l) => l.paneId === "p2");
+  assert.deepEqual([...p1.tabs], ["tab_1"], "the busy member keeps exactly its own view");
+  assert.equal(root.groups.length, 1, "the drop minted a group");
+  const group = root.groups[0];
+  assert.deepEqual([...group.memberIds], ["p1", "p4"], "the fresh member seats beside the busy target");
+  assert.equal(p2.tabs.length, 0, "the source leaf emptied");
+  assert.equal(p2.active, null, "source active pointer healed");
+  const fresh = root.panels.find((l) => l.paneId === "p4");
+  assert.ok(fresh, "the split minted the fresh member");
+  assert.deepEqual([...fresh.tabs], ["tab_2"], "the dropped view lands in the fresh member");
+  assert.equal(fresh.active, "tab_2", "the fresh member activates the landed view");
+  assert.equal(root.visible.type, "group", "the split takes the subject");
+  assert.equal(panes.activePane().paneId, "p4", "focus lands on the fresh member");
+});
+
+test("a tab dropped on a BUSY group member's strip grows the group", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 4);
+  const panes = ctx.HerdrWorkspacePanes;
+  // p2 and p3 form a visible group; p1 holds tab_1 outside it.
+  buildGroup(ctx, ["p2", "p3"], { kind: "row", sizes: [1, 1], children: ["p2", "p3"] });
+  const groupBefore = panes.paneRoot().groups[0];
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_1" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  const p2El = findPaneEl(document, "p2");
+  panes.paneStripDrop(stripDropEvent(p2El));
+  await flushSplitEngine(ctx);
+  const root = panes.paneRoot();
+  const p1 = root.panels.find((l) => l.paneId === "p1");
+  const p2 = root.panels.find((l) => l.paneId === "p2");
+  assert.deepEqual([...p1.tabs], [], "the source leaf emptied");
+  assert.deepEqual([...p2.tabs], ["tab_2"], "the busy member keeps its view");
+  assert.equal(root.groups.length, 1, "no second group appeared");
+  const group = root.groups[0];
+  assert.equal(group.groupId, groupBefore.groupId, "the existing group grew");
+  assert.ok(group.memberIds.includes("p5"), "the fresh member joined the group");
+  assert.equal(group.memberIds.length, 3, "the group holds three members now");
+  const fresh = root.panels.find((l) => l.paneId === "p5");
+  assert.ok(fresh, "the split minted the fresh member");
+  assert.deepEqual([...fresh.tabs], ["tab_1"], "the dropped view lands in the fresh member");
+  assert.equal(fresh.groupId, group.groupId, "the fresh member is a group member");
+});
+
+test("a tab dropped on a FREE member's strip still moves in place", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  seedPanels(ctx, 3);
+  const panes = ctx.HerdrWorkspacePanes;
+  ctx.paneTabDragStart({ target: { dataset: { tabId: "tab_2" } }, dataTransfer: { setData() {}, effectAllowed: "" } });
+  const p1El = findPaneEl(document, "p1");
+  // Empty p1 first: a free target keeps the plain cross-leaf move.
+  const root0 = panes.paneRoot();
+  const leaf1 = root0.panels.find((l) => l.paneId === "p1");
+  leaf1.tabs = [];
+  leaf1.active = null;
+  panes.paneStripDrop(stripDropEvent(p1El));
+  await flushSplitEngine(ctx);
+  const root = panes.paneRoot();
+  const p1 = root.panels.find((l) => l.paneId === "p1");
+  const p2 = root.panels.find((l) => l.paneId === "p2");
+  assert.deepEqual([...p1.tabs], ["tab_2"], "the free target received the tab in place");
+  assert.equal(p1.active, "tab_2", "the moved tab activates");
+  // Collector contract: the gesture emptied the source, the move armed
+  // it, and the render's sweep folds it. The tree ends two panels.
+  assert.equal(p2, undefined, "the emptied source folded on the move");
+  assert.equal(root.groups.length, 0, "a free target never splits");
+  assert.equal(root.panels.length, 2, "two panels remain: target and bystander");
 });
