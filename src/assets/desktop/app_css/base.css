@@ -248,6 +248,9 @@ body.light {
   .sidebar-preview {
     transition: none !important;
   }
+  .sidebar-toggle {
+    transition: none !important;
+  }
   #app.sidebar-resizing {
     transition: none !important;
   }

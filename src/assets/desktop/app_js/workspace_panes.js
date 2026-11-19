@@ -43,6 +43,14 @@ let lastSyncedRouteTab;
 // any render ran, the editor pointer is the freshest signal.
 let sawExplicitActive;
 
+// Handler-payload escapers. escapeAttr covers attribute values; the
+// inline onclick payloads below interpolate ids and file paths inside
+// single-quoted JS strings, where HTML entities decode before the
+// handler compiles, so those payloads need the JS-string escaper instead.
+const escapeHandlerArg =
+  (typeof HerdrAppHelpers !== "undefined" && HerdrAppHelpers.escapeJsSingleQuoted)
+  || ((v) => String(v == null ? "" : v).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+
 function editorTabId(path) {
   return `${EDITOR_TAB_PREFIX}${path}`;
 }
@@ -160,7 +168,7 @@ function paneGitMountId(viewKey) {
 function paneGitTabButtonHtml(tabId, isActive) {
   const viewKey = gitTabViewKey(tabId);
   const label = gitTabLabel(viewKey);
-  return `<button class="pane-tab git ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="git" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(gitTabTitle(viewKey))}" onclick="activatePaneTab('${escapeAttr(tabId)}')" onauxclick="paneTabAuxClick(event,'git','${escapeAttr(viewKey)}')"><span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close Git view" aria-label="Close Git view" onclick="event.stopPropagation();closeGitTab('${escapeAttr(viewKey)}')">✕</span></button>`;
+  return `<button class="pane-tab git ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="git" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(gitTabTitle(viewKey))}" onclick="activatePaneTab('${escapeHandlerArg(tabId)}')" onauxclick="paneTabAuxClick(event,'git','${escapeHandlerArg(viewKey)}')"><span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close Git view" aria-label="Close Git view" onclick="event.stopPropagation();closeGitTab('${escapeHandlerArg(viewKey)}')">✕</span></button>`;
 }
 
 function paneEditorMountId(path) {
@@ -182,7 +190,7 @@ function paneEditorTabButtonHtml(tabId, isActive) {
   const dirty = !!(file && file.dirty && file.editing);
   const label = editorTabLabel(path);
   const encoded = encodeURIComponent(path);
-  return `<button class="pane-tab editor ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="editor" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(path)}" onclick="activatePaneTab('${escapeAttr(tabId)}')" onauxclick="paneTabAuxClick(event,'editor','${escapeAttr(encoded)}')">${dirty ? '<span class="pane-tab-dirty" title="Modified" aria-hidden="true">●</span>' : ""}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close file" aria-label="Close file" onclick="event.stopPropagation();closeEditorTab('${escapeAttr(encoded)}')">✕</span></button>`;
+  return `<button class="pane-tab editor ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="editor" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(path)}" onclick="activatePaneTab('${escapeHandlerArg(tabId)}')" onauxclick="paneTabAuxClick(event,'editor','${escapeHandlerArg(encoded)}')">${dirty ? '<span class="pane-tab-dirty" title="Modified" aria-hidden="true">●</span>' : ""}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close file" aria-label="Close file" onclick="event.stopPropagation();closeEditorTab('${escapeHandlerArg(encoded)}')">✕</span></button>`;
 }
 
 // Session-global tree store (D1): ONE tree per session whose leaves host
@@ -466,6 +474,13 @@ function leafWorkspaceId(leaf) {
     if (ws) return ws;
   }
   return null;
+}
+
+// Cheap identity of what panel.update carries (ws binding + tab list +
+// active pointer), as one string. syncTerminalTabsIntoTree snapshots it
+// per leaf at entry and pushes only leaves whose print moved.
+function leafSyncFingerprint(leaf) {
+  return `${leafWsId(leaf) || ""}|${(leaf.tabs || []).join(",")}|${leaf.active || ""}`;
 }
 
 function leavesBoundTo(entry, wsId) {
@@ -908,6 +923,16 @@ async function panesServerOp(op, opts) {
         return PANES_OP_REJECTED;
       }
     }
+    // Both tries failed on transport/5xx. Demote on the SERVER's last
+    // known entry, not on the possibly-stale local one: the first POST
+    // may have landed after all (a lost response), and running the
+    // local twin over that state would fork the session. A successful
+    // resync proves the server is reachable again, so the session stays
+    // in server mode with the fresh entry; a failed resync confirms the
+    // outage and the demotion is safe.
+    if (await panesServerResync({ skipRender: !!(opts && opts.skipRender) })) {
+      return PANES_OP_REJECTED;
+    }
     panesMode = "local";
     return null;
   }
@@ -1318,6 +1343,13 @@ function syncTerminalTabsIntoTree(root) {
   const allBackendIds = allKnownTerminalIds();
   const routeTab = state.tab != null ? String(state.tab) : null;
   let changed = false;
+  // Server-mode chatter guard: fingerprints the leaves the sync STARTED
+  // with, so the panel.update push below fires only for leaves this pass
+  // actually rewrote. Without it every pusher (route change, prune, heal)
+  // pays one POST per leaf in the tree.
+  const syncEntryFingerprint = new Map(
+    paneLeaves(paneRootFor()).map((leaf) => [leaf.paneId, leafSyncFingerprint(leaf)])
+  );
   for (const id of allBackendIds) {
     // paneRootFor() per iteration: the mint can append a panel mid-pass
     // (the entry object stays), but re-reading keeps the lookup honest
@@ -1519,6 +1551,11 @@ function syncTerminalTabsIntoTree(root) {
     // push is lost.
     if (panesMode === "server") {
       for (const leaf of paneLeaves(paneRootFor())) {
+        // New leaves (absent from the entry map) always push: the server
+        // has to learn them once. Touched leaves push their delta;
+        // untouched ones stay quiet.
+        const entryPrint = syncEntryFingerprint.get(leaf.paneId);
+        if (entryPrint && entryPrint === leafSyncFingerprint(leaf)) continue;
         void panesServerOp({
           op: "panel.update",
           paneId: leaf.paneId,
@@ -1631,6 +1668,7 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
         mount = document.createElement("div");
         mount.className = "workspace-pane";
         mount.dataset.paneId = leaf.paneId;
+        mount.id = `pane-${leaf.paneId}`;
         const strip = document.createElement("div");
         strip.className = "pane-tab-strip";
         strip.setAttribute("role", "tablist");
@@ -1763,11 +1801,11 @@ function railPanelChipHtml(leaf, isActive) {
   const encoded = encodeURIComponent(leaf.paneId);
   const title = `Show panel ${label}`;
   if (state.editingPanelPaneId === leaf.paneId) {
-    return `<input class="pane-group-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeAttr(encoded)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeAttr(encoded)}')">`;
+    return `<input class="pane-group-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeHandlerArg(encoded)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeHandlerArg(encoded)}')">`;
   }
   // Every rail chip is an ungrouped panel (grouped members carry no
   // chip), so every chip drags: the label drag starts a split.
-  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeAttr(encoded)}')" ondblclick="startPanelChipRename('${escapeAttr(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeAttr(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeAttr(encoded)}')" ondragend="paneLabelDragEnd()"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
+  return `<button class="pane-label-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(leaf.paneId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="pane-${escapeAttr(leaf.paneId)}" tabindex="${isActive ? "0" : "-1"}" draggable="true" data-pane-id="${escapeAttr(leaf.paneId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)} (double-click or press F2 to rename)" onclick="event.preventDefault();showPanelFromRail('${escapeHandlerArg(encoded)}')" ondblclick="startPanelChipRename('${escapeHandlerArg(encoded)}')" onkeydown="railChipKeyDown(event,'panel','${escapeHandlerArg(encoded)}')" ondragstart="paneLabelDragStart(event,'${escapeHandlerArg(encoded)}')" ondragend="paneLabelDragEnd()"><span class="pane-label-chip-text">${escapeHtml(label)}</span></button>`;
 }
 
 function railGroupChipHtml(group, isActive) {
@@ -1775,7 +1813,7 @@ function railGroupChipHtml(group, isActive) {
   const title = `${name} (double-click or press F2 to rename)`;
   const encoded = encodeURIComponent(group.groupId);
   if (state.editingPaneGroup === group.groupId) {
-    return `<input class="pane-group-rename-input" aria-label="Rename panel group" value="${escapeAttr(state.editingPaneGroupValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPaneGroupRename('${escapeAttr(encoded)}')" oninput="state.editingPaneGroupValue=this.value" onkeydown="paneGroupRenameKey(event,'${escapeAttr(encoded)}')">`;
+    return `<input class="pane-group-rename-input" aria-label="Rename panel group" value="${escapeAttr(state.editingPaneGroupValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPaneGroupRename('${escapeHandlerArg(encoded)}')" oninput="state.editingPaneGroupValue=this.value" onkeydown="paneGroupRenameKey(event,'${escapeHandlerArg(encoded)}')">`;
   }
   // The group's split wrapper id matches the one reconcileSplitNode
   // stamps (pane-layout-<splitId path>); a degraded flat layout has no
@@ -1784,7 +1822,7 @@ function railGroupChipHtml(group, isActive) {
   const layoutControls = group.layout && isPaneSplit(group.layout)
     ? `pane-layout-${String(splitNodeId(group.layout)).replace(/\//g, "-")}`
     : "workspacePanes";
-  return `<button class="pane-label-chip pane-panel-group-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(group.groupId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="${escapeAttr(layoutControls)}" tabindex="${isActive ? "0" : "-1"}" draggable="false" data-group-id="${escapeAttr(group.groupId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.preventDefault();showGroupFromRail('${escapeAttr(encoded)}')" ondblclick="startPaneGroupRename('${escapeAttr(encoded)}')" onkeydown="railChipKeyDown(event,'group','${escapeAttr(encoded)}')">${escapeHtml(name)}</button>`;
+  return `<button class="pane-label-chip pane-panel-group-chip${isActive ? " active" : ""}" role="tab" id="pane-rail-tab-${escapeAttr(group.groupId)}" aria-selected="${isActive ? "true" : "false"}" aria-controls="${escapeAttr(layoutControls)}" tabindex="${isActive ? "0" : "-1"}" draggable="false" data-group-id="${escapeAttr(group.groupId)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.preventDefault();showGroupFromRail('${escapeHandlerArg(encoded)}')" ondblclick="startPaneGroupRename('${escapeHandlerArg(encoded)}')" onkeydown="railChipKeyDown(event,'group','${escapeHandlerArg(encoded)}')">${escapeHtml(name)}</button>`;
 }
 
 // Group rename (rail chip double-click): the name rides the group
@@ -1800,6 +1838,9 @@ function startPaneGroupRename(encodedGroupId) {
   setTimeout(() => {
     if (state.editingPaneGroup !== groupId) return;
     const input = document.querySelector(".pane-group-rename-input");
+    // select() alone is a text-range call, not a focus grant: in some
+    // focus contexts the input stays unfocused with the range set.
+    if (input && input.focus) input.focus();
     if (input && input.select) input.select();
   }, 0);
 }
@@ -1856,6 +1897,8 @@ function startPanelChipRename(encodedPaneId) {
   setTimeout(() => {
     if (state.editingPanelPaneId !== paneId) return;
     const input = document.querySelector(".pane-group-rename-input");
+    // Same as the group rename: focus explicitly, then select.
+    if (input && input.focus) input.focus();
     if (input && input.select) input.select();
   }, 0);
 }
@@ -2231,6 +2274,7 @@ function renderWorkspacePanes() {
         pane = document.createElement("div");
         pane.className = "workspace-pane";
         pane.dataset.paneId = subject.leaf.paneId || "root";
+        pane.id = `pane-${subject.leaf.paneId || "root"}`;
         const strip = document.createElement("div");
         strip.className = "pane-tab-strip";
         strip.setAttribute("role", "tablist");
@@ -2387,7 +2431,7 @@ function paneWorkspaceBadgeHtml(leaf) {
     ids[0];
   const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
   const title = `Workspace: ${label}`;
-  return `<button class="pane-ws-badge" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.stopPropagation();HerdrPaneWorkspacePicker.openPicker(this,'${escapeAttr(encodedPane)}','switch')">${escapeHtml(label)}</button>`;
+  return `<button class="pane-ws-badge" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" onclick="event.stopPropagation();HerdrPaneWorkspacePicker.openPicker(this,'${escapeHandlerArg(encodedPane)}','switch')">${escapeHtml(label)}</button>`;
 }
 
 // Panels hosting the selected workspace's terminal tabs carry the
@@ -2509,12 +2553,12 @@ function paneMemberViewSpan(origin, fullTitle, viewLabel) {
 function paneMergedHeaderHtml(leaf, tabs, activeTab) {
   const label = paneMemberHeaderLabel(leaf);
   const encodedPane = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  const dragAttrs = ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeAttr(encodedPane)}')" ondragend="paneMemberDragEnd()"`;
+  const dragAttrs = ` draggable="true" ondragstart="paneMemberDragStart(event,'${escapeHandlerArg(encodedPane)}')" ondragend="paneMemberDragEnd()"`;
   // Grouped members carry no rail chip, so the rename input mounts
   // right here: the header button swaps to the same input the rail
   // uses and commit/cancel restore focus to the header.
   if (state.editingPanelPaneId === leaf.paneId) {
-    return `<input class="pane-group-rename-input pane-member-header-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeAttr(encodedPane)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeAttr(encodedPane)}')">`;
+    return `<input class="pane-group-rename-input pane-member-header-input" aria-label="Rename panel" value="${escapeAttr(state.editingPanelValue || "")}"${typeof inputAttrs === "function" ? inputAttrs("done") : ""} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitPanelChipRename('${escapeHandlerArg(encodedPane)}')" oninput="state.editingPanelValue=this.value" onkeydown="panelChipRenameKey(event,'${escapeHandlerArg(encodedPane)}')">`;
   }
   const views = tabs || [];
   const single = views.length === 1 ? views[0] : null;
@@ -2547,10 +2591,10 @@ function paneMergedHeaderHtml(leaf, tabs, activeTab) {
     }
   }
   const header =
-    `<button class="pane-member-header pane-panel-chip" role="tab" aria-label="Focus panel: ${escapeAttr(label)}" title="Focus panel: ${escapeAttr(label)} (double-click or press F2 to rename)" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs}` +
-    ` onclick="event.preventDefault();focusPanelFor('${escapeAttr(encodedPane)}')" ondblclick="startPanelChipRename('${escapeAttr(encodedPane)}')" onkeydown="memberHeaderKey(event,'${escapeAttr(encodedPane)}')">` +
+    `<button class="pane-member-header pane-panel-chip" role="tab" id="pane-header-${escapeAttr(leaf.paneId || "")}" aria-selected="${activeTab === single ? "true" : "false"}" aria-label="Focus panel: ${escapeAttr(label)}" title="Focus panel: ${escapeAttr(label)} (double-click or press F2 to rename)" data-pane-id="${escapeAttr(leaf.paneId || "")}"${dragAttrs}` +
+    ` onclick="event.preventDefault();focusPanelFor('${escapeHandlerArg(encodedPane)}')" ondblclick="startPanelChipRename('${escapeHandlerArg(encodedPane)}')" onkeydown="memberHeaderKey(event,'${escapeHandlerArg(encodedPane)}')">` +
     `<span class="pane-label-chip-text">${escapeHtml(label)}</span>${viewHtml}` +
-    `<span class="pane-tab-close" role="button" tabindex="0" title="Leave split" aria-label="Leave split" onclick="event.stopPropagation();ungroupPaneMember('${escapeAttr(encodedPane)}')">✕</span>` +
+    `<span class="pane-tab-close" role="button" tabindex="0" title="Leave split" aria-label="Leave split" onclick="event.stopPropagation();ungroupPaneMember('${escapeHandlerArg(encodedPane)}')">✕</span>` +
     `</button>`;
   const extra = views.length > 1
     ? views.map((tabId) => {
@@ -2818,7 +2862,7 @@ function rescueLiveSurfaces(container, element) {
 
 function paneTabButtonHtml(tab, isActive, index, tabs) {
   if (state.editingTab === tab.tab_id)
-    return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
+    return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" aria-label="Rename panel" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeHandlerArg(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeHandlerArg(tab.tab_id)}')"></span>`;
   // The strip prefix is the panel's origin, and only a
   // default-numbered label gets one (a custom name is the identity).
   // Computed HERE, once, and panelVisibleLabel receives it so the two
@@ -2835,7 +2879,7 @@ function paneTabButtonHtml(tab, isActive, index, tabs) {
     ? `<span class="pane-tab-label" data-ws-prefix="${escapeAttr(prefix.trim())}">${escapeHtml(shown)}</span>`
     : `<span class="pane-tab-label">${escapeHtml(label)}</span>`;
   const ariaLabel = `Panel ${label}`;
-  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" draggable="true" aria-label="${escapeAttr(ariaLabel)}" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}${labelSpan}<span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
+  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" draggable="true" aria-label="${escapeAttr(ariaLabel)}" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" onclick="activatePaneTab('${escapeHandlerArg(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeHandlerArg(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeHandlerArg(tab.tab_id)}','${escapeHandlerArg(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}${labelSpan}<span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeHandlerArg(tab.tab_id)}')">✕</span></button>`;
 }
 
 function paneTerminalTabButtonHtml(tab, isActive) {
@@ -2888,7 +2932,7 @@ function paneBarControlsSignature() {
     subject ? `${subject.kind}:${subject.kind === "group" ? subject.group.groupId : subject.leaf.paneId}` : "",
     paneLeaves(root).length,
     tabKind,
-    paneMarkdownControlHtml(leaf) ? "md" : "",
+    paneMarkdownControlState(leaf),
   ].join(":");
 }
 
@@ -2900,13 +2944,17 @@ function paneFindControlHtml(leaf) {
   const activeTab = leaf && leaf.active;
   if (!activeTab || !isEditorTab(activeTab)) return "";
   const encoded = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  return `<button class="pane-strip-button pane-find-button" title="Find / replace" aria-label="Find / replace" onclick="event.preventDefault();openPaneEditorFind('${escapeAttr(encoded)}')">⌕</button>`;
+  return `<button class="pane-strip-button pane-find-button" title="Find / replace" aria-label="Find / replace" onclick="event.preventDefault();openPaneEditorFind('${escapeHandlerArg(encoded)}')">⌕</button>`;
 }
 
 // Markdown editor tabs get one eye control beside the find button: it
 // cycles rendered preview, raw source, and edit. Non-markdown files and
 // read-only mounts (partial previews) keep the strip without it.
-function paneMarkdownControlHtml(leaf) {
+// Which eye-button state the active editor tab is in: "" (no control),
+// "edit", "source", or "preview". The bar signature needs the state as a
+// token so a mode toggle repaints the button; paneMarkdownControlHtml
+// renders from the same token.
+function paneMarkdownControlState(leaf) {
   const activeTab = leaf && leaf.active;
   if (!activeTab || !isEditorTab(activeTab)) return "";
   const path = editorTabPath(activeTab);
@@ -2917,17 +2965,23 @@ function paneMarkdownControlHtml(leaf) {
   if (!file || file.binary || file.truncated) return "";
   const markdown = !!(window.HerdrEditor && window.HerdrEditor.isMarkdownPath && window.HerdrEditor.isMarkdownPath(path));
   if (!markdown) return "";
-  const encoded = encodeURIComponent(path);
-  if (file.editing) {
+  if (file.editing) return "edit";
+  return file.previewSource ? "source" : "preview";
+}
+
+function paneMarkdownControlHtml(leaf) {
+  const state = paneMarkdownControlState(leaf);
+  if (!state) return "";
+  const encoded = encodeURIComponent(editorTabPath(leaf.active));
+  if (state === "edit") {
     // Edit mode: the eye returns to the rendered preview. Dirty drafts
     // stay in the draft buffer; going back is the same unsaved state the
     // tab close would confirm about.
-    return `<button class="pane-strip-button pane-md-button" title="Show rendered preview" aria-label="Show rendered preview" onclick="event.preventDefault();paneMarkdownPreview('${escapeAttr(encoded)}')">◔</button>`;
+    return `<button class="pane-strip-button pane-md-button" title="Show rendered preview" aria-label="Show rendered preview" onclick="event.preventDefault();paneMarkdownPreview('${escapeHandlerArg(encoded)}')">◔</button>`;
   }
-  const viewingSource = !!file.previewSource;
-  return viewingSource
-    ? `<button class="pane-strip-button pane-md-button" title="Edit markdown source" aria-label="Edit markdown source" onclick="event.preventDefault();paneMarkdownEdit('${escapeAttr(encoded)}')">✎</button>`
-    : `<button class="pane-strip-button pane-md-button" title="Show markdown source" aria-label="Show markdown source" onclick="event.preventDefault();paneMarkdownSource('${escapeAttr(encoded)}')">◑</button>`;
+  return state === "source"
+    ? `<button class="pane-strip-button pane-md-button" title="Edit markdown source" aria-label="Edit markdown source" onclick="event.preventDefault();paneMarkdownEdit('${escapeHandlerArg(encoded)}')">✎</button>`
+    : `<button class="pane-strip-button pane-md-button" title="Show markdown source" aria-label="Show markdown source" onclick="event.preventDefault();paneMarkdownSource('${escapeHandlerArg(encoded)}')">◑</button>`;
 }
 
 // Preview: leave edit/source and mount the rendered view. Dirty drafts
@@ -2991,7 +3045,7 @@ function paneNewTabControlHtml(leaf) {
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
   const multi = (state.workspaces || []).length > 1;
   if (multi) {
-    return `<button class="pane-strip-button pane-new-picker" title="New panel in a workspace" aria-label="New panel in a workspace" aria-haspopup="dialog" onclick="event.preventDefault();HerdrPaneWorkspacePicker.openPicker(this,'${escapeAttr(encoded)}','new-tab')">+</button>`;
+    return `<button class="pane-strip-button pane-new-picker" title="New panel in a workspace" aria-label="New panel in a workspace" aria-haspopup="dialog" onclick="event.preventDefault();HerdrPaneWorkspacePicker.openPicker(this,'${escapeHandlerArg(encoded)}','new-tab')">+</button>`;
   }
   return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newPanelForFocused()">+</button>`;
 }
@@ -3006,7 +3060,7 @@ function paneCloseControlHtml(leaf) {
   const root = paneRootFor();
   if (paneLeaves(root).length < 2) return "";
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  return `<button class="pane-strip-button" title="Close panel" aria-label="Close panel" onclick="event.preventDefault();closePaneFor('${escapeAttr(encoded)}')">✕</button>`;
+  return `<button class="pane-strip-button" title="Close panel" aria-label="Close panel" onclick="event.preventDefault();closePaneFor('${escapeHandlerArg(encoded)}')">✕</button>`;
 }
 
 // ---- pane menu (Phase 5) -----------------------------------------------
@@ -4160,7 +4214,6 @@ function paneStripDragOver(event) {
   }
   const index = paneDropIndexAt(strip, event, drag.tabId);
   paneDropCaretAt(strip, index);
-  strip.dataset.dropIndex = String(index);
 }
 
 function paneStripDrop(event) {
@@ -4201,7 +4254,11 @@ function paneStripDrop(event) {
   if (!tabId || !pane) return;
   if (event.preventDefault) event.preventDefault();
   const paneId = pane.dataset ? pane.dataset.paneId : null;
-  const index = strip && strip.dataset ? Number(strip.dataset.dropIndex) : NaN;
+  // Recompute the caret index from the release coordinates instead of
+  // trusting strip.dataset.dropIndex: the strip may have re-rendered
+  // (losing the dataset) or the pointer kept moving after the last
+  // dragover, so a cached index lands the tab in a stale slot.
+  const index = strip ? paneDropIndexAt(strip, event, tabId) : NaN;
   // v3.2 marker ownership: the emptying gesture decides, the move is
   // pure tree surgery. A same-pane drop is a reorder (renders itself);
   // a cross-pane strip drop arms its emptied source BEFORE the single
@@ -4678,59 +4735,6 @@ function onTerminalTabClosed(tabId) {
   const pruned = pruneClosedTabFromLeaf(tabId);
   if (sweepAbandonedEmptyLeaves()) renderWorkspacePanes();
   return pruned;
-}
-
-// Moves the active tab to the next leaf in tree order (wraps). Terminal
-// tabs refuse: exactly one #terminalShell surface exists and its tab
-// stays in the terminal leaf. A busy target SPLITS instead of taking
-// the tab: the one-view rule is absolute, so a flat target receiving
-// a second view would strand it (flats render no strip), and a split
-// target growing a second tab violates the member shape the same way.
-// The moved-to member takes focus and the tab pointer.
-async function moveActiveTabToNextPane() {
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return false;
-  const leaves = paneLeaves(root);
-  if (leaves.length <= 1) return false;
-  const leaf = activeLeaf(root);
-  if (!leaf || !leaf.active) return false;
-  const tabId = leaf.active;
-  if (!isEditorTab(tabId) && !isGitTab(tabId)) return false;
-  const index = leaves.indexOf(leaf);
-  let target = leaves[(index + 1) % leaves.length];
-  if (!target || target === leaf) return false;
-  // One view per member: a busy target gets a fresh split sibling and
-  // the tab lands there (old left, new right, focus fresh), the same
-  // rule every other second-view path follows. A refused or failed
-  // split refuses the move (the tab stays put, nothing strands).
-  if (leafBusyViews(target) > 0) {
-    const fresh = await splitLeafWithFreshMember(target, (member) => landTabIntoLeaf(member, tabId));
-    if (!fresh || fresh === PANES_OP_REJECTED) return false;
-    // The split settle landed the tab in the fresh member; the source
-    // still owns its copy until the splice here. removeTabFromLeaf is
-    // the v3.2 choke point (splice + active heal + empty arm), the same
-    // path every tab departure takes, so the id never lives in two
-    // leaves and an emptied source still arms its auto-close.
-    removeTabFromLeaf(leaf, tabId, true);
-    if (panesMode === "server") {
-      void panesServerOp({
-        op: "panel.update",
-        paneId: leaf.paneId,
-        tabs: (leaf.tabs || []).slice(),
-        active: leaf.active || undefined,
-        wsId: leafWorkspaceId(leaf) || undefined,
-      });
-    }
-    return true;
-  }
-  // Delegate to the shared move primitive (splice, activate, focus,
-  // persist, module re-mount all live there; the v3.2 marker stays
-  // with this gesture): the chord empties the source, so the source
-  // arms here and the single render folds it.
-  if (!movePaneTabTo(tabId, target.paneId, null, { skipRender: true })) return false;
-  armLeafAutoClose(leaf);
-  renderWorkspacePanes();
-  return true;
 }
 
 // ---- terminal tab labels (moved from panel_switcher.js, Phase 5) ----
@@ -5262,6 +5266,7 @@ function mountEmptyLeafInPane(shown) {
       pane = document.createElement("div");
       pane.className = "workspace-pane";
       pane.dataset.paneId = subject.leaf.paneId || "root";
+      pane.id = `pane-${subject.leaf.paneId || "root"}`;
       const strip = document.createElement("div");
       strip.className = "pane-tab-strip";
       strip.setAttribute("role", "tablist");
@@ -5315,7 +5320,7 @@ function mountEmptyPanelCard(content, leaf) {
   const html = `<h1>${escapeHtml(name || wsId || "Empty panel")}</h1>`
     + `<p>No terminal in this panel yet.</p>`
     + `<p class="workspace-empty-leaf-hint">Press <kbd>Enter</kbd> to open a terminal.</p>`
-    + `<button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTabForPane('${escapeAttr(encodeURIComponent(leaf.paneId))}')">New terminal</button>`;
+    + `<button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTabForPane('${escapeHandlerArg(encodeURIComponent(leaf.paneId))}')">New terminal</button>`;
   if (card.__herdrEmptySignature !== html) {
     card.__herdrEmptySignature = html;
     const inner = card.querySelector(".workspace-empty-leaf-card");

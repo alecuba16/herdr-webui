@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 use std::time::UNIX_EPOCH;
@@ -623,6 +624,19 @@ fn resolve_root(cwd: &str) -> Result<PathBuf, String> {
         .map_err(|err| format!("invalid root: {err}"))
 }
 
+/// Canonical $HOME, computed once: the empty-cwd effective root and the
+/// read allowance both compare against it, so the alias form (say /Users
+/// vs a symlinked home) must be stable across requests.
+fn canonical_home() -> PathBuf {
+    static HOME: OnceLock<PathBuf> = OnceLock::new();
+    HOME.get_or_init(|| {
+        PathBuf::from(expand_user_path_string("~"))
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(expand_user_path_string("~")))
+    })
+    .clone()
+}
+
 fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
     let joined = root.join(path);
     let canonical = if joined.exists() {
@@ -645,6 +659,17 @@ fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// How far an absolute path may range when the request carries no cwd
+/// (the editor-tab contract: tabs persist filesystem-absolute paths and
+/// rehydrate with cwd=""). ReadAllowHome keeps the tab flow working by
+/// canonically confining to $HOME; ConfineToRoot is the destructive
+/// contract (write/rename/delete): the effective root only, no allowance.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResolvePolicy {
+    ReadAllowHome,
+    ConfineToRoot,
+}
+
 /// Resolve a client-supplied path against the request root. Relative paths
 /// keep the historic root.join semantics. Absolute paths are honored as-is:
 /// editor tabs and external entry points (search results, pane-tree tab ids)
@@ -652,7 +677,18 @@ fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
 /// its leading slash stripped by clean_relative_path, producing
 /// home/Users/... and a spurious 400. When the request carries a real root,
 /// the absolute target must stay confined under it, same as a relative path.
+/// The confinement check is canonical on both sides so path aliases
+/// (/tmp vs /private/tmp) and in-root symlinks cannot dodge it.
 fn resolve_child_path(root: &Path, cwd: &str, path: &str) -> Result<PathBuf, String> {
+    resolve_child_path_with_policy(root, cwd, path, ResolvePolicy::ConfineToRoot)
+}
+
+fn resolve_child_path_with_policy(
+    root: &Path,
+    cwd: &str,
+    path: &str,
+    policy: ResolvePolicy,
+) -> Result<PathBuf, String> {
     // Only ~ expansion needs the user-prefix helper: a relative path must
     // stay relative so resolve_child's root.join keeps owning it (running
     // it through expand_user_path_string would rebase it on $HOME and
@@ -666,31 +702,47 @@ fn resolve_child_path(root: &Path, cwd: &str, path: &str) -> Result<PathBuf, Str
         return resolve_child(root, &expanded);
     }
     let cwd_empty = cwd.trim().is_empty();
+    let home = canonical_home();
+    // Empty (or whitespace-only) cwd means "no request root": the effective
+    // root is canonical $HOME, which is exactly the pre-absolute-path
+    // behavior of resolve_root("") + resolve_child. A non-empty root is
+    // canonicalized HERE, not trusted as-given: an alias-spelled root
+    // (/var vs /private/var on macOS) must still contain the canonical
+    // target, the comparison is canonical on both sides (F4).
+    let effective_root: PathBuf = if cwd_empty {
+        home
+    } else {
+        root.canonicalize()
+            .map_err(|err| format!("invalid root: {err}"))?
+    };
     let target = PathBuf::from(&expanded);
-    if cwd_empty {
-        let canonical = if target.exists() {
-            target.canonicalize().map_err(|err| err.to_string())?
-        } else {
-            let parent = target
-                .parent()
-                .ok_or_else(|| "invalid path".to_string())?
-                .canonicalize()
-                .map_err(|err| err.to_string())?;
-            parent.join(
-                target
-                    .file_name()
-                    .ok_or_else(|| "invalid path".to_string())?,
-            )
-        };
+    let canonical = if target.exists() {
+        target.canonicalize().map_err(|err| err.to_string())?
+    } else {
+        // Missing targets (write-to-new-file, rename into a fresh name)
+        // canonicalize the parent chain; the check below still applies to
+        // the joined result.
+        let parent = target
+            .parent()
+            .ok_or_else(|| "invalid path".to_string())?
+            .canonicalize()
+            .map_err(|err| err.to_string())?;
+        parent.join(
+            target
+                .file_name()
+                .ok_or_else(|| "invalid path".to_string())?,
+        )
+    };
+    if canonical.starts_with(effective_root.as_path()) {
         return Ok(canonical);
     }
-    // Root confinement: an absolute path outside the request root is a
-    // refusal, matching resolve_child's escape rule.
-    if target.starts_with(root) {
-        resolve_child(root, &expanded)
-    } else {
-        Err("path escapes root".to_string())
+    // The one allowance: cwd-less reads stay servable inside $HOME so
+    // persisted editor tabs rehydrate. Destructive callers never pass
+    // this policy, and a read outside $HOME was never the tab contract.
+    if policy == ResolvePolicy::ReadAllowHome && canonical.starts_with(canonical_home()) {
+        return Ok(canonical);
     }
+    Err("path escapes root".to_string())
 }
 
 /// Like `resolve_child`, but for write targets that may introduce new
@@ -2036,7 +2088,7 @@ fn file_browser_file_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child_path(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str())) {
+    let file = match resolve_child_path_with_policy(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str()), ResolvePolicy::ReadAllowHome) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2154,7 +2206,7 @@ fn file_browser_outline_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child_path(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str())) {
+    let file = match resolve_child_path_with_policy(&root, cwd_raw, query.path.as_deref().unwrap_or(rel.as_str()), ResolvePolicy::ReadAllowHome) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2402,7 +2454,7 @@ fn file_browser_content_search_file_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "file is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child_path(&root, cwd_raw, query.file.as_deref().or(query.path.as_deref()).unwrap_or(rel.as_str())) {
+    let file = match resolve_child_path_with_policy(&root, cwd_raw, query.file.as_deref().or(query.path.as_deref()).unwrap_or(rel.as_str()), ResolvePolicy::ReadAllowHome) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2523,11 +2575,6 @@ fn file_browser_delete_payload(
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let rel = match clean_relative_path(Some(&body.path)) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
     let path = match resolve_child_path(&root, cwd_raw, body.path.as_str()) {
         Ok(path) => path,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -2567,6 +2614,23 @@ mod tests {
     use super::*;
     use std::time::SystemTime;
 
+    // Outside-$HOME scratch for the confinement pins. std::env::temp_dir
+    // is WRONG here: a dev box can point TMPDIR inside $HOME (this repo's
+    // tooling does), and a target under $HOME is exactly what the
+    // resolver must ALLOW. /private/tmp (canonical /tmp on macOS) or /tmp
+    // is outside any real user HOME.
+    fn outside_home_dir(label: &str) -> PathBuf {
+        let base = if Path::new("/private/tmp").exists() {
+            PathBuf::from("/private/tmp")
+        } else {
+            PathBuf::from("/tmp")
+        };
+        let dir = base.join(format!("herdr-{}-{}", label, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn numbered_lines_html_builds_gutter_and_escaped_code() {
         let (gutter, code) = numbered_lines_html("fn main() {\n    let x = 1 < 2;\n}");
@@ -2588,7 +2652,8 @@ mod tests {
 
     #[test]
     fn resolve_child_path_honors_abspath_without_cwd() {
-        let root = std::env::temp_dir().join(format!(
+        let home = canonical_home();
+        let root = home.join(format!(
             "herdr-resolve-abspath-{}",
             SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2602,11 +2667,33 @@ mod tests {
         let file = file.canonicalize().unwrap();
 
         // A cwd-less request with an absolute path resolves the file
-        // directly (the editor tab / external entry point case).
+        // directly (the editor tab / external entry point case) under
+        // the destructive policy: the file lives under $HOME.
         assert_eq!(
             resolve_child_path(&canonical_root, "", file.to_str().unwrap()).unwrap(),
             file
         );
+        // The read policy serves the same under-$HOME path.
+        assert_eq!(
+            resolve_child_path_with_policy(
+                &canonical_root,
+                "",
+                file.to_str().unwrap(),
+                ResolvePolicy::ReadAllowHome
+            )
+            .unwrap(),
+            file
+        );
+        // Both policies refuse an absolute path outside $HOME when the
+        // cwd is empty: /etc/hostname was never the tab contract.
+        assert!(resolve_child_path(&canonical_root, "", "/etc/hostname").is_err());
+        assert!(resolve_child_path_with_policy(
+            &canonical_root,
+            "",
+            "/etc/hostname",
+            ResolvePolicy::ReadAllowHome
+        )
+        .is_err());
         // The same absolute path under a real root stays confined.
         assert_eq!(
             resolve_child_path(
@@ -2636,7 +2723,8 @@ mod tests {
 
     #[test]
     fn file_payload_reads_abspath_with_empty_cwd() {
-        let root = std::env::temp_dir().join(format!(
+        let home = canonical_home();
+        let root = home.join(format!(
             "herdr-webui-file-abspath-{}",
             std::process::id()
         ));
@@ -2666,6 +2754,139 @@ mod tests {
         assert_eq!(payload["content"].as_str().unwrap(), "# Hello\n");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_abspath_empty_cwd_refuses_outside_home() {
+        // /etc/hostname exists on every Unix: a cwd-less read of it was
+        // never the editor-tab contract (tabs live under $HOME).
+        let payload = file_browser_file_payload(FileBrowserQuery {
+            cwd: String::new(),
+            path: Some("/etc/hostname".to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        });
+        assert!(payload.is_err());
+    }
+
+    #[test]
+    fn write_abspath_empty_cwd_refuses_outside_home() {
+        let outside = outside_home_dir("write-outside");
+        let target = outside.join("evil.txt");
+        let result = file_browser_write_file_payload(FileBrowserWriteRequest {
+            cwd: String::new(),
+            path: target.to_string_lossy().to_string(),
+            content: "no".to_string(),
+            expected_hash: None,
+            create_parents: false,
+        });
+        assert!(result.is_err());
+        // The refusal must leave nothing behind: the parent-fallback path
+        // is the exact hole this pins (F2).
+        assert!(!target.exists());
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn delete_abspath_empty_cwd_refuses_outside_home() {
+        let outside = outside_home_dir("delete-outside");
+        let result = file_browser_delete_payload(FileBrowserDeleteRequest {
+            cwd: String::new(),
+            path: outside.to_string_lossy().to_string(),
+        });
+        assert!(result.is_err());
+        // rm -rf on a cwd-less absolute path must never run (F1).
+        assert!(outside.exists());
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn rename_abspath_empty_cwd_refuses_outside_home() {
+        let outside = outside_home_dir("rename-outside");
+        let source = outside.join("before.txt");
+        fs::write(&source, "x").unwrap();
+        let result = file_browser_rename_payload(FileBrowserRenameRequest {
+            cwd: String::new(),
+            path: source.to_string_lossy().to_string(),
+            new_name: "after.txt".to_string(),
+        });
+        assert!(result.is_err());
+        assert!(source.exists());
+        assert!(!outside.join("after.txt").exists());
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn real_root_abspath_alias_resolves_inside() {
+        // macOS /tmp is a symlink to /private/tmp: the alias form of an
+        // in-root absolute path must serve, not 400 (F4). The check is
+        // canonical on both sides, so the alias canonicalizes inside.
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let file = root.join("alias-probe.txt");
+        fs::write(&file, "alias").unwrap();
+        // std::env::temp_dir() on macOS is /var/folders/... (already
+        // canonical-friendly); the alias case matters when the root is
+        // expressed in its non-canonical form, so exercise both forms.
+        let canonical_str = root.to_string_lossy().to_string();
+        let non_canonical = canonical_str.replace("/private/", "/");
+        let root_nc = if non_canonical != canonical_str {
+            PathBuf::from(non_canonical)
+        } else {
+            root.clone()
+        };
+        let resolved = resolve_child_path(&root_nc, root_nc.to_str().unwrap(), file.to_str().unwrap());
+        assert_eq!(resolved.unwrap(), file);
+        let _ = fs::remove_file(&file);
+    }
+
+    #[test]
+    fn real_root_abspath_symlink_escape_refused() {
+        // The root is a scratch dir (anywhere) and the escape target must
+        // sit OUTSIDE that root: the in-root symlink points at it.
+        let root = outside_home_dir("symlink-escape");
+        let outside = outside_home_dir("symlink-outside");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let target = root.join("link/newfile.txt");
+        // Write with a real root through an in-root symlink: refused,
+        // nothing created outside (F4-class canonical check).
+        assert!(resolve_child_path(&root, root.to_str().unwrap(), target.to_str().unwrap()).is_err());
+        assert!(resolve_child_path_with_policy(
+            &root,
+            root.to_str().unwrap(),
+            target.to_str().unwrap(),
+            ResolvePolicy::ReadAllowHome
+        )
+        .is_err());
+        assert!(!outside.join("newfile.txt").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn whitespace_cwd_treated_as_empty() {
+        // " " trims to the empty-cwd branch by design (rejecting would
+        // 400 the legitimate empty-string sends of the tab flow).
+        assert!(resolve_child_path_with_policy(
+            &canonical_home(),
+            " ",
+            "/etc/hostname",
+            ResolvePolicy::ReadAllowHome
+        )
+        .is_err());
+        assert!(resolve_child_path(&canonical_home(), " ", "/etc/hostname").is_err());
     }
 
     #[test]

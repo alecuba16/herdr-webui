@@ -170,6 +170,14 @@ fn load_entry(session: &str) -> PanesEntry {
     };
     serde_json::from_str(&raw).unwrap_or_else(|err| {
         eprintln!("invalid webui-panes.json for session {session}, starting fresh: {err}");
+        // Park the corrupt bytes next to the sidecar before the reset
+        // overwrites them: a hand-edit or a partial atomic write is
+        // recoverable from the .bak, and silent loss makes the reset
+        // impossible to audit. Best effort only; a failed rename must
+        // not block the fresh start.
+        let mut bak = panes_sidecar_path(session);
+        bak.set_extension("json.bak");
+        let _ = fs::write(&bak, &raw);
         default_entry()
     })
 }

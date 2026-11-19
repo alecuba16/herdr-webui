@@ -313,7 +313,11 @@ function makeServerApi(startingEntry) {
   const api = async (url, opt) => {
     calls.push({ url, opt });
     if (url === "/api/workspace-panes" && (!opt || !opt.method || opt.method === "GET")) {
-      return { ...entry, session: "work" };
+      // Wire-realistic: a real response deserializes fresh objects, so
+      // a GET must never share references with the fake's live entry
+      // (adoption would alias client leaves into the fake and local
+      // mutations would write through to "server truth").
+      return JSON.parse(JSON.stringify({ ...entry, session: "work" }));
     }
     if (url === "/api/workspace-panes" && opt && opt.method === "POST") {
       const body = JSON.parse(opt.body);
@@ -579,7 +583,7 @@ test("ungroup sends the op and adopts the server surgery", async () => {
   assert.equal(after.panels.find((p) => p.paneId === "p2").groupId, null);
 });
 
-test("failed op falls back to the local mutation and drops to local mode", async () => {
+test("failed op resyncs and stays in server mode; a dead resync demotes to local", async () => {
   const { nodes, document } = buildDom();
   let failOps = true;
   const script = makeServerApi(serverEntry());
@@ -598,13 +602,35 @@ test("failed op falls back to the local mutation and drops to local mode", async
   ctx.HerdrWorkspacePanes.startPanelChipRename(enc);
   ctx.state.editingPanelValue = "local wins";
   ctx.HerdrWorkspacePanes.commitPanelChipRename(enc);
-  // The op dispatch is fire-and-forget: let the retry and the local-mode
-  // drop settle before asserting.
+  // The op dispatch is fire-and-forget: let the retry, the resync, and
+  // the settle run before asserting.
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  // Retry once then local mode: the rename kept the local value.
-  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "local");
-  assert.equal(ctx.HerdrWorkspacePanes.paneRoot().panels[0].name, "local wins");
+  // Both op tries failed on transport, but the server answers the
+  // resync GET: the session STAYS in server mode on the resynced
+  // entry (demoting would fork the session against a live server),
+  // and the local twin never runs over the server truth.
+  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server");
+  assert.equal(ctx.HerdrWorkspacePanes.paneRoot().panels[0].name, null);
+  // A server that cannot answer the resync either is a real outage:
+  // the session demotes and the local twin stands.
+  failOps = true;
+  const deadScript = makeServerApi(serverEntry());
+  const deadApi = async (url, opt) => {
+    if (url === "/api/workspace-panes") throw Error("dead");
+    if (url === "/api/workspace-panes/op") throw Error("boom");
+    return deadScript.api(url, opt);
+  };
+  const ctx2 = loadPanesModule(document, "ws-2", deadApi);
+  ctx2.HerdrWorkspacePanes.setPanesModeForTests("server");
+  const enc2 = encodeURIComponent("p1");
+  ctx2.HerdrWorkspacePanes.startPanelChipRename(enc2);
+  ctx2.state.editingPanelValue = "local wins";
+  ctx2.HerdrWorkspacePanes.commitPanelChipRename(enc2);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ctx2.HerdrWorkspacePanes.panesMode(), "local");
+  assert.equal(ctx2.HerdrWorkspacePanes.paneRoot().panels[0].name, "local wins");
 });
 
 test("transport failure on boot stays in local mode", async () => {
@@ -694,7 +720,7 @@ test("label drop posts group.create with the drop geometry and adopts the group"
   assert.equal(entry.panels.find((p) => p.paneId === "p2").groupId, "g1");
 });
 
-test("a sync pass with a changed leaf pushes one panel.update per leaf", async () => {
+test("a sync pass pushes one panel.update for the touched leaf only", async () => {
   const { nodes, document } = buildDom();
   const script = makeServerApi(serverEntry());
   const ctx = loadPanesModule(document, "ws-1", script.api);
@@ -719,14 +745,11 @@ test("a sync pass with a changed leaf pushes one panel.update per leaf", async (
   const updates = script.calls
     .map((c) => (c.url === "/api/workspace-panes/op" ? JSON.parse(c.opt.body) : null))
     .filter((op) => op && op.op === "panel.update");
-  assert.equal(updates.length, 2, "one panel.update per leaf");
+  assert.equal(updates.length, 1, "one panel.update for the touched leaf");
   const byId = new Map(updates.map((op) => [op.paneId, op]));
-  const p1 = byId.get("p1");
   const p2 = byId.get("p2");
-  assert.ok(p1 && p2, "both leaves pushed");
-  assert.deepEqual(p1.tabs, ["t1"], "the untouched leaf pushed its tabs too");
-  assert.equal(p1.active, "t1");
-  assert.equal(p1.wsId, "ws-1");
+  assert.ok(p2, "the touched leaf pushed");
+  assert.ok(!byId.has("p1"), "the untouched leaf stayed quiet");
   assert.deepEqual(p2.tabs, ["t2"], "p2 pushed its re-homed tabs");
   assert.equal(p2.active, "t2");
   assert.equal(p2.wsId, "ws-1");
@@ -924,49 +947,6 @@ test("a 422-rejected intent resyncs and never runs the local twin", async () => 
   assert.equal(panes.panesMode(), "server", "422 does not demote to local mode");
 });
 
-// moveActiveTabToNextPane (dormant command, pinned directly): the busy
-// target split must refuse cleanly when the server rejects the group
-// intent. panel.create succeeds (the server mints the member), then
-// group.create answers 422: the move returns false, the tab stays in
-// its source leaf, and the minted member never survives locally as a
-// stranded viewless leaf.
-test("moveActiveTabToNextPane: a rejected split refuses the move and nothing strands", async () => {
-  const { document } = buildDom();
-  const script = makeServerApi(serverEntry());
-  const realApi = script.api;
-  const refusingApi = async (url, opt) => {
-    if (url === "/api/workspace-panes/op") {
-      const op = JSON.parse(opt.body);
-      if (op.op === "group.create") {
-        throw Object.assign(new Error("cannot group"), { status: 422 });
-      }
-    }
-    return realApi(url, opt);
-  };
-  const ctx = loadPanesModule(document, "ws-1", refusingApi);
-  ctx.state.tabs = [
-    { tab_id: "t1", workspace_id: "ws-1" },
-    { tab_id: "t2", workspace_id: "ws-1" },
-  ];
-  await ctx.HerdrWorkspacePanes.bootFromServer();
-  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
-  const panes = ctx.HerdrWorkspacePanes;
-  const source = panes.paneLeaves(panes.paneRoot()).find((l) => l.paneId === "p1");
-  source.tabs.push("editor:src/a.py");
-  source.active = "editor:src/a.py";
-  panes.focusPanelFor("p1");
-  const moved = await ctx.moveActiveTabToNextPane();
-  assert.equal(moved, false, "rejected group.create refuses the move");
-  const leavesAfter = panes.paneLeaves(panes.paneRoot());
-  const sourceAfter = leavesAfter.find((l) => l.paneId === "p1");
-  assert.ok(sourceAfter.tabs.includes("editor:src/a.py"), "the editor tab stayed in its source leaf");
-  assert.equal(sourceAfter.active, "editor:src/a.py", "source active pointer untouched");
-  assert.equal((panes.paneRoot().groups || []).length, 0, "no group survived the rejection");
-  const targetAfter = leavesAfter.find((l) => l.paneId === "p2");
-  assert.deepEqual([...targetAfter.tabs], ["t2"], "busy target kept exactly its own row");
-  assert.equal(panes.panesMode(), "server", "rejection resyncs without demoting");
-});
-
 test("a 400 rejection is authoritative: resync, no twin, no demotion", async () => {
   const { document } = buildDom();
   const script = makeServerApi(serverEntry());
@@ -998,11 +978,15 @@ test("a 401 auth failure is NOT authoritative: retry then local mode", async () 
   const { document } = buildDom();
   const script = makeServerApi(serverEntry());
   // 401 is carved out of the rejection set: auth failures ride the
-  // retry ladder like a transport failure, ending in local mode with
-  // the local twin applied, not a resync.
+  // retry ladder like a transport failure. A dead session 401s the op
+  // AND the resync GET (same cookie), so the ladder ends in local mode
+  // with the local twin applied.
   const realApi = script.api;
   const authApi = async (url, opt) => {
-    if (url === "/api/workspace-panes/op") {
+    if (
+      url === "/api/workspace-panes/op" ||
+      (url === "/api/workspace-panes" && (!opt || !opt.method || opt.method === "GET"))
+    ) {
       throw Object.assign(new Error("unauthorized"), { status: 401 });
     }
     return realApi(url, opt);

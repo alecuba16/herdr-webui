@@ -394,6 +394,29 @@
       .replace(/"/g, "&quot;");
   }
 
+  // escapeHtml plus the single quote, for attribute values that sit in
+  // single-quoted HTML (inline handler payloads).
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/'/g, "&#39;");
+  }
+
+  // Payload safety for single-quoted JS strings inside double-quoted HTML
+  // attributes (onclick="fn('...')"). Two layers, and the ORDER matters:
+  // first the JS-string layer so the payload cannot end or bend the
+  // '...' literal (backslash first, then the quote: a filename like
+  // a');payload;// must not run payload), then escapeHtml on TOP so the
+  // same payload cannot terminate the double-quoted attribute early
+  // (x" onmouseover="...). The browser HTML-decodes the attribute value
+  // before the handler compiles, so &#39; inside the JS string decodes
+  // back to the literal ' after both layers have run.
+  function escapeJsSingleQuoted(value) {
+    return escapeHtml(
+      String(value == null ? "" : value)
+      .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+    );
+  }
+
   // Keyboard guard set for text-like inputs. Some Android keyboards attach
   // autocorrect, grammar suggestions, autocomplete, or capitalization to any
   // text field, so every input the user can type into carries the full set.
@@ -534,6 +557,8 @@
     terminalPasteInput,
     stripTerminalMouseReports,
     escapeHtml,
+    escapeAttr,
+    escapeJsSingleQuoted,
     inputAttrs,
     pathBasename,
     hashId,

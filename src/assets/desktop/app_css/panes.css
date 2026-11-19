@@ -196,6 +196,9 @@
   .pane-tab {
     transition: none;
   }
+  .pane-member-header {
+    transition: none;
+  }
 }
 
 .pane-tab-dot {
@@ -570,9 +573,6 @@
   font-size: 12px;
   line-height: 1.4;
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .pane-label-chip:hover {

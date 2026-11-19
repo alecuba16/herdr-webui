@@ -49,6 +49,34 @@
   right/down (`D`/`Shift+D`), move tab (`M`), and maximize
   (`Shift+M`): no such chords or buttons exist in the WebUI, splits
   are implicit, and maximize left with the stripless rework.
+- The dormant move-tab command is deleted outright (review-round
+  hygiene): its chord was gone and nothing called it; the two tests
+  that pinned its split rule are gone with it.
+- Destructive file ops (write, rename, delete) refuse any target that
+  escapes the request root, whatever the cwd: an empty or whitespace
+  cwd roots them at the canonical home directory (macOS alias forms
+  like `/tmp` vs `/private/tmp` resolve on both sides), and an in-root
+  symlink pointing outside is refused. Only reads keep the
+  home-allowed policy that persisted editor-tab rehydration needs.
+  Every refusal leaves nothing behind.
+- Inline handler payloads (pane ids, file paths in tab strips, rail
+  chips, rename inputs) escape for the single-quoted JS-string layer
+  AND the double-quoted HTML attribute layer: a filename like
+  `a');payload;//` stays a string argument and `x" onmouseover=` stays
+  inert text. The escaper lives in shared core with the plain
+  attribute escaper beside it.
+- The tab-strip drop recomputes its caret index from the release
+  coordinates instead of a cached dataset slot, the sync pass pushes
+  one `panel.update` per touched leaf (untouched leaves stay quiet),
+  the markdown eye button exposes its edit/source/preview state to the
+  bar repaint signature, and a server-op failure now resyncs from the
+  server entry before demoting to local mode, so a lost response never
+  forks the session against a live server.
+- A corrupt panes sidecar parks its bytes in a `.bak` beside the file
+  before the fresh-seed reset, merged headers carry `aria-selected`
+  with the dangling `pane-<id>` references now backed by real mount
+  ids, rename inputs take focus explicitly, and the member header
+  and sidebar resize handle honor reduced-motion.
 
 ## 0.7.54 Release Notes
 - The terminal hub join race is closed: `start_attach` spawns the
