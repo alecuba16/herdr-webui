@@ -1615,6 +1615,12 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
     element = document.createElement("div");
     element.className = node.kind === "row" ? "pane-row" : "pane-column";
     element.dataset.splitId = idPath;
+    // The rail's group chip points aria-controls at this wrapper
+    // (pane-layout-<splitId path>, slashes flattened), so every split
+    // wrapper mints that id: the root wrapper is the chip's target
+    // while the group is the visible subject, and nested wrappers just
+    // carry unique ids.
+    element.id = `pane-layout-${String(idPath).replace(/\//g, "-")}`;
     container.appendChild(element);
   }
   const wanted = node.kind === "row" ? "pane-row" : "pane-column";
