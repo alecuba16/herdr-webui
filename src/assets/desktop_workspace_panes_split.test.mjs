@@ -749,6 +749,37 @@ test("a group subject renders one split wrapper, one pane per member, dividers",
   }
 });
 
+// Regression: the order-enforcement walk at the end of reconcileSplitNode
+// keyed mounts by dataset.paneId only, so a nested split wrapper (keyed by
+// dataset.splitId) never matched its tree slot; the insertBefore pass then
+// dragged the leaf mounts and dividers to the front and shoved the split
+// wrapper to the end, rendering layout [col[p1,p2], p3] as [p3, col].
+test("mixed split and leaf children keep their tree order in the DOM", () => {
+  const { nodes, document } = buildDom();
+  const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: ["t3"], groupId: "g1" }]);
+  spec.groups[0].memberIds = ["p1", "p2", "p3"];
+  spec.rows = ["tab_2", "t2", "t3"];
+  spec.groups[0].layout = {
+    kind: "row", sizes: [1, 1], splitId: "s1",
+    children: [{ kind: "column", sizes: [1, 1], splitId: "s2", children: ["p1", "p2"] }, "p3"],
+  };
+  const { panes } = loadGroupSession(document, spec);
+  const root = splitElements(nodes)[0];
+  assert.ok(root, "root wrapper rendered");
+  const order = Array.from(root.children).map((c) =>
+    c.dataset.splitId != null ? "split:" + c.dataset.splitId
+      : c.dataset.paneId != null ? "pane:" + c.dataset.paneId
+        : "divider:" + c.dataset.dividerFor);
+  assert.deepEqual(order, ["split:s1/s2", "divider:p3", "pane:p3"], "split wrapper first, divider, leaf: tree order kept");
+  // A second render pass must keep the order (enforcement is idempotent).
+  panes.renderWorkspacePanes();
+  const orderAgain = Array.from(root.children).map((c) =>
+    c.dataset.splitId != null ? "split:" + c.dataset.splitId
+      : c.dataset.paneId != null ? "pane:" + c.dataset.paneId
+        : "divider:" + c.dataset.dividerFor);
+  assert.deepEqual(orderAgain, ["split:s1/s2", "divider:p3", "pane:p3"], "re-render keeps the tree order");
+});
+
 test("a single panel subject renders one flat pane with no wrapper", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");

@@ -1842,7 +1842,10 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
   // tree the walk matches and nothing moves.
   const expected = [];
   node.children.forEach((child, i) => {
-    const mount = [...element.children].find((c) => c.dataset && c.dataset.paneId === childIds[i]);
+    const mount = [...element.children].find((c) =>
+      c.dataset && (isPaneSplit(child)
+        ? c.dataset.splitId === childIds[i]
+        : c.dataset.paneId === childIds[i]));
     if (mount) expected.push(mount);
     if (i < node.children.length - 1) {
       const divider = [...element.children].find((c) => c.dataset && c.dataset.dividerFor === childIds[i + 1]);
