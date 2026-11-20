@@ -781,7 +781,16 @@ fn git_common_dir(checkout: &Path) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let printed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    git_common_dir_from_output(checkout, &output.stdout)
+}
+
+/// Pure core of `git_common_dir`: map git's stdout (already exit-0)
+/// to the comparable absolute path. Split from the subprocess wrapper
+/// so tests drive the parsing without forking git. Empty or blank
+/// output means a wrapper printed nothing on success: refuse, the
+/// match stays exact-cwd-only for that checkout.
+fn git_common_dir_from_output(checkout: &Path, stdout: &[u8]) -> Option<String> {
+    let printed = String::from_utf8_lossy(stdout).trim().to_string();
     if printed.is_empty() {
         return None;
     }
@@ -2861,6 +2870,53 @@ mod tests {
                 reason: RefusalReason::NoSessionPath
             }
         );
+    }
+
+    #[test]
+    fn fresh_cached_rows_keep_their_worktree_root() {
+        // The freshness path serves the cached row without re-reading
+        // the file; after the sweep window the same row must still
+        // carry its resolved worktree root or a later worktree
+        // resolve would silently degrade to exact-cwd-only.
+        let (main, lane) = worktree_pair("s6");
+        let dir = temp_store("wt6");
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&ev_session("session_a", 500, &main.to_string_lossy(), "Active"))
+                .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir);
+        let resolve = |idx: &JcodeStoreIndex| {
+            idx.resolve(lane.as_path(), &|pid| pid != 500, &|pid| pid == 500, "", &[])
+        };
+        assert_eq!(
+            resolve(&index),
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
+        );
+        // Outlive the 250 ms sweep TTL without touching the file, so
+        // the next resolve serves the row from the freshness cache.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            resolve(&index),
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn git_common_dir_empty_output_is_none() {
+        // Pure core: a wrapper printing nothing on success must refuse,
+        // keeping the match exact-cwd-only for that checkout. Blank
+        // whitespace counts as empty.
+        assert_eq!(git_common_dir_from_output(Path::new("/w"), b""), None);
+        assert_eq!(git_common_dir_from_output(Path::new("/w"), b"  \n"), None);
+        // Relative print is joined against the checkout; the guard is
+        // about emptiness, not shape.
+        assert!(git_common_dir_from_output(Path::new("/w"), b".git\n").is_some());
     }
 
     #[test]
