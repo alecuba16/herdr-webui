@@ -698,6 +698,60 @@ test("boot with no server entry seeds it through the apply POST", async () => {
   assert.equal(stored.panels.length, 1, "the local entry seeded the server");
 });
 
+test("zero-workspace boot converts the server's contentless seed to the empty entry", async () => {
+  // Change 6: the server store never holds a zero-panel entry (GET
+  // self-seeds, the last panel.close resets to the seed), so a
+  // zero-workspace client adopts its contentless p1 seed as the EMPTY
+  // state instead of minting the ghost panel.
+  const { nodes, document } = buildDom();
+  const seedApi = async (url, opt) => {
+    if (url === "/api/workspace-panes" && (!opt || !opt.method || opt.method === "GET")) {
+      return {
+        v: 3,
+        panels: [{ kind: "pane", paneId: "p1", tabs: [], active: null, wsId: null, groupId: null }],
+        groups: [],
+        visible: { type: "panel", id: "p1" },
+        at: 5,
+      };
+    }
+    throw Error(`unexpected ${url}`);
+  };
+  const ctx = loadPanesModule(document, null, seedApi);
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server");
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(entry.panels.length, 0, "the contentless seed adopted as the empty entry");
+  ctx.HerdrWorkspacePanes.renderWorkspacePanes();
+  assert.ok(!nodes.container.querySelector(".pane-label-rail"), "no rail over the dashboard");
+});
+
+test("zero-workspace boot posts the seed shape but keeps the local empty state", async () => {
+  // The server never accepts a zero-panel entry (validation gates
+  // panels.is_empty()), so a zero-workspace client posts the p1 seed
+  // shape on the migration POST while keeping its local panels at
+  // zero.
+  const { document } = buildDom();
+  let posted = null;
+  const noEntryApi = async (url, opt) => {
+    if (url === "/api/workspace-panes" && (!opt || !opt.method || opt.method === "GET")) {
+      return null;
+    }
+    if (url === "/api/workspace-panes" && opt.method === "POST") {
+      posted = JSON.parse(opt.body).entry;
+      return { ...posted, session: "work" };
+    }
+    throw Error(`unexpected ${url}`);
+  };
+  const ctx = loadPanesModule(document, null, noEntryApi);
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  assert.equal(ctx.HerdrWorkspacePanes.panesMode(), "server");
+  assert.ok(posted, "the migration POST fired");
+  assert.equal(posted.panels.length, 1, "the POST carried the p1 seed shape");
+  assert.equal(posted.panels[0].paneId, "p1");
+  const entry = ctx.HerdrWorkspacePanes.paneRoot();
+  assert.equal(entry.panels.length, 0, "the local entry stays empty (zero workspaces)");
+});
+
 test("label drop posts group.create with the drop geometry and adopts the group", async () => {
   const { nodes, document } = buildDom();
   const script = makeServerApi(serverEntry());

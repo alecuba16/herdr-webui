@@ -1187,6 +1187,53 @@ test("load resets an all-empty stored entry to the single default pane", () => {
   assert.ok(entry.panels[0].paneId, "reset panel has a fresh pane id");
 });
 
+test("zero workspaces boot lands the empty entry: zero panels, no rail", () => {
+  // Change 6: zero workspaces means zero panels. The load path must
+  // not mint the p1 seed over the dashboard, and nothing may paint a
+  // rail for panels no workspace can anchor.
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, null);
+  const panes = ctx.HerdrWorkspacePanes;
+  const entry = panes.paneRootFor();
+  assert.equal(entry.panels.length, 0, "zero panels with zero workspaces");
+  panes.renderWorkspacePanes();
+  assert.ok(!nodes.container.querySelector(".pane-label-rail"), "no rail with zero panels");
+  assert.ok(!nodes.container.querySelector(".pane-label-chip"), "no chip paints");
+
+  // A workspace appearing upgrades the empty entry lazily on the read.
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "alpha" }];
+  const upgraded = panes.paneRootFor();
+  assert.equal(upgraded.panels.length, 1, "the first workspace read mints the seed");
+  assert.equal(upgraded.panels[0].paneId, "p1", "seed pane id");
+  deepEqual([...upgraded.panels[0].tabs], ["terminal"], "seed placeholder tab");
+  panes.renderWorkspacePanes();
+  assert.ok(nodes.container.querySelector(".pane-label-rail"), "rail paints once a panel exists");
+});
+
+test("load with zero workspaces converts an all-empty ghost to the empty entry", () => {
+  // D13 ghost + Change 6: with no workspace to anchor any panel, the
+  // all-empty stored entry heals to the empty state, never a dead seed.
+  const stored = JSON.stringify({
+    __session__: {
+      v: 2,
+      panels: [
+        { kind: "pane", paneId: "p1", tabs: [], active: null, wsId: null, groupId: null },
+        { kind: "pane", paneId: "p2", tabs: [], active: null, wsId: null, groupId: null },
+      ],
+      groups: [],
+      visible: { type: "panel", id: "p1" },
+      activePaneId: null,
+      at: 9,
+    },
+  });
+  const { document } = buildDom();
+  const ctx = loadPanesModuleWithStorage(document, null, stored);
+  const panes = ctx.HerdrWorkspacePanes;
+  const entry = panes.paneRootFor();
+  assert.equal(entry.panels.length, 0, "ghost heals to zero panels with zero workspaces");
+  assert.equal(entry.groups.length, 0, "groups stay empty");
+});
+
 test("the entry survives a workspace switch (no per-workspace swap)", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");

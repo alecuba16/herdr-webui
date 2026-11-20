@@ -1224,7 +1224,7 @@ async function commitTabRename(id) {
   refresh();
 }
 let closeTabInFlight = false;
-async function closeTab(id) {
+async function closeTab(id, opts) {
   // Guard: double-click on the ✕ button must not fire two close requests
   // (the second would close the next panel too). Claimed at entry, before
   // the await on the modal: a slow question dialog must not open a window
@@ -1234,8 +1234,11 @@ async function closeTab(id) {
   // Terminals are the one tab kind worth a confirm: a dead shell is a
   // lost session. The question modal (Enter confirms, Esc cancels)
   // replaces the old blocking confirm(); file and git tabs close silent.
+  // skipConfirm: the last-panel chip fork already asked its one question
+  // (close the workspace?), so its drain must not stack per-terminal
+  // modals on top of that answer.
   try {
-    const okToClose = await askQuestion({
+    const okToClose = opts && opts.skipConfirm || await askQuestion({
       title: "Close panel",
       message: `Close panel "${panelCloseName(id)}"?`,
       confirmText: "Close",

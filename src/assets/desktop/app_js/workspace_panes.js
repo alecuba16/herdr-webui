@@ -248,17 +248,52 @@ function buildPanePassLookups(root) {
   return { rows, known, workspacesById, panesByTab: null, treeMixed: treeIsMixedFor(root) };
 }
 
+// The p1 seed needs a workspace to anchor to. With no workspace
+// selected and none open, the session entry is the ZERO-panel empty
+// state: no rail, no ghost seed (the dashboard owns the pane area).
+// Seedable means a selected ws id or a non-empty workspaces list; the
+// pane harnesses omit state.workspaces, so the array read stays guarded.
+function panesSessionSeedable() {
+  return !!(state.ws || (state.workspaces || []).length > 0);
+}
+
+function freshSeedEntry() {
+  return {
+    v: 2,
+    panels: [newLeaf("p1")],
+    groups: [],
+    visible: { type: "panel", id: "p1" },
+    at: Date.now(),
+  };
+}
+
+function emptyPanelsEntry(v, at) {
+  return {
+    v: v || 2,
+    panels: [],
+    groups: [],
+    at: typeof at === "number" ? at : Date.now(),
+  };
+}
+
 function panesStateFor() {
-  if (!state.workspacePanes[SESSION_PANES_KEY]) {
-    state.workspacePanes[SESSION_PANES_KEY] = {
-      v: 2,
-      panels: [newLeaf("p1")],
-      groups: [],
-      visible: { type: "panel", id: "p1" },
-      at: Date.now(),
-    };
+  const existing = state.workspacePanes[SESSION_PANES_KEY];
+  if (!existing || !Array.isArray(existing.panels) || !existing.panels.length) {
+    // The empty entry upgrades to the seed lazily, on the first read
+    // after a workspace appears: the boot window (workspaces still
+    // fetching) never paints dead chrome, and the first render with a
+    // workspace still finds a renderable tree.
+    if (panesSessionSeedable()) {
+      state.workspacePanes[SESSION_PANES_KEY] = freshSeedEntry();
+    } else if (!existing) {
+      state.workspacePanes[SESSION_PANES_KEY] = emptyPanelsEntry();
+    } else if (!Array.isArray(existing.panels)) {
+      existing.panels = [];
+      if (!Array.isArray(existing.groups)) existing.groups = [];
+    }
+    return state.workspacePanes[SESSION_PANES_KEY];
   }
-  return state.workspacePanes[SESSION_PANES_KEY];
+  return existing;
 }
 
 // ---- group records (one-visible-view model) -------------------------
@@ -677,18 +712,24 @@ function normalizeGroupRecord(group, entry) {
 
 // Repairs the whole session entry: panels healed, groups healed and
 // dissolved-away, visible pointer validated. Returns the entry or null.
-function normalizePanelEntry(entry) {
+// opts.allowEmpty (load/adopt call sites only) lets a zero-panel entry
+// through: that is the no-workspace empty state, and every other reader
+// keeps the null contract so nothing ever renders an empty entry.
+function normalizePanelEntry(entry, opts) {
   if (!entry || typeof entry !== "object" || !Array.isArray(entry.panels)) return null;
   entry.panels = entry.panels.map(normalizePanelLeaf).filter(Boolean);
-  if (!entry.panels.length) return null;
+  if (!entry.panels.length && !(opts && opts.allowEmpty)) return null;
   if (!Array.isArray(entry.groups)) entry.groups = [];
   entry.groups = entry.groups.map((g) => normalizeGroupRecord(g, entry)).filter(Boolean);
   // The visible pointer survives only when it names a live subject;
   // anything else heals to the first panel (all panels are subjects now).
-  const subject = visibleSubject(entry);
-  entry.visible = subject && subject.kind === "group"
-    ? { type: "group", id: subject.group.groupId }
-    : { type: "panel", id: subject.leaf.paneId };
+  // An empty entry has no subject to heal to.
+  if (entry.panels.length) {
+    const subject = visibleSubject(entry);
+    entry.visible = subject && subject.kind === "group"
+      ? { type: "group", id: subject.group.groupId }
+      : { type: "panel", id: subject.leaf.paneId };
+  }
   return entry;
 }
 
@@ -708,21 +749,24 @@ function loadWorkspacePanesStates() {
     const parsed = JSON.parse(raw);
     const entry = parsed && typeof parsed === "object" ? parsed[SESSION_PANES_KEY] || Object.values(parsed)[0] : null;
     if (entry && Array.isArray(entry.panels)) {
-      const healed = normalizePanelEntry(entry);
+      // allowEmpty: a saved zero-panel entry is the no-workspace empty
+      // state and restores as-is; a seed mints only when a workspace
+      // can anchor it (panesStateFor upgrades on the next seedable
+      // read, so the boot window never repaints dead chrome).
+      const healed = normalizePanelEntry(entry, { allowEmpty: true });
       if (healed) {
         // D13 reset, collector refinement: an all-empty entry whose
         // panels carry NO workspace binding is a ghost (every id closed
         // in a previous session, nothing adopted since) and resets to
-        // the single default panel. Empty panels with a live binding are
-        // real panels the user left and restore as-is.
+        // the seed when a workspace can anchor it, or to the empty
+        // state when none can (zero workspaces). Empty panels with a
+        // live binding are real panels the user left and restore as-is.
         const restorable = healed.panels.some((leaf) => (leaf.tabs && leaf.tabs.length) || leafWsId(leaf));
-        state.workspacePanes[SESSION_PANES_KEY] = restorable ? healed : {
-          v: 2,
-          panels: [newLeaf("p1")],
-          groups: [],
-          visible: { type: "panel", id: "p1" },
-          at: Date.now(),
-        };
+        state.workspacePanes[SESSION_PANES_KEY] = restorable
+          ? healed
+          : panesSessionSeedable()
+            ? freshSeedEntry()
+            : emptyPanelsEntry();
       }
     } else if (entry && entry.root) {
       // Legacy tree blob: flatten every leaf into panels. Old marks
@@ -796,8 +840,31 @@ function panesServerReachable() {
 // markers (runtime-only, never serialized to the server), and the
 // editor/git tab ids (client-owned; the server stores whatever the last
 // writer pushed, so each client merges its own back).
+// The server store's untouched default: one empty unbound p1 panel and
+// nothing else (mirror of the Rust entry_is_seed rule). A client with
+// real content always wins over it, so the conversion below only ever
+// eats the self-seeded default, never a real snapshot.
+function serverEntryIsContentlessSeed(entry) {
+  if (!entry || !Array.isArray(entry.panels) || entry.panels.length !== 1) return false;
+  const leaf = entry.panels[0] || {};
+  return leaf.paneId === "p1"
+    && !(leaf.tabs || []).length
+    && leaf.wsId == null
+    && leaf.groupId == null
+    && !(entry.groups || []).length;
+}
+
 function adoptServerPanesEntry(incoming, opts) {
   if (!incoming || typeof incoming !== "object" || !Array.isArray(incoming.panels)) return false;
+  // Zero-workspace conversion: the server store self-seeds a
+  // contentless p1 default, and adopting it would mint a panel no
+  // workspace can anchor (the ghost rail over the dashboard). The
+  // empty state wins instead; panesStateFor re-mints the seed lazily
+  // on the first read after a workspace appears.
+  if (!panesSessionSeedable() && serverEntryIsContentlessSeed(incoming)) {
+    state.workspacePanes[SESSION_PANES_KEY] = emptyPanelsEntry(incoming.v, incoming.at);
+    return true;
+  }
   const prev = state.workspacePanes[SESSION_PANES_KEY] || null;
   const prevVisible = prev && prev.visible && typeof prev.visible === "object" ? prev.visible : null;
   const prevFocus = prev && prev.activePaneId ? String(prev.activePaneId) : null;
@@ -996,10 +1063,16 @@ async function bootWorkspacePanesFromServer() {
       return;
     }
     // No server entry yet: seed it with the local one (migration POST).
+    // The server store never holds a zero-panel entry (GET self-seeds,
+    // the last panel.close resets to the seed), so a zero-workspace
+    // client posts the p1 seed shape while keeping its local empty
+    // state: the seed converts back on every adoption until a
+    // workspace exists.
+    const local = paneRootFor();
     await api("/api/workspace-panes", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ entry: paneRootFor() }),
+      body: JSON.stringify({ entry: (local.panels || []).length ? local : freshSeedEntry() }),
     });
     panesMode = "server";
   } catch (_) {
@@ -1113,6 +1186,25 @@ function paneRoot() {
 // An entry renders when it holds at least one panel.
 function paneTreeRenderable(entry) {
   return paneLeaves(entry).length > 0;
+}
+
+// Runtime twin of the boot-time zero-workspace conversion: when the
+// LAST workspace closes at runtime (SSE), the seed/prune leaves behind
+// an unbound empty panel that would paint a ghost rail over the
+// dashboard. Same contract as the boot path: zero workspaces means
+// ZERO panels. Conservative guard: any leaf still holding tabs or a
+// live ws binding keeps the tree (workspaces remain, or the user's
+// unsaved views wait for their own close path).
+function resetSessionEntryWhenNoWorkspaces() {
+  if (panesSessionSeedable()) return false;
+  const entry = state.workspacePanes && state.workspacePanes[SESSION_PANES_KEY];
+  if (!entry || !Array.isArray(entry.panels) || !entry.panels.length) return false;
+  const live = paneLeaves(entry);
+  if (live.some((leaf) => (leaf.tabs || []).length || leafWorkspaceId(leaf))) return false;
+  state.workspacePanes[SESSION_PANES_KEY] = emptyPanelsEntry();
+  saveWorkspacePanesStates();
+  renderWorkspacePanes();
+  return true;
 }
 
 // Leaf-level accessors default to the acting panel. paneTabs/paneActiveTab
@@ -4383,21 +4475,19 @@ function closePaneFor(encodedPaneId) {
 // Chip close: ungated by design (the chip ✕ renders even on the last
 // panel). A real close through closeActivePane needs a second leaf to
 // hand the route to, so the last panel drains through its own tab
-// closes: confirm paths included, the workspace cascade closes the
-// workspace's last terminal, and closeLastPanelToSeed resets the
-// record. The empty pane area (seed panel, or the dashboard when the
-// cascade took the workspace) is the accepted landing state.
-async function closePanelFromChip(encodedPaneId) {
-  const root = paneRootFor();
-  if (!paneTreeRenderable(root)) return false;
-  const paneId = decodeURIComponentSafe(encodedPaneId);
-  const leaf = paneId ? paneForPaneId(root, paneId) : activeLeaf(root);
-  if (!leaf) return false;
-  if (paneLeaves(root).length >= 2) {
-    focusLeaf(root, leaf);
-    root.activePaneId = leaf.paneId;
-    return closeActivePane();
-  }
+// closes: the workspace fork below owns the confirms, and
+// closeLastPanelToSeed resets the record. The empty pane area (seed
+// panel, or the dashboard when the cascade took the workspace) is the
+// accepted landing state.
+
+// Shared drain for the last-panel close: every real tab id in the leaf
+// closes through its own path (editor/git local, terminal via the
+// bundle's closeTab). skipConfirm rides the workspace fork's drain: the
+// fork already collected the one answer, per-terminal modals would stack
+// on it. The loop tolerates the leaf vanishing mid-drain (the SSE sweep
+// can fold it while the closes land).
+async function drainLastPanelTabs(leaf, opts) {
+  const skipConfirm = !!(opts && opts.skipConfirm);
   for (const tabId of [...(leaf.tabs || [])]) {
     if (tabId === TERMINAL_TAB_PLACEHOLDER) continue;
     const doomed = paneForPaneId(paneRootFor(), leaf.paneId);
@@ -4407,7 +4497,7 @@ async function closePanelFromChip(encodedPaneId) {
     } else if (isGitTab(tabId)) {
       closeGitTab(gitTabViewKey(tabId));
     } else if (typeof closeTab === "function" && terminalTabKnown(tabId)) {
-      await closeTab(tabId);
+      await closeTab(tabId, skipConfirm ? { skipConfirm: true } : undefined);
     } else {
       pruneClosedTabFromLeaf(tabId);
     }
@@ -4416,6 +4506,142 @@ async function closePanelFromChip(encodedPaneId) {
     if (!drained) return true;
     if ((drained.tabs || []).includes(tabId)) return false;
   }
+  return true;
+}
+
+// The fork's gate: ask only when the closing panel is bound to an
+// ALIVE workspace and the close-on-last-terminal option is on. An
+// unbound panel or a dead binding has no workspace to ask about. The
+// typeof checks keep standalone pane harnesses (core.js not in their
+// scope) on the legacy ungated drain.
+function lastPanelAskWorkspace(leaf) {
+  if (typeof askQuestion !== "function") return null;
+  if (typeof closeWorkspaceById !== "function") return null;
+  if (typeof closeWorkspaceOnLastTerminalFlag !== "function" ||
+      !closeWorkspaceOnLastTerminalFlag()) return null;
+  const wsId = leafWorkspaceId(leaf);
+  if (!wsId) return null;
+  const workspace = (state.workspaces || [])
+    .find((candidate) => candidate && candidate.workspace_id === wsId) || null;
+  if (!workspace) return null;
+  // The ask belongs to the workspace's LAST panel only: a sibling
+  // panel of the same workspace survives the close, so the workspace
+  // lives on and no ask fires (the leaf-count branch in
+  // closePanelFromChip used to skip this check entirely, closing a
+  // sole-ws panel silently beside an unbound neighbor).
+  if (leavesBoundTo(paneRootFor(), wsId).length > 1) return null;
+  return workspace;
+}
+
+// The inflight claim spans the fork's whole drain: every closeTab call
+// pokes maybeAutoCloseWorkspace, and the SSE tab.closed frames arrive
+// mid-drain too. Without the claim each would stack a second workspace
+// modal on the answer this fork already collected.
+function claimWorkspaceAutoClose(workspaceId) {
+  if (typeof autoCloseInFlight === "undefined" || !autoCloseInFlight) return;
+  autoCloseInFlight.add(workspaceId);
+}
+
+function releaseWorkspaceAutoClose(workspaceId) {
+  if (typeof autoCloseInFlight === "undefined" || !autoCloseInFlight) return;
+  autoCloseInFlight.delete(workspaceId);
+}
+
+// The last-panel fork: ONE ask decides the workspace's fate before any
+// drain. Confirm closes the workspace after the drain (the tail mirrors
+// maybeAutoCloseWorkspace's confirmed branch); cancel keeps the workspace
+// and the drain lands on the fresh seed, which the ladder binds when the
+// next terminal opens.
+async function closeLastPanelWithWorkspaceAsk(leaf, workspace) {
+  const workspaceId = workspace.workspace_id;
+  const kind = typeof isLinkedWorktree === "function" && isLinkedWorktree(workspace)
+    ? "worktree"
+    : "workspace";
+  const name = typeof workspaceCloseName === "function"
+    ? workspaceCloseName(workspaceId)
+    : workspaceId;
+  const confirmed = await askQuestion({
+    title: `Close ${kind}?`,
+    message: `Close ${kind} "${name}"? Its last panel is closing. Cancel keeps it open with a fresh empty panel.`,
+    confirmText: "Close",
+    danger: true,
+  });
+  claimWorkspaceAutoClose(workspaceId);
+  try {
+    const drained = await drainLastPanelTabs(leaf, { skipConfirm: true });
+    if (!drained) {
+      releaseWorkspaceAutoClose(workspaceId);
+      return false;
+    }
+    if (!confirmed) {
+      keepLastPanelStanding(leaf);
+      // Cancel holds the claim past this fork: the tab.closed SSE frame
+      // for the just-drained terminal arrives right after and pokes
+      // maybeAutoCloseWorkspace again, which would stack a second ask on
+      // an answer the user already gave. The timed release keeps the
+      // suppression window short so a later genuine close still asks.
+      if (typeof setTimeout === "function") {
+        setTimeout(() => releaseWorkspaceAutoClose(workspaceId), 2000);
+      } else {
+        releaseWorkspaceAutoClose(workspaceId);
+      }
+      return true;
+    }
+    const wasSelected = state.ws === workspaceId;
+    await closeWorkspaceById(workspaceId);
+    releaseWorkspaceAutoClose(workspaceId);
+    if (wasSelected) {
+      if (typeof resetTerminalConnection === "function") resetTerminalConnection(true);
+      if (typeof selectFallbackWorkspaceAfterClosed === "function")
+        selectFallbackWorkspaceAfterClosed(workspaceId);
+      if (typeof render === "function") render();
+      if (typeof replaceSelectionHistory === "function") replaceSelectionHistory();
+      if (window.HerdrTerminalRenderer && typeof connectTerminal === "function") connectTerminal();
+    }
+    return true;
+  } catch (_) {
+    releaseWorkspaceAutoClose(workspaceId);
+    return true;
+  }
+}
+
+// Cancel's landing state: the workspace keeps exactly one panel. A
+// single-leaf tree resets to the pristine seed; a multi-leaf tree keeps
+// the drained leaf standing (empty, still ws-bound) so the sibling
+// panels of OTHER workspaces stay untouched. The explicit user keep
+// disarms the v3.2 auto-close so a later sweep cannot fold the panel
+// the user just said to keep.
+function keepLastPanelStanding(leaf) {
+  const live = paneRootFor();
+  if (paneLeaves(live).length > 1) {
+    const standing = paneForPaneId(live, leaf.paneId);
+    if (!standing) return true;
+    disarmLeafAutoClose(standing);
+    saveWorkspacePanesStates();
+    renderWorkspacePanes();
+    return true;
+  }
+  return closeLastPanelToSeed(leaf);
+}
+
+async function closePanelFromChip(encodedPaneId) {
+  const root = paneRootFor();
+  if (!paneTreeRenderable(root)) return false;
+  const paneId = decodeURIComponentSafe(encodedPaneId);
+  const leaf = paneId ? paneForPaneId(root, paneId) : activeLeaf(root);
+  if (!leaf) return false;
+  // The workspace ask gates BEFORE the leaf-count branch: a ws's last
+  // panel must ask even when sibling panels of OTHER workspaces stand
+  // beside it (the multi-leaf close would otherwise drop it silently).
+  const askWorkspace = lastPanelAskWorkspace(leaf);
+  if (askWorkspace) return closeLastPanelWithWorkspaceAsk(leaf, askWorkspace);
+  if (paneLeaves(root).length >= 2) {
+    focusLeaf(root, leaf);
+    root.activePaneId = leaf.paneId;
+    return closeActivePane();
+  }
+  const drained = await drainLastPanelTabs(leaf);
+  if (!drained) return false;
   return closeLastPanelToSeed(leaf);
 }
 
@@ -5595,12 +5821,16 @@ function dashboardSidebarHome() {
 
 function detachPaneLayoutNodes(container) {
   // The pane render owns these classes; anything else (the app.html
-  // id siblings, rescued surfaces, the shell) stays.
+  // id siblings, rescued surfaces, the shell) stays. The label rail
+  // is pane chrome like the strips: a dashboard takeover (zero
+  // workspaces) must sweep it too, or the previous render's rail
+  // ghosts over the dashboard.
   const isLayoutNode = (node) =>
     hasClass(node, "workspace-pane") ||
     hasClass(node, "pane-row") ||
     hasClass(node, "pane-column") ||
     hasClass(node, "pane-strip-rail") ||
+    hasClass(node, "pane-label-rail") ||
     hasClass(node, "pane-divider");
   for (const child of [...(container.children || [])]) {
     if (isLayoutNode(child)) {
@@ -5840,6 +6070,7 @@ window.HerdrWorkspacePanes = {
   paneBarControlsSignature,
   forgetWorkspacePanes,
   pruneWorkspaceTabsFromPanes,
+  resetSessionEntryWhenNoWorkspaces,
   // Phase 4 surface. paneLeaves/activePane expose the flat panel walk;
   // consumers keep the names.
   paneLeaves,

@@ -22,9 +22,11 @@ section; the location bar and both sidebars stay as they are.
 5. Empty panel: shows the workspace path + a hint. Only Enter opens the
    terminal; typing does nothing (keyboard keeps its current behavior).
 6. Right sidebar follows the selected panel (its workspace's shell mode).
-7. Closing a workspace's LAST panel closes the panel's tabs and the
-   workspace itself (cascade): every open workspace always has at least
-   one panel, and the center and the sidebar never disagree.
+7. Closing a workspace's LAST panel asks once: confirm closes the panel's
+   tabs AND the workspace (cascade); cancel keeps the workspace with a
+   fresh empty seed panel (the ladder binds it later, no explicit bind).
+   Every open workspace keeps at least one panel, and the center and the
+   sidebar never disagree.
 8. Reuse: location bar, both sidebars, shell grid, resize/collapse, split
    tree, dividers, maximize, aux terminal surfaces.
 
@@ -131,13 +133,21 @@ split := { kind:"row"|"column", sizes:[grow...], children:[leaf|split...] }
   surviving panel bound to the SAME workspace (`migrationTargetForClosedLeaf`
   walks same-ws survivors). Cross-workspace migration never happens (the
   wsId invariant forbids it). When no same-ws survivor exists (this was
-  the ws's last panel), the panel's tabs close with the panel and the
-  workspace closes too (decision 7): sidebar row leaves, backend close
-  flow runs, remaining panels stay untouched.
+  the ws's last panel), ONE ask fires: confirm closes the panel's tabs
+  and the workspace (sidebar row leaves, backend close flow runs,
+  remaining panels stay untouched); cancel keeps the workspace with a
+  fresh empty panel: a single-panel tree resets to the pristine seed
+  (unbound; the ladder binds the panel when a terminal appears, no
+  explicit bind), while a multi-panel tree keeps the drained leaf
+  standing empty and ws-bound (other workspaces' panels stay
+  untouched) with the auto-close disarmed against the explicit keep.
 - Workspace close (explicit sidebar close): every leaf bound to that ws
   drops from the tree with its tabs; the tree collapses as today. If the
-  tree empties entirely it resets to the single default leaf and the
-  dashboard state takes the center, same as today's no-workspace boot.
+  tree empties entirely (no workspaces remain) the collector holds the
+  empty entry: ZERO panels render, no rail, no ghost p1 seed. The seed
+  blob the older server posts at boot converts to the empty entry
+  client-side; the first workspace appearance upgrades the empty entry to
+  a live seed panel.
 - The sync's auto-split mint stays as the boot/restore safety net: backend
   terminal ids for a ws with no panel (fresh boot, restored route) mint
   the missing panel beside the focused one instead of landing in a

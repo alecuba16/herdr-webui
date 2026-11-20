@@ -978,7 +978,7 @@ describe("app bundle load", () => {
     // The pane menu (F10, [⋮]) is deleted: its help row must not render.
     ok(!/Inside the menu, arrows move between items/.test(html), "pane menu row is gone");
     ok(!html.includes("[⋮]"), "no menu glyph anywhere in the help");
-    match(html, /Every label chip carries a ✕: it closes the panel \(the last panel closes to a fresh empty one\) and a group chip's ✕ dissolves the split back to the rail\./);
+    match(html, /Every label chip carries a ✕: it closes the panel \(the last one asks whether to close its workspace; cancel keeps the workspace with a fresh empty panel\) and a group chip's ✕ dissolves the split back to the rail\./);
     match(html, /Cancel the confirmation dialog; Enter confirms it\./);
   });
 
@@ -5373,7 +5373,7 @@ describe("app bundle load", () => {
     match(html, /workspace-group-main/);
   });
 
-  it("closing the last panel keeps the workspace open", async () => {
+  it("closing the last terminal asks whether to close the workspace: cancel keeps it", async () => {
     const ctx = context();
     runSource(ctx);
 
@@ -5384,9 +5384,15 @@ describe("app bundle load", () => {
         return { result: {} };
       };
       refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
       state.ws = "ws1";
       state.tab = "tab1";
       state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
       state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
       state.allTabs = state.tabs;
       state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
@@ -5394,20 +5400,427 @@ describe("app bundle load", () => {
       ctx,
     );
     await flushMicrotasks();
-    // The question modal is up: terminals ask before closing. Enter
-    // confirms, and the close then proceeds.
+    // First modal: the terminal close confirm. Enter proceeds.
     await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    // Second modal: maybeAutoCloseWorkspace asks about the workspace
+    // (closeWorkspaceOnLastTerminal defaults on, the workspace row
+    // exists, and the last tab is gone). Cancel keeps the workspace.
+    await ctx.closeQuestion(false);
     await flushMicrotasks();
     const calls = await vm.runInContext("calls", ctx);
 
-    // One tab close call, no workspace close: terminals are decoupled
-    // from workspace lifecycle. (The bundle boot also queues workspace
-    // and session fetches; only the close call matters here.)
+    // One tab close call, no workspace close: the answer owns it.
     const closeCalls = calls.filter((call) => call.url.includes("/close"));
     equal(closeCalls.length, 1);
     equal(closeCalls[0].url, "/api/tabs/tab1/close");
     equal(calls.some((call) => call.url.includes("workspaces") && call.method === "POST"), false,
-      "closing the last terminal never posts a workspace close");
+      "a cancelled workspace ask never posts a workspace close");
+    equal(await vm.runInContext("state.ws", ctx), "ws1");
+  });
+
+  it("closing the last terminal asks whether to close the workspace: confirm closes it", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      closeTab("tab1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // The tab close and the workspace close both POST.
+    const closeCalls = calls.filter((call) => call.url.includes("/close"));
+    equal(closeCalls.some((call) => call.url === "/api/tabs/tab1/close"), true);
+    equal(closeCalls.some((call) => call.url === "/api/workspaces/ws1/close"), true,
+      "a confirmed workspace ask posts the workspace close");
+    // closeWorkspaceById resets the selected route (state.ws null).
+    equal(await vm.runInContext("state.ws", ctx), null);
+  });
+
+  it("closing the last panel chip asks to close its workspace: cancel reseeds the panel", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [{ kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" }],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    // ONE modal for the whole fork: the workspace ask. Cancel keeps the
+    // workspace and lands the panel on the fresh seed.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // The drain POSTed the tab close with no per-terminal confirm (the
+    // fork's one ask covers it) and no workspace close posted.
+    const closeCalls = calls.filter((call) => call.url.includes("/close"));
+    equal(closeCalls.some((call) => call.url === "/api/tabs/tab1/close"), true,
+      "the drain closed the tab");
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false,
+      "cancel keeps the workspace open");
+    const entry = await vm.runInContext("HerdrWorkspacePanes.paneRoot()", ctx);
+    equal(entry.panels.length, 1);
+    equal(entry.panels[0].paneId, "p1", "the fresh seed panel stays with the workspace");
+    equal(await vm.runInContext("state.ws", ctx), "ws1");
+  });
+
+  it("closing the last panel chip asks to close its workspace: confirm closes it", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [{ kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" }],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // The workspace close POSTed once (the drain's tab close rode
+    // skipConfirm, so no extra terminal modal stacked in between).
+    equal(calls.filter((call) => call.url === "/api/tabs/tab1/close").length, 1);
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), true,
+      "confirm posts the workspace close");
+    equal(await vm.runInContext("state.ws", ctx), null);
+  });
+
+  it("closing the last panel of a workspace beside another workspace's panel asks: cancel keeps the panel standing", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: [], active: null, groupId: null, wsId: null },
+            { kind: "pane", paneId: "p2", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p2" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p2");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    // ONE ask for the whole fork even with a sibling panel standing:
+    // p2 is ws1's last panel. Cancel keeps the workspace.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    equal(calls.some((call) => call.url === "/api/tabs/tab1/close"), true,
+      "the drain closed the tab with skipConfirm (no per-terminal modal)");
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false,
+      "cancel keeps the workspace open");
+    const entry = await vm.runInContext("HerdrWorkspacePanes.paneRoot()", ctx);
+    equal(entry.panels.length, 2, "the multi-leaf tree keeps both panels");
+    const standing = entry.panels.find((panel) => panel.paneId === "p2");
+    equal(standing.tabs.length, 0, "the drained panel stands empty");
+    equal(standing.wsId, "ws1", "the standing panel keeps its ws binding");
+    equal(await vm.runInContext("state.ws", ctx), "ws1");
+  });
+
+  it("closing the last panel of a workspace beside another workspace's panel asks: confirm closes it", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: [], active: null, groupId: null, wsId: null },
+            { kind: "pane", paneId: "p2", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p2" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p2");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    equal(calls.filter((call) => call.url === "/api/tabs/tab1/close").length, 1,
+      "the tab close rode skipConfirm");
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), true,
+      "confirm posts the workspace close");
+    equal(await vm.runInContext("state.ws", ctx), null,
+      "the confirmed tail resets the selection");
+  });
+
+  it("a workspace with a second panel never asks on chip close", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+            { kind: "pane", paneId: "p2", tabs: [], active: null, groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p2");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // p1 holds ws1's tab, so closing the EMPTY sibling p2 is a plain
+    // panel close: no ask, no workspace close, the ws keeps its panel.
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false,
+      "a surviving same-ws panel means no workspace ask");
+    equal(await vm.runInContext("document.getElementById('questionModal').classList.contains('show')", ctx), false,
+      "no modal ever opened");
+    const entry = await vm.runInContext("HerdrWorkspacePanes.paneRoot()", ctx);
+    equal(entry.panels.length, 1, "the empty sibling dropped, the ws panel stays");
+    equal(entry.panels[0].paneId, "p1");
+  });
+
+  it("a canceled last-panel ask suppresses the tab.closed SSE echo", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [{ kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" }],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    // The fork's one ask: cancel keeps the workspace with the seed.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+    // The SSE echo for the drained terminal arrives inside the claim's
+    // suppression window: no second ask may stack on the given answer.
+    await vm.runInContext(
+      `removeClosedTabFromState = () => {};
+       forgetClosedSelection("tab.closed", { tab_id: "tab1", workspace_id: "ws1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    equal(await vm.runInContext("document.getElementById('questionModal').classList.contains('show')", ctx), false,
+      "the SSE echo never re-asks within the suppression window");
+    equal(await vm.runInContext("(state.workspaces || []).length", ctx), 1,
+      "the workspace survives the canceled ask and its echo");
+    const calls = await vm.runInContext("calls", ctx);
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false);
+  });
+
+  it("closing the last workspace empties the session entry at runtime", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: [], active: null, groupId: null, wsId: null },
+            { kind: "pane", paneId: "p2", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p2" },
+        },
+      };
+      forgetClosedSelection("workspace.closed", { workspace_id: "ws1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    // Zero workspaces at runtime lands the same empty entry as the boot
+    // conversion: no panels, no ghost seed rail over the dashboard.
+    const entry = await vm.runInContext(
+      "state.workspacePanes['__session__']", ctx);
+    equal(entry.panels.length, 0, "the session entry empties, no ghost seed");
+    const html = await vm.runInContext("document.body.innerHTML", ctx);
+    equal(html.includes("pane-label-chip"), false,
+      "no rail chip paints over the dashboard");
   });
 
   it("closing a panel that vanished server-side still finishes the close flow", async () => {
