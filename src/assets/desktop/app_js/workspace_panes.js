@@ -1200,7 +1200,17 @@ function resetSessionEntryWhenNoWorkspaces() {
   const entry = state.workspacePanes && state.workspacePanes[SESSION_PANES_KEY];
   if (!entry || !Array.isArray(entry.panels) || !entry.panels.length) return false;
   const live = paneLeaves(entry);
-  if (live.some((leaf) => (leaf.tabs || []).length || leafWorkspaceId(leaf))) return false;
+  // Liveness, not presence: a restored saved entry can carry a
+  // dead-but-nonnull wsId (its workspace closed in an earlier
+  // session), and honoring it would let a ghost rail survive the
+  // zero-workspace conversion. Only a binding to a workspace that
+  // still exists keeps the tree.
+  const liveWsIds = new Set((state.workspaces || []).map((w) => w && w.workspace_id));
+  const bindingIsLive = (leaf) => {
+    const wsId = leafWorkspaceId(leaf);
+    return !!wsId && liveWsIds.has(wsId);
+  };
+  if (live.some((leaf) => (leaf.tabs || []).length || bindingIsLive(leaf))) return false;
   state.workspacePanes[SESSION_PANES_KEY] = emptyPanelsEntry();
   saveWorkspacePanesStates();
   renderWorkspacePanes();
@@ -4560,13 +4570,17 @@ async function closeLastPanelWithWorkspaceAsk(leaf, workspace) {
   const name = typeof workspaceCloseName === "function"
     ? workspaceCloseName(workspaceId)
     : workspaceId;
+  // Claim BEFORE the ask: while the modal is up, an SSE tab.closed
+  // that empties the ws pokes maybeAutoCloseWorkspace, and without the
+  // claim it would open a second askQuestion (one questionResolve
+  // slot, core.js) whose answer strands this fork's promise forever.
+  claimWorkspaceAutoClose(workspaceId);
   const confirmed = await askQuestion({
     title: `Close ${kind}?`,
     message: `Close ${kind} "${name}"? Its last panel is closing. Cancel keeps it open with a fresh empty panel.`,
     confirmText: "Close",
     danger: true,
   });
-  claimWorkspaceAutoClose(workspaceId);
   try {
     const drained = await drainLastPanelTabs(leaf, { skipConfirm: true });
     if (!drained) {
@@ -4600,8 +4614,12 @@ async function closeLastPanelWithWorkspaceAsk(leaf, workspace) {
     }
     return true;
   } catch (_) {
+    // The POST failed: the workspace is still open server-side with a
+    // drained panel. The drain already destroyed the views, so report
+    // the miss (false) instead of success, and release the claim so a
+    // later genuine close can still ask.
     releaseWorkspaceAutoClose(workspaceId);
-    return true;
+    return false;
   }
 }
 

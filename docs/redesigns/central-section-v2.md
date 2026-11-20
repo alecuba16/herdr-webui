@@ -129,10 +129,11 @@ split := { kind:"row"|"column", sizes:[grow...], children:[leaf|split...] }
 - Tab close (terminal, editor, git): per-tab rules unchanged, except the
   emptied leaf stays standing as an empty panel (the Enter state); empty
   panels die by explicit panel close only, never by auto-collapse.
-- Panel close (pane menu, pane controls bar): tabs migrate to the nearest
-  surviving panel bound to the SAME workspace (`migrationTargetForClosedLeaf`
-  walks same-ws survivors). Cross-workspace migration never happens (the
-  wsId invariant forbids it). When no same-ws survivor exists (this was
+- Panel close (rail chip ✕): each view closes through its own
+  confirmation path (terminal ask, dirty editor confirm, git silent),
+  then the panel record drops with its views, nothing merges into a
+  neighbor. Cross-workspace migration never happens (the wsId
+  invariant forbids it). When no same-ws sibling exists (this was
   the ws's last panel), ONE ask fires: confirm closes the panel's tabs
   and the workspace (sidebar row leaves, backend close flow runs,
   remaining panels stay untouched); cancel keeps the workspace with a
@@ -187,10 +188,17 @@ The ask gate (`lastPanelAskWorkspace(leaf)` → workspace or null):
 4. Placeholder-only or unbound leaves return null: no workspace is
    tied to the close.
 
-Fork (`closeLastPanelWithWorkspaceAsk`): ONE ask before any drain
-(`skipConfirm` rides the drain so per-view modals never stack).
+Fork (`closeLastPanelWithWorkspaceAsk`): ONE ask before any drain. The
+claim is taken BEFORE the ask (a tab.closed SSE frame that empties the
+ws mid-modal would otherwise open a second ask and strand this fork's
+promise, one questionResolve slot). `skipConfirm` rides the terminal
+closes only: editor dirty-confirms still run inside the drain (per-view
+stacking stays possible exactly there, by design, a refused editor
+confirm stops the fork with the tree intact).
 - Confirm: drain → `closeWorkspaceById` (server close + forget) →
-  claim released; the SSE frame owns the zero-ws conversion.
+  claim released; the SSE frame owns the zero-ws conversion. A failed
+  close POST releases the claim and reports false (the drain already
+  destroyed the views, the workspace lives on).
 - Cancel: drain → `keepLastPanelStanding(leaf)`: one-panel tree resets
   to `freshSeedEntry()` (unbound; `closeLastPanelToSeed` op, same as a
   normal drop), multi-leaf tree keeps the drained leaf standing empty
@@ -198,9 +206,10 @@ Fork (`closeLastPanelWithWorkspaceAsk`): ONE ask before any drain
   so the `tab.closed` SSE echo (which re-pokes
   `maybeAutoCloseWorkspace`) cannot stack a second ask on the answer
   already given.
-- The claim (`autoCloseInFlight`) spans the whole fork: every
-  `closeTab` inside the drain pokes the sweep, the SSE echoes arrive
-  mid-drain. Without it each would mint its own modal.
+- The claim (`autoCloseInFlight`) spans the whole fork, ask window
+  included: every `closeTab` inside the drain pokes the sweep, the SSE
+  echoes arrive mid-drain and mid-modal. Without it each would mint
+  its own modal.
 
 Design decisions behind the ordering:
 
