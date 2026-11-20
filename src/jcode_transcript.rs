@@ -53,6 +53,19 @@ struct SessionEvidence {
     status_active: bool,
     /// (mtime_ns, size) of the file the evidence was read from.
     generation: (u128, u64),
+    /// The session checkout's git common dir (`git rev-parse
+    /// --git-common-dir`), resolved only when a worktree-aware resolve
+    /// first needs it. A linked worktree session (session started in
+    /// `worktrees/<repo>/<lane>`) records the worktree path as
+    /// working_dir, while a pane can sit in the main checkout, or the
+    /// session in the main checkout while the pane sits in the
+    /// worktree: the common dir is the shared repo identity both sides
+    /// can match on. Cached in the index's `git_roots` map, NOT on the
+    /// row: rows are cloned on every 250 ms sweep and a per-row lazy
+    /// cell would re-fork git once per row per sweep; with hundreds of
+    /// session files that turned pane.list into a fork storm that
+    /// blew the 10 s request timeout (live incident, 992 rows).
+    worktree_root: Option<String>,
 }
 
 /// Parsed-turn cache entry for the chat lens: the stat signatures
@@ -86,6 +99,14 @@ pub struct JcodeStoreIndex {
     // field so tests (and only tests) can redirect it away from the
     // real HOME.
     client_sessions_dir: PathBuf,
+    // Any path's git common dir (pane cwd or session working_dir),
+    // throttled like the process-table cache: the worktree-aware match
+    // resolves each DISTINCT path once per 250 ms window instead of
+    // once per candidate row per poll. Session rows are re-cloned on
+    // every sweep, so the cache lives here and the row carries only
+    // the resolved string; one pane poll reuses the session entries
+    // across its panes because they key on the same path strings.
+    git_roots: Mutex<(Option<Instant>, HashMap<String, Option<String>>)>,
     // Parsed-turn cache for the chat lens: full snapshot+journal
     // re-read/re-parse per poll was the lens's hot path. One entry
     // per session, keyed by the stat signatures of both files (the
@@ -112,6 +133,7 @@ impl JcodeStoreIndex {
             swarm_workers: Mutex::new((None, HashSet::new())),
             client_sessions_dir,
             turns_cache: Mutex::new(HashMap::new()),
+            git_roots: Mutex::new((None, HashMap::new())),
         }
     }
 
@@ -382,12 +404,36 @@ impl JcodeStoreIndex {
             .filter(|e| !swarm_workers.contains(&e.session_id))
             .collect();
         let cwd = pane_cwd.to_string_lossy();
+        // Worktree-aware cwd gate. Exact string match stays the primary
+        // and cheapest path; the git common dir comparison only runs
+        // when the strings differ and both sides resolve to a git
+        // checkout. This is the fix for the live report: a session
+        // started in the main checkout (`.../projects/herdr-webui`)
+        // while the pane sits in a linked worktree
+        // (`.../worktrees/herdr-webui/pane_controls_bar`) recorded
+        // different working_dir strings, so every exact-match step
+        // refused `no_session_path` even though the pane's own terminal
+        // was the session's client. The pid/status gates below are
+        // UNCHANGED: a worktree match only widens which sessions a
+        // step can consider, never which of them wins.
+        let pane_root = self.git_root_cached(&cwd);
+        let cwd_matches = |e: &SessionEvidence| -> bool {
+            if e.working_dir == cwd {
+                return true;
+            }
+            let (Some(pane_root), Some(session_root)) =
+                (&pane_root, &e.worktree_root)
+            else {
+                return false;
+            };
+            pane_root == session_root.as_str()
+        };
 
         // Step 1: PID evidence (primary). Sessions whose last_pid is in
         // the pane's process tree and whose cwd matches.
         let tree_hits: Vec<&SessionEvidence> = index
             .iter()
-            .filter(|e| e.working_dir == cwd && descendants(e.last_pid))
+            .filter(|e| cwd_matches(e) && descendants(e.last_pid))
             .collect();
         if let Some(only) = single(&tree_hits) {
             return JcodeSessionResolution::Resolved {
@@ -410,7 +456,7 @@ impl JcodeStoreIndex {
         // many (two clients in one tree) continue.
         let known: HashSet<&str> = index
             .iter()
-            .filter(|e| e.working_dir == cwd)
+            .filter(|e| cwd_matches(e))
             .map(|e| e.session_id.as_str())
             .collect();
         let mut marker_ids: Vec<String> = Vec::new();
@@ -432,7 +478,7 @@ impl JcodeStoreIndex {
         // the status filter is load-bearing — validated round 6).
         let live_hits: Vec<&SessionEvidence> = index
             .iter()
-            .filter(|e| e.working_dir == cwd && live_pids(e.last_pid) && e.status_active)
+            .filter(|e| cwd_matches(e) && live_pids(e.last_pid) && e.status_active)
             .collect();
         if let Some(only) = single(&live_hits) {
             return JcodeSessionResolution::Resolved {
@@ -519,6 +565,32 @@ impl JcodeStoreIndex {
         workers
     }
 
+    /// Any checkout path's git common dir (pane cwd or session
+    /// working_dir), cached per path string with the same 250 ms
+    /// throttle the other poll-side caches use. `None` means the
+    /// path is not a git checkout (or git is broken there): the
+    /// worktree-aware match then never fires for that path, exactly
+    /// as if the step did not exist. Distinct paths still pay one
+    /// git fork each per window; identical paths (many sessions in
+    /// one checkout, the pane polls of one poll cycle) share one.
+    fn git_root_cached(&self, path: &str) -> Option<String> {
+        let mut guard = self
+            .git_roots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(at) = guard.0 {
+            if at.elapsed() < Duration::from_millis(250) {
+                if let Some(hit) = guard.1.get(path) {
+                    return hit.clone();
+                }
+            }
+        }
+        let resolved = git_common_dir(Path::new(path));
+        guard.0 = Some(Instant::now());
+        guard.1.insert(path.to_string(), resolved.clone());
+        resolved
+    }
+
     /// Re-stats the store and re-reads only changed files. Returns the
     /// current evidence rows through the cache lock (cheap clone of
     /// the map values). ONE row per session: snapshot evidence wins;
@@ -585,7 +657,13 @@ impl JcodeStoreIndex {
                         break;
                     }
                 }
-                if let Some(e) = read_evidence(path, &session_id, generation) {
+                if let Some(mut e) = read_evidence(path, &session_id, generation) {
+                    // The row's worktree root comes from the shared
+                    // throttled cache: one git fork per DISTINCT
+                    // working_dir per window, never one per row
+                    // re-read. Rows kept fresh by generation stay as
+                    // cloned and keep their resolved root.
+                    e.worktree_root = self.git_root_cached(&e.working_dir);
                     cache.insert(session_id.clone(), e.clone());
                     evidence = Some(e);
                     break;
@@ -655,6 +733,7 @@ fn read_evidence(
             last_pid,
             status_active: value.get("status") == Some(&serde_json::Value::String("Active".into())),
             generation,
+            worktree_root: None,
         })
     };
     if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
@@ -680,6 +759,41 @@ fn read_evidence(
         let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
         evidence_from(&parsed)
     }
+}
+
+/// A checkout's git common dir: the one path every linked worktree and
+/// the main checkout of the same repository share (`git rev-parse
+/// --git-common-dir`). Two checkouts resolving to the same common dir
+/// are the same repository, the identity a worktree-aware session
+/// match needs. Plain folders, broken git, or a missing directory
+/// return None and the caller falls back to exact-path matching only.
+/// The output is made absolute against the queried checkout because
+/// git prints it relative to the `-C` cwd for linked worktrees
+/// (`../.git` style) while the main checkout prints an absolute path,
+/// and the two strings must compare equal when they mean the same repo.
+fn git_common_dir(checkout: &Path) -> Option<String> {
+    let output = crate::git_bin::command()
+        .arg("-C")
+        .arg(checkout)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let printed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if printed.is_empty() {
+        return None;
+    }
+    let absolute = if Path::new(&printed).is_absolute() {
+        PathBuf::from(printed)
+    } else {
+        checkout.join(printed)
+    };
+    // Normalize away the `../.git` hops a linked worktree prints, so
+    // the resolved path is directly comparable across checkouts.
+    let normalized = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+    Some(normalized.to_string_lossy().into_owned())
 }
 
 fn default_store_dir() -> PathBuf {
@@ -2560,6 +2674,175 @@ mod tests {
                 reason: RefusalReason::Ambiguous
             }
         );
+    }
+
+    // Worktree-aware matching tests (live report: a session started in
+    // a main checkout never matched a pane sitting in a linked worktree
+    // of the same repo because every exact-cwd gate refused).
+
+    /// Two real linked worktrees of one throwaway repo: the session side
+    /// records the main checkout, the pane side sits in the worktree
+    /// (and the mirror case). `git rev-parse --git-common-dir` is the
+    /// real subprocess, so the fixture builds a real repo on disk.
+    fn worktree_pair(name: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "jcode-wt-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let main = root.join("main");
+        let lane = root.join("lane");
+        std::fs::create_dir_all(&main).unwrap();
+        let mut run = |args: &[&str], cwd: &Path| {
+            let mut cmd = crate::git_bin::command();
+            cmd.arg("-C").arg(cwd).args(args);
+            let out = cmd.output().expect("git spawns");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"], &main);
+        std::fs::write(main.join("f"), "x").unwrap();
+        run(&["-c", "user.email=t@t", "-c", "user.name=T", "add", "-A"], &main);
+        run(
+            &["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "x", "--no-gpg-sign"],
+            &main,
+        );
+        // A branch must exist for a linked worktree to check out.
+        run(&["branch", "lane"], &main);
+        let out = crate::git_bin::command()
+            .arg("-C")
+            .arg(&main)
+            .args(["worktree", "add", "-q", "--", &lane.to_string_lossy(), "lane"])
+            .output()
+            .expect("git worktree add spawns");
+        assert!(
+            out.status.success(),
+            "worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(lane.join(".git").exists(), "linked worktree exists");
+        (main, lane)
+    }
+
+    #[test]
+    fn resolve_matches_worktree_pane_to_main_checkout_session() {
+        let (main, lane) = worktree_pair("s1");
+        let dir = temp_store("wt1");
+        // Session recorded with the MAIN checkout as working_dir; the
+        // pane's live cwd is the linked worktree lane.
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&ev_session("session_a", 500, &main.to_string_lossy(), "Active"))
+                .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir);
+        // Step 1 shape: the session's pid is in the pane's tree.
+        let res = index.resolve(&lane, &|pid| pid != 500, &|pid| pid == 500, "", &[]);
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_matches_main_checkout_pane_to_worktree_session() {
+        // Mirror: session started INSIDE the worktree, pane sits in the
+        // main checkout.
+        let (main, lane) = worktree_pair("s2");
+        let dir = temp_store("wt2");
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&ev_session("session_a", 500, &lane.to_string_lossy(), "Active"))
+                .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir);
+        let res = index.resolve(&main, &|pid| pid != 500, &|pid| pid == 500, "", &[]);
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_worktree_match_keeps_status_gate() {
+        let (_main, lane) = worktree_pair("s3");
+        let dir = temp_store("wt3");
+        // Same repo, pid live and in-tree, but the session is Closed:
+        // the worktree match must not bypass the status filter.
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&ev_session("session_a", 500, "/w", "Closed")).unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir);
+        let res = index.resolve(&lane, &|pid| pid == 500, &|pid| pid == 500, "", &[]);
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::NoSessionPath
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_two_worktree_sessions_stay_ambiguous() {
+        let (main, lane) = worktree_pair("s4");
+        let dir = temp_store("wt4");
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&ev_session("session_a", 700, &main.to_string_lossy(), "Active"))
+                .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("session_b.json"),
+            serde_json::to_string(&ev_session("session_b", 700, &lane.to_string_lossy(), "Active"))
+                .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir);
+        // Both sessions same repo (one main, one lane), same live pid:
+        // the widened gate finds both and ambiguity must refuse, not guess.
+        let res = index.resolve(&lane, &|pid| pid == 700, &|_| false, "", &[]);
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_different_repos_never_match() {
+        let (main, lane) = worktree_pair("s5");
+        let dir = temp_store("wt5");
+        // Session in a DIFFERENT repo (its own fixture pair): exact cwd
+        // differs and the common dir differs too.
+        let (other_main, _other_lane) = worktree_pair("s5b");
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&ev_session("session_a", 500, &other_main.to_string_lossy(), "Active"))
+                .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir);
+        let res = index.resolve(&lane, &|pid| pid != 500, &|pid| pid == 500, "", &[]);
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::NoSessionPath
+            }
+        );
+        let _ = main;
     }
 
     #[test]
