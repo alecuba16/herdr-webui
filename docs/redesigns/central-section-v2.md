@@ -153,6 +153,74 @@ split := { kind:"row"|"column", sizes:[grow...], children:[leaf|split...] }
   the missing panel beside the focused one instead of landing in a
   foreign leaf.
 
+### Close rules: implementation reference
+
+Entry points (`window.HerdrWorkspacePanes`, workspace_panes.js):
+
+- `closePanelFromChip(paneId)` (rail chip ✕, async, boolean): the only
+  surface that carries the last-panel ask. Order: ask gate →
+  multi-leaf close (`closeActivePane`) → last-leaf drain → seed reset.
+- `closePaneFor(paneId)` (exported helper, tests drive it): focuses the
+  leaf, then `closeActivePane()`. Refuses a single-leaf tree, so it
+  never reaches the workspace cascade. No DOM button binds it since the
+  rail chips took over close.
+- `closeActivePane()` (`prefix E` too): requires a second leaf; drains
+  views through their own confirm paths, drops the record. A ws-bound
+  last panel is unreachable here (nothing to hand the route to), so
+  the cascade stays owned by the chip path.
+- `drainLastPanelTabs(leaf, { skipConfirm })`: one view at a time, each
+  through its real close (editor confirm, git, terminal via `closeTab`).
+  False = a confirm was refused, the close stops with the tree intact.
+- `resetSessionEntryWhenNoWorkspaces()`: converts the session entry to
+  `emptyPanelsEntry()` when the tree holds no tabs and no live ws
+  binding (conservative guard: real panels wait for their own path).
+  core.js calls it from the `workspace.closed` / `worktree.removed`
+  frame after the prune.
+
+The ask gate (`lastPanelAskWorkspace(leaf)` → workspace or null):
+
+1. `closeWorkspaceOnLastTerminal` on (default; missing options = off
+   in isolated harnesses).
+2. `leafWorkspaceId(leaf)` resolves and the workspace row exists.
+3. `leavesBoundTo(root, wsId).length === 1`: a same-ws sibling means
+   the ws survives the close, no ask.
+4. Placeholder-only or unbound leaves return null: no workspace is
+   tied to the close.
+
+Fork (`closeLastPanelWithWorkspaceAsk`): ONE ask before any drain
+(`skipConfirm` rides the drain so per-view modals never stack).
+- Confirm: drain → `closeWorkspaceById` (server close + forget) →
+  claim released; the SSE frame owns the zero-ws conversion.
+- Cancel: drain → `keepLastPanelStanding(leaf)`: one-panel tree resets
+  to `freshSeedEntry()` (unbound; `closeLastPanelToSeed` op, same as a
+  normal drop), multi-leaf tree keeps the drained leaf standing empty
+  and ws-bound with `autoCloseArmed` cleared; the claim holds 2000 ms
+  so the `tab.closed` SSE echo (which re-pokes
+  `maybeAutoCloseWorkspace`) cannot stack a second ask on the answer
+  already given.
+- The claim (`autoCloseInFlight`) spans the whole fork: every
+  `closeTab` inside the drain pokes the sweep, the SSE echoes arrive
+  mid-drain. Without it each would mint its own modal.
+
+Design decisions behind the ordering:
+
+- Ask BEFORE the drain: the user decides the workspace's fate before
+  any view closes. A pre-drain cancel costs nothing; post-drain would
+  have to rebuild tabs.
+- Gate BEFORE the leaf-count branch in `closePanelFromChip`: a ws's
+  last panel must ask even when sibling panels of OTHER workspaces
+  stand beside it (the multi-leaf close would drop it silently).
+- Cancel lands on a fresh EMPTY panel (not the old tree): the
+  Enter-on-empty-panel path mints the terminal and the ladder binds
+  the panel to the workspace, no explicit rebind call.
+- Zero workspaces = zero panels, both boot and runtime: the render
+  path assumes a one-panel minimum, so the empty entry (not a seeded
+  p1) is the resting state; `panesStateFor` upgrades it to a seed
+  lazily on the first read after a workspace appears. The saved entry
+  on the server keeps the seed shape (the server store never holds a
+  zero-panel entry, GET self-seeds), the client converts on every
+  adoption until a workspace exists.
+
 ## Integration points
 
 - `renderWorkspacePanes()` contract unchanged; `renderLeafInto` prepends
