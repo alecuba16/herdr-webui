@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.7.55 Release Notes
 - Flat panels outside a split hold exactly one view and render no
   strip: their identity lives in the label rail chip and the location
   bar, and every second-view path auto-splits the host (old left,
@@ -99,6 +99,18 @@
   The attach now clears the surface first, the same contract as the
   primary shell's reset, so the replay repaints the tail exactly
   once.
+- Editor and Git tab closes reach the server now: those ids are
+  client-owned and the terminal sync pass never carried them, so a
+  close stayed local and the next op response adopted the dead id
+  back into the tree (seen live: a subject.set response resurrected
+  a closed editor tab). Closes push their leaf delta as a
+  `panel.update` before any reopen op fires, and a 15-second
+  per-id tombstone keeps the adoption merge from healing the
+  just-closed id back out of the close's own response; a legitimate
+  reopen clears the mark. The reload rehydrate pays the same file
+  browser state activation a sidebar visit pays (a narrow
+  `activateWorkspace` export), so the first file fetch no longer
+  rides an empty cwd and 400s.
 
 ## 0.7.54 Release Notes
 - The terminal hub join race is closed: `start_attach` spawns the
@@ -998,6 +1010,7 @@ Each version links to its GitHub release for the full changelog.
 
 | Version | Date | Release |
 | --- | --- | --- |
+| 0.7.55 | 2026-11-21 | [v0.7.55](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.55) |
 | 0.7.54 | 2026-11-16 | [v0.7.54](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.54) |
 | 0.7.53 | 2026-11-15 | [v0.7.53](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.53) |
 | 0.7.52 | 2026-11-15 | [v0.7.52](https://github.com/alecuba16/herdr-webui/releases/tag/v0.7.52) |
