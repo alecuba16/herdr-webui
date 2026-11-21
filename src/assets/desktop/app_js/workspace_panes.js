@@ -87,6 +87,42 @@ function isGitTab(tabId) {
   return typeof tabId === "string" && tabId.startsWith(GIT_TAB_PREFIX);
 }
 
+// Editor/git tab ids are client-owned: the server stores whatever the
+// last writer pushed, so closes must ride their own panel.update (the
+// terminal sync pass never carries them). But the adoption merge heals
+// client file tabs the server missed by re-inserting every local id the
+// incoming entry lacks, and the close's own op response arrives while
+// the dead id still sits in that map: the merge resurrected what the
+// close just removed (observed live: a subject.set response brought a
+// closed editor tab back). A per-id tombstone with a short expiry keeps
+// the heal working for stale ADDITIONS while sparing ids this client
+// deliberately closed until the window passes or the tab legitimately
+// reopens through the same open funnel that clears the mark.
+const closedFileTabAt = new Map();
+const CLOSED_TAB_TOMBSTONE_MS = 15000;
+
+function rememberClosedFileTab(tabId) {
+  if (!tabId) return;
+  if (closedFileTabAt.size > 200) closedFileTabAt.clear();
+  closedFileTabAt.set(String(tabId), Date.now());
+}
+
+function clearClosedFileTab(tabId) {
+  if (!tabId) return;
+  closedFileTabAt.delete(String(tabId));
+}
+
+function fileTabTombstoned(tabId) {
+  if (!tabId) return false;
+  const at = closedFileTabAt.get(String(tabId));
+  if (at == null) return false;
+  if (Date.now() - at > CLOSED_TAB_TOMBSTONE_MS) {
+    closedFileTabAt.delete(String(tabId));
+    return false;
+  }
+  return true;
+}
+
 function gitTabLabel(viewKey) {
   const key = String(viewKey || "");
   const at = key.indexOf("@");
@@ -892,7 +928,11 @@ function adoptServerPanesEntry(incoming, opts) {
     }
     const mine = localFileTabs.get(leaf.paneId);
     if (mine) {
-      for (const id of mine) if (!leaf.tabs.includes(id)) leaf.tabs.push(id);
+      // The tombstone check is the close discipline: without it the
+      // merge heals a just-closed id back out of the server response
+      // of the close's own op (the id was still in the prev map when
+      // the op was sent).
+      for (const id of mine) if (!leaf.tabs.includes(id) && !fileTabTombstoned(id)) leaf.tabs.push(id);
     }
   }
   if (!opts || !opts.keepLocalVisible) return true;
@@ -4934,7 +4974,11 @@ async function closeActivePane() {
   // views still needs the record drop; the sweep below owns the group
   // surgery and the subject heal.
   if (!paneForPaneId(paneRootFor(), leaf.paneId)) return true;
-  const dropped = dropLeafFromTree(leaf);
+  // The drain's per-tab pushes adopt new panel objects (fire-and-forget
+  // panel.update): the loop's leaf reference is stale by now, so the
+  // drop must re-read the live record or its identity splice misses.
+  const liveLeaf = paneForPaneId(paneRootFor(), leaf.paneId);
+  const dropped = liveLeaf ? dropLeafFromTree(liveLeaf) : true;
   // Server mode: the op owns the splice; the sweep (group dissolve,
   // subject heal) only runs once the adoption landed. REJECTED means the
   // server kept the panel: report the close refused, nothing swept.
@@ -5060,6 +5104,23 @@ function disarmLeafAutoClose(leaf) {
   if (leaf) leaf.autoCloseArmed = false;
 }
 
+// Client-owned tabs (editor/git ids) never enter the terminal sync pass,
+// so their closes produce no panel.update from syncTerminalTabsIntoTree.
+// Without this push the server keeps the dead id and the next op response
+// resurrects it into the local tree (verified live: closed editor tab came
+// back on the following subject.set adoption). Same fire-and-forget shape
+// as the move/splice pushes; a lost push re-derives on the next sync pass.
+function pushLeafTabsToServer(leaf) {
+  if (panesMode !== "server") return;
+  void panesServerOp({
+    op: "panel.update",
+    paneId: leaf.paneId,
+    tabs: (leaf.tabs || []).slice(),
+    active: leaf.active || undefined,
+    wsId: leafWorkspaceId(leaf) || undefined,
+  });
+}
+
 // v3.2 choke point for single-tab removals from a leaf: splice the id
 // out, heal the active pointer, and arm the leaf when the removal
 // emptied it (the arm helper owns the emptiness guard). Every close
@@ -5074,6 +5135,9 @@ function removeTabFromLeaf(leaf, tabId, neighborHeal) {
   // Decay fold stamp before the splice changes the leaf's label count.
   leaf.autoClosePre = autoClosePreStateFor(paneRootFor(), leaf);
   leaf.tabs.splice(at, 1);
+  // Editor/git ids need the mark so the adoption merge cannot heal the
+  // just-closed id back (terminal ids are server-authored, no mark).
+  if (isEditorTab(tabId) || isGitTab(tabId)) rememberClosedFileTab(tabId);
   if (neighborHeal) leaf.active = leaf.tabs[at] || leaf.tabs[at - 1] || leaf.tabs[0] || null;
   else if (leaf.active === tabId) leaf.active = leaf.tabs[0] || null;
   armLeafAutoClose(leaf);
@@ -5286,6 +5350,9 @@ async function paneEnsureTabId(tabId) {
   // (closed drawer, load failure).
   const owner = paneForTab(root, tabId);
   if (owner) {
+    // A reopen after a close must clear the tombstone: the merge would
+    // keep healing the id away while the user deliberately reopened it.
+    clearClosedFileTab(tabId);
     owner.active = tabId;
     focusLeaf(root, owner);
     saveWorkspacePanesStates();
@@ -5296,6 +5363,9 @@ async function paneEnsureTabId(tabId) {
   const leaf = activeLeaf(root);
   if (!leaf) return null;
   if (!leaf.tabs.includes(tabId)) {
+    // Same tombstone clear on the mint path: the tab is (re)opening by
+    // user intent, the adoption heal must stop sparing it.
+    clearClosedFileTab(tabId);
     if (!leafBusyViews(leaf)) {
       // Free flat leaf (or placeholder-only): the first view lands in
       // place, exactly as before.
@@ -5322,7 +5392,6 @@ async function paneEnsureTabId(tabId) {
       disarmLeafAutoClose(leaf);
       saveWorkspacePanesStates();
       renderWorkspacePanes();
-      return leaf;
     }
   }
   if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
@@ -5375,6 +5444,11 @@ function closeEditorTabImmediate(encodedPath) {
   // guard.
   const wasActive = leaf.active === tabId;
   if (!removeTabFromLeaf(leaf, tabId, true)) return;
+  // The server must learn the splice before the wasActive branch fires
+  // any reopen op: an adopted entry would carry the dead id in this leaf
+  // and the one-owner rule would seat it back (same discipline as the
+  // move/splice pushes).
+  pushLeafTabsToServer(leaf);
   if (wasActive) {
     if (isEditorTab(leaf.active)) void activateEditorTab(editorTabPath(leaf.active));
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
@@ -5461,6 +5535,9 @@ function closeGitTabImmediate(viewKey) {
   // panel) carry the invariants.
   const wasActive = leaf.active === tabId;
   if (!removeTabFromLeaf(leaf, tabId, true)) return;
+  // Same pre-reopen push as the editor close: the git id is client-owned
+  // and the sync pass will never carry its removal to the server.
+  pushLeafTabsToServer(leaf);
   if (wasActive) {
     if (isEditorTab(leaf.active)) void activateEditorTab(editorTabPath(leaf.active));
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
@@ -5791,7 +5868,19 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
         void (async () => {
           try {
             const registry = await ensureFileBrowserModule();
-            if (registry && registry.openEditorTab) await registry.openEditorTab(rehydratePath);
+            if (!registry || !registry.openEditorTab) return;
+            // openEditorTab alone never activates the file browser state
+            // for the tab's workspace, so on a reload (no prior sidebar
+            // visit) its first file fetch goes out with an empty cwd and
+            // 400s. activateWorkspace runs the same activateState(key,
+            // cwd) an openAt tree click pays, without swinging the Files
+            // sidebar open on a passive rehydrate.
+            const wsId = leafWorkspaceId(leaf) || state.ws;
+            const workspace = wsId
+              ? (state.workspaces || []).find((w) => w && w.workspace_id === wsId) || null
+              : null;
+            if (workspace && registry.activateWorkspace) registry.activateWorkspace(workspace);
+            await registry.openEditorTab(rehydratePath);
           } catch (_) {
             // A failed fetch leaves the tab listed but contentless; the
             // claim pass runs again on the next render and the one-shot

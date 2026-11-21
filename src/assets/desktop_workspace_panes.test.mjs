@@ -2206,6 +2206,39 @@ test("a persisted editor tab with no container rehydrates once on render", async
   assert.equal(calls.length, 1, "renders after the rehydrate do not refetch");
 });
 
+test("rehydration activates the file browser state for the tab's workspace", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  ctx.state.tabs = [{ tab_id: "tab_2", workspace_id: "ws-1" }];
+  ctx.state.tab = "tab_2";
+  ctx.state.workspaces = [{ workspace_id: "ws-1", label: "alpha", cwd: "/repo" }];
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.renderWorkspacePanes();
+  const leaf = panes.activePane();
+  leaf.tabs.push("editor:src/demo.py");
+  leaf.active = "editor:src/demo.py";
+  const calls = [];
+  const activated = [];
+  ctx.window.HerdrFileBrowser = {
+    activateWorkspace(workspace) { activated.push(workspace.workspace_id); },
+    async openEditorTab(path) {
+      calls.push(path);
+      panes.setActivePaneTab("editor:" + path);
+    },
+    editorFor() { return null; },
+  };
+
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Without the activation the registry fetch rides an empty cwd; the
+  // rehydrate must pay the same activateState a sidebar visit pays.
+  assert.equal(activated.length, 1, "the workspace state activated once");
+  assert.equal(activated[0], "ws-1", "activation used the leaf's workspace");
+  assert.equal(calls.length, 1, "the tab still rehydrated through the funnel");
+  assert.equal(calls[0], "src/demo.py");
+});
+
 // Helper: the .pane-content slot of the DOM pane keyed by leaf id. The fake
 // DOM's querySelector walks children, so the lookup mirrors the real DOM
 // contract (one pane element per leaf, keyed by data-pane-id).

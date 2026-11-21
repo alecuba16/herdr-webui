@@ -1382,3 +1382,81 @@ test("a server group.create drop defers the paint to the op response", async () 
   );
   assert.ok(!JSON.stringify(ctx.__storage).includes('"__pending__"'), "the settle repaint persists the real subject");
 });
+
+test("an editor tab close pushes its leaf delta to the server", async () => {
+  const { document } = buildDom();
+  // p2 holds one terminal id and one editor id: the terminal sync pass
+  // never carries the editor close, so the close itself must push.
+  const starting = serverEntry();
+  starting.panels[1].tabs = ["t2", "editor:src/gone.py"];
+  starting.panels[1].active = "editor:src/gone.py";
+  const script = makeServerApi(starting);
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  ctx.HerdrWorkspacePanes.closeEditorTabImmediate(encodeURIComponent("src/gone.py"));
+  // Fire-and-forget push: settle before reading the op log.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const updates = script.calls
+    .map((c) => (c.url === "/api/workspace-panes/op" ? JSON.parse(c.opt.body) : null))
+    .filter((op) => op && op.op === "panel.update");
+  assert.equal(updates.length, 1, "the close pushed one panel.update");
+  assert.equal(updates[0].paneId, "p2");
+  assert.deepEqual([...updates[0].tabs], ["t2"], "the dead editor id left the server array");
+  assert.equal(updates[0].active, "t2");
+  // The push response adoption must not resurrect the closed id: the
+  // server entry (scripted) dropped it and the local tree stays clean.
+  // vm-realm arrays fail the host deepStrictEqual: spread before compare.
+  const leaf = ctx.HerdrWorkspacePanes.paneRoot().panels.find((p) => p.paneId === "p2");
+  assert.deepEqual([...leaf.tabs], ["t2"], "the local tree kept the splice after adoption");
+});
+
+test("a git tab close pushes its leaf delta to the server", async () => {
+  const { document } = buildDom();
+  const starting = serverEntry();
+  starting.panels[1].tabs = ["t2", "git:status"];
+  starting.panels[1].active = "git:status";
+  const script = makeServerApi(starting);
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("server");
+  ctx.HerdrWorkspacePanes.closeGitTabImmediate("status");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const updates = script.calls
+    .map((c) => (c.url === "/api/workspace-panes/op" ? JSON.parse(c.opt.body) : null))
+    .filter((op) => op && op.op === "panel.update");
+  assert.equal(updates.length, 1, "the git close pushed one panel.update");
+  assert.equal(updates[0].paneId, "p2");
+  assert.deepEqual([...updates[0].tabs], ["t2"], "the dead git id left the server array");
+});
+
+test("an editor tab close in local mode pushes nothing", async () => {
+  const { document } = buildDom();
+  const script = makeServerApi(serverEntry());
+  const ctx = loadPanesModule(document, "ws-1", script.api);
+  ctx.state.tabs = [
+    { tab_id: "t1", workspace_id: "ws-1" },
+    { tab_id: "t2", workspace_id: "ws-1" },
+  ];
+  await ctx.HerdrWorkspacePanes.bootFromServer();
+  ctx.HerdrWorkspacePanes.setPanesModeForTests("local");
+  const leaf = ctx.HerdrWorkspacePanes.paneRoot().panels.find((p) => p.paneId === "p2");
+  leaf.tabs.push("editor:src/gone.py");
+  leaf.active = "editor:src/gone.py";
+  ctx.HerdrWorkspacePanes.closeEditorTabImmediate(encodeURIComponent("src/gone.py"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const updates = script.calls
+    .map((c) => (c.url === "/api/workspace-panes/op" ? JSON.parse(c.opt.body) : null))
+    .filter((op) => op && op.op === "panel.update");
+  assert.equal(updates.length, 0, "local mode never posts the delta");
+});
