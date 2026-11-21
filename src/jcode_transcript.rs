@@ -77,6 +77,11 @@ struct TurnsCacheEntry {
     turns: Arc<Vec<Turn>>,
 }
 
+/// A throttled cache cell: (last sweep instant, per-key payload).
+/// One shared shape for the process table, swarm workers, git roots,
+/// and any later window cache, so the field types stay readable.
+type ThrottledCache<V> = Mutex<(Option<Instant>, V)>;
+
 /// Cached evidence index over `~/.jcode/sessions` (design section 2:
 /// ~600 ms cold build, ~17 ms stat-only revalidation sweep — the cache
 /// is mandatory, never rebuild per poll).
@@ -93,7 +98,7 @@ pub struct JcodeStoreIndex {
     // re-reading `~/.jcode/state/swarm/*.json` per poll would be
     // wasted work between registry rotations.
     swarm_dir: PathBuf,
-    swarm_workers: Mutex<(Option<Instant>, HashSet<String>)>,
+    swarm_workers: ThrottledCache<HashSet<String>>,
     // jcode's client focus markers, `~/.jcode/client_sessions/<pid>`.
     // Resolve step 1b reads one file per pane-tree pid; the dir is a
     // field so tests (and only tests) can redirect it away from the
@@ -106,7 +111,7 @@ pub struct JcodeStoreIndex {
     // every sweep, so the cache lives here and the row carries only
     // the resolved string; one pane poll reuses the session entries
     // across its panes because they key on the same path strings.
-    git_roots: Mutex<(Option<Instant>, HashMap<String, Option<String>>)>,
+    git_roots: ThrottledCache<HashMap<String, Option<String>>>,
     // Parsed-turn cache for the chat lens: full snapshot+journal
     // re-read/re-parse per poll was the lens's hot path. One entry
     // per session, keyed by the stat signatures of both files (the
@@ -421,9 +426,7 @@ impl JcodeStoreIndex {
             if e.working_dir == cwd {
                 return true;
             }
-            let (Some(pane_root), Some(session_root)) =
-                (&pane_root, &e.worktree_root)
-            else {
+            let (Some(pane_root), Some(session_root)) = (&pane_root, &e.worktree_root) else {
                 return false;
             };
             pane_root == session_root.as_str()
@@ -574,10 +577,7 @@ impl JcodeStoreIndex {
     /// git fork each per window; identical paths (many sessions in
     /// one checkout, the pane polls of one poll cycle) share one.
     fn git_root_cached(&self, path: &str) -> Option<String> {
-        let mut guard = self
-            .git_roots
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.git_roots.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(at) = guard.0 {
             if at.elapsed() < Duration::from_millis(250) {
                 if let Some(hit) = guard.1.get(path) {
@@ -2694,15 +2694,12 @@ mod tests {
     /// (and the mirror case). `git rev-parse --git-common-dir` is the
     /// real subprocess, so the fixture builds a real repo on disk.
     fn worktree_pair(name: &str) -> (PathBuf, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "jcode-wt-{name}-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("jcode-wt-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let main = root.join("main");
         let lane = root.join("lane");
         std::fs::create_dir_all(&main).unwrap();
-        let mut run = |args: &[&str], cwd: &Path| {
+        let run = |args: &[&str], cwd: &Path| {
             let mut cmd = crate::git_bin::command();
             cmd.arg("-C").arg(cwd).args(args);
             let out = cmd.output().expect("git spawns");
@@ -2714,9 +2711,22 @@ mod tests {
         };
         run(&["init", "-q"], &main);
         std::fs::write(main.join("f"), "x").unwrap();
-        run(&["-c", "user.email=t@t", "-c", "user.name=T", "add", "-A"], &main);
         run(
-            &["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "x", "--no-gpg-sign"],
+            &["-c", "user.email=t@t", "-c", "user.name=T", "add", "-A"],
+            &main,
+        );
+        run(
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "x",
+                "--no-gpg-sign",
+            ],
             &main,
         );
         // A branch must exist for a linked worktree to check out.
@@ -2724,7 +2734,14 @@ mod tests {
         let out = crate::git_bin::command()
             .arg("-C")
             .arg(&main)
-            .args(["worktree", "add", "-q", "--", &lane.to_string_lossy(), "lane"])
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                "--",
+                &lane.to_string_lossy(),
+                "lane",
+            ])
             .output()
             .expect("git worktree add spawns");
         assert!(
@@ -2744,8 +2761,13 @@ mod tests {
         // pane's live cwd is the linked worktree lane.
         std::fs::write(
             dir.join("session_a.json"),
-            serde_json::to_string(&ev_session("session_a", 500, &main.to_string_lossy(), "Active"))
-                .unwrap(),
+            serde_json::to_string(&ev_session(
+                "session_a",
+                500,
+                &main.to_string_lossy(),
+                "Active",
+            ))
+            .unwrap(),
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
@@ -2767,8 +2789,13 @@ mod tests {
         let dir = temp_store("wt2");
         std::fs::write(
             dir.join("session_a.json"),
-            serde_json::to_string(&ev_session("session_a", 500, &lane.to_string_lossy(), "Active"))
-                .unwrap(),
+            serde_json::to_string(&ev_session(
+                "session_a",
+                500,
+                &lane.to_string_lossy(),
+                "Active",
+            ))
+            .unwrap(),
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
@@ -2808,14 +2835,24 @@ mod tests {
         let dir = temp_store("wt4");
         std::fs::write(
             dir.join("session_a.json"),
-            serde_json::to_string(&ev_session("session_a", 700, &main.to_string_lossy(), "Active"))
-                .unwrap(),
+            serde_json::to_string(&ev_session(
+                "session_a",
+                700,
+                &main.to_string_lossy(),
+                "Active",
+            ))
+            .unwrap(),
         )
         .unwrap();
         std::fs::write(
             dir.join("session_b.json"),
-            serde_json::to_string(&ev_session("session_b", 700, &lane.to_string_lossy(), "Active"))
-                .unwrap(),
+            serde_json::to_string(&ev_session(
+                "session_b",
+                700,
+                &lane.to_string_lossy(),
+                "Active",
+            ))
+            .unwrap(),
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
@@ -2839,8 +2876,13 @@ mod tests {
         let (other_main, _other_lane) = worktree_pair("s5b");
         std::fs::write(
             dir.join("session_a.json"),
-            serde_json::to_string(&ev_session("session_a", 500, &other_main.to_string_lossy(), "Active"))
-                .unwrap(),
+            serde_json::to_string(&ev_session(
+                "session_a",
+                500,
+                &other_main.to_string_lossy(),
+                "Active",
+            ))
+            .unwrap(),
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
@@ -2882,13 +2924,24 @@ mod tests {
         let dir = temp_store("wt6");
         std::fs::write(
             dir.join("session_a.json"),
-            serde_json::to_string(&ev_session("session_a", 500, &main.to_string_lossy(), "Active"))
-                .unwrap(),
+            serde_json::to_string(&ev_session(
+                "session_a",
+                500,
+                &main.to_string_lossy(),
+                "Active",
+            ))
+            .unwrap(),
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
         let resolve = |idx: &JcodeStoreIndex| {
-            idx.resolve(lane.as_path(), &|pid| pid != 500, &|pid| pid == 500, "", &[])
+            idx.resolve(
+                lane.as_path(),
+                &|pid| pid != 500,
+                &|pid| pid == 500,
+                "",
+                &[],
+            )
         };
         assert_eq!(
             resolve(&index),

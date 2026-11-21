@@ -78,6 +78,9 @@ fn git_blame_args<'a>(file: &'a str, ref_name: &'a str) -> Vec<&'a str> {
 }
 
 /// Requires cwd + file query params and validates the repo-relative file path.
+// Same Response-as-Err shape as the other git_ui validators; the lint is
+// allowed with the same marker the older helpers carry.
+#[allow(clippy::result_large_err)]
 fn validated_cwd_file(cwd: Option<&str>, file: Option<&str>) -> Result<(String, String), Response> {
     let (Some(cwd), Some(file)) = (cwd, file) else {
         return Err(git_json_error(

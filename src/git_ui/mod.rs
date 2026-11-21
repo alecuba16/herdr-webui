@@ -1465,6 +1465,8 @@ fn git_ui_stage_blocking(
 }
 
 /// Parses and validates GitUiPathsRequest paths into owned strings.
+// Response-as-Err matches the sibling validators (file.rs, log.rs).
+#[allow(clippy::result_large_err)]
 fn stage_paths(body: &GitUiPathsRequest) -> Result<Vec<String>, Response> {
     match git_ui_paths(body) {
         Ok(paths) => Ok(paths.into_iter().map(|p| p.to_string()).collect()),

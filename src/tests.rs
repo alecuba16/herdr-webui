@@ -14170,7 +14170,9 @@ async fn cleanup_sessions_removes_panes_sidecar_and_store_entry_with_tabs() {
     )
     .unwrap();
     // Panes sidecar with tab ids on its panels.
-    let sidecar = config_home.join("herdr-webui").join(format!("panes-{session_name}.json"));
+    let sidecar = config_home
+        .join("herdr-webui")
+        .join(format!("panes-{session_name}.json"));
     fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
     fs::write(
         &sidecar,
@@ -14226,8 +14228,21 @@ async fn cleanup_sessions_removes_panes_sidecar_and_store_entry_with_tabs() {
         "cleanup must remove the journal recording the session's shell tabs"
     );
     assert!(
-        server_settings_path().parent().unwrap().join("builtin").join(session_name).read_dir().is_err()
-            || fs::read_dir(server_settings_path().parent().unwrap().join("builtin").join(session_name)).is_err(),
+        server_settings_path()
+            .parent()
+            .unwrap()
+            .join("builtin")
+            .join(session_name)
+            .read_dir()
+            .is_err()
+            || fs::read_dir(
+                server_settings_path()
+                    .parent()
+                    .unwrap()
+                    .join("builtin")
+                    .join(session_name)
+            )
+            .is_err(),
         "the session directory itself is gone"
     );
     let _ = fs::remove_dir_all(config_home);
@@ -14239,6 +14254,9 @@ async fn cleanup_sessions_removes_panes_sidecar_and_store_entry_with_tabs() {
 /// cannot see the session anymore once close removed its dir.
 #[cfg(unix)]
 #[tokio::test]
+// The env lock guards XDG_CONFIG_HOME for the whole await span (same
+// shape as the panes_routes_tests suites).
+#[allow(clippy::await_holding_lock)]
 async fn close_session_drops_panes_sidecar_and_store_entry() {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     let _guard = lock_env();
@@ -14368,6 +14386,8 @@ async fn close_session_drops_panes_sidecar_and_store_entry() {
 /// though the file name spells the component differently.
 #[cfg(unix)]
 #[tokio::test]
+// The env lock guards XDG_CONFIG_HOME for the whole await span.
+#[allow(clippy::await_holding_lock)]
 async fn cleanup_sessions_sweeps_orphan_sidecars_without_session_dirs() {
     let _guard = lock_env();
     let config_home = PathBuf::from(format!(
@@ -14479,6 +14499,8 @@ async fn cleanup_sessions_sweeps_orphan_sidecars_without_session_dirs() {
 /// missing directory.
 #[cfg(unix)]
 #[tokio::test]
+// The env lock guards XDG_CONFIG_HOME for the whole await span.
+#[allow(clippy::await_holding_lock)]
 async fn cleanup_sessions_answers_ok_when_the_builtin_dir_is_missing() {
     let _guard = lock_env();
     let config_home = PathBuf::from(format!(

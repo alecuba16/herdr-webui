@@ -285,13 +285,11 @@ async fn panes_apply_heals_poisoned_ids_and_caps_arrays() {
     // Array cap: 2 + 80 panels truncate to the MAX_PANELS cap.
     assert!(healed["panels"].as_array().unwrap().len() <= 64);
     // The poisoned group dissolved; nothing references it.
-    assert!(
-        healed["groups"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|g| g["groupId"] != json!("g'-xss-'"))
-    );
+    assert!(healed["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|g| g["groupId"] != json!("g'-xss-'")));
 
     // Round-trip: GET returns the healed entry, never the poison.
     let get = app
@@ -306,17 +304,15 @@ async fn panes_apply_heals_poisoned_ids_and_caps_arrays() {
         .unwrap();
     assert_eq!(get.status(), StatusCode::OK);
     let persisted = response_json(get).await;
-    assert!(
-        persisted["panels"]
-            .as_array()
+    assert!(persisted["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["paneId"]
+            .as_str()
             .unwrap()
-            .iter()
-            .all(|p| p["paneId"]
-                .as_str()
-                .unwrap()
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-    );
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')));
 
     // Ops on the healed entry keep working: panel.create mints a clean id.
     let create = app
@@ -351,7 +347,9 @@ async fn panes_op_rejects_malformed_bodies() {
             request(Method::POST, "/api/workspace-panes/op")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({ "op": "group.create", "axis": "row" }).to_string()))
+                .body(Body::from(
+                    json!({ "op": "group.create", "axis": "row" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -518,10 +516,10 @@ async fn panes_ops_broadcast_per_session() {
         let msg =
             match tokio::time::timeout(std::time::Duration::from_millis(500), other_stream.next())
                 .await
-        {
-            Ok(Some(Ok(m))) => m,
-            _ => break,
-        };
+            {
+                Ok(Some(Ok(m))) => m,
+                _ => break,
+            };
         let text = msg.to_text().expect("expected text message");
         let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
         if value["type"].as_str() == Some("workspace_panes_changed") {
@@ -529,7 +527,10 @@ async fn panes_ops_broadcast_per_session() {
             break;
         }
     }
-    assert!(!leaked, "another session's socket must not see alpha frames");
+    assert!(
+        !leaked,
+        "another session's socket must not see alpha frames"
+    );
 
     server_handle.abort();
     let _ = std::fs::remove_file(socket);

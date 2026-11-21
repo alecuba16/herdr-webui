@@ -228,7 +228,10 @@ fn sidecar_name_component(session: &str) -> String {
 /// merely looks stale cannot delete a live session's tab data. Names map
 /// through the sidecar sanitizer because the file system only knows the
 /// sanitized form (see `sidecar_name_component`).
-pub fn sweep_protected_session_names(store: &Arc<PanesStore>, safe: &HashSet<String>) -> HashSet<String> {
+pub fn sweep_protected_session_names(
+    store: &Arc<PanesStore>,
+    safe: &HashSet<String>,
+) -> HashSet<String> {
     let mut names: HashSet<String> = store
         .sessions
         .lock()
@@ -301,7 +304,10 @@ pub fn sweep_orphan_panes_sidecars(
         if protected.contains(&session) || owned.contains(&session) {
             continue;
         }
-        if socket_dir_for(&session).map(|d| d.exists()).unwrap_or(false) {
+        if socket_dir_for(&session)
+            .map(|d| d.exists())
+            .unwrap_or(false)
+        {
             continue;
         }
         if fs::remove_file(entry.path()).is_ok() {
@@ -360,8 +366,7 @@ fn max_layout_split_seq(node: &Value) -> Option<u64> {
     let children = node
         .get("children")
         .and_then(Value::as_array)
-        .map(|children| children.iter().filter_map(max_layout_split_seq).max())
-        .flatten();
+        .and_then(|children| children.iter().filter_map(max_layout_split_seq).max());
     [own, children].into_iter().flatten().max()
 }
 
@@ -372,13 +377,17 @@ fn max_layout_split_seq(node: &Value) -> Option<u64> {
 /// keeps ids stable: mint once into the stored tree, the client adopts
 /// and reuses them, and group.sizes paths stay resolvable.
 fn heal_layout_split_ids(node: &mut Value, counter: &mut u64, seen: &mut HashSet<String>) {
-    if !node.get("children").and_then(Value::as_array).is_some_and(|c| !c.is_empty()) {
+    if !node
+        .get("children")
+        .and_then(Value::as_array)
+        .is_some_and(|c| !c.is_empty())
+    {
         return;
     }
-    if node
+    if !node
         .get("splitId")
         .and_then(Value::as_str)
-        .map_or(true, |id| !seen.insert(id.to_string()))
+        .is_some_and(|id| seen.insert(id.to_string()))
     {
         loop {
             *counter += 1;
@@ -447,7 +456,7 @@ fn layout_without(node: &Value, pane_id: &str) -> Option<Value> {
                 .filter(|child| child.as_str() != Some(pane_id))
                 .cloned()
                 .collect();
-            (!kept.is_empty()).then(|| Value::Array(kept))
+            (!kept.is_empty()).then_some(Value::Array(kept))
         }
         _ => {
             let children = node.get("children").and_then(Value::as_array)?;
@@ -972,11 +981,11 @@ async fn panes_get(
         .panes_store
         .sessions
         .lock()
-        .and_then(|mut store| {
-            Ok(store
+        .map(|mut store| {
+            store
                 .entry(session.clone())
                 .or_insert_with(|| load_entry(&session))
-                .clone())
+                .clone()
         })
         .map(|entry| entry_public_json(&session, &entry));
     match snapshot {
@@ -1381,13 +1390,10 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 .ok_or((StatusCode::BAD_REQUEST, "axis must be row or column".into()))?;
             let dragged_at = panel_index(entry, &dragged)
                 .ok_or((StatusCode::NOT_FOUND, "dragged panel not found".into()))?;
-            let actual_group = entry.panels[dragged_at]
-                .group_id
-                .clone()
-                .ok_or((
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "panel is not grouped".into(),
-                ))?;
+            let actual_group = entry.panels[dragged_at].group_id.clone().ok_or((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "panel is not grouped".into(),
+            ))?;
             if actual_group != group_id {
                 return Err((
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -1421,8 +1427,8 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
                 ));
             }
             let layout = entry.groups[group_at].layout.clone();
-            let removed = layout_without(&layout, &dragged)
-                .unwrap_or_else(|| Value::String(dragged.clone()));
+            let removed =
+                layout_without(&layout, &dragged).unwrap_or_else(|| Value::String(dragged.clone()));
             entry.groups[group_at].layout =
                 layout_with_panel_at(&removed, &dragged, axis, op.dragged_first, Some(&host));
             Ok(())
@@ -1940,7 +1946,10 @@ mod tests {
         create.axis = Some("row".into());
         create.dragged_first = true;
         apply_op(&mut entry, &create).unwrap();
-        assert_eq!(entry.groups[0].layout["children"], serde_json::json!(["p2", "p3"]));
+        assert_eq!(
+            entry.groups[0].layout["children"],
+            serde_json::json!(["p2", "p3"])
+        );
         // Move p3 first beside host p2 (dragged first on the row axis).
         let mut mv = req("group.move");
         mv.pane_id = Some("p3".into());
@@ -1949,7 +1958,10 @@ mod tests {
         mv.axis = Some("row".into());
         mv.dragged_first = true;
         apply_op(&mut entry, &mv).unwrap();
-        assert_eq!(entry.groups[0].layout["children"], serde_json::json!(["p3", "p2"]));
+        assert_eq!(
+            entry.groups[0].layout["children"],
+            serde_json::json!(["p3", "p2"])
+        );
     }
 
     #[test]
@@ -2044,9 +2056,10 @@ mod tests {
         // its member links survive for the rail chip.
         assert_eq!(entry.groups.len(), 1);
         assert_eq!(entry.groups[0].group_id, "g1");
-        assert!(entry.panels.iter().all(|p| {
-            p.group_id.is_none() || p.group_id.as_deref() == Some("g1")
-        }));
+        assert!(entry
+            .panels
+            .iter()
+            .all(|p| { p.group_id.is_none() || p.group_id.as_deref() == Some("g1") }));
         assert_eq!(entry.visible.kind, "panel");
         assert_eq!(entry.visible.id, "p3");
         // Focus memory rides the switch when the client names the group
@@ -2408,11 +2421,17 @@ mod tests {
         create.dragged_first = true;
         apply_op(&mut entry, &create).unwrap();
         normalize_entry(&mut entry);
-        let first = entry.groups[0].layout["splitId"].as_str().unwrap().to_string();
+        let first = entry.groups[0].layout["splitId"]
+            .as_str()
+            .unwrap()
+            .to_string();
         // A second normalize pass (any later op) must not remint: the
         // healed id is persisted identity, adoption must reuse it.
         normalize_entry(&mut entry);
-        let second = entry.groups[0].layout["splitId"].as_str().unwrap().to_string();
+        let second = entry.groups[0].layout["splitId"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert_eq!(first, second);
         // Duplicate ids across groups heal to distinct ones.
         entry.groups.push(GroupRecord {
@@ -2586,7 +2605,10 @@ mod tests {
         let store = PanesStore::new();
         let swept = sweep_orphan_panes_sidecars(&store, &HashSet::new(), &[], |_| None);
         assert!(swept.is_empty());
-        assert!(dotted.exists(), "non-canonical sidecar names are never swept");
+        assert!(
+            dotted.exists(),
+            "non-canonical sidecar names are never swept"
+        );
         assert!(
             empty_stem.exists(),
             "the empty stem maps to default, never to a sweep candidate"

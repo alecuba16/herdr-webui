@@ -657,6 +657,8 @@ pub(super) async fn git_ui_tag(
 }
 
 /// Validates an optional branch token, returning a JSON error response on failure.
+// Response-as-Err matches the sibling validators (file.rs, mod.rs).
+#[allow(clippy::result_large_err)]
 fn validated_branch(branch: &Option<String>) -> Result<Option<String>, Response> {
     match branch.as_deref().filter(|value| !value.trim().is_empty()) {
         Some(value) => match safe_git_token(value, "branch") {

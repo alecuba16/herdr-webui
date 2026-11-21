@@ -3,9 +3,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 #[cfg(target_os = "macos")]
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
 use axum::extract::{ConnectInfo, Query, State};
@@ -2426,7 +2426,16 @@ fn file_browser_content_search_file_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "file is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child_path_with_policy(&root, cwd_raw, query.file.as_deref().or(query.path.as_deref()).unwrap_or(rel.as_str()), ResolvePolicy::ReadAllowHome) {
+    let file = match resolve_child_path_with_policy(
+        &root,
+        cwd_raw,
+        query
+            .file
+            .as_deref()
+            .or(query.path.as_deref())
+            .unwrap_or(rel.as_str()),
+        ResolvePolicy::ReadAllowHome,
+    ) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2685,8 +2694,12 @@ mod tests {
         .is_err());
         // Relative paths keep the root.join semantics.
         assert_eq!(
-            resolve_child_path(&canonical_root, canonical_root.to_str().unwrap(), "store.rs")
-                .unwrap(),
+            resolve_child_path(
+                &canonical_root,
+                canonical_root.to_str().unwrap(),
+                "store.rs"
+            )
+            .unwrap(),
             file
         );
 
@@ -2696,10 +2709,7 @@ mod tests {
     #[test]
     fn file_payload_reads_abspath_with_empty_cwd() {
         let home = canonical_home();
-        let root = home.join(format!(
-            "herdr-webui-file-abspath-{}",
-            std::process::id()
-        ));
+        let root = home.join(format!("herdr-webui-file-abspath-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let file = root.join("notes.md");
@@ -2817,7 +2827,8 @@ mod tests {
         } else {
             root.clone()
         };
-        let resolved = resolve_child_path(&root_nc, root_nc.to_str().unwrap(), file.to_str().unwrap());
+        let resolved =
+            resolve_child_path(&root_nc, root_nc.to_str().unwrap(), file.to_str().unwrap());
         assert_eq!(resolved.unwrap(), file);
         let _ = fs::remove_file(&file);
     }
@@ -2834,7 +2845,9 @@ mod tests {
         let target = root.join("link/newfile.txt");
         // Write with a real root through an in-root symlink: refused,
         // nothing created outside (F4-class canonical check).
-        assert!(resolve_child_path(&root, root.to_str().unwrap(), target.to_str().unwrap()).is_err());
+        assert!(
+            resolve_child_path(&root, root.to_str().unwrap(), target.to_str().unwrap()).is_err()
+        );
         assert!(resolve_child_path_with_policy(
             &root,
             root.to_str().unwrap(),

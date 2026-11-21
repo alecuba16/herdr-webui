@@ -3250,77 +3250,78 @@ async fn cleanup_sessions(
     // Probe + remove runs one blocking connect and filesystem ops per
     // session; keep it off the async runtime like the other session probes.
     let probe_state = state.clone();
-    let (removed, kept_running, kept_default, swept_orphans) = tokio::task::spawn_blocking(move || {
-        let safe = cleanup_safe_builtin_names(&probe_state);
-        let sessions_dir = builtin_socket_paths(Some("default"))
-            .0
-            .parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| config_dir().join("builtin"));
-        let mut removed = Vec::new();
-        let mut kept_running = 0usize;
-        let mut kept_default = 0usize;
-        let Ok(entries) = fs::read_dir(&sessions_dir) else {
-            return (removed, kept_running, kept_default, Vec::new());
-        };
-        let mut names = Vec::new();
-        for entry in entries.filter_map(Result::ok) {
-            if !entry.path().is_dir() {
-                continue;
+    let (removed, kept_running, kept_default, swept_orphans) =
+        tokio::task::spawn_blocking(move || {
+            let safe = cleanup_safe_builtin_names(&probe_state);
+            let sessions_dir = builtin_socket_paths(Some("default"))
+                .0
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| config_dir().join("builtin"));
+            let mut removed = Vec::new();
+            let mut kept_running = 0usize;
+            let mut kept_default = 0usize;
+            let Ok(entries) = fs::read_dir(&sessions_dir) else {
+                return (removed, kept_running, kept_default, Vec::new());
+            };
+            let mut names = Vec::new();
+            for entry in entries.filter_map(Result::ok) {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if let Ok(name) = entry.file_name().into_string() {
+                    names.push(name);
+                }
             }
-            if let Ok(name) = entry.file_name().into_string() {
-                names.push(name);
+            names.sort();
+            let all_dir_names = names.clone();
+            for name in names {
+                // The default slot is the relaunch target for every fresh
+                // session and the empty-socket state is normal there: never
+                // remove it.
+                if name == "default" {
+                    kept_default += 1;
+                    continue;
+                }
+                // Non-default session names are always safe_socket_component
+                // output, so a different canonical name means the directory is
+                // not a session slot; leave it alone.
+                if name != canonical_session_name(Some(&name)) {
+                    continue;
+                }
+                if safe.contains(&name) {
+                    kept_running += 1;
+                    continue;
+                }
+                let (api_socket, _) = builtin_socket_paths(Some(&name));
+                if connect_local_stream(&api_socket).is_ok() {
+                    kept_running += 1;
+                    continue;
+                }
+                if cleanup_builtin_session_dir(&name) {
+                    removed.push(name);
+                }
             }
-        }
-        names.sort();
-        let all_dir_names = names.clone();
-        for name in names {
-            // The default slot is the relaunch target for every fresh
-            // session and the empty-socket state is normal there: never
-            // remove it.
-            if name == "default" {
-                kept_default += 1;
-                continue;
-            }
-            // Non-default session names are always safe_socket_component
-            // output, so a different canonical name means the directory is
-            // not a session slot; leave it alone.
-            if name != canonical_session_name(Some(&name)) {
-                continue;
-            }
-            if safe.contains(&name) {
-                kept_running += 1;
-                continue;
-            }
-            let (api_socket, _) = builtin_socket_paths(Some(&name));
-            if connect_local_stream(&api_socket).is_ok() {
-                kept_running += 1;
-                continue;
-            }
-            if cleanup_builtin_session_dir(&name) {
-                removed.push(name);
-            }
-        }
-        // Orphan sweep: sidecars whose session dir is already gone (close
-        // and the loop above both remove dirs) were unreachable before this
-        // pass, and header-routed panes ops can create sidecars for sessions
-        // that never had a backend at all.
-        let swept_orphans = workspace_panes_store::sweep_orphan_panes_sidecars(
-            &probe_state.panes_store,
-            &safe,
-            &all_dir_names,
-            |name| {
-                let (api_socket, _) = builtin_socket_paths(Some(name));
-                api_socket.parent().map(Path::to_path_buf)
-            },
-        );
-        (removed, kept_running, kept_default, swept_orphans)
-    })
-    .await
-    // A dead probe task (panic or runtime shutdown) must still answer the
-    // route: an empty result reports nothing removed, nothing kept.
-    .unwrap_or_default();
+            // Orphan sweep: sidecars whose session dir is already gone (close
+            // and the loop above both remove dirs) were unreachable before this
+            // pass, and header-routed panes ops can create sidecars for sessions
+            // that never had a backend at all.
+            let swept_orphans = workspace_panes_store::sweep_orphan_panes_sidecars(
+                &probe_state.panes_store,
+                &safe,
+                &all_dir_names,
+                |name| {
+                    let (api_socket, _) = builtin_socket_paths(Some(name));
+                    api_socket.parent().map(Path::to_path_buf)
+                },
+            );
+            (removed, kept_running, kept_default, swept_orphans)
+        })
+        .await
+        // A dead probe task (panic or runtime shutdown) must still answer the
+        // route: an empty result reports nothing removed, nothing kept.
+        .unwrap_or_default();
     debug_assert!(kept_default <= 1, "default session dir is never removed");
     let mut removed_count = 0usize;
     if let Ok(mut closed) = state.closed_builtin_sessions.lock() {
@@ -6567,7 +6568,12 @@ async fn events_ws(
     ws.on_upgrade(move |socket| events_socket(state, api, socket, panes_session))
 }
 
-async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket, panes_session: String) {
+async fn events_socket(
+    state: WebState,
+    api: ApiClient,
+    mut socket: WebSocket,
+    panes_session: String,
+) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     // Settings changes must reach open tabs immediately: a backend disabled
     // mid-session stops being targeted/offered without a page reload.

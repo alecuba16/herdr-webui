@@ -48,8 +48,8 @@ use crate::builtin_detection::{
     JcodeDetectionVariant,
 };
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
-use crate::local_socket::{connect_local_stream, LocalStream};
 use crate::chat_lens;
+use crate::local_socket::{connect_local_stream, LocalStream};
 use crate::protocol::{
     read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
 };
