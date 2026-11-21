@@ -1835,7 +1835,11 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
       mountsByKey.set(childId, mount);
       element.appendChild(mount);
     }
-    mount.style.flexGrow = String(node.sizes && node.sizes[i] > 0 ? node.sizes[i] : 1);
+    const grow = String(node.sizes && node.sizes[i] > 0 ? node.sizes[i] : 1);
+    // Compare first: a render pass that reaches a mount whose size did
+    // not change must not touch the style binding at all, or a re-render
+    // of an unchanged tree would still dirty every pane's style.
+    if (mount.style.flexGrow !== grow) mount.style.flexGrow = grow;
     if (isPaneSplit(child)) {
       // Nested split: recurse so its panes materialize; the id path is
       // the unique key the divider drag walks back on resize.

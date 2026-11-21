@@ -1491,3 +1491,35 @@ test("movePaneTabTo matrix: cross-panel, reorder, refuse, default target", () =>
 function leafTabsCount(leaf) {
   return (leaf.tabs || []).length;
 }
+
+// An unchanged re-render must not rewrite flexGrow: the compare guard
+// keeps a no-change pass from dirtying every pane's style binding.
+test("re-render of unchanged sizes does not rewrite flexGrow", () => {
+  const { nodes, document } = buildDom();
+  const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: ["t3"], groupId: "g1" }]);
+  spec.groups[0].memberIds = ["p1", "p2", "p3"];
+  spec.rows = ["tab_2", "t2", "t3"];
+  spec.groups[0].layout = {
+    kind: "row", sizes: [2, 1], splitId: "s1",
+    children: ["p1", { kind: "column", sizes: [1, 1], splitId: "s2", children: ["p2", "p3"] }],
+  };
+  const { panes } = loadGroupSession(document, spec);
+  const mounts = paneElements(nodes);
+  const writes = [];
+  mounts.forEach((m) => {
+    const style = m.style;
+    const current = style.flexGrow;
+    Object.defineProperty(style, "flexGrow", {
+      get() { return style.__grow != null ? style.__grow : current; },
+      set(v) { writes.push(v); style.__grow = v; },
+      configurable: true,
+    });
+  });
+  panes.renderWorkspacePanes();
+  assert.equal(writes.length, 0, "no flexGrow writes on unchanged re-render");
+  const group = firstGroup(panes);
+  group.layout.sizes = [3, 1];
+  writes.length = 0;
+  panes.renderWorkspacePanes();
+  assert.deepEqual(writes, ["3"], "only the changed slot rewrites (the split wrapper already sat at 1)");
+});
