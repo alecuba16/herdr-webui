@@ -14474,6 +14474,45 @@ async fn cleanup_sessions_sweeps_orphan_sidecars_without_session_dirs() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// A fresh config home with no builtin sessions dir is the normal first-run
+/// state: cleanup answers ok with empty lists instead of erroring on the
+/// missing directory.
+#[cfg(unix)]
+#[tokio::test]
+async fn cleanup_sessions_answers_ok_when_the_builtin_dir_is_missing() {
+    let _guard = lock_env();
+    let config_home = PathBuf::from(format!(
+        "/tmp/hw-cleanup-missing-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let mut state = test_state();
+    state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/session/cleanup")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "backend": "builtin" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["removed_count"], 0);
+    assert_eq!(body["kept_running_count"], 0);
+    assert_eq!(body["swept_orphans"], json!([]));
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 /// The composer submit route owns the refusal classification AND copy: one
 /// step produces the status code, the wire code, and the human note. The
 /// browser displays `note` verbatim (falling back to the error string when

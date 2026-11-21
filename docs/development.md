@@ -19,6 +19,7 @@
 - `src/protocol.rs`: Herdr direct terminal attach wire types and frame codec.
 - `src/backend_client.rs`: reusable Rust client over built-in backend sockets for TUI and smoke tools.
 - `src/terminal_hub.rs`: shared terminal attach hub: one backend attach per pane fanned out to browser and TUI clients.
+- `src/workspace_panes_store.rs`: server-owned shared panel/group store per herdr session: the `panes-<session>.json` sidecars, the panes op route, entry normalization/healing, broadcasts over `panes_store.tx`, session close cleanup, and the orphan sidecar sweep.
 - `src/builtin_backend.rs`: built-in backend runtime: workspaces, tabs, panes, terminals, worktree helpers, local socket listeners, and request dispatch (detailed in `docs/technical-details.md`).
 - `src/builtin_detection/`: agent identity and screen-status detection for the built-in backend (argv labels, process trees, screen markers).
 - `src/builtin_events.rs`: built-in backend event hub that snapshots state and fans events out to subscribers.

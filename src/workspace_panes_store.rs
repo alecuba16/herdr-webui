@@ -268,18 +268,23 @@ pub fn sweep_orphan_panes_sidecars(
         .iter()
         .map(|name| sidecar_name_component(name))
         .collect();
-    let Some(config_dir) = panes_sidecar_path("x").parent().map(Path::to_path_buf) else {
-        return Vec::new();
-    };
+    // panes_sidecar_path always yields <dir>/panes-x.json, so the parent
+    // is the sidecar config dir; an empty default keeps the sweep total
+    // (nothing removable) if that shape ever breaks.
+    let config_dir = panes_sidecar_path("x")
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
     let Ok(entries) = fs::read_dir(&config_dir) else {
         return Vec::new();
     };
     let mut removed = Vec::new();
     for entry in entries.filter_map(Result::ok) {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
-        };
+        // Lossy decode is safe here: only sanitized-canonical names are
+        // swept below, and a replacement char never survives the sanitizer
+        // round-trip, so a non-UTF-8 name always fails that check.
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
         let Some(raw) = name
             .strip_prefix("panes-")
             .and_then(|stem| stem.strip_suffix(".json"))
@@ -2476,5 +2481,118 @@ mod tests {
         };
         let err = apply_op(&mut entry, &hidden).unwrap_err();
         assert_eq!(err.0, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// The sidecar sanitizer contract the sweep and the protection map
+    /// both rely on: dots drop (a.b and a_b share one file), anything
+    /// else non-word becomes underscore, and the empty result falls back
+    /// to the default session's sidecar name.
+    #[test]
+    fn sidecar_name_component_maps_sessions_onto_file_stems() {
+        assert_eq!(sidecar_name_component("a.b"), "a_b");
+        assert_eq!(sidecar_name_component("keep-OK_2"), "keep-OK_2");
+        assert_eq!(sidecar_name_component("\u{65e5}"), "_");
+        assert_eq!(sidecar_name_component(""), "default");
+    }
+
+    /// A sweep with no sidecar dir to read is total (nothing removable)
+    /// and not an error: fresh installs and wiped config homes hit it.
+    #[test]
+    fn sweep_returns_empty_when_the_sidecar_dir_is_missing() {
+        let _guard = crate::tests::lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-sweep-missing-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let store = PanesStore::new();
+        let swept = sweep_orphan_panes_sidecars(&store, &HashSet::new(), &[], |_| None);
+        assert!(swept.is_empty());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// The socket-dir pin: a sidecar whose session dir still lives (the
+    /// /tmp fallback for long canonical paths) must survive the sweep even
+    /// though the dir is not in the builtin listing the sweep was handed.
+    #[test]
+    fn sweep_keeps_a_sidecar_whose_socket_dir_still_exists() {
+        let _guard = crate::tests::lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-sweep-sockdir-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let sidecar_dir = config_home.join("herdr-webui");
+        fs::create_dir_all(&sidecar_dir).unwrap();
+        let pinned = sidecar_dir.join("panes-fallback.json");
+        fs::write(&pinned, "{\"v\":1,\"panels\":[]}").unwrap();
+        let live_dir = std::env::temp_dir().join(format!(
+            "herdr-webui-sweep-live-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&live_dir).unwrap();
+
+        let store = PanesStore::new();
+        let swept = sweep_orphan_panes_sidecars(&store, &HashSet::new(), &[], |name| {
+            (name == "fallback").then(|| live_dir.clone())
+        });
+        assert!(swept.is_empty());
+        assert!(
+            pinned.exists(),
+            "a sidecar with a live socket dir is not an orphan"
+        );
+
+        let _ = fs::remove_dir_all(&config_home);
+        let _ = fs::remove_dir_all(&live_dir);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// Only sanitized-canonical names are sweep candidates. A file the
+    /// app never mints (`panes-a.b.json`: the sanitizer writes `a_b`) can
+    /// belong to a session whose raw name maps onto it, and the empty
+    /// stem (`panes-.json`) maps to the default slot, so both must stay.
+    #[test]
+    fn sweep_skips_files_that_are_not_sanitized_canonical() {
+        let _guard = crate::tests::lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-webui-sweep-canonical-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let sidecar_dir = config_home.join("herdr-webui");
+        fs::create_dir_all(&sidecar_dir).unwrap();
+        let dotted = sidecar_dir.join("panes-a.b.json");
+        let empty_stem = sidecar_dir.join("panes-.json");
+        for path in [&dotted, &empty_stem] {
+            fs::write(path, "{\"v\":1,\"panels\":[]}").unwrap();
+        }
+
+        let store = PanesStore::new();
+        let swept = sweep_orphan_panes_sidecars(&store, &HashSet::new(), &[], |_| None);
+        assert!(swept.is_empty());
+        assert!(dotted.exists(), "non-canonical sidecar names are never swept");
+        assert!(
+            empty_stem.exists(),
+            "the empty stem maps to default, never to a sweep candidate"
+        );
+
+        let _ = fs::remove_dir_all(&config_home);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 }

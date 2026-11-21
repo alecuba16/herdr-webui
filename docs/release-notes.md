@@ -83,6 +83,22 @@
   with the dangling `pane-<id>` references now backed by real mount
   ids, rename inputs take focus explicitly, and the member header
   and sidebar resize handle honor reduced-motion.
+- Closing a built-in session is final for its panel tab data: the
+  server drops the session's `panes-<session>.json` sidecar and the
+  warm store entry along with the journal and dir (the default slot
+  keeps its sidecar), so a same-name relaunch starts clean instead
+  of resurrecting panels pointing at dead tabs. The cleanup pass
+  also sweeps orphaned panes sidecars whose session dir is fully
+  gone (never `default`, never a live name, warm entry, or a session
+  dir the sweep can still see) and reports them in `swept_orphans`.
+- Re-attaching a parked pane terminal no longer duplicates its
+  output: the aux surface keeps its wterm instance across park and
+  return, but the server replay used to append its whole tail into
+  the still-populated buffer on every re-attach, so each park/return
+  or socket-death cycle painted one extra copy of the scrollback.
+  The attach now clears the surface first, the same contract as the
+  primary shell's reset, so the replay repaints the tail exactly
+  once.
 
 ## 0.7.54 Release Notes
 - The terminal hub join race is closed: `start_attach` spawns the

@@ -3318,7 +3318,9 @@ async fn cleanup_sessions(
         (removed, kept_running, kept_default, swept_orphans)
     })
     .await
-    .unwrap_or_else(|_| (Vec::new(), 0, 0, Vec::new()));
+    // A dead probe task (panic or runtime shutdown) must still answer the
+    // route: an empty result reports nothing removed, nothing kept.
+    .unwrap_or_default();
     debug_assert!(kept_default <= 1, "default session dir is never removed");
     let mut removed_count = 0usize;
     if let Ok(mut closed) = state.closed_builtin_sessions.lock() {

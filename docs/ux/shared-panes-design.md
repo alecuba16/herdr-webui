@@ -34,7 +34,19 @@ Sidecar per session: `panes-<session>.json` in the config dir
 (`~/.config/herdr-webui/`, `XDG_CONFIG_HOME` in tests), written with the
 existing `atomic_write`. The server-wide notes precedent uses
 `notes.json`; panes need per-session files because two herdr sessions
-never share panels.
+never share panels. The sidecar name maps through a sanitizer that drops
+dots, so session `a.b` and session `a_b` share one file and every
+protection or sweep must compare through that sanitized form. Lifecycle:
+session close drops the sidecar and the warm store entry (the default
+slot keeps its sidecar for a fresh boot), and the cleanup pass sweeps
+orphaned sidecars whose backing session dir is fully gone, reporting them
+in `swept_orphans`.
+
+Aux terminal surfaces keep their wterm instance across park and return
+(the D8 cache), but re-attach clears the surface before opening the
+socket: the server always replays the tail on attach, so an uncleared
+buffer accumulated one duplicate copy per park/return cycle. Clear first,
+replay repaints once.
 
 ## The wire
 
