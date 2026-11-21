@@ -240,6 +240,52 @@ fn panel_index(entry: &PanesEntry, pane_id: &str) -> Option<usize> {
     entry.panels.iter().position(|p| p.pane_id == pane_id)
 }
 
+/// Highest s<N> split id inside a layout, for the heal counter floor.
+fn max_layout_split_seq(node: &Value) -> Option<u64> {
+    let own = node
+        .get("splitId")
+        .and_then(Value::as_str)
+        .and_then(|id| id.strip_prefix("s"))
+        .and_then(|n| n.parse().ok());
+    let children = node
+        .get("children")
+        .and_then(Value::as_array)
+        .map(|children| children.iter().filter_map(max_layout_split_seq).max())
+        .flatten();
+    [own, children].into_iter().flatten().max()
+}
+
+/// Heal split identity into every layout split node: the client mints
+/// `splitId` on demand (splitNodeId) but only on its in-memory tree, so
+/// a store-grown layout reaches the client without ids and the client's
+/// next render mints fresh ones. Healing at every normalize boundary
+/// keeps ids stable: mint once into the stored tree, the client adopts
+/// and reuses them, and group.sizes paths stay resolvable.
+fn heal_layout_split_ids(node: &mut Value, counter: &mut u64, seen: &mut HashSet<String>) {
+    if !node.get("children").and_then(Value::as_array).is_some_and(|c| !c.is_empty()) {
+        return;
+    }
+    if node
+        .get("splitId")
+        .and_then(Value::as_str)
+        .map_or(true, |id| !seen.insert(id.to_string()))
+    {
+        loop {
+            *counter += 1;
+            let candidate = format!("s{counter}");
+            if seen.insert(candidate.clone()) {
+                node["splitId"] = serde_json::json!(candidate);
+                break;
+            }
+        }
+    }
+    if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
+        for child in children.iter_mut() {
+            heal_layout_split_ids(child, counter, seen);
+        }
+    }
+}
+
 fn group_index(entry: &PanesEntry, group_id: &str) -> Option<usize> {
     entry.groups.iter().position(|g| g.group_id == group_id)
 }
@@ -542,6 +588,22 @@ fn dissolve_undersized_groups(entry: &mut PanesEntry) {
 /// trust incoming blobs only so far.
 fn normalize_entry(entry: &mut PanesEntry) {
     entry.v = ENTRY_VERSION;
+    // Heal split identity first: every layout split node needs a stable
+    // persisted splitId or a group.sizes writeback names a path this
+    // store never minted. The counter clears the highest existing id
+    // so minted ids never collide.
+    {
+        let mut counter: u64 = entry
+            .groups
+            .iter()
+            .filter_map(|g| max_layout_split_seq(&g.layout))
+            .max()
+            .unwrap_or(0);
+        let mut seen: HashSet<String> = HashSet::new();
+        for group in entry.groups.iter_mut() {
+            heal_layout_split_ids(&mut group.layout, &mut counter, &mut seen);
+        }
+    }
     // Panel ids must be unique and non-empty; dedupe keeps the first.
     let mut seen: HashSet<String> = HashSet::new();
     entry.panels.retain(|p| {
@@ -2188,6 +2250,71 @@ mod tests {
         let sizes = nested["sizes"].as_array().unwrap();
         assert_eq!(sizes[0].as_f64(), Some(2.0));
         assert_eq!(sizes[1].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn group_sizes_resolves_paths_the_store_itself_minted() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p3".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("column".into());
+        grow.host_pane_id = Some("p2".into());
+        apply_op(&mut entry, &grow).unwrap();
+        // apply_op skips normalize (apply_panes owns it live); mirror the
+        // server flow so the healed ids exist before the path read.
+        normalize_entry(&mut entry);
+        // Store-grown layouts arrive with NO splitId fields (the client
+        // mints them on render, never persisting back): normalize must
+        // heal ids in or a client writeback path can never resolve.
+        let layout = &entry.groups[0].layout;
+        let root_id = layout["splitId"].as_str().unwrap().to_string();
+        let nested_id = layout["children"][1]["splitId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!root_id.is_empty() && !nested_id.is_empty());
+        let mut sizes = req("group.sizes");
+        sizes.group_id = Some("g1".into());
+        sizes.split_id = Some(format!("{root_id}/{nested_id}"));
+        sizes.sizes = Some(vec![3.0, 1.0]);
+        apply_op(&mut entry, &sizes).unwrap();
+        let nested_sizes = entry.groups[0].layout["children"][1]["sizes"].clone();
+        assert_eq!(nested_sizes[0].as_f64(), Some(3.0));
+        assert_eq!(nested_sizes[1].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn normalize_heals_split_ids_stably_across_ops() {
+        let mut entry = entry_with_panels(&["p1", "p2"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        normalize_entry(&mut entry);
+        let first = entry.groups[0].layout["splitId"].as_str().unwrap().to_string();
+        // A second normalize pass (any later op) must not remint: the
+        // healed id is persisted identity, adoption must reuse it.
+        normalize_entry(&mut entry);
+        let second = entry.groups[0].layout["splitId"].as_str().unwrap().to_string();
+        assert_eq!(first, second);
+        // Duplicate ids across groups heal to distinct ones.
+        entry.groups.push(GroupRecord {
+            group_id: "g2".into(),
+            name: None,
+            member_ids: vec!["p1".into(), "p2".into()],
+            layout: serde_json::json!({ "kind": "row", "sizes": [1, 1], "children": ["p1", "p2"], "splitId": first }),
+            focused_pane_id: None,
+        });
+        normalize_entry(&mut entry);
+        let g2_id = entry.groups[1].layout["splitId"].as_str().unwrap();
+        assert_ne!(g2_id, first);
     }
 
     #[test]
