@@ -10,6 +10,65 @@ const shortcutsScript = new vm.Script(readFileSync(SHORTCUTS_PATH, "utf8"), {
   filename: SHORTCUTS_PATH,
 });
 
+// shortcuts.js reads its default chord table from the shared
+// HerdrAppHelpers.gitShortcutDefaults factory (moved out of the module
+// in the production-twin dedup), so the harness stub carries the same
+// defaults the shared helpers ship. Factory form: the module must never
+// hold a mutable reference a test could leak across cases.
+function gitShortcutDefaultsStub() {
+  return {
+    changes: "Digit1",
+    commit: "Digit2",
+    log: "Digit3",
+    stash: "Digit4",
+    commitAlt: "KeyC",
+    logAlt: "KeyL",
+    refresh: "KeyR",
+    stageAll: "KeyG",
+    stageFile: "KeyY",
+    unstageFile: "KeyU",
+    discardFile: "KeyD",
+    stashFile: "KeyZ",
+    history: "KeyH",
+    blame: "KeyM",
+    edit: "KeyE",
+    compare: "KeyO",
+    branch: "KeyV",
+    focusFile: "KeyI",
+    help: "Digit0",
+    cleanup: "Digit5",
+    pull: "F2",
+    push: "F3",
+    fetch: "F4",
+    pullRebase: "Shift+KeyT",
+    stashPush: "Shift+KeyK",
+    stashApply: "F5",
+    stashPop: "F6",
+    stashDrop: "Shift+KeyQ",
+    conflictOurs: "F7",
+    conflictBase: "F8",
+    conflictTheirs: "Shift+F9",
+    conflictMark: "Shift+KeyN",
+  };
+}
+
+
+// Same stub discipline as gitShortcutDefaults: shortcutDisplay also
+// moved into the shared helpers in the dedup. The help/title paths
+// assert the friendly key names, so the stub mirrors the shared
+// implementation instead of an identity shape.
+function shortcutDisplayStub(value) {
+  return String(value || "")
+    .replace(/(^|\+)Key/g, "$1")
+    .replace(/(^|\+)Digit/g, "$1")
+    .replace("BracketLeft", "[")
+    .replace("BracketRight", "]")
+    .replace("Slash", "/")
+    .replace("Period", ".")
+    .replace("Comma", ",")
+    .replace("Shift+", "Shift+");
+}
+
 // Focused harness for the git_ui shortcuts Esc contract. The window-capture
 // handler arbitrates Escape itself: modal states close first, the navigation
 // stack pops before hiding, and the plain changes list hides through the
@@ -39,6 +98,8 @@ function makeContext() {
     window: { addEventListener() {} },
     HerdrAppHelpers: {
       escapeHtml: (value) => String(value),
+      gitShortcutDefaults: gitShortcutDefaultsStub,
+      shortcutDisplay: shortcutDisplayStub,
     },
   };
   ctx.globalThis = ctx;
