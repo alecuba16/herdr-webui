@@ -14234,6 +14234,246 @@ async fn cleanup_sessions_removes_panes_sidecar_and_store_entry_with_tabs() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// Close is final for tab data too: the panes sidecar (panel tab ids) and
+/// the warm store entry must go with the session, because a later cleanup
+/// cannot see the session anymore once close removed its dir.
+#[cfg(unix)]
+#[tokio::test]
+async fn close_session_drops_panes_sidecar_and_store_entry() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-close-panes-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let session_name = "close-tabs-session";
+    let (api_socket, _) = builtin_socket_paths(Some(session_name));
+    fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+    let _ = fs::remove_file(&api_socket);
+    let name = api_socket.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let stop_handle = thread::spawn(move || {
+        let stream = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "server.stop");
+        // Drop without responding: proxy_server_stop treats that as ok.
+        drop(stream);
+    });
+
+    // Journal and panes sidecar with tab ids: the session's tab data.
+    let session_dir = server_settings_path()
+        .parent()
+        .unwrap()
+        .join("builtin")
+        .join(session_name);
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::write(
+        session_dir.join("session-journal.json"),
+        json!({
+            "version": 1,
+            "workspaces": [{
+                "workspace_id": "ws_1",
+                "label": "closing",
+                "cwd": "/tmp",
+                "shell_tabs": ["Shell"]
+            }],
+            "focused_workspace_cwd": "/tmp"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let sidecar = config_home
+        .join("herdr-webui")
+        .join(format!("panes-{session_name}.json"));
+    fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+    fs::write(
+        &sidecar,
+        json!({
+            "v": 1,
+            "panels": [{
+                "kind": "pane",
+                "paneId": "p1",
+                "tabs": ["tab_1"],
+                "active": "tab_1",
+                "groupId": null
+            }],
+            "groups": [],
+            "visible": { "type": "panel", "id": "p1" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut state = test_state();
+    state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+    state
+        .panes_store
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(session_name.to_string(), Default::default());
+    // Keep the store handle to assert eviction after the app consumes the
+    // state: same Arc the close path mutates.
+    let store = state.panes_store.clone();
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/session/close")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "session": session_name, "backend": "builtin" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    stop_handle.join().unwrap();
+    assert!(
+        !sidecar.exists(),
+        "close must drop the panes sidecar carrying the session's tab ids"
+    );
+    assert!(
+        !session_dir.join("session-journal.json").exists(),
+        "close must drop the journal recording the session's shell tabs"
+    );
+    assert!(
+        !store.sessions.lock().unwrap().contains_key(session_name),
+        "close must evict the warm panes store entry"
+    );
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// The orphan sweep is the safety net for sidecars no session dir backs:
+/// close and cleanup both delete dirs, so their sidecars would otherwise be
+/// unreachable forever. Protection is name-mapped, not pattern-matched:
+/// a running dotted session (`a.b`) owns sidecar `panes-a_b.json` through
+/// the sanitizer (dots dropped), so the live name must pin that file even
+/// though the file name spells the component differently.
+#[cfg(unix)]
+#[tokio::test]
+async fn cleanup_sessions_sweeps_orphan_sidecars_without_session_dirs() {
+    let _guard = lock_env();
+    let config_home = PathBuf::from(format!(
+        "/tmp/hw-sweep-panes-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let builtin_root = config_home.join("herdr-webui").join("builtin");
+    // Running dotted session: dir + registry entry, must pin the sidecar
+    // the sanitizer maps it to (panes-a_b.json).
+    fs::create_dir_all(builtin_root.join("a.b")).unwrap();
+
+    let sidecars = config_home.join("herdr-webui");
+    fs::create_dir_all(&sidecars).unwrap();
+    let orphan = sidecars.join("panes-orphan-a.json");
+    let dotted_owner = sidecars.join("panes-a_b.json");
+    let live_sidecar = sidecars.join("panes-live-session.json");
+    let default_sidecar = sidecars.join("panes-default.json");
+    for path in [&orphan, &dotted_owner, &live_sidecar, &default_sidecar] {
+        fs::write(path, "{\"v\":1,\"panels\":[],\"groups\":[]}").unwrap();
+    }
+
+    let mut state = test_state();
+    state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+    // Live registry entries (real throwaway handles): the strongest pin,
+    // their sockets live in /tmp and never collide with the config home.
+    for (name, suffix) in [("live-session", "live"), ("a.b", "dotted")] {
+        let handle = Arc::new(
+            builtin_backend::BuiltinBackendHandle::start(builtin_backend::BuiltinBackendConfig {
+                api_socket: PathBuf::from(format!(
+                    "/tmp/herdr-webui-sweep-{suffix}-api-{}.sock",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                )),
+                client_socket: PathBuf::from(format!(
+                    "/tmp/herdr-webui-sweep-{suffix}-client-{}.sock",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                )),
+                cwd: std::env::temp_dir(),
+                shell: None,
+                jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+                journal_dir: None,
+            })
+            .unwrap(),
+        );
+        state
+            .builtin_sessions
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), handle);
+    }
+    // Warm store entry pins like a live name would.
+    state
+        .panes_store
+        .sessions
+        .lock()
+        .unwrap()
+        .insert("warm-session".to_string(), Default::default());
+    let warm_sidecar = sidecars.join("panes-warm-session.json");
+    fs::write(&warm_sidecar, "{\"v\":1,\"panels\":[],\"groups\":[]}").unwrap();
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/session/cleanup")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "backend": "builtin" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let swept: Vec<String> = body["swept_orphans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    assert_eq!(swept, vec!["orphan-a".to_string()]);
+    assert!(!orphan.exists(), "orphan sidecar must be swept");
+    assert!(
+        dotted_owner.exists(),
+        "running dotted session pins its sidecar across the sanitizer"
+    );
+    assert!(
+        live_sidecar.exists(),
+        "live registry entry pins its sidecar"
+    );
+    assert!(default_sidecar.exists(), "default sidecar is never swept");
+    assert!(warm_sidecar.exists(), "warm store entry pins its sidecar");
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 /// The composer submit route owns the refusal classification AND copy: one
 /// step produces the status code, the wire code, and the human note. The
 /// browser displays `note` verbatim (falling back to the error string when

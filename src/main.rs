@@ -3144,6 +3144,12 @@ fn mark_closed_builtin_session(state: &WebState, session_name: &str) {
     if session_name == "default" {
         return;
     }
+    // Close is final for tab data too: drop the panes sidecar (panel tab
+    // ids) and the warm store entry, or a same-name relaunch would
+    // resurrect the closed session's panels pointing at dead tabs. The
+    // default slot keeps its sidecar so a fresh default boot keeps the
+    // empty rail shape.
+    workspace_panes_store::cleanup_session_entry(&state.panes_store, session_name);
     // The session slot may exist in two places when the socket pair fell
     // back to /tmp: the canonical dir (journal) and the fallback dir
     // (sockets). Both must go when empty, or a hollow dir keeps the
@@ -3244,7 +3250,7 @@ async fn cleanup_sessions(
     // Probe + remove runs one blocking connect and filesystem ops per
     // session; keep it off the async runtime like the other session probes.
     let probe_state = state.clone();
-    let (removed, kept_running, kept_default) = tokio::task::spawn_blocking(move || {
+    let (removed, kept_running, kept_default, swept_orphans) = tokio::task::spawn_blocking(move || {
         let safe = cleanup_safe_builtin_names(&probe_state);
         let sessions_dir = builtin_socket_paths(Some("default"))
             .0
@@ -3256,7 +3262,7 @@ async fn cleanup_sessions(
         let mut kept_running = 0usize;
         let mut kept_default = 0usize;
         let Ok(entries) = fs::read_dir(&sessions_dir) else {
-            return (removed, kept_running, kept_default);
+            return (removed, kept_running, kept_default, Vec::new());
         };
         let mut names = Vec::new();
         for entry in entries.filter_map(Result::ok) {
@@ -3268,6 +3274,7 @@ async fn cleanup_sessions(
             }
         }
         names.sort();
+        let all_dir_names = names.clone();
         for name in names {
             // The default slot is the relaunch target for every fresh
             // session and the empty-socket state is normal there: never
@@ -3295,10 +3302,23 @@ async fn cleanup_sessions(
                 removed.push(name);
             }
         }
-        (removed, kept_running, kept_default)
+        // Orphan sweep: sidecars whose session dir is already gone (close
+        // and the loop above both remove dirs) were unreachable before this
+        // pass, and header-routed panes ops can create sidecars for sessions
+        // that never had a backend at all.
+        let swept_orphans = workspace_panes_store::sweep_orphan_panes_sidecars(
+            &probe_state.panes_store,
+            &safe,
+            &all_dir_names,
+            |name| {
+                let (api_socket, _) = builtin_socket_paths(Some(name));
+                api_socket.parent().map(Path::to_path_buf)
+            },
+        );
+        (removed, kept_running, kept_default, swept_orphans)
     })
     .await
-    .unwrap_or_else(|_| (Vec::new(), 0, 0));
+    .unwrap_or_else(|_| (Vec::new(), 0, 0, Vec::new()));
     debug_assert!(kept_default <= 1, "default session dir is never removed");
     let mut removed_count = 0usize;
     if let Ok(mut closed) = state.closed_builtin_sessions.lock() {
@@ -3310,12 +3330,19 @@ async fn cleanup_sessions(
             workspace_panes_store::cleanup_session_entry(&state.panes_store, name);
         }
         removed_count = removed.len();
+        // Swept orphans never had a closed marker or a store entry that
+        // matters anymore, but a same-name relaunch must not find the
+        // evicted sidecar in the warm map either.
+        for name in &swept_orphans {
+            closed.remove(name);
+        }
     }
     Json(json!({
         "ok": true,
         "removed": removed,
         "removed_count": removed_count,
         "kept_running_count": kept_running,
+        "swept_orphans": swept_orphans,
     }))
     .into_response()
 }

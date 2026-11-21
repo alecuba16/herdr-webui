@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{ConnectInfo, State};
@@ -199,6 +199,111 @@ pub fn cleanup_session_entry(store: &Arc<PanesStore>, session: &str) {
     if let Ok(mut sessions) = store.sessions.lock() {
         sessions.remove(session);
     }
+}
+
+/// Sidecar file name for one session: the sidecar sanitizer differs from
+/// the socket one (dots are dropped here, kept there), so `a.b` and `a_b`
+/// write the same file `panes-a_b.json` while living in different session
+/// dirs. Collision protection must therefore compare through this form.
+fn sidecar_name_component(session: &str) -> String {
+    let safe: String = session
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "default".to_string()
+    } else {
+        safe
+    }
+}
+
+/// Session names whose panes sidecar the orphan sweep must never touch.
+/// Reconstructed from live registries rather than a pattern so a name that
+/// merely looks stale cannot delete a live session's tab data. Names map
+/// through the sidecar sanitizer because the file system only knows the
+/// sanitized form (see `sidecar_name_component`).
+pub fn sweep_protected_session_names(store: &Arc<PanesStore>, safe: &HashSet<String>) -> HashSet<String> {
+    let mut names: HashSet<String> = store
+        .sessions
+        .lock()
+        .map(|sessions| {
+            sessions
+                .keys()
+                .map(|key| sidecar_name_component(key))
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in safe {
+        names.insert(sidecar_name_component(name));
+    }
+    names.insert("default".to_string());
+    names
+}
+
+/// Remove panes sidecars whose session is fully gone: no builtin session
+/// dir, no live socket, no warm store entry, not `default`. Close and
+/// cleanup both remove session dirs, so a sidecar left behind by either
+/// path would otherwise survive every sweep forever; header-routed panes
+/// ops can also mint sidecars for sessions that never had a backend.
+/// The reverse name mapping is many-to-one (the sidecar sanitizer drops
+/// dots, so `a.b` and `a_b` share a file), so a candidate is only deleted
+/// when no existing session dir, live name, or warm entry maps to its
+/// component. `existing_session_names` is the fresh builtin dir listing
+/// (dir names are `safe_socket_component` output, mapped through the
+/// sidecar sanitizer here). Best effort: unreadable entries stay.
+pub fn sweep_orphan_panes_sidecars(
+    store: &Arc<PanesStore>,
+    safe: &HashSet<String>,
+    existing_session_names: &[String],
+    socket_dir_for: impl Fn(&str) -> Option<PathBuf>,
+) -> Vec<String> {
+    let protected = sweep_protected_session_names(store, safe);
+    let owned: HashSet<String> = existing_session_names
+        .iter()
+        .map(|name| sidecar_name_component(name))
+        .collect();
+    let Some(config_dir) = panes_sidecar_path("x").parent().map(Path::to_path_buf) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(&config_dir) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        let Some(raw) = name
+            .strip_prefix("panes-")
+            .and_then(|stem| stem.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        // Only sanitized-canonical names can be swept: a candidate that is
+        // not its own sidecar-sanitized form can belong to a session whose
+        // raw name maps here (dots) and must survive.
+        let session = sidecar_name_component(raw);
+        if session != raw {
+            continue;
+        }
+        if protected.contains(&session) || owned.contains(&session) {
+            continue;
+        }
+        if socket_dir_for(&session).map(|d| d.exists()).unwrap_or(false) {
+            continue;
+        }
+        if fs::remove_file(entry.path()).is_ok() {
+            removed.push(session);
+        }
+    }
+    removed
 }
 
 fn default_entry() -> PanesEntry {
