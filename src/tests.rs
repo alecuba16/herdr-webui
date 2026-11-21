@@ -14120,6 +14120,120 @@ async fn cleanup_sessions_rejects_non_builtin_backend() {
     assert_eq!(body["ok"], false);
 }
 
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn cleanup_sessions_removes_panes_sidecar_and_store_entry_with_tabs() {
+    // Session cleanup must take the TAB data with it, not just the
+    // socket dir: the panes sidecar carries each panel's tab ids, and
+    // the in-memory panes store holds the same entry for a warm server.
+    // A cleanup that leaves either would resurrect closed tabs on the
+    // next same-name launch or GET.
+    let _guard = lock_env();
+    let config_home = PathBuf::from(format!(
+        "/tmp/hw-cleanup-panes-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let session_name = "panes-tabs-session";
+    let (api_socket, _) = builtin_socket_paths(Some(session_name));
+    fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+    // Dead-listener socket so the cleanup sees the session as stale.
+    {
+        let listener = std::os::unix::net::UnixListener::bind(&api_socket).unwrap();
+        drop(listener);
+    }
+    let session_dir = server_settings_path()
+        .parent()
+        .unwrap()
+        .join("builtin")
+        .join(session_name);
+    fs::create_dir_all(&session_dir).unwrap();
+    // Journal with shell tabs: the tab half of the session record.
+    fs::write(
+        session_dir.join("session-journal.json"),
+        json!({
+            "version": 1,
+            "workspaces": [{
+                "workspace_id": "ws_1",
+                "label": "tabs-here",
+                "cwd": "/tmp",
+                "shell_tabs": ["Shell"]
+            }],
+            "focused_workspace_cwd": "/tmp"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Panes sidecar with tab ids on its panels.
+    let sidecar = config_home.join("herdr-webui").join(format!("panes-{session_name}.json"));
+    fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+    fs::write(
+        &sidecar,
+        json!({
+            "v": 1,
+            "panels": [{
+                "kind": "pane",
+                "paneId": "p1",
+                "tabs": ["tab_1"],
+                "active": "tab_1",
+                "groupId": null
+            }],
+            "groups": [],
+            "visible": { "type": "panel", "id": "p1" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut state = test_state();
+    state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+    // Warm the in-memory store the way any GET/op on this session does.
+    // A default entry stands in for the loaded one: the cleanup contract
+    // is the eviction itself, not the payload shape.
+    state
+        .panes_store
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(session_name.to_string(), Default::default());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/session/cleanup")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "backend": "builtin" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["removed_count"], 1);
+    assert!(
+        !sidecar.exists(),
+        "cleanup must remove the panes sidecar carrying the session's tab ids"
+    );
+    assert!(
+        !session_dir.join("session-journal.json").exists(),
+        "cleanup must remove the journal recording the session's shell tabs"
+    );
+    assert!(
+        server_settings_path().parent().unwrap().join("builtin").join(session_name).read_dir().is_err()
+            || fs::read_dir(server_settings_path().parent().unwrap().join("builtin").join(session_name)).is_err(),
+        "the session directory itself is gone"
+    );
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 /// The composer submit route owns the refusal classification AND copy: one
 /// step produces the status code, the wire code, and the human note. The
 /// browser displays `note` verbatim (falling back to the error string when
