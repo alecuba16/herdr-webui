@@ -459,7 +459,9 @@ const usedPaneIds = new Set();
 
 // Layout node ids (group split trees) share the counter pattern: one
 // session, one namespace, persistence keeps minted ids stable across
-// reloads.
+// reloads. Ids are retained for the session by design: the mint walks
+// the counter past taken ids, and a reminted id could collide with a
+// persisted layout from an older storage blob.
 let splitIdCounter = 0;
 const usedSplitIds = new Set();
 
@@ -1762,6 +1764,8 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
   // different parents never collide.
   const childIds = node.children.map((child, i) =>
     isPaneSplit(child) ? `${idPath}/${splitNodeId(child)}` : ((leafOf(child) && leafOf(child).paneId) || `p?${i}`));
+  const childIdSet = new Set(childIds);
+  const dividerKeySet = new Set(childIds.slice(1));
   [...element.children].forEach((child) => {
     const isDivider = hasClass(child, "pane-divider");
     // Split wrappers carry data-split-id, leaves carry data-pane-id. Keying
@@ -1776,8 +1780,8 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
       // on anything outside childIds.slice(1) lost its pair (a leaf got
       // wrapped into a nested split, a subtree got removed). Stale ones
       // paint phantom drag handles forever, prune them.
-      if (!childIds.slice(1).includes(key)) element.removeChild(child);
-    } else if (childIds.indexOf(key) < 0) {
+      if (!dividerKeySet.has(key)) element.removeChild(child);
+    } else if (!childIdSet.has(key)) {
       // A genuinely removed subtree can still hold live surfaces: editor
       // and git containers, the terminal shell. Park them in the persistent
       // home first; a raw removeChild would orphan them.
@@ -1786,11 +1790,18 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
       element.removeChild(child);
     }
   });
+  // One keyed pass over the surviving children replaces the repeated
+  // [...element.children].find scans (mount find, expected-order find,
+  // divider find): the walk below stays O(children) instead of O(n^2).
+  const mountsByKey = new Map();
+  const dividersByFor = new Map();
+  [...element.children].forEach((child) => {
+    if (hasClass(child, "pane-divider")) dividersByFor.set(child.dataset.dividerFor, child);
+    else mountsByKey.set(child.dataset.splitId != null ? child.dataset.splitId : child.dataset.paneId, child);
+  });
   node.children.forEach((child, i) => {
     const childId = childIds[i];
-    let mount = [...element.children].find((candidate) =>
-      !hasClass(candidate, "pane-divider")
-      && (isPaneSplit(child) ? candidate.dataset.splitId === childId : candidate.dataset.paneId === childId));
+    let mount = mountsByKey.get(childId) || null;
     if (!mount) {
       if (isPaneSplit(child)) {
         mount = document.createElement("div");
@@ -1821,6 +1832,7 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
         content.className = "pane-content";
         mount.appendChild(content);
       }
+      mountsByKey.set(childId, mount);
       element.appendChild(mount);
     }
     mount.style.flexGrow = String(node.sizes && node.sizes[i] > 0 ? node.sizes[i] : 1);
@@ -1831,7 +1843,7 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
     }
     if (i < node.children.length - 1) {
       const dividerFor = childIds[i + 1];
-      ensureDivider(element, dividerFor, node.kind);
+      ensureDivider(element, dividerFor, node.kind, dividersByFor);
     }
   });
   // Extend splices fresh panes mid-array while reuse keeps existing
@@ -1842,13 +1854,10 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
   // tree the walk matches and nothing moves.
   const expected = [];
   node.children.forEach((child, i) => {
-    const mount = [...element.children].find((c) =>
-      c.dataset && (isPaneSplit(child)
-        ? c.dataset.splitId === childIds[i]
-        : c.dataset.paneId === childIds[i]));
+    const mount = mountsByKey.get(childIds[i]);
     if (mount) expected.push(mount);
     if (i < node.children.length - 1) {
-      const divider = [...element.children].find((c) => c.dataset && c.dataset.dividerFor === childIds[i + 1]);
+      const divider = dividersByFor.get(childIds[i + 1]);
       if (divider) expected.push(divider);
     }
   });
@@ -1858,12 +1867,13 @@ function reconcileSplitNode(container, node, idPath, resolveLeaf) {
   return element;
 }
 
-function ensureDivider(element, dividerFor, kind) {
-  // Walk children instead of an attribute-selector query: the node-test
-  // DOM stubs only support #id and .class selectors. Spread first: a real
+function ensureDivider(element, dividerFor, kind, dividersByFor) {
+  // Prefer the caller's keyed map (the reconcile pass builds one);
+  // walk children only when no map was handed in. Spread first: a real
   // HTMLCollection has no .find of its own.
-  let divider = [...(element.children || [])].find((child) =>
-    hasClass(child, "pane-divider") && child.dataset && child.dataset.dividerFor === dividerFor);
+  let divider = (dividersByFor && dividersByFor.get(dividerFor))
+    || [...(element.children || [])].find((child) =>
+        hasClass(child, "pane-divider") && child.dataset && child.dataset.dividerFor === dividerFor);
   if (!divider) {
     divider = document.createElement("div");
     divider.className = "pane-divider";
@@ -1871,6 +1881,7 @@ function ensureDivider(element, dividerFor, kind) {
     divider.setAttribute("role", "separator");
     divider.title = "Drag to resize";
     element.appendChild(divider);
+    if (dividersByFor) dividersByFor.set(dividerFor, divider);
   }
   // A kind never changes after creation now (tmux model: same-kind
   // presses extend, other-kind presses nest, nothing flips), but the
@@ -2301,7 +2312,14 @@ function renderLabelRail(container, entry, subject) {
     }
   } else if (railShowsInput !== editingState || (!editingState && rail.__herdrRailSignature !== html)) {
     rail.__herdrRailSignature = html;
+    // The innerHTML swap drops focus to body; a focused chip button
+    // (keyboard navigation, not a rename) must survive the rebuild.
+    const activeId = (document.activeElement && document.activeElement.id) || null;
     rail.innerHTML = html;
+    if (activeId) {
+      const refocus = [...(rail.children || [])].find((child) => child.id === activeId);
+      if (refocus && typeof refocus.focus === "function") refocus.focus();
+    }
   }
 }
 
@@ -2457,12 +2475,21 @@ function renderWorkspacePanes() {
       const members = groupMembers(subject.group);
       const layout = { kind: "row", sizes: members.map(() => 1), children: members.map((m) => m.paneId) };
       subject.group.layout = layout;
+      // The normalize minted a split tree the next reload must find;
+      // without this save the repair lived only in memory until some
+      // later gesture persisted the entry.
+      saveWorkspacePanesStates();
       reconcileSplitNode(container, layout, splitNodeId(layout), (id) => paneForPaneId(settled, id));
       renderLeaves.push(...members);
     } else {
       // Single panel subject: keep the Phase 3 flat contract (no wrapper
       // element), so existing callers and probes that query
       // .workspace-pane directly stay valid.
+      // Cleanup runs BEFORE the flat pane materializes: the stale
+      // wrapper from a group subject still holds a pane with the same
+      // pane-<paneId> id, and appending the flat pane first left two
+      // duplicate ids in one synchronous pass.
+      cleanupAbandonedSubjectDom(container, subject, [subject.leaf]);
       let pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
       if (!pane) {
         pane = createPaneElement(subject.leaf.paneId || "root");
@@ -2969,8 +2996,16 @@ function renderLeafInto(pane, leaf) {
   const stripHtml = paneMergedHeaderHtml(leaf, paneTabsForTree(leaf), activeTab);
   if (strip.__herdrPaneSignature !== stripHtml) {
     strip.__herdrPaneSignature = stripHtml;
+    // A focused header control (view tab, close) must survive the swap;
+    // the rename input lives in its own guarded path and never carries
+    // a pane-tab id, so the id restore cannot fight it.
+    const activeId = (document.activeElement && document.activeElement.id) || null;
     strip.innerHTML = stripHtml;
     if (strip.removeAttribute) strip.removeAttribute("hidden");
+    if (activeId && document.activeElement !== strip) {
+      const refocus = strip.querySelector(`#${activeId}`);
+      if (refocus && typeof refocus.focus === "function") refocus.focus();
+    }
   }
 }
 
@@ -3378,12 +3413,30 @@ function memberLayoutWithout(node, paneId) {
     return kept.length ? kept : null;
   }
   if (!Array.isArray(node.children)) return node;
+  // Track the ORIGINAL index while filtering: sizes pair with children
+  // by position, so remapping survivors by kept-index gave every child
+  // after the removed slot its left neighbor's size.
+  let removedAt = -1;
   node.children = node.children
-    .map((child) => memberLayoutWithout(child, paneId))
+    .map((child, i) => {
+      const next = memberLayoutWithout(child, paneId);
+      if (next === null && removedAt < 0) removedAt = i;
+      return next;
+    })
     .filter(Boolean);
   if (node.children.length === 0) return null;
   if (node.children.length === 1) return node.children[0];
-  node.sizes = node.children.map((_, i) => (Number.isFinite(node.sizes[i]) && node.sizes[i] > 0 ? node.sizes[i] : 1));
+  if (Array.isArray(node.sizes)) {
+    const sizes = [];
+    let kept = 0;
+    for (let i = 0; i < node.children.length; i++) {
+      const src = kept + (removedAt >= 0 && kept >= removedAt ? 1 : 0);
+      const raw = node.sizes[src];
+      sizes.push(Number.isFinite(raw) && raw > 0 ? raw : 1);
+      kept++;
+    }
+    node.sizes = sizes;
+  }
   return node;
 }
 
@@ -3714,10 +3767,13 @@ function paneContainerTabDrop(event) {
   // the host into the next growth drop and misplace it).
   dropHostPaneId = target.paneId || null;
   let landed = false;
+  // The drop tail below owns the single save+render: skipping the
+  // settle render keeps local-mode drops at one paint instead of two.
+  const settleOpts = { skipRender: true };
   if (labelDropCreatesGroup(root)) {
-    landed = createGroupFromDrop(dragged, axis, target.first);
+    landed = createGroupFromDrop(dragged, axis, target.first, settleOpts);
   } else {
-    landed = growVisibleGroupWith(dragged, axis, target.first);
+    landed = growVisibleGroupWith(dragged, axis, target.first, settleOpts);
   }
   dropHostPaneId = null;
   paneLabelDragEnd();
@@ -3725,7 +3781,9 @@ function paneContainerTabDrop(event) {
   // A thenable landed value means a server op owns the outcome: its
   // settle owns save+render. REJECTED is not thenable and still paints
   // here; a local paint on the promise path would persist and paint a
-  // visible subject with the "__pending__" placeholder id.
+  // visible subject with the "__pending__" placeholder id. The server
+  // SUCCESS path adopted and rendered inside the op, so it returns a
+  // thenable and skips this tail.
   if (landed && typeof landed.then === "function") return;
   saveWorkspacePanesStates();
   renderWorkspacePanes();
@@ -3753,7 +3811,7 @@ function labelDropCreatesGroup(root) {
   return !!(subject && subject.kind === "panel");
 }
 
-function createGroupFromDrop(dragged, axis, draggedFirst) {
+function createGroupFromDrop(dragged, axis, draggedFirst, opts) {
   const root = paneRootFor();
   const neighbor = autoJoinNeighborFor(dragged);
   if (!neighbor) return false;
@@ -3776,6 +3834,7 @@ function createGroupFromDrop(dragged, axis, draggedFirst) {
         draggedFirst,
       },
       runLocal,
+      opts,
     );
   }
   return runLocal();
@@ -3805,7 +3864,7 @@ function localCreateGroupFromDrop(dragged, neighbor, axis, draggedFirst) {
 
 // Group subject: the dragged ungrouped panel joins the visible group
 // at the previewed quadrant inside the layout.
-function growVisibleGroupWith(dragged, axis, draggedFirst) {
+function growVisibleGroupWith(dragged, axis, draggedFirst, opts) {
   const root = paneRootFor();
   const subject = visibleSubject(root);
   if (!subject || subject.kind !== "group" || dragged.groupId) return false;
@@ -3820,6 +3879,7 @@ function growVisibleGroupWith(dragged, axis, draggedFirst) {
       hostPaneId: dropHostPaneId || undefined,
     },
     () => localGrowVisibleGroupWith(dragged, group, axis, draggedFirst),
+    opts,
   );
 }
 
@@ -4146,12 +4206,18 @@ function layoutWithPanelAt(layout, paneId, axis, first) {
   }
   const parent = slot.parent;
   if (parent.kind === axis) {
-    // Extend the same-axis parent at the host index.
-    const share = Math.max(1, (parent.sizes && parent.sizes[slot.index]) || 1) / 2;
-    parent.children.splice(first ? slot.index : slot.index + 1, 0, paneId);
+    // Extend the same-axis parent at the host index. The newcomer takes
+    // the split's average share, never half of the host slot: halving
+    // collapsed the dragged pair geometrically across repeated
+    // repositions (6 moves shrank a pane to 1/64 of its width).
+    const sizes = Array.isArray(parent.sizes) ? parent.sizes : [];
+    const total = sizes.reduce((sum, v) => sum + (Number.isFinite(v) && v > 0 ? v : 1), 0)
+      || parent.children.length;
+    const share = total / parent.children.length;
+    const at = first ? slot.index : slot.index + 1;
+    parent.children.splice(at, 0, paneId);
     if (!Array.isArray(parent.sizes)) parent.sizes = parent.children.map(() => 1);
-    parent.sizes.splice(first ? slot.index : slot.index + 1, 0, share);
-    parent.sizes[first ? slot.index + 1 : slot.index] = share;
+    parent.sizes.splice(at, 0, share);
     return layout;
   }
   // Nest under the host.
@@ -6010,6 +6076,14 @@ function writeDividerSizes(splitElement, sizes) {
   if (!node) return;
   node.sizes = sizes;
   saveWorkspacePanesStates();
+  // Server mode: the drag sizes are the only layout fact the store never
+  // learns through a structural op, so every later adoption (panel.create
+  // and friends) rebuilds from the stale tree and silently resets them.
+  // The local write above stays the optimistic twin; a rejection lands in
+  // the shared resync path.
+  if (panesMode === "server" && panesServerReachable()) {
+    panesServerOp({ op: "group.sizes", groupId: subject.group.groupId, splitId: path, sizes });
+  }
 }
 
 function findSplitByPath(root, path) {
@@ -6055,12 +6129,60 @@ function paneElementForTab(tabId) {
   return activePaneElement();
 }
 
+// Pane-tree signature for the render() gate: render.js polls this and
+// skips its renderWorkspacePanes call while the string is unchanged.
+// Covers every fact the paint consumes structurally (subject, panel
+// membership, group layouts and their sizes, tab sets) PLUS the facts
+// only a render pass folds into the tree: the route tab (the strip
+// highlight homes through syncTerminalTabsIntoTree, never directly),
+// the backend tab rows (new ids home into leaf.tabs only inside a
+// render; label/number text feeds every strip span), and the workspace
+// display names the member headers read. Pure string build, no DOM
+// reads; every state field is guarded because vm harnesses stub state
+// minimally.
+function paneTreeSignature() {
+  const root = paneRootFor();
+  if (!root) return "none";
+  const vis = `${root.visible ? `${root.visible.type}:${root.visible.id}` : "-"}`;
+  const panels = (root.panels || []).map((leaf) =>
+    `${leaf.paneId}|${leaf.groupId || ""}|${(leaf.tabs || []).join(",")}`).join(";");
+  const groups = (root.groups || []).map((group) => {
+    const layout = JSON.stringify(group.layout, (key, value) =>
+      key === "splitId" ? undefined : value);
+    return `${group.groupId}|${(group.memberIds || []).join(",")}|${layout}`;
+  }).join(";");
+  // Route tab: a tab-only navigation moves no tree fact, but the next
+  // render's route resync (syncTerminalTabsIntoTree) re-homes leaf.active
+  // and the shell owner off it.
+  const state_ = typeof state === "object" && state ? state : {};
+  const routeTab = state_.tab != null ? String(state_.tab) : "-";
+  // Backend rows: id plus the label/number text the strip spans derive
+  // from. New ids must open the gate so the render homes them; edits
+  // must open it so the strips repaint.
+  const rows = (state_.tabs || []).map((row) =>
+    row && typeof row === "object"
+      ? `${row.tab_id}|${row.label || ""}|${row.number || ""}`
+      : String(row)).join(";");
+  // Workspace display names: paneMemberHeaderLabel and
+  // paneMemberWorktreeName resolve them through worktreeDisplayName
+  // (branch, worktree path, wt.label, then w.label), so the fingerprint
+  // carries the RESOLVED name, not the raw label: a branch switch or a
+  // worktree move changes the rendered span with workspace_id and label
+  // untouched.
+  const workspaces = (state_.workspaces || []).map((workspace) =>
+    workspace && typeof workspace === "object"
+      ? `${workspace.workspace_id}|${(typeof worktreeDisplayName === "function" && worktreeDisplayName(workspace)) || workspace.label || ""}`
+      : String(workspace)).join(";");
+  return `${vis}#${panels}#${groups}#${routeTab}#${rows}#${workspaces}`;
+}
+
 window.HerdrWorkspacePanes = {
   panesStateFor,
   paneRoot,
   paneTabs,
   paneActiveTab,
   renderWorkspacePanes,
+  paneTreeSignature,
   activatePaneTab,
   openEditorTab,
   closeEditorTab,

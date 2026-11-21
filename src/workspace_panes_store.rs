@@ -295,32 +295,34 @@ fn layout_without(node: &Value, pane_id: &str) -> Option<Value> {
         }
         _ => {
             let children = node.get("children").and_then(Value::as_array)?;
-            let mut kept: Vec<Value> = Vec::new();
-            for child in children {
+            let sizes = node.get("sizes").and_then(Value::as_array).cloned();
+            let sizes = sizes.unwrap_or_default();
+            // Sizes map by ORIGINAL child index: a survivor after a
+            // removed middle child must keep its own slot, not inherit
+            // its left neighbor's.
+            let mut kept: Vec<(usize, Value)> = Vec::new();
+            for (index, child) in children.iter().enumerate() {
                 if let Some(kept_child) = layout_without(child, pane_id) {
-                    kept.push(kept_child);
+                    kept.push((index, kept_child));
                 }
             }
             match kept.len() {
                 0 => None,
-                1 => Some(kept.remove(0)),
+                1 => Some(kept.remove(0).1),
                 _ => {
                     let mut next = node.clone();
-                    let sizes = next.get("sizes").and_then(Value::as_array).cloned();
-                    let sizes = sizes.unwrap_or_default();
                     let next_sizes: Vec<Value> = kept
                         .iter()
-                        .enumerate()
-                        .map(|(i, _)| {
+                        .map(|(index, _)| {
                             sizes
-                                .get(i)
+                                .get(*index)
                                 .and_then(Value::as_f64)
                                 .filter(|v| *v > 0.0)
                                 .map(|v| serde_json::json!(v))
                                 .unwrap_or(serde_json::json!(1))
                         })
                         .collect();
-                    next["children"] = Value::Array(kept);
+                    next["children"] = Value::Array(kept.into_iter().map(|(_, v)| v).collect());
                     next["sizes"] = Value::Array(next_sizes);
                     Some(next)
                 }
@@ -424,22 +426,23 @@ fn insert_at_host(node: &mut Value, host: &str, pane_id: &str, axis: &str, first
     for i in 0..children.len() {
         if children[i].as_str() == Some(host) {
             if kind == axis {
-                // Extend the same-axis parent at the host index. Halving
-                // mirrors the client: the pair keeps the host's old
-                // total, so repeated grows never inflate the row.
+                // Extend the same-axis parent at the host index. The
+                // newcomer takes the parent's average share instead of
+                // halving the host slot: sizes act as flex-grow so
+                // absolute sums do not matter, and repeated extends
+                // must never shrink an existing entry geometrically.
                 let at = if first { i } else { i + 1 };
-                let share = sizes
-                    .get(i)
-                    .and_then(Value::as_f64)
-                    .filter(|v| *v > 0.0)
-                    .unwrap_or(1.0);
-                let half = share / 2.0;
-                children.insert(at, serde_json::json!(pane_id));
                 while sizes.len() < children.len() {
                     sizes.push(serde_json::json!(1));
                 }
-                sizes[i] = serde_json::json!(half);
-                sizes.insert(at, serde_json::json!(half));
+                let total: f64 = sizes
+                    .iter()
+                    .filter_map(|v| v.as_f64().filter(|n| *n > 0.0))
+                    .sum::<f64>()
+                    .max(children.len() as f64);
+                let newcomer = total / children.len() as f64;
+                children.insert(at, serde_json::json!(pane_id));
+                sizes.insert(at, serde_json::json!(newcomer));
                 node["children"] = Value::Array(children);
                 node["sizes"] = Value::Array(sizes);
             } else {
@@ -896,6 +899,12 @@ struct PanesOpRequest {
     /// restores that member.
     #[serde(default)]
     focused_pane_id: Option<String>,
+    /// Divider-drag writeback (group.sizes): the client's split path
+    /// (`<rootSplitId>/<childSplitId>/...` from node.splitId fields).
+    #[serde(default)]
+    split_id: Option<String>,
+    #[serde(default)]
+    sizes: Option<Vec<f64>>,
 }
 
 async fn panes_op(
@@ -913,6 +922,26 @@ async fn panes_op(
         Ok(value) => Json(value).into_response(),
         Err((status, message)) => panes_json_error(status, message),
     }
+}
+
+/// Resolve a client split path (`<rootSplitId>/<childSplitId>/...`)
+/// onto a layout node. The root matches by its own splitId alone, each
+/// further segment descends one split child.
+fn resolve_split_by_path<'a>(node: &'a mut Value, path: &str) -> Option<&'a mut Value> {
+    let mut segments = path.split('/');
+    let head = segments.next()?;
+    if node.get("splitId").and_then(Value::as_str) != Some(head) {
+        return None;
+    }
+    let mut current = node;
+    for segment in segments {
+        let children = current.get_mut("children")?.as_array_mut()?;
+        let at = children
+            .iter()
+            .position(|child| child.get("splitId").and_then(Value::as_str) == Some(segment))?;
+        current = children.get_mut(at)?;
+    }
+    Some(current)
 }
 
 fn valid_axis(axis: Option<&str>) -> Option<&'static str> {
@@ -1262,6 +1291,57 @@ fn apply_op(entry: &mut PanesEntry, op: &PanesOpRequest) -> Result<(), (StatusCo
             group.name = name;
             Ok(())
         }
+        "group.sizes" => {
+            let group_id = op
+                .group_id
+                .clone()
+                .ok_or((StatusCode::BAD_REQUEST, "group_id required".into()))?;
+            let split_id = op
+                .split_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or((StatusCode::BAD_REQUEST, "split_id required".into()))?;
+            let sizes = op
+                .sizes
+                .as_ref()
+                .ok_or((StatusCode::BAD_REQUEST, "sizes required".into()))?;
+            let group_at = group_index(entry, &group_id)
+                .ok_or((StatusCode::NOT_FOUND, "group not found".into()))?;
+            if entry.visible.kind != "group" || entry.visible.id != group_id {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "group is not the visible subject".into(),
+                ));
+            }
+            let mut layout = entry.groups[group_at].layout.clone();
+            let node = resolve_split_by_path(&mut layout, split_id).ok_or((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("split path {split_id} not found"),
+            ))?;
+            let children_len = node
+                .get("children")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .ok_or((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("split path {split_id} is not a split"),
+                ))?;
+            if sizes.len() != children_len {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("sizes length must match children length {children_len}"),
+                ));
+            }
+            if sizes.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "sizes must be finite and positive".into(),
+                ));
+            }
+            node["sizes"] = Value::Array(sizes.iter().map(|v| serde_json::json!(v)).collect());
+            entry.groups[group_at].layout = layout;
+            Ok(())
+        }
         "subject.set" => {
             let kind = op
                 .visible
@@ -1362,6 +1442,8 @@ mod tests {
             visible: None,
             active_pane_id: None,
             focused_pane_id: None,
+            split_id: None,
+            sizes: None,
         }
     }
 
@@ -1860,7 +1942,7 @@ mod tests {
     }
 
     #[test]
-    fn group_grow_same_axis_halves_host_share() {
+    fn group_grow_same_axis_extends_with_parent_average() {
         let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
         let mut create = req("group.create");
         create.pane_id = Some("p1".into());
@@ -1878,10 +1960,11 @@ mod tests {
             group.layout["children"],
             serde_json::json!(["p1", "p3", "p2"])
         );
-        // Client parity: the pair keeps the host's old total, each half.
+        // The newcomer takes the parent average; existing entries keep
+        // their own sizes (no halving).
         let sizes = group.layout["sizes"].as_array().unwrap();
-        assert_eq!(sizes[0].as_f64(), Some(0.5));
-        assert_eq!(sizes[1].as_f64(), Some(0.5));
+        assert_eq!(sizes[0].as_f64(), Some(1.0));
+        assert_eq!(sizes[1].as_f64(), Some(1.0));
         assert_eq!(sizes[2].as_f64(), Some(1.0));
     }
 
@@ -1965,5 +2048,201 @@ mod tests {
         });
         let out = layout_without(&nested, "p3").unwrap();
         assert_eq!(out["children"], serde_json::json!(["p1", "p2"]));
+    }
+
+    #[test]
+    fn layout_without_survivors_keep_their_own_sizes() {
+        let layout = serde_json::json!({
+            "kind": "row",
+            "sizes": [1, 2, 3],
+            "children": ["a", "b", "c"]
+        });
+        let out = layout_without(&layout, "b").unwrap();
+        assert_eq!(out["children"], serde_json::json!(["a", "c"]));
+        // Original-index mapping: the survivor keeps its own slot, not its
+        // left neighbor's ([1, 2] would be the old kept-index bug).
+        let out_sizes = out["sizes"].as_array().unwrap();
+        assert_eq!(out_sizes[0].as_f64(), Some(1.0));
+        assert_eq!(out_sizes[1].as_f64(), Some(3.0));
+    }
+
+    #[test]
+    fn group_move_repeated_repositions_never_collapse_sizes() {
+        let mut entry = entry_with_panels(&["p8", "p6", "p9", "p7"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p8".into());
+        create.axis = Some("column".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        // Root column [p8, p6]; nest p9 under p8 and p7 under p6 so the
+        // root holds two row splits, each a 2-child pair.
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p9".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("row".into());
+        grow.dragged_first = true;
+        grow.host_pane_id = Some("p8".into());
+        apply_op(&mut entry, &grow).unwrap();
+        let mut grow2 = req("group.grow");
+        grow2.pane_id = Some("p7".into());
+        grow2.group_id = Some("g1".into());
+        grow2.axis = Some("row".into());
+        grow2.dragged_first = false;
+        grow2.host_pane_id = Some("p6".into());
+        apply_op(&mut entry, &grow2).unwrap();
+        assert_eq!(entry.groups[0].layout["sizes"], serde_json::json!([1, 1]));
+        // Six alternating repositions of p8 onto host p6 on the row axis
+        // inside p6's pair. Each cycle removes p8 (pair collapses) and
+        // re-inserts it; sizes must never shrink geometrically.
+        for step in 0..6 {
+            let mut mv = req("group.move");
+            mv.pane_id = Some("p8".into());
+            mv.group_id = Some("g1".into());
+            mv.host_pane_id = Some("p6".into());
+            mv.axis = Some("row".into());
+            mv.dragged_first = step % 2 == 0;
+            apply_op(&mut entry, &mv).unwrap();
+            let layout = &entry.groups[0].layout;
+            let root_sizes = layout["sizes"].as_array().unwrap();
+            let total: f64 = root_sizes.iter().filter_map(|v| v.as_f64()).sum();
+            for value in root_sizes.iter().filter_map(|v| v.as_f64()) {
+                assert!(
+                    value >= 0.1 * total,
+                    "step {step}: root size {value} below 0.1 of {total}"
+                );
+            }
+        }
+        // No halving per op: the root slot pair keeps its full share.
+        let final_sizes = entry.groups[0].layout["sizes"].as_array().unwrap();
+        assert_eq!(final_sizes[0].as_f64(), Some(1.0));
+        assert_eq!(final_sizes[1].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn group_grow_same_axis_keeps_pair_share_against_sibling() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3", "p4"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p4".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("column".into());
+        grow.dragged_first = false;
+        grow.host_pane_id = Some("p2".into());
+        apply_op(&mut entry, &grow).unwrap();
+        // Root row [p1, column [p2, p4]], root sizes [1, 1]. Force a
+        // distinctive 2-child split: sizes [2, 1] on the nested column.
+        entry.groups[0].layout["children"][1]["sizes"] = serde_json::json!([2, 1]);
+        let mut extend = req("group.grow");
+        extend.pane_id = Some("p3".into());
+        extend.group_id = Some("g1".into());
+        extend.axis = Some("column".into());
+        extend.host_pane_id = Some("p2".into());
+        apply_op(&mut entry, &extend).unwrap();
+        let layout = &entry.groups[0].layout;
+        // The extended pair lives inside the nested column, so its slot
+        // share against the sibling split is the untouched root entry.
+        assert_eq!(layout["sizes"], serde_json::json!([1, 1]));
+        let nested = &layout["children"][1];
+        // Newcomer takes the nested split average (3/2); the host's 2 and
+        // the sibling's 1 inside the pair stay untouched (no halving).
+        assert_eq!(nested["sizes"], serde_json::json!([2, 1.5, 1]));
+        let pair_total = 2.0 + 1.5;
+        let inner_total = 2.0 + 1.5 + 1.0;
+        assert!(pair_total / inner_total >= 0.1);
+    }
+
+    #[test]
+    fn group_sizes_writes_and_survives_panel_create() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p3".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("column".into());
+        grow.host_pane_id = Some("p2".into());
+        apply_op(&mut entry, &grow).unwrap();
+        // Give the layout nodes the client's splitId fields.
+        entry.groups[0].layout["splitId"] = serde_json::json!("s41");
+        entry.groups[0].layout["children"][1]["splitId"] = serde_json::json!("s46");
+        let mut sizes = req("group.sizes");
+        sizes.group_id = Some("g1".into());
+        sizes.split_id = Some("s41/s46".into());
+        sizes.sizes = Some(vec![2.0, 1.0]);
+        apply_op(&mut entry, &sizes).unwrap();
+        // The nested column keeps the dragged [2, 1] after group.sizes.
+        let nested = &entry.groups[0].layout["children"][1];
+        let sizes = nested["sizes"].as_array().unwrap();
+        assert_eq!(sizes[0].as_f64(), Some(2.0));
+        assert_eq!(sizes[1].as_f64(), Some(1.0));
+        // Divider drags must survive unrelated structural ops.
+        apply_op(&mut entry, &req("panel.create")).unwrap();
+        let nested = &entry.groups[0].layout["children"][1];
+        let sizes = nested["sizes"].as_array().unwrap();
+        assert_eq!(sizes[0].as_f64(), Some(2.0));
+        assert_eq!(sizes[1].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn group_sizes_rejects_bad_path_length_and_values() {
+        let mut entry = entry_with_panels(&["p1", "p2", "p3"]);
+        let mut create = req("group.create");
+        create.pane_id = Some("p1".into());
+        create.axis = Some("row".into());
+        create.dragged_first = true;
+        apply_op(&mut entry, &create).unwrap();
+        let mut grow = req("group.grow");
+        grow.pane_id = Some("p3".into());
+        grow.group_id = Some("g1".into());
+        grow.axis = Some("column".into());
+        grow.host_pane_id = Some("p2".into());
+        apply_op(&mut entry, &grow).unwrap();
+        entry.groups[0].layout["splitId"] = serde_json::json!("s41");
+        entry.groups[0].layout["children"][1]["splitId"] = serde_json::json!("s46");
+        // Unresolvable path: 422.
+        let mut bad_path = req("group.sizes");
+        bad_path.group_id = Some("g1".into());
+        bad_path.split_id = Some("s41/s99".into());
+        bad_path.sizes = Some(vec![1.0, 1.0]);
+        let err = apply_op(&mut entry, &bad_path).unwrap_err();
+        assert_eq!(err.0, StatusCode::UNPROCESSABLE_ENTITY);
+        // Wrong length: 400.
+        let mut bad_len = req("group.sizes");
+        bad_len.group_id = Some("g1".into());
+        bad_len.split_id = Some("s41/s46".into());
+        bad_len.sizes = Some(vec![1.0, 1.0, 1.0]);
+        let err = apply_op(&mut entry, &bad_len).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        // Non-finite or non-positive values: 400.
+        let mut bad_value = req("group.sizes");
+        bad_value.group_id = Some("g1".into());
+        bad_value.split_id = Some("s41/s46".into());
+        bad_value.sizes = Some(vec![0.0, 1.0]);
+        let err = apply_op(&mut entry, &bad_value).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        // Unknown group: 404; non-visible group: 422.
+        let mut missing = req("group.sizes");
+        missing.group_id = Some("g404".into());
+        missing.split_id = Some("s41".into());
+        missing.sizes = Some(vec![1.0, 1.0]);
+        let err = apply_op(&mut entry, &missing).unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+        let mut hidden = req("group.sizes");
+        hidden.group_id = Some("g1".into());
+        hidden.split_id = Some("s41".into());
+        hidden.sizes = Some(vec![1.0, 1.0]);
+        entry.visible = VisiblePointer {
+            kind: "panel".into(),
+            id: "p1".into(),
+        };
+        let err = apply_op(&mut entry, &hidden).unwrap_err();
+        assert_eq!(err.0, StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

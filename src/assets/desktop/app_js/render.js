@@ -113,7 +113,23 @@ function render() {
     fitTerminalShell();
     if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   }
-  if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+  // Gate the pane repaint on the tree signature: render() runs on every
+  // poll tick, and the pane pass is idempotent on an unchanged tree, so
+  // a signature match means the paint below could only rebuild identical
+  // DOM. Direct renderWorkspacePanes callers (adoptions, gestures) keep
+  // painting unconditionally.
+  const panesModule = window.HerdrWorkspacePanes;
+  if (panesModule) {
+    if (typeof panesModule.paneTreeSignature === "function") {
+      const paneSignature = panesModule.paneTreeSignature();
+      if (paneSignature !== lastPaneTreeSignature) {
+        lastPaneTreeSignature = paneSignature;
+        panesModule.renderWorkspacePanes();
+      }
+    } else {
+      panesModule.renderWorkspacePanes();
+    }
+  }
   // A group chip rename in flight must survive this repaint: the panes
   // container rebuilds below, and an unguarded repaint would drop the
   // focused input mid-keystroke. The guard mirrors the workspace/tab
@@ -140,6 +156,9 @@ let lastThemeHeadIcon = null;
 // show. render() reruns on every poll tick; the flag stops each sync
 // from stealing focus back from whatever the user opened meanwhile.
 let emptyLeafFocused = false;
+// Last pane-tree signature seen by render(): a match on the next poll
+// tick skips the renderWorkspacePanes repaint.
+let lastPaneTreeSignature = null;
 // Retired with the singleton card (collector model): kept because the
 // vm harnesses reference it when driving syncWorkspaceEmptyLeaf, and the
 // reset below is the last write.

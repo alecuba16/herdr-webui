@@ -780,6 +780,83 @@ test("mixed split and leaf children keep their tree order in the DOM", () => {
   assert.deepEqual(orderAgain, ["split:s1/s2", "divider:p3", "pane:p3"], "re-render keeps the tree order");
 });
 
+// Mirrored case of the regression above: the LEAF child first, the
+// nested split second. The order walk must key both kinds, so a future
+// regression cannot pass by symmetry with the split-first pin alone.
+test("mixed leaf-first children keep their tree order in the DOM", () => {
+  const { nodes, document } = buildDom();
+  const spec = seedTwoMemberGroup(document, [{ paneId: "p3", tabs: ["t3"], groupId: "g1" }]);
+  spec.groups[0].memberIds = ["p1", "p2", "p3"];
+  spec.rows = ["tab_2", "t2", "t3"];
+  spec.groups[0].layout = {
+    kind: "row", sizes: [1, 1], splitId: "s1",
+    children: ["p3", { kind: "column", sizes: [1, 1], splitId: "s2", children: ["p1", "p2"] }],
+  };
+  const { panes } = loadGroupSession(document, spec);
+  const root = splitElements(nodes)[0];
+  assert.ok(root, "root wrapper rendered");
+  const order = Array.from(root.children).map((c) =>
+    c.dataset.splitId != null ? "split:" + c.dataset.splitId
+      : c.dataset.paneId != null ? "pane:" + c.dataset.paneId
+        : "divider:" + c.dataset.dividerFor);
+  assert.deepEqual(order, ["pane:p3", "divider:s1/s2", "split:s1/s2"], "leaf first, divider, split wrapper: tree order kept");
+  panes.renderWorkspacePanes();
+  const orderAgain = Array.from(root.children).map((c) =>
+    c.dataset.splitId != null ? "split:" + c.dataset.splitId
+      : c.dataset.paneId != null ? "pane:" + c.dataset.paneId
+        : "divider:" + c.dataset.dividerFor);
+  assert.deepEqual(orderAgain, ["pane:p3", "divider:s1/s2", "split:s1/s2"], "re-render keeps the tree order");
+});
+
+// Three children where the middle divider pairs with a NESTED split:
+// ensureDivider keys dividerFor on childIds[i + 1], which for a split
+// child is the split-path id, not a paneId. A key regression that only
+// compares pane ids would drop this divider from the expected order.
+test("a divider pairing with a nested split sits before the split wrapper", () => {
+  const { nodes, document } = buildDom();
+  const spec = seedTwoMemberGroup(document, [
+    { paneId: "p3", tabs: ["t3"], groupId: "g1" },
+    { paneId: "p4", tabs: ["t4"], groupId: "g1" },
+    { paneId: "p5", tabs: ["t5"], groupId: "g1" },
+  ]);
+  spec.groups[0].memberIds = ["p1", "p2", "p3", "p4", "p5"];
+  spec.rows = ["tab_2", "t2", "t3", "t4", "t5"];
+  spec.groups[0].layout = {
+    kind: "row", sizes: [1, 1, 1], splitId: "s1",
+    children: [
+      { kind: "column", sizes: [1, 1], splitId: "s2", children: ["p1", "p2"] },
+      "p3",
+      { kind: "column", sizes: [1, 1], splitId: "s3", children: ["p4", "p5"] },
+    ],
+  };
+  const { panes } = loadGroupSession(document, spec);
+  const root = splitElements(nodes)[0];
+  assert.ok(root, "root wrapper rendered");
+  const order = Array.from(root.children).map((c) =>
+    c.dataset.splitId != null ? "split:" + c.dataset.splitId
+      : c.dataset.paneId != null ? "pane:" + c.dataset.paneId
+        : "divider:" + c.dataset.dividerFor);
+  assert.deepEqual(order, [
+    "split:s1/s2",
+    "divider:p3",
+    "pane:p3",
+    "divider:s1/s3",
+    "split:s1/s3",
+  ], "the trailing divider keys on the nested split path id");
+  panes.renderWorkspacePanes();
+  const orderAgain = Array.from(root.children).map((c) =>
+    c.dataset.splitId != null ? "split:" + c.dataset.splitId
+      : c.dataset.paneId != null ? "pane:" + c.dataset.paneId
+        : "divider:" + c.dataset.dividerFor);
+  assert.deepEqual(orderAgain, [
+    "split:s1/s2",
+    "divider:p3",
+    "pane:p3",
+    "divider:s1/s3",
+    "split:s1/s3",
+  ], "re-render keeps the interleaved order");
+});
+
 test("a single panel subject renders one flat pane with no wrapper", () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanesModule(document, "ws-1");

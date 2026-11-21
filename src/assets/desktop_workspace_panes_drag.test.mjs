@@ -779,7 +779,7 @@ test("growVisibleGroupWith extends a same-axis host split flat", () => {
   const layout = stripSplitIds(group.layout);
   assert.equal(layout.kind, "row", "root stays a row");
   assert.deepEqual([...layout.children], ["p4", "p2", "p3"], "same-axis host extends beside the host");
-  assert.deepEqual([...layout.sizes], [0.5, 0.5, 1], "the host's share splits in half");
+  assert.deepEqual([...layout.sizes], [1, 1, 1], "the newcomer takes the row's average share, existing entries untouched");
 });
 
 test("growVisibleGroupWith nests an other-kind split under the host", () => {
