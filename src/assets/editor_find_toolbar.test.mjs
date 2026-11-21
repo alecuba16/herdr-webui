@@ -8,6 +8,8 @@ const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf
 // Compiled once so coverage attributes editor.js lines to the real file.
 const EDITOR_PATH = fileURLToPath(new URL("./shared/editor.js", import.meta.url));
 const editorScript = new vm.Script(readFileSync(EDITOR_PATH, "utf8"), { filename: EDITOR_PATH });
+const CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const coreScript = new vm.Script(readFileSync(CORE_PATH, "utf8"), { filename: CORE_PATH });
 
 // The find toolbar owns the keyboard while it is open: every keystroke in
 // the query repaints the selection, and selectRange must not move focus
@@ -125,11 +127,11 @@ function loadEditor(overrides = {}) {
     clearTimeout,
     document,
     localStorage: { getItem() { return null; }, setItem() {} },
-    HerdrAppHelpers: null,
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
   vm.createContext(ctx);
+  coreScript.runInContext(ctx);
   Object.assign(ctx, overrides);
   editorScript.runInContext(ctx);
   return { ctx, HerdrEditor: ctx.window.HerdrEditor, document };

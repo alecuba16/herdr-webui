@@ -14,6 +14,8 @@ const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url
 // what the vm used to run, but named after the real disk file.
 const TREE_PATH = fileURLToPath(new URL("./shared/file_tree.js", import.meta.url));
 const treeScript = new vm.Script(readFileSync(TREE_PATH, "utf8"), { filename: TREE_PATH });
+const CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const coreScript = new vm.Script(readFileSync(CORE_PATH, "utf8"), { filename: CORE_PATH });
 const PICKER_PATH = fileURLToPath(new URL("./desktop/directory_picker.js", import.meta.url));
 let pickerScript = null;
 
@@ -116,6 +118,7 @@ function loadPicker({ fetchImpl, defaultFolder, explorationDefault } = {}) {
       },
     };
   }
+  coreScript.runInContext(ctx);
   treeScript.runInContext(ctx);
   pickerScriptForRun().runInContext(ctx);
   return harness;

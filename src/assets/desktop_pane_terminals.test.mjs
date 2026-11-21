@@ -252,11 +252,15 @@ function makeRendererStub() {
         cols: opts.cols,
         rows: opts.rows,
         writes: [],
+        cleared: 0,
         resized: [],
         themes: [],
         disposed: false,
         write(data) {
           term.writes.push(data);
+        },
+        clear() {
+          term.cleared += 1;
         },
         resize(cols, rows) {
           term.cols = cols;
@@ -358,28 +362,40 @@ function loadPanes(document, stateWs) {
   return ctx;
 }
 
-function bootSplitWithTwoTerminals(ctx, renderer) {
+function bootGroupedTwoTerminals(ctx, renderer) {
   WsStub.instances.length = 0;
   ctx.HerdrTerminalRenderer = renderer;
-  ctx.state.tabs = [{ tab_id: "tab_1", title: "one" }];
+  // Collector model: the sync binds each tab through its row's
+  // workspace_id (the production ClientShellTab always carries one).
+  ctx.state.tabs = [
+    { tab_id: "tab_1", title: "one", workspace_id: "ws-1" },
+    { tab_id: "tab_2", title: "two", workspace_id: "ws-1" },
+  ];
   ctx.state.tab = "tab_1";
   ctx.state.panes = [
     { tab_id: "tab_1", terminal_id: "term-aaa", focused: true, pane_id: "p1" },
+    { tab_id: "tab_2", terminal_id: "term-bbb", focused: false, pane_id: "p2" },
   ];
   const panes = ctx.HerdrWorkspacePanes;
-  // First render: the sync seeds tab_1 into the placeholder leaf.
-  panes.renderWorkspacePanes();
-  panes.splitPaneRight();
-  // Second panel via the real placement path: mark the new pane as the
-  // next home, then let the sync route the freshly landed tab_2 there
-  // (exactly what the strip + button does through newTabForPane).
-  const leaves = panes.paneLeaves(panes.paneRoot());
-  panes.newTabForPane(leaves[1].paneId);
-  ctx.state.tabs.push({ tab_id: "tab_2", title: "two" });
-  ctx.state.panes.push({ tab_id: "tab_2", terminal_id: "term-bbb", focused: false, pane_id: "p2" });
+  // Traced to the one visible view model: free splits are gone; the
+  // ONLY way two panels render together is a GROUP subject (the label
+  // drag gesture). Build the exact entry a group-creating drop leaves
+  // behind: two members, row layout, group visible, focus on member 1
+  // (the drop focuses the dragged panel).
+  const entry = panes.panesStateFor();
+  entry.panels = [
+    { kind: "pane", paneId: "p1", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1", groupId: "g1" },
+    { kind: "pane", paneId: "p2", tabs: ["tab_2"], active: "tab_2", wsId: "ws-1", groupId: "g1" },
+  ];
+  entry.groups = [{ groupId: "g1", name: null, memberIds: ["p1", "p2"], layout: { kind: "row", sizes: [1, 1], children: ["p1", "p2"] } }];
+  entry.visible = { type: "group", id: "g1" };
+  entry.activePaneId = "p1";
   panes.renderWorkspacePanes();
   return panes;
 }
+
+// The old bootGroupedTwoTerminals kept its name so every call site reads
+// the same; the group boot above is the new-model equivalent.
 
 function auxOf(ctx) {
   return ctx.document.querySelectorAll(".pane-terminal-aux");
@@ -391,7 +407,7 @@ test("split sibling mounts its own aux terminal with own socket", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  bootSplitWithTwoTerminals(ctx, renderer);
+  bootGroupedTwoTerminals(ctx, renderer);
   // createSurface is async: the render pass kicked it off; let it land.
   await new Promise((resolve) => setTimeout(resolve, 0));
   const auxNodes = auxOf(ctx);
@@ -412,7 +428,7 @@ test("re-render reuses the aux surface instead of recreating it", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -425,7 +441,7 @@ test("ws frames write into the term and onData routes back to the socket", async
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  bootSplitWithTwoTerminals(ctx, renderer);
+  bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
   ws.onmessage({ data: "hello pane" });
@@ -452,7 +468,7 @@ test("herdr_error frame drops the socket and re-attach waits out the backoff", a
   }
   ctx.Date = DateShim;
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
   ws.onmessage({ data: JSON.stringify({ type: "herdr_error", kind: "connect_failed", message: "down" }) });
@@ -475,13 +491,43 @@ test("herdr_error frame drops the socket and re-attach waits out the backoff", a
   assert.ok(WsStub.instances[1].url.includes("terminal_id=term-bbb"), "fresh socket targets the same pty");
 });
 
+test("re-attach clears the surface so the hub replay cannot duplicate content", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const term = renderer.created[0];
+  const firstWs = WsStub.instances[0];
+  // First attach clears a fresh instance once (no-op semantically, but
+  // the contract is uniform: every attach starts from an empty grid).
+  assert.equal(term.cleared, 1, "initial attach clears the fresh instance");
+  firstWs.onmessage({ data: "line-one\r\n" });
+  firstWs.onmessage({ data: "line-two\r\n" });
+  // Park detaches the socket; the return re-attaches into the SAME
+  // wterm instance and the hub replay repays the tail.
+  ctx.HerdrPaneTerminals.parkForTab("tab_2");
+  assert.equal(firstWs.closed, true, "park detaches the socket");
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const secondWs = WsStub.instances[1];
+  assert.ok(secondWs, "return re-attaches a fresh socket");
+  assert.equal(term.cleared, 2, "re-attach clears before the replay lands");
+  // Replay of the same two lines: without the clear the term would now
+  // hold four lines (two copies). The cleared count above is the guard;
+  // this write proves the replay still lands after the clear.
+  secondWs.onmessage({ data: "line-one\r\n" });
+  secondWs.onmessage({ data: "line-two\r\n" });
+  assert.equal(term.writes.length, 4, "replay frames still write through");
+});
+
 // ---- aux surface lifecycle --------------------------------------------
 
 test("closing the aux tab disposes its cached surface and socket", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
   // First park the surface the way a leaf collapse does: closePaneFor
@@ -489,7 +535,17 @@ test("closing the aux tab disposes its cached surface and socket", async () => {
   // surface parks (D8), not disposes. The pane close itself must NOT
   // kill the cached surface.
   const leaves = panes.paneLeaves(panes.paneRoot());
-  panes.closePaneFor(leaves[1].paneId);
+  // The new close path drains the leaf view-by-view through the real
+  // closeTab (confirm + prune + sweep), and bootGroupedTwoTerminals keeps
+  // LIVE rows in state.tabs: without a closeTab stub the D10 snapshot
+  // race guard keeps the id known and the close legitimately refuses.
+  // Mirror the real close: drop the row everywhere, then notify the
+  // prune (releaseForTab still runs through onTerminalTabClosed).
+  ctx.window.closeTab = async (tabId) => {
+    ctx.state.tabs = ctx.state.tabs.filter((row) => row.tab_id !== tabId);
+    panes.onTerminalTabClosed(tabId);
+  };
+  await panes.closePaneFor(leaves[1].paneId);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ctx.HerdrPaneTerminals.count(), 1, "pane close parks, registry keeps the cache");
   assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "surface parked, not disposed");
@@ -506,7 +562,7 @@ test("promoting the aux tab to the shell owner parks its surface, flip back reus
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   // Make the sibling's tab the routed tab: terminalShellOwnerLeaf keys
   // off state.tab, so tab_2's leaf becomes the owner and the primary
@@ -536,29 +592,44 @@ test("promoting the aux tab to the shell owner parks its surface, flip back reus
   assert.ok(renderer.created.includes(tabTwoTerm) && !tabTwoTerm.disposed, "same wterm instance serves the return");
 });
 
-test("maximized pane parks the hidden sibling's aux, restore reuses it", async () => {
+test("subject switch parks the hidden members' aux, group return reuses it", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
   const term = renderer.created[0];
-  const leaves = panes.paneLeaves(panes.paneRoot());
-  panes.maximizePaneFor(leaves[0].paneId);
+  // Traced to the one visible view model: maximize is gone. The
+  // equivalent parking event is a SUBJECT SWITCH: choosing a panel
+  // label hides the group (every member leaves the rendered set), so
+  // releaseStale parks the sibling's aux surface instead of disposing it.
+  const entry = panes.panesStateFor();
+  entry.panels.push({ kind: "pane", paneId: "pc", tabs: ["editor:src/c.py"], active: "editor:src/c.py", wsId: "ws-1", groupId: null });
+  panes.showPanelFromRail("pc");
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ctx.HerdrPaneTerminals.count(), 1, "registry keeps the cache entry");
   assert.equal(ctx.HerdrPaneTerminals.parked(), 1, "hidden sibling's surface parked");
   assert.equal(ws.closed, true, "park detaches the socket (no sockets for non-visible)");
-  assert.equal(term.disposed, false, "wterm instance survives the maximize");
-  // Restore: the parked surface re-attaches and re-parents, SAME wterm
-  // instance, scrollback intact.
-  panes.maximizePaneFor(leaves[0].paneId);
+  assert.equal(term.disposed, false, "wterm instance survives the subject switch");
+  // Ephemeral contract: the subject switch DISSOLVED the group, so the
+  // return is a fresh grouping gesture, not a chip press. Re-group
+  // through the drop the same way a user would.
+  const entry2 = panes.panesStateFor();
+  const member = entry2.panels.find((l) => l.paneId === "p1");
+  const neighbor = entry2.panels.find((l) => l.paneId === "p2");
+  assert.ok(member && neighbor, "both former members still present");
+  const group = { groupId: "g1", name: null, memberIds: [member.paneId, neighbor.paneId], layout: { kind: "row", sizes: [1, 1], children: [member.paneId, neighbor.paneId] } };
+  entry2.groups.push(group);
+  member.groupId = "g1";
+  neighbor.groupId = "g1";
+  entry2.visible = { type: "group", id: "g1" };
+  panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(auxOf(ctx).length, 1, "restore re-mounts the aux surface");
+  assert.equal(auxOf(ctx).length, 1, "group return re-mounts the aux surface");
   assert.equal(ctx.HerdrPaneTerminals.parked(), 0, "surface is live again");
-  assert.equal(term.disposed, false, "same wterm instance serves the restore");
-  assert.ok(WsStub.instances.length >= 2, "restore re-attaches a fresh socket");
+  assert.equal(term.disposed, false, "same wterm instance serves the return");
+  assert.ok(WsStub.instances.length >= 2, "return re-attaches a fresh socket");
   const liveWs = WsStub.instances[WsStub.instances.length - 1];
   assert.equal(liveWs.closed, false, "re-attached socket is open");
 });
@@ -567,7 +638,7 @@ test("editor-active non-owner leaf parks its aux surface, terminal return reuses
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const ws = WsStub.instances[0];
   const term = renderer.created[0];
@@ -605,25 +676,30 @@ test("parking beyond the cap evicts least-recently-focused first", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ctx.HerdrPaneTerminals.cap(), 8, "cap is 8 aux surfaces");
-  // Grow the cache past the cap: pre-distribute one known terminal per
-  // leaf by hand (the sync only lands homeless ids in ONE target leaf,
-  // so raw splits would leave the extra leaves empty), then render.
-  // Ten terminals total: tab_1 renders via the singleton shell (the
-  // owner does not count toward the aux cap), so tabs 2..10 give nine
-  // aux surfaces, one over the cap of 8.
-  for (let i = 0; i < 8; i += 1) panes.splitPaneRight();
+  // Grow the cache past the cap. Traced to the one visible view model:
+  // free splits are gone, so the wide layout is a ten-member GROUP (the
+  // drag gesture is the only split path; a 3+ member group extends the
+  // same way). Ten terminals total: tab_1 renders via the singleton
+  // shell (the owner does not count toward the aux cap), so tabs 2..10
+  // give nine aux surfaces, one over the cap of 8.
+  ctx.state.tabs.push(
+    ...Array.from({ length: 8 }, (_, i) => ({ tab_id: `tab_${i + 3}`, title: `t${i + 3}`, workspace_id: "ws-1" })),
+  );
+  ctx.state.panes.push(
+    ...Array.from({ length: 8 }, (_, i) => ({ tab_id: `tab_${i + 3}`, terminal_id: `term-${i + 3}`, focused: false, pane_id: `p${i + 3}` })),
+  );
+  const entry = panes.panesStateFor();
+  entry.panels = ["p1", "p2", ...Array.from({ length: 8 }, (_, i) => `p${i + 3}`)]
+    .map((paneId, i) => ({ kind: "pane", paneId, tabs: [`tab_${i + 1}`], active: `tab_${i + 1}`, wsId: "ws-1", groupId: "g1" }));
+  const ids = entry.panels.map((leaf) => leaf.paneId);
+  entry.groups = [{ groupId: "g1", name: null, memberIds: ids, layout: { kind: "row", sizes: ids.map(() => 1), children: ids } }];
+  entry.visible = { type: "group", id: "g1" };
+  entry.activePaneId = "p1";
   const leaves = panes.paneLeaves(panes.paneRoot());
-  assert.ok(leaves.length >= 10, "ten leaves stand");
-  for (let i = 3; i <= 10; i += 1) {
-    ctx.state.tabs.push({ tab_id: `tab_${i}`, title: `t${i}` });
-    ctx.state.panes.push({ tab_id: `tab_${i}`, terminal_id: `term-${i}`, focused: false, pane_id: `p${i}` });
-    const leaf = leaves[i - 1];
-    leaf.tabs = [`tab_${i}`];
-    leaf.active = `tab_${i}`;
-  }
+  assert.ok(leaves.length >= 10, "ten panels stand in the group");
   panes.renderWorkspacePanes();
   await new Promise((resolve) => setTimeout(resolve, 0));
   // The cap holds at the end of every render pass (releaseStale runs
@@ -636,12 +712,14 @@ test("parking beyond the cap evicts least-recently-focused first", async () => {
   assert.equal(ctx.HerdrPaneTerminals.count(), 8, "cache caps at 8 mid-render, not later");
   assert.equal(firstCreated.disposed, true, "least-recently-focused entry evicted");
   assert.equal(lastCreated.disposed, false, "newest surface survives the eviction");
-  // Maximize one leaf: every aux parks, and parked means socket detached
-  // (no sockets for non-visible surfaces).
-  panes.maximizePaneFor(leaves[0].paneId);
+  // Subject switch (maximize's new-model equivalent): choosing a panel
+  // label hides the group, every aux parks, and parked means socket
+  // detached (no sockets for non-visible surfaces).
+  entry.panels.push({ kind: "pane", paneId: "pextra", tabs: ["editor:src/x.py"], active: "editor:src/x.py", wsId: "ws-1", groupId: null });
+  panes.showPanelFromRail("pextra");
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ctx.HerdrPaneTerminals.count(), 8, "cache stays at the cap after parking");
-  assert.equal(ctx.HerdrPaneTerminals.parked(), 8, "maximize parked the rest");
+  assert.equal(ctx.HerdrPaneTerminals.parked(), 8, "subject switch parked the rest");
   const liveSockets = WsStub.instances.filter((ws) => !ws.closed);
   assert.equal(liveSockets.length, 0, "no live sockets while every surface is parked");
   assert.equal(lastCreated.disposed, false, "surviving surfaces keep their wterm instances");
@@ -651,7 +729,7 @@ test("divider drag finish refits aux grids to the new slot size", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  bootSplitWithTwoTerminals(ctx, renderer);
+  bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const term = renderer.created[0];
   const before = term.resized.length;
@@ -674,7 +752,7 @@ test("fitAll debounces a resize message to the aux pty socket", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  bootSplitWithTwoTerminals(ctx, renderer);
+  bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   WsStub.instances.forEach((ws) => (ws.sent.length = 0));
   const aux = ctx.HerdrPaneTerminals;
@@ -697,7 +775,7 @@ test("disposal cancels the pending pty resize", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  bootSplitWithTwoTerminals(ctx, renderer);
+  bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const panes = ctx.HerdrWorkspacePanes;
   // Empty the second leaf's tabs and re-render: the aux disposes while a
@@ -857,21 +935,30 @@ test("zero-tab workspace: pane render keeps the mounted card owner and the shell
 // earlier session must not survive the empty state as dead chrome. The
 // whole skeleton goes, so no strips float over empty sibling panes,
 // and the hide pass lets the next render rebuild the layout.
-test("empty-state dashboard drops the whole split layout", () => {
+test("empty-state dashboard drops the whole group layout", () => {
   const { document, nodes } = buildDom();
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
   const dashboard = document.getElementById("projectDashboard");
-  // Build a split: render once so p1 exists, then split it.
+  // Traced to the one visible view model: free splits are gone; the
+  // multi-panel layout is a GROUP subject (two members, row layout).
   dashboard.hidden = true;
+  // No pre-render here: the singleton pane from a first pass would stay
+  // in the DOM and stack on the rebuilt group layout.
+  const entry = panes.panesStateFor();
+  entry.panels = [
+    { kind: "pane", paneId: "p1", tabs: [], active: null, groupId: "g1" },
+    { kind: "pane", paneId: "p2", tabs: [], active: null, groupId: "g1" },
+  ];
+  entry.groups = [{ groupId: "g1", name: null, memberIds: ["p1", "p2"], layout: { kind: "row", sizes: [1, 1], children: ["p1", "p2"] } }];
+  entry.visible = { type: "group", id: "g1" };
   panes.renderWorkspacePanes();
-  assert.equal(panes.splitPaneRightFor("p1"), true, "split builds a second leaf");
-  assert.equal(document.querySelectorAll(".workspace-pane").length, 2, "two panes in the split");
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 2, "two panes in the group");
   // Full render order: panes first, then the dashboard show pass.
   panes.renderWorkspacePanes();
   dashboard.hidden = false;
   panes.mountDashboardInPane(true);
-  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "split skeleton dropped");
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "group skeleton dropped");
   assert.equal(document.querySelectorAll(".pane-tab-strip").length, 0, "strips dropped with it");
   assert.equal(dashboard.parentNode, nodes.sidebarScroll, "dashboard lives in the sidebar");
   // Hide pass: the next render rebuilds the pane layout from the tree.
@@ -887,7 +974,7 @@ test("applyThemeAll re-themes open aux surfaces on theme switch", async () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  bootSplitWithTwoTerminals(ctx, renderer);
+  bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const aux = ctx.HerdrPaneTerminals;
   assert.equal(aux.count(), 1, "one aux surface open");
@@ -904,7 +991,7 @@ test("dragging an aux terminal tab to another leaf keeps the wterm instance and 
   const { document } = buildDom();
   const ctx = loadPanes(document, "ws-1");
   const renderer = makeRendererStub();
-  const panes = bootSplitWithTwoTerminals(ctx, renderer);
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
   await new Promise((resolve) => setTimeout(resolve, 0));
   const termBefore = renderer.created[0];
   const socketBefore = WsStub.instances[0];

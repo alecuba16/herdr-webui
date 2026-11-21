@@ -19,7 +19,6 @@ function render() {
       if (row && typeof row === "object" && !tabById[id]) tabById[id] = row;
     }
   }
-  const panesByTab = panesByTabIndex();
   let tabCountsByWorkspace = null;
   if (state.workspaceCounts) {
     tabCountsByWorkspace = new Map(
@@ -114,7 +113,31 @@ function render() {
     fitTerminalShell();
     if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   }
-  if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+  // Gate the pane repaint on the tree signature: render() runs on every
+  // poll tick, and the pane pass is idempotent on an unchanged tree, so
+  // a signature match means the paint below could only rebuild identical
+  // DOM. Direct renderWorkspacePanes callers (adoptions, gestures) keep
+  // painting unconditionally.
+  const panesModule = window.HerdrWorkspacePanes;
+  if (panesModule) {
+    if (typeof panesModule.paneTreeSignature === "function") {
+      const paneSignature = panesModule.paneTreeSignature();
+      if (paneSignature !== lastPaneTreeSignature) {
+        lastPaneTreeSignature = paneSignature;
+        panesModule.renderWorkspacePanes();
+      }
+    } else {
+      panesModule.renderWorkspacePanes();
+    }
+  }
+  // A group chip rename in flight must survive this repaint: the panes
+  // container rebuilds below, and an unguarded repaint would drop the
+  // focused input mid-keystroke. The guard mirrors the workspace/tab
+  // rename family above (editing state + live input check).
+  if (document.querySelector(".pane-group-rename-input")) {
+    const input = document.querySelector(".pane-group-rename-input");
+    if (input && document.activeElement !== input) input.focus();
+  }
   // Click-to-focus wiring is idempotent; the render pass is the reliable
   // first moment #workspacePanes exists with panes inside.
   if (window.HerdrPaneFocus && typeof window.HerdrPaneFocus.wire === "function")
@@ -133,6 +156,12 @@ let lastThemeHeadIcon = null;
 // show. render() reruns on every poll tick; the flag stops each sync
 // from stealing focus back from whatever the user opened meanwhile.
 let emptyLeafFocused = false;
+// Last pane-tree signature seen by render(): a match on the next poll
+// tick skips the renderWorkspacePanes repaint.
+let lastPaneTreeSignature = null;
+// Retired with the singleton card (collector model): kept because the
+// vm harnesses reference it when driving syncWorkspaceEmptyLeaf, and the
+// reset below is the last write.
 
 function panesByTabIndex() {
   const map = new Map();
@@ -159,71 +188,19 @@ function syncProjectDashboard() {
   if (!showDashboard) return;
   dashboard.innerHTML = renderProjectDashboard();
 }
-// Keep the zero-terminal card only while the workspace has no open file or
-// Git pane tabs. Those tabs own the center pane independently of state.tab.
-function workspaceHasOpenFileOrGitTab() {
-  const panes = window.HerdrWorkspacePanes;
-  if (
-    !state.ws ||
-    !panes ||
-    !panes.paneRoot ||
-    !panes.paneLeaves ||
-    !panes.isEditorTab ||
-    !panes.isGitTab
-  )
-    return false;
-  const root = panes.paneRoot();
-  return panes.paneLeaves(root).some((leaf) =>
-    (leaf.tabs || []).some(
-      (tabId) => panes.isEditorTab(tabId) || panes.isGitTab(tabId),
-    ),
-  );
-}
-
 function syncWorkspaceEmptyLeaf() {
-  const emptyLeaf = el("workspaceEmptyLeaf"),
-    shell = el("terminalShell");
+  const emptyLeaf = el("workspaceEmptyLeaf");
   if (!emptyLeaf) return;
-  const show = !!state.ws && !state.tab && !workspaceHasOpenFileOrGitTab();
-  emptyLeaf.hidden = !show;
-  if (shell) shell.hidden = show;
-  if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.mountEmptyLeafInPane)
-    window.HerdrWorkspacePanes.mountEmptyLeafInPane(show);
-  if (!show) {
-    emptyLeafFocused = false;
-    return;
-  }
-  const workspace = (state.workspaces || []).find((w) => w.workspace_id === state.ws);
-  const name = workspace ? (workspace.worktree ? worktreeDisplayName(workspace) : workspace.label) : "";
-  const newTitle = titleWithWebuiShortcut("New terminal", "newPanel");
-  emptyLeaf.innerHTML = `<div class="workspace-empty-leaf-card"><h1>${escapeHtml(name || "Workspace")}</h1><p>No terminal in this workspace yet. Files, Git, and Search still work.</p><p class="workspace-empty-leaf-hint">Press <kbd>Enter</kbd> to open a terminal.</p><button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTab()">New terminal</button></div>`;
-  // Claim focus once per show so the pane body has a concrete Enter
-  // target instead of relying on body-level focus alone. A modal holds
-  // its own focus (open-workspace dialog, question modal), and so does
-  // anything the user actually focused; only the body-level default
-  // is up for grabs. One exception rides along: the control that opened
-  // the workspace (header Actions, dashboard card) gets its focus back
-  // when the open-workspace modal closes, so the zero-tab render lands
-  // with that button focused. Enter would then natively re-click it
-  // (Actions reopens the palette) instead of creating the first
-  // terminal the card advertises. A button outside the pane column is
-  // never something the user focused on purpose here: focus landed on
-  // it from the modal-restore, so the leaf claims it too.
-  if (!emptyLeafFocused && !modalOpen()) {
-    const active = document.activeElement;
-    const staleOpenerButton =
-      active &&
-      active.tagName === "BUTTON" &&
-      !(active.closest && active.closest("#workspacePanes")) &&
-      !(active.closest && active.closest("input, select, textarea, [contenteditable='true']"));
-    if (
-      ((!active || active === document.body || active === document.documentElement) || staleOpenerButton) &&
-      emptyLeaf.focus
-    ) {
-      emptyLeaf.focus();
-      emptyLeafFocused = true;
-    }
-  }
+  // Collector model: the singleton zero-terminal card retired. Per-leaf
+  // empty panel cards (mountEmptyPanelCard in workspace_panes.js) own
+  // the empty state now: one card per empty panel, naming its own bound
+  // workspace. The old global condition (no route tab, no file/git tab)
+  // could not express a mixed tree (empty panel beside a terminal
+  // panel), and it fought the per-leaf cards for the content slot. The
+  // node stays hidden at its app.html home; mountEmptyLeafInPane's
+  // mount path is dead too, kept exported only for the vm harnesses.
+  emptyLeaf.hidden = true;
+  emptyLeafFocused = false;
 }
 function renderProjectDashboard() {
   const actionsMenu = window.HerdrActionRegistry.action("actions-menu");
@@ -251,7 +228,13 @@ function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
     : pane
       ? pane.pane_id
       : "panel";
-  document.title = `${workspace} • ${panel}`;
+  // Default panel labels now carry the worktree ("feat/panels 1"), so
+  // the leading workspace token would duplicate the label's own head:
+  // the title collapses to the label alone in that case, keeping
+  // "workspace • panel" for custom names and #N disambiguation.
+  document.title = panel.startsWith(`${workspace} `)
+    ? panel
+    : `${workspace} • ${panel}`;
 }
 function pushMapList(map, key, value) {
   const rows = map.get(key) || [];
@@ -261,23 +244,26 @@ function pushMapList(map, key, value) {
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
-  // D15: the tooltip must speak the strip's language. A foreign default
-  // panel reads "<worktree> N" in the strip, so the hover starts from the
-  // same visible label (panelDisplayName), never the raw backend "shell".
-  // The workspace line carries the friendly name the badge shows, plus
-  // the id for exact lookup.
-  const workspace =
-    t.workspace_id && t.workspace_id !== state.ws
-      ? `Workspace ${workspaceHoverName(t.workspace_id)} (${t.workspace_id}) · `
-      : "";
+  // The tooltip must speak the strip's language. A default panel now
+  // reads "<worktree> N" there, so when the label already carries the
+  // workspace name the hover collapses the workspace line to the raw
+  // id suffix; custom names keep the full "Workspace <name> (<id>)"
+  // line (the name alone does not spell the origin).
   const label =
     typeof panelDisplayName === "function" ? panelDisplayName(t) : tabTitle(t);
-  if (!pane) return `${workspace}${label}`;
+  const foreignWs = t.workspace_id && t.workspace_id !== state.ws ? t.workspace_id : null;
+  const wsName = foreignWs ? workspaceHoverName(foreignWs) : "";
+  const head = wsName && label.startsWith(`${wsName} `)
+    ? `${label} (${foreignWs})`
+    : foreignWs
+      ? `Workspace ${wsName} (${foreignWs}) · ${label}`
+      : label;
+  if (!pane) return head;
   const size =
     t.tab_id === state.tab && state.termCols && state.termRows
       ? ` · ${state.termCols}x${state.termRows}`
       : "";
-  return `${workspace}${label} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
+  return `${head} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
 }
 
 // The hover's workspace line uses the same friendly name the pane badge
@@ -838,22 +824,16 @@ function workspaceDisplayTitle(w) {
   return workspaceBranch(w) || worktreeDisplayName(w) || w.label;
 }
 function spaceMeta(w) {
-  const wt = worktreeForWorkspace(w);
-  const parts = [`${w.pane_count} panes`];
-  if (isLinkedWorktree(w)) {
-    const label = worktreeCustomLabel(w, wt);
-    if (label)
-      parts.push(`<span class="chip label"><span class="chip-icon" aria-hidden="true">🏷</span>${escapeHtml(label)}</span>`);
-  } else {
-    const branch = workspaceBranch(w);
-    if (branch)
-      parts.push(`<span class="chip branch">${escapeHtml(branch)}</span>`);
-  }
-  return parts.join(" ");
+  return [`${w.pane_count} panes`, spaceChipsHtml(w)].filter(Boolean).join(" ");
 }
 function selectedSpaceMeta(w) {
-  const wt = worktreeForWorkspace(w),
-    parts = [];
+  return spaceChipsHtml(w);
+}
+// Label chip for linked worktrees, branch chip for plain workspaces; empty
+// when the source field is absent.
+function spaceChipsHtml(w) {
+  const wt = worktreeForWorkspace(w);
+  const parts = [];
   if (isLinkedWorktree(w)) {
     const label = worktreeCustomLabel(w, wt);
     if (label)

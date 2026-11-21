@@ -1,6 +1,7 @@
-// Workspace picker for the pane strips (D3/D6). The `+` in a strip can
-// start a terminal in ANY workspace, not only the selected one, and the
-// workspace badge opens the same picker scoped to its pane. One popover
+// Workspace picker for pane surfaces (D3/D6). The `+` in the location
+// bar controls (and a strip's workspace badge) can start a terminal in
+// ANY workspace, not only the selected one; the badge's picker is
+// scoped to its pane. One popover
 // machinery serves both entries: rows list every workspace with its
 // worktree name and branch (near-identical worktree names otherwise
 // mislead, UX review finding 4), the current workspace stays one click
@@ -86,8 +87,14 @@
     );
   }
 
+  // Chord opens with no anchor element (location bar repainted, or
+  // the + hidden in the empty state): the class carries no position of
+  // its own, so a static-flow popover would sink under the app; pin it
+  // near the top-left where the bar sits.
   function positionNear(anchor) {
-    if (!anchor || !anchor.getBoundingClientRect) return {};
+    if (!anchor || !anchor.getBoundingClientRect) {
+      return { position: "fixed", left: "16px", top: "48px" };
+    }
     const rect = anchor.getBoundingClientRect();
     return {
       position: "fixed",
@@ -104,9 +111,9 @@
   function openPicker(anchorElement, paneId, scope) {
     close();
     const rows = pickerRows();
-    if (!rows.length) return;
+    if (!rows.length) return false;
     const host = document.body;
-    if (!host) return;
+    if (!host) return false;
     const element = document.createElement("div");
     element.className = "pane-workspace-picker";
     element.setAttribute("role", "dialog");
@@ -128,6 +135,7 @@
     if (first && typeof first.focus === "function") {
       try { first.focus(); } catch (e) {}
     }
+    return true;
   }
 
   // Create a panel in the picked workspace and land it in this pane.

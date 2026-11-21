@@ -10,8 +10,8 @@
 // The registry is a session-scoped cache (D8), keyed by tab id. A leaf
 // stopping rendering (maximize, editor stint, tab moved to the owner)
 // parks its surface hidden with the socket detached (no sockets for
-// non-visible surfaces) instead of destroying it, so scrollback and
-// the wterm instance survive the flip back and a re-attach replays the
+// non-visible surfaces) instead of destroying it, so the wterm
+// instance survives the flip back and a re-attach replays the
 // view. Only a closed tab disposes for real, plus cap eviction
 // (least-recently-focused first).
 
@@ -19,6 +19,18 @@
   // key -> { key, tabId, terminalId, container, term, ws, lastFocusedAt }
   const surfaces = new Map();
   const inputEncoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
+
+  // Focus-order tiebreaker: same-millisecond creations would otherwise
+  // fall back to Map insertion order in evictBeyondCap's sort, which a
+  // stubbed-async create can invert (entry 2 stamps before entry 1's
+  // microtask runs). The monotonic counter keeps LRU honest per stamp
+  // order within a millisecond.
+  let focusStamp = 0;
+  function focusStampNow() {
+    const wall = Date.now();
+    focusStamp = wall > focusStamp ? wall : focusStamp + 1;
+    return focusStamp;
+  }
 
   // Rendered aux surfaces cost one live WS plus a hub replay ring plus a
   // fan-out slot each, so tmux pane counts do not apply. Eight aux
@@ -124,13 +136,13 @@
   // of disposing it. Parked means hidden, out of the pane slots, and its
   // socket detached (no sockets for non-visible surfaces: the hub replay
   // ring rehydrates the view when the tab returns). The wterm instance
-  // stays, so scrollback survives a maximize, an editor stint, or an
+  // stays, so the surface survives a maximize, an editor stint, or an
   // owner flip. Only a closed tab or cap eviction disposes.
   function park(entry) {
     if (!entry) return;
     // Recording focus order on park: lastFocusedAt drives LRU eviction,
     // so every exit from a pane slot must touch it or the order rots.
-    entry.lastFocusedAt = Date.now();
+    entry.lastFocusedAt = focusStampNow();
     if (entry.observer && typeof entry.observer.disconnect === "function") {
       try { entry.observer.disconnect(); } catch (e) {}
       entry.observer = null;
@@ -151,8 +163,8 @@
 
   // D8 socket rule: no sockets for non-visible surfaces. Detaching
   // drops the hub replay ring and the fan-out slot a parked surface
-  // would otherwise hold; re-attach replays the scrollback back into
-  // the same wterm instance, so nothing visible is lost.
+  // would otherwise hold; re-attach clears the surface and replays the
+  // scrollback into it, so nothing visible is lost.
   function detachSocket(entry) {
     if (!entry || !entry.ws) return;
     const ws = entry.ws;
@@ -212,7 +224,7 @@
     const size = gridSizeFor(container);
     // Placeholder entry first: onData resolves the socket through it, so
     // early keystrokes queue on the entry even before the socket exists.
-    const entry = { key, tabId: activeTab, terminalId, container, term: null, ws: null, lastFocusedAt: Date.now() };
+    const entry = { key, tabId: activeTab, terminalId, container, term: null, ws: null, lastFocusedAt: focusStampNow() };
     surfaces.set(key, entry);
     const sendInput = (data) => {
       if (!data || !entry.ws || entry.ws.readyState !== 1) return;
@@ -251,6 +263,17 @@
       dispose(entry);
       return null;
     }
+    // A cap eviction between the placeholder stamp and this await would
+    // otherwise leak the wterm instance: dispose(entry) on a pending
+    // entry skips the term dispose (term is still null), and the instance
+    // resolved here never hears about its own death. Entry identity is
+    // the judge: a disposed entry no longer sits in the registry.
+    if (entry.disposed) {
+      if (term && typeof term.dispose === "function") {
+        try { term.dispose(); } catch (e) {}
+      }
+      return null;
+    }
     // The leaf may have re-rendered while the async create ran (split
     // flip, close): the registry entry must still be ours and the pane
     // element still must host our container.
@@ -268,7 +291,7 @@
     if (renderer.attachClickFocus && typeof term.focus === "function") {
       renderer.attachClickFocus(container, () => {
         if (entry.disposed || entry.term !== term) return;
-        entry.lastFocusedAt = Date.now();
+        entry.lastFocusedAt = focusStampNow();
         try { term.focus(); } catch (e) {}
       });
     }
@@ -306,6 +329,13 @@
     // tail; a socket before the term exists would drop early frames.
     if (!entry.term) return null;
     if (entry.ws) return entry.ws;
+    // The replay paints the whole tail, so a surface still holding its
+    // pre-park content would append a second copy of it (each
+    // park/return or socket-death cycle duplicated the view). Same
+    // contract as the primary surface's resetTerminalConnection(true).
+    if (typeof entry.term.clear === "function") {
+      try { entry.term.clear(); } catch (e) {}
+    }
     const ws = new WebSocket(
       wsUrlFor(
         `/ws/terminal?terminal_id=${encodeURIComponent(entry.terminalId)}&cols=${gridSizeFor(entry.container).cols}&rows=${gridSizeFor(entry.container).rows}`,
@@ -339,17 +369,25 @@
 
   function entryBackToLeaf(entry, pane, leaf) {
     const content = pane.querySelector(".pane-content");
+    // Stamp on real relocations only: a parked entry coming home, or a
+    // surface re-parented into a different slot. A routine render pass
+    // re-parents nothing for an already-live entry, and stamping there
+    // would make LRU order track the leaf walk order instead of focus
+    // (the same entry re-stamped every pass, eviction victims flipping
+    // with tree shape).
+    const wasParked = entry.container.dataset.paneId === "";
+    const moving = content && entry.container.parentElement !== content;
+    if (wasParked || moving) entry.lastFocusedAt = focusStampNow();
     if (content) {
       if (entry.container.parentElement !== content) content.appendChild(entry.container);
       if (entry.container.style) entry.container.style.display = "";
     }
     entry.container.dataset.paneId = leaf.paneId || "";
-    entry.lastFocusedAt = Date.now();
     // Parked surfaces lost their socket by design (no sockets for
     // non-visible); a dead-while-visible socket carries closedAt. One
     // re-attach attempt per backoff window keeps a down backend from
-    // churning sockets at render-pass cadence; the hub replay fills
-    // the same wterm instance either way, scrollback intact.
+    // churning sockets at render-pass cadence; the hub replay refills
+    // the same wterm instance either way.
     const deadWithinBackoff =
       entry.closedAt && Date.now() - entry.closedAt < SOCKET_RETRY_BACKOFF_MS;
     if (!deadWithinBackoff) attachSocket(entry);
@@ -431,7 +469,7 @@
   }
 
   // D8 cache lifecycle: a tab leaving the rendered set parks its surface
-  // (socket detached, wterm and scrollback kept) instead of disposing it.
+  // (socket detached, wterm instance kept) instead of disposing it.
   // Real disposal stays on closeTab and cap eviction (LRF first).
   function releaseStale(renderedTabIds) {
     const keep = new Set(renderedTabIds.map((tabId) => tabKey(tabId)));

@@ -627,14 +627,21 @@ fn resolve_workspace_root(cwd: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-async fn spawn_server(
-    state: &WebState,
+/// Spawns the language server process and wires the shared handle plumbing
+/// (stdin writer, stdio takes, mpsc channel). Readers stay at the call sites.
+async fn spawn_lsp_process(
     language: &str,
     root: &str,
     command: &str,
     args: &[String],
-) -> Result<String, String> {
-    // Resolve the command: absolute path or PATH lookup. Never a shell.
+) -> Result<
+    (
+        Arc<LspServerHandle>,
+        tokio::process::ChildStdout,
+        tokio::process::ChildStderr,
+    ),
+    String,
+> {
     let resolved = resolve_command(command).ok_or_else(|| {
         format!("language server command not found: {command}. Install it or set an absolute path.")
     })?;
@@ -668,11 +675,8 @@ async fn spawn_server(
         exited: Mutex::new(false),
     });
 
-    // stdin writer task
-    let key = server_key(language, root);
-    let stdin_writer = stdin;
     tokio::spawn(async move {
-        let mut writer = stdin_writer;
+        let mut writer = stdin;
         let mut rx = stdin_rx;
         while let Some(frame) = rx.recv().await {
             if writer.write_all(&frame).await.is_err() {
@@ -682,9 +686,22 @@ async fn spawn_server(
         }
     });
 
+    Ok((handle, stdout, stderr))
+}
+
+async fn spawn_server(
+    state: &WebState,
+    language: &str,
+    root: &str,
+    command: &str,
+    args: &[String],
+) -> Result<String, String> {
+    let (handle, stdout, stderr) = spawn_lsp_process(language, root, command, args).await?;
+
     // stdout reader: parse LSP frames, dispatch responses and notifications.
     let handle_for_reader = Arc::clone(&handle);
     let registry_for_reader = Arc::clone(&state.lsp);
+    let key = server_key(language, root);
     let key_for_reader = key.clone();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
@@ -1648,43 +1665,7 @@ function handleMessage(msg) {
         command: &str,
         args: &[String],
     ) -> Result<Arc<LspServerHandle>, String> {
-        let resolved =
-            resolve_command(command).ok_or_else(|| format!("command not found: {command}"))?;
-        let mut cmd = Command::new(&resolved);
-        cmd.args(args)
-            .current_dir(root)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|err| err.to_string())?;
-        let stdin = child.stdin.take().ok_or("no stdin")?;
-        let stdout = child.stdout.take().ok_or("no stdout")?;
-        let stderr = child.stderr.take().ok_or("no stderr")?;
-        let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(64);
-        let handle = Arc::new(LspServerHandle {
-            language: language.to_string(),
-            root_string: root.to_string(),
-            command: resolved.to_string_lossy().to_string(),
-            args: args.to_vec(),
-            child: Mutex::new(Some(child)),
-            stdin_tx,
-            pending: Mutex::new(HashMap::new()),
-            notifications: Mutex::new(Vec::new()),
-            state: std::sync::Mutex::new(ServerState::Starting),
-            last_error: std::sync::Mutex::new(None),
-            exited: Mutex::new(false),
-        });
-        tokio::spawn(async move {
-            let mut writer = stdin;
-            let mut rx = stdin_rx;
-            while let Some(frame) = rx.recv().await {
-                if writer.write_all(&frame).await.is_err() {
-                    break;
-                }
-                let _ = writer.flush().await;
-            }
-        });
+        let (handle, stdout, stderr) = spawn_lsp_process(language, root, command, args).await?;
         let handle_for_reader = Arc::clone(&handle);
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);

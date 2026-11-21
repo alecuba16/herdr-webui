@@ -536,31 +536,28 @@ pub(super) fn git_ui_cwd(cwd: &str) -> Result<String, String> {
 pub(super) fn git_ui_repo(cwd: &str) -> Result<String, String> {
     let validated = safe_git_token(cwd, "repository path")?;
     let expanded = expand_user_path_string(validated);
+    rev_parse_toplevel(&expanded)?;
+    Ok(expanded)
+}
+
+/// Runs `git rev-parse --show-toplevel` in the expanded cwd, returning the root.
+fn rev_parse_toplevel(expanded: &str) -> Result<String, String> {
     let output = crate::git_bin::command()
         .arg("-C")
-        .arg(&expanded)
+        .arg(expanded)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .map_err(|err| err.to_string())?;
     if !output.status.success() {
         return Err(git_failure(output, "git rev-parse"));
     }
-    Ok(expanded)
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn git_repo_root(cwd: &str) -> Result<String, String> {
     let validated = safe_git_token(cwd, "repository path")?;
     let expanded = expand_user_path_string(validated);
-    let output = crate::git_bin::command()
-        .arg("-C")
-        .arg(&expanded)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        return Err(git_failure(output, "git rev-parse"));
-    }
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let root = rev_parse_toplevel(&expanded)?;
     if root.is_empty() {
         return Err("git repository root was empty".to_string());
     }
@@ -580,18 +577,24 @@ fn repo_relative_path(repo_root: &Path, cwd: &Path, file: &str) -> Result<String
     }
 }
 
-fn git_ui_path_info_blocking(
-    cwd: String,
-    path: String,
-) -> Result<serde_json::Value, (StatusCode, String)> {
-    let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-    let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+/// Validates a repo path and resolves it to (repo_root, repo-relative path).
+fn repo_path_arg(cwd: &str, path: &str) -> Result<(String, String), (StatusCode, String)> {
+    let path = safe_repo_path(path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let repo_root = git_repo_root(cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));
-    let expanded_cwd_text = expand_user_path_string(&cwd);
+    let expanded_cwd_text = expand_user_path_string(cwd);
     let expanded_cwd =
         fs::canonicalize(&expanded_cwd_text).unwrap_or_else(|_| PathBuf::from(&expanded_cwd_text));
     let repo_path = repo_relative_path(&repo_root_path, &expanded_cwd, path)
         .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    Ok((repo_root, repo_path))
+}
+
+fn git_ui_path_info_blocking(
+    cwd: String,
+    path: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let (repo_root, repo_path) = repo_path_arg(&cwd, &path)?;
     Ok(json!({ "repo_root": repo_root, "file": repo_path }))
 }
 
@@ -722,14 +725,7 @@ fn git_ui_permalink_blocking(
     cwd: String,
     path: String,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-    let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-    let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));
-    let expanded_cwd_text = expand_user_path_string(&cwd);
-    let expanded_cwd =
-        fs::canonicalize(&expanded_cwd_text).unwrap_or_else(|_| PathBuf::from(&expanded_cwd_text));
-    let repo_path = repo_relative_path(&repo_root_path, &expanded_cwd, path)
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let (repo_root, repo_path) = repo_path_arg(&cwd, &path)?;
     let commit = git_ui_text(&repo_root, &["rev-parse", "HEAD"])
         .map_err(|err| (StatusCode::BAD_GATEWAY, err))?
         .trim()
@@ -1468,6 +1464,16 @@ fn git_ui_stage_blocking(
     }
 }
 
+/// Parses and validates GitUiPathsRequest paths into owned strings.
+// Response-as-Err matches the sibling validators (file.rs, log.rs).
+#[allow(clippy::result_large_err)]
+fn stage_paths(body: &GitUiPathsRequest) -> Result<Vec<String>, Response> {
+    match git_ui_paths(body) {
+        Ok(paths) => Ok(paths.into_iter().map(|p| p.to_string()).collect()),
+        Err(err) => Err(git_json_error(StatusCode::BAD_REQUEST, err)),
+    }
+}
+
 async fn git_ui_stage(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1475,11 +1481,10 @@ async fn git_ui_stage(
     Json(body): Json<GitUiPathsRequest>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let paths = match git_ui_paths(&body) {
+    let paths = match stage_paths(&body) {
         Ok(paths) => paths,
-        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        Err(response) => return response,
     };
-    let paths = paths.into_iter().map(|p| p.to_string()).collect::<Vec<_>>();
     let cwd = body.cwd;
     git_spawn(move || git_ui_stage_blocking(cwd, paths)).await
 }
@@ -1507,11 +1512,10 @@ async fn git_ui_unstage(
     Json(body): Json<GitUiPathsRequest>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let paths = match git_ui_paths(&body) {
+    let paths = match stage_paths(&body) {
         Ok(paths) => paths,
-        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        Err(response) => return response,
     };
-    let paths = paths.into_iter().map(|p| p.to_string()).collect::<Vec<_>>();
     let cwd = body.cwd;
     git_spawn(move || git_ui_unstage_blocking(cwd, paths)).await
 }
@@ -1574,11 +1578,10 @@ async fn git_ui_discard(
     if !body.confirmed.unwrap_or(false) {
         return git_json_error(StatusCode::BAD_REQUEST, "discard requires confirmation");
     }
-    let paths = match git_ui_paths(&body) {
+    let paths = match stage_paths(&body) {
         Ok(paths) => paths,
-        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        Err(response) => return response,
     };
-    let paths = paths.into_iter().map(|p| p.to_string()).collect::<Vec<_>>();
     let cwd = body.cwd;
     git_spawn(move || git_ui_discard_blocking(cwd, paths)).await
 }
@@ -1677,6 +1680,7 @@ mod tests {
             settings_tx,
             notes: Arc::new(Mutex::new(crate::notes::NotesState::default())),
             notes_tx,
+            panes_store: crate::workspace_panes_store::PanesStore::new(),
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
             lsp: Arc::new(crate::lsp::LspRegistry::new(Default::default())),
             terminal_hub: Arc::new(crate::terminal_hub::TerminalHub::new()),

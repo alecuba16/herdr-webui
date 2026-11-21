@@ -77,6 +77,24 @@ fn git_blame_args<'a>(file: &'a str, ref_name: &'a str) -> Vec<&'a str> {
     }
 }
 
+/// Requires cwd + file query params and validates the repo-relative file path.
+// Same Response-as-Err shape as the other git_ui validators; the lint is
+// allowed with the same marker the older helpers carry.
+#[allow(clippy::result_large_err)]
+fn validated_cwd_file(cwd: Option<&str>, file: Option<&str>) -> Result<(String, String), Response> {
+    let (Some(cwd), Some(file)) = (cwd, file) else {
+        return Err(git_json_error(
+            StatusCode::BAD_REQUEST,
+            "cwd and file are required",
+        ));
+    };
+    let file = match safe_repo_path(file) {
+        Ok(file) => file,
+        Err(err) => return Err(git_json_error(StatusCode::BAD_REQUEST, err)),
+    };
+    Ok((cwd.to_string(), file.to_string()))
+}
+
 pub(super) async fn git_ui_blame(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -84,19 +102,14 @@ pub(super) async fn git_ui_blame(
     Query(query): Query<GitUiBlameQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let (Some(cwd), Some(file)) = (query.cwd.as_deref(), query.file.as_deref()) else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd and file are required");
-    };
-    let file = match safe_repo_path(file) {
-        Ok(file) => file,
-        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+    let (cwd, file) = match validated_cwd_file(query.cwd.as_deref(), query.file.as_deref()) {
+        Ok(pair) => pair,
+        Err(response) => return response,
     };
     let ref_name = match safe_git_token(query.ref_name.as_deref().unwrap_or("working"), "ref") {
         Ok(v) => v,
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
-    let cwd = cwd.to_string();
-    let file = file.to_string();
     let ref_name = ref_name.to_string();
     git_spawn(move || git_ui_blame_blocking(cwd, file, ref_name)).await
 }
@@ -163,15 +176,10 @@ pub(super) async fn git_ui_file(
     Query(query): Query<GitUiFileQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let (Some(cwd), Some(file)) = (query.cwd.as_deref(), query.file.as_deref()) else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd and file are required");
+    let (cwd, file) = match validated_cwd_file(query.cwd.as_deref(), query.file.as_deref()) {
+        Ok(pair) => pair,
+        Err(response) => return response,
     };
-    let file = match safe_repo_path(file) {
-        Ok(file) => file,
-        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let cwd = cwd.to_string();
-    let file = file.to_string();
     let ref_name = query.ref_name.clone();
     git_spawn(move || git_ui_file_blocking(cwd, file, ref_name)).await
 }
@@ -268,15 +276,10 @@ pub(super) async fn git_ui_file_history(
     Query(query): Query<GitUiFileHistoryQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let (Some(cwd), Some(file)) = (query.cwd.as_deref(), query.file.as_deref()) else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd and file are required");
+    let (cwd, file) = match validated_cwd_file(query.cwd.as_deref(), query.file.as_deref()) {
+        Ok(pair) => pair,
+        Err(response) => return response,
     };
-    let file = match safe_repo_path(file) {
-        Ok(file) => file,
-        Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let cwd = cwd.to_string();
-    let file = file.to_string();
     git_spawn(move || git_ui_file_history_blocking(cwd, file)).await
 }
 

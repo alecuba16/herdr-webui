@@ -39,9 +39,11 @@ the auto-start; only the explicit replay paths start it again. The
    selection to the next workspace. Chord: `Ctrl+B j`.
 3. **Agents** - status per agent with color badges. Demo jumps between
    agents. Chord: `Ctrl+B a`.
-4. **Panels / main screen** - tab strips per pane. WebUI demo creates a
-   terminal tab; TUI demo switches to the files screen. Chord: `Ctrl+B
-   f` (TUI) / `Ctrl+B P` (WebUI new panel).
+4. **Panels / main screen** - one view per flat panel, labels riding
+   the rail above the panes; split panes carry one merged header per
+   member. WebUI demo creates a terminal tab; TUI demo switches to
+   the files screen. Chord: `Ctrl+B f` (TUI) / `Ctrl+B P` (WebUI new
+   panel).
 5. **Terminal** - paste, scrollback, links. WebUI demo focuses the
    terminal; TUI demo returns to the terminal screen. Chord: `Ctrl+B t`.
 6. **Workspace views / sidebar collapse** - WebUI walks the right rail

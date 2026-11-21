@@ -19,6 +19,14 @@ function productScript(relPath) {
   return productScript.cache.get(relPath);
 }
 
+// Shared modules consume HerdrAppHelpers as a required dependency, so the
+// harness mirrors the boot order: shared/core.js runs in the same context
+// before the module under test.
+function runSharedModule(relPath, target) {
+  productScript("./shared/core.js").runInNewContext(target);
+  return productScript(relPath).runInNewContext(target);
+}
+
 const require = createRequire(import.meta.url);
 const {
   branchPathSlug,
@@ -825,7 +833,7 @@ describe("HerdrFileTree search helpers", () => {
   function loadTree() {
     const context = { window: {} };
     productScript("./shared/file_icons.js").runInNewContext(context);
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     return context.window.HerdrFileTree;
   }
 
@@ -948,7 +956,7 @@ describe("HerdrEditor line number helpers", () => {
   async function createFallbackEditor(options) {
     const parent = { innerHTML: "", querySelector() { return null; } };
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, options || {}));
     await new Promise((resolve) => setTimeout(resolve, 0));
     return parent.innerHTML;
@@ -972,7 +980,7 @@ describe("HerdrEditor line number helpers", () => {
     const boot = () => {
       const parent = { innerHTML: "", querySelector() { return null; } };
       const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
-      productScript("./shared/editor.js").runInNewContext(context);
+      runSharedModule("./shared/editor.js", context);
       return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "big.log", content: "a\nb", readonly: true }, opts)) };
     };
 
@@ -1019,7 +1027,7 @@ describe("HerdrEditor line number helpers", () => {
       },
     };
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const editor = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: "a\nb", readonly: true });
     assert.equal(parent._herdrEditorApi, editor);
@@ -1075,7 +1083,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const api = context.window.HerdrEditor.create({
       parent,
@@ -1126,7 +1134,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const api = context.window.HerdrEditor.create({
       parent,
@@ -1163,7 +1171,7 @@ describe("HerdrEditor line number helpers", () => {
     const boot = () => {
       const parent = { innerHTML: "", querySelector() { return null; } };
       const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
-      productScript("./shared/editor.js").runInNewContext(context);
+      runSharedModule("./shared/editor.js", context);
       return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, opts)) };
     };
 
@@ -1237,7 +1245,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } },
       Promise, localStorage: { getItem() { return null; }, setItem() {} },
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     const api = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: text, readonly: true });
     assert.equal(typeof api.getValue, "function");
     const setText = (value) => { textareaNode.value = value; };
@@ -1282,7 +1290,7 @@ describe("HerdrEditor line number helpers", () => {
 
   it("supports match-case and regex range detection", () => {
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const helper = context.window.HerdrEditor;
     assert.equal(helper.findRanges("Alpha alpha alpha-42", "alpha", { matchCase: false, regex: false }).ranges.length, 3);
@@ -1345,7 +1353,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild() {} } },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     const editor = context.window.HerdrEditor.create({ parent, path: "demo.js", content: "abc", readonly: true });
     let prevented = false;
@@ -1391,7 +1399,7 @@ describe("HerdrEditor line number helpers", () => {
       Promise,
       setTimeout(fn) { fn(); },
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     const query = {
       focused: false,
       selected: false,
@@ -1444,7 +1452,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.js", content: "const x = 1;", readonly: true, hideHeader: true, lineNumbers: true });
     assert.match(parent.innerHTML, /herdr-editor cm/);
@@ -1492,7 +1500,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.js", content: "let x = 1;", readonly: false, hideHeader: true, lineNumbers: true });
     assert.match(parent.innerHTML, /herdr-editor cm/);
@@ -1533,7 +1541,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild() { throw new Error("should not load CodeMirror dynamically"); } } },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.py", content: "print('x')", readonly: true, hideHeader: true, lineNumbers: true });
 
@@ -1582,7 +1590,7 @@ describe("HerdrEditor goto-line and position readout (A5)", () => {
       localStorage: { getItem: () => null, setItem: () => {} },
       Promise,
     };
-    productScript("./shared/editor.js").runInNewContext(context);
+    runSharedModule("./shared/editor.js", context);
     return { context, readout, calls };
   }
 
@@ -1753,6 +1761,16 @@ describe("desktop file browser editor integration", () => {
       if (child.id) this.ownerDocument.nodes.set(child.id, child);
       return child;
     }
+    // The split reconcile re-parents layout nodes between wrappers
+    // (reconcileSplitNode); a harness split needs honest insertion.
+    insertBefore(child, reference) {
+      child.parentNode = this;
+      const at = reference ? this.children.indexOf(reference) : -1;
+      if (at >= 0) this.children.splice(at, 0, child);
+      else this.children.push(child);
+      if (child.id) this.ownerDocument.nodes.set(child.id, child);
+      return child;
+    }
     remove() {
       if (this.id) this.ownerDocument.nodes.delete(this.id);
       if (this.parentNode && Array.isArray(this.parentNode.children)) {
@@ -1837,7 +1855,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -1896,7 +1914,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -1954,7 +1972,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2055,7 +2073,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2143,7 +2161,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2237,7 +2255,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2300,7 +2318,7 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    productScript("./shared/file_tree.js").runInNewContext(context);
+    runSharedModule("./shared/file_tree.js", context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2468,7 +2486,8 @@ describe("desktop file browser editor integration", () => {
     terminalShell.id = "terminalShell";
     workspacePanes.appendChild(terminalShell);
 
-    productScript("./shared/file_tree.js").runInNewContext(vm.createContext(context.window));
+    productScript("./shared/core.js").runInNewContext(context.window);
+    productScript("./shared/file_tree.js").runInNewContext(context.window);
     productScript("./desktop/app_js/workspace_panes.js").runInNewContext(vm.createContext(context.window));
     productScript("./desktop/file_browser.js").runInNewContext(vm.createContext(context.window));
     harness.context = context;
@@ -2478,6 +2497,55 @@ describe("desktop file browser editor integration", () => {
       const pane = document.querySelector("#workspacePanes .workspace-pane");
       const strip = pane && pane.querySelector(".pane-tab-strip");
       return strip ? strip.innerHTML : "";
+    };
+    // Stripless flats: strip markup only renders inside a visible split
+    // (the merged header + degraded tab blob). Park the acting leaf in a
+    // two-member group so the editor/git tab markup renders again, the
+    // same way a label drop groups two panels.
+    harness.parkInSplit = (leaf) => {
+      const entry = harness.Panes.paneRoot();
+      let aux = entry.panels.find((p) => p !== leaf && !p.groupId);
+      if (!aux) {
+        // Single-panel session: mint the neighbor the way the rail's new
+        // panel control does, then group the two.
+        aux = harness.Panes.newPanelForFocused();
+        if (!aux || aux === leaf) return false;
+      }
+      entry.groups.push({ groupId: "g_core", name: null, memberIds: [leaf.paneId, aux.paneId], layout: { kind: "row", sizes: [1, 1], children: [leaf.paneId, aux.paneId] } });
+      leaf.groupId = "g_core";
+      aux.groupId = "g_core";
+      entry.visible = { type: "group", id: "g_core" };
+      // newPanelForFocused focuses the fresh panel; the parked leaf keeps
+      // the acting focus (its editor stays the active surface).
+      entry.activePaneId = leaf.paneId;
+      harness.Panes.renderWorkspacePanes();
+      return true;
+    };
+    // Back to the flat session: park ONLY for the strip checks above, so
+    // the single-pane flows (editor container swap) run on a flat panel.
+    // The ungroup must use the module's own close (ungroupPaneMember's
+    // drop path), not a hand-rolled state edit: a bare state rewrite
+    // re-splits on the next render (the homing ladder re-groups a
+    // stranded neighbor).
+    harness.flatAgain = () => {
+      const entry = harness.Panes.paneRoot();
+      const aux = entry.panels.find((p) => p.groupId && p !== harness.Panes.activePane());
+      if (!aux) return;
+      // The aux panel is view-less: the real close path prunes it straight
+      // (no tabs to drain) and the sweep dissolves the group + heals the
+      // visible pointer back to the editor panel.
+      harness.Panes.closePaneFor(encodeURIComponent(aux.paneId));
+      const entry2 = harness.Panes.paneRoot();
+      const still = entry2.panels.find((p) => p.paneId === aux.paneId);
+      if (still) {
+        // Defensive: sweep dissolves the group, then flatten any residue.
+        entry2.groups.length = 0;
+        for (const panel of entry2.panels) panel.groupId = null;
+        const leaf = harness.Panes.activePane();
+        entry2.visible = { type: "panel", id: leaf.paneId };
+        entry2.activePaneId = leaf.paneId;
+        harness.Panes.renderWorkspacePanes();
+      }
     };
     harness.containerFor = (path) => document.getElementById("pane-editor-" + require("./shared/core.js").hashId(path));
     return harness;
@@ -2490,9 +2558,15 @@ describe("desktop file browser editor integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Tab identity and strip markup come from the panes module.
-    const root = h.Panes.paneRoot();
+    // Traced to the one visible view model: paneRoot() is the session
+    // entry (flat panels), so per-tab assertions read the acting panel.
+    const root = h.Panes.activePane();
     assert.deepEqual([...root.tabs], ["terminal", "editor:src/demo.py"]);
     assert.equal(root.active, "editor:src/demo.py");
+    // Stripless flat: park the leaf in a split so the strip markup
+    // (merged header + degraded two-view blob) renders, then return to
+    // the flat for the container-flow checks below.
+    assert.ok(h.parkInSplit(root), "second panel exists to group with");
     const strip = h.stripHtml();
     assert.match(strip, /pane-tab editor active/);
     assert.match(strip, /data-tab-kind="editor"/);
@@ -2500,6 +2574,7 @@ describe("desktop file browser editor integration", () => {
     assert.match(strip, /<span class="pane-tab-label">demo\.py<\/span>/);
     assert.match(strip, /closeEditorTab\('src%2Fdemo\.py'\)/);
     assert.doesNotMatch(strip, /pane-tab-dirty/);
+    h.flatAgain();
 
     // Editable by default: the editor mounts in the pane content slot.
     assert.equal(h.editorCalls.at(-1).path, "src/demo.py");
@@ -2512,13 +2587,16 @@ describe("desktop file browser editor integration", () => {
     assert.equal(h.FB.activeEditorPath(), "src/demo.py");
     assert.equal(h.FB.editorFor("src/demo.py").editing, true);
 
-    // Opening another file mounts its own container; the old one hides.
+    // Opening another file splits the busy panel (the new view lands
+    // RIGHT as its own member): each panel's content owns its
+    // container, the old one stays mounted in its pane, and the
+    // active editor path moves to the new file.
     await h.Panes.openEditorTab("src/other.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const first = h.containerFor("src/demo.py");
     const second = h.containerFor("src/other.py");
-    assert.equal(first.style.display, "none");
-    assert.equal(second.style.display, "");
+    assert.ok(first && second, "both editor containers exist");
+    assert.notEqual(second.parentNode, first.parentNode, "the second open landed in its own split member");
     assert.equal(h.FB.activeEditorPath(), "src/other.py");
   });
 
@@ -2540,6 +2618,11 @@ describe("desktop file browser editor integration", () => {
     await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
     await h.Panes.openEditorTab("src/demo.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.doesNotMatch(h.stripHtml(), /pane-tab-dirty/);
+    // Stripless flat: park the leaf in a split so the dirty dot has a
+    // strip to render in (the degraded blob's editor button).
+    const leaf = h.Panes.activePane();
+    assert.ok(h.parkInSplit(leaf), "second panel exists to group with");
     assert.doesNotMatch(h.stripHtml(), /pane-tab-dirty/);
 
     h.editorCalls.at(-1).onChange("content of src/demo.py\nplus edits");
@@ -2718,7 +2801,7 @@ describe("desktop file browser editor integration", () => {
     h.setConfirm(false);
     let closed = await h.FB.closeEditorTab(encodeURIComponent("src/demo.py"));
     assert.equal(closed, false);
-    assert.ok(h.Panes.paneRoot().tabs.includes("editor:src/demo.py"));
+    assert.ok(h.Panes.activePane().tabs.includes("editor:src/demo.py"));
     assert.ok(h.FB.editorFor("src/demo.py"), "state kept while close is declined");
     assert.equal(h.confirmCalls.length, 1);
     assert.match(h.confirmCalls[0], /src\/demo\.py/);
@@ -2727,7 +2810,7 @@ describe("desktop file browser editor integration", () => {
     h.setConfirm(true);
     closed = await h.FB.closeEditorTab(encodeURIComponent("src/demo.py"));
     assert.equal(closed, true);
-    assert.ok(!h.Panes.paneRoot().tabs.includes("editor:src/demo.py"));
+    assert.ok(!h.Panes.activePane().tabs.includes("editor:src/demo.py"));
     assert.ok(!h.FB.editorFor("src/demo.py"), "state dropped after confirmed close");
     assert.equal(h.containerFor("src/demo.py"), null, "container removed with the tab");
   });
@@ -2744,7 +2827,7 @@ describe("desktop file browser editor integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const fetchesAfter = h.requests.filter((r) => r.url.startsWith("/api/file-browser/file")).length;
     assert.equal(fetchesAfter, fetchesBefore, "no duplicate fetch for an open tab");
-    const editorTabs = h.Panes.paneRoot().tabs.filter((tabId) => tabId.startsWith("editor:"));
+    const editorTabs = h.Panes.activePane().tabs.filter((tabId) => tabId.startsWith("editor:"));
     assert.deepEqual([...editorTabs], ["editor:src/demo.py"], "one tab per path");
   });
 
@@ -2763,7 +2846,7 @@ describe("desktop file browser editor integration", () => {
     assert.equal(file.searchHighlight, "needle");
     assert.equal(file.previewSource, true);
     assert.equal(h.editorCalls.at(-1).markdownPreview, false, "highlight forces the source view");
-    const editorTabs = h.Panes.paneRoot().tabs.filter((tabId) => tabId.startsWith("editor:"));
+    const editorTabs = h.Panes.activePane().tabs.filter((tabId) => tabId.startsWith("editor:"));
     assert.deepEqual([...editorTabs], ["editor:README.md"], "search open reuses the existing tab");
   });
 
@@ -2831,6 +2914,10 @@ describe("desktop file browser editor integration", () => {
     await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
     await h.Panes.openEditorTab("src/a.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
+    // Stripless flat: park the leaf in a split so the dirty dot has a
+    // strip to render in (the degraded blob's editor button).
+    const leaf = h.Panes.activePane();
+    assert.ok(h.parkInSplit(leaf), "second panel exists to group with");
     h.editorCalls.at(-1).onChange("content of src/a.py\nplus edits");
     assert.match(h.stripHtml(), /pane-tab-dirty/);
 

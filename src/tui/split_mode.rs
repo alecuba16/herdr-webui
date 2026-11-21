@@ -611,22 +611,28 @@ impl TuiApp {
     }
 }
 
+/// Vim-style arrow/arrow-key delta for mode key handlers.
+fn vim_motion_delta(code: KeyCode) -> (i32, i32) {
+    let dx = match code {
+        KeyCode::Left | KeyCode::Char('h') => -1,
+        KeyCode::Right | KeyCode::Char('l') => 1,
+        _ => 0,
+    };
+    let dy = match code {
+        KeyCode::Up | KeyCode::Char('k') => -1,
+        KeyCode::Down | KeyCode::Char('j') => 1,
+        _ => 0,
+    };
+    (dx, dy)
+}
+
 /// Key routing while split mode owns the keyboard (design: hjkl/arrows
 /// move the ghost, Tab flips side family, p cycles the candidate,
 /// Enter commits, Esc cancels). Lives on TuiApp for `handle_key`
 /// access; the pure movement logic stays above.
 impl TuiApp {
     pub(crate) fn handle_split_mode_key(&mut self, key: KeyEvent) {
-        let dx = match key.code {
-            KeyCode::Left | KeyCode::Char('h') => -1,
-            KeyCode::Right | KeyCode::Char('l') => 1,
-            _ => 0,
-        };
-        let dy = match key.code {
-            KeyCode::Up | KeyCode::Char('k') => -1,
-            KeyCode::Down | KeyCode::Char('j') => 1,
-            _ => 0,
-        };
+        let (dx, dy) = vim_motion_delta(key.code);
         match key.code {
             KeyCode::Esc => {
                 self.split_mode = None;
@@ -643,16 +649,7 @@ impl TuiApp {
     }
 
     pub(crate) fn handle_move_mode_key(&mut self, key: KeyEvent) {
-        let dx = match key.code {
-            KeyCode::Left | KeyCode::Char('h') => -1,
-            KeyCode::Right | KeyCode::Char('l') => 1,
-            _ => 0,
-        };
-        let dy = match key.code {
-            KeyCode::Up | KeyCode::Char('k') => -1,
-            KeyCode::Down | KeyCode::Char('j') => 1,
-            _ => 0,
-        };
+        let (dx, dy) = vim_motion_delta(key.code);
         match key.code {
             KeyCode::Esc => {
                 self.move_mode = None;

@@ -11,6 +11,8 @@ const MARKDOWN_PREVIEW_PATH = fileURLToPath(new URL("./shared/markdown_preview.j
 const markdownPreviewScript = new vm.Script(readFileSync(MARKDOWN_PREVIEW_PATH, "utf8"), {
   filename: MARKDOWN_PREVIEW_PATH,
 });
+const CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const coreScript = new vm.Script(readFileSync(CORE_PATH, "utf8"), { filename: CORE_PATH });
 
 function loadModule() {
   const window = {};
@@ -24,6 +26,7 @@ function loadModule() {
   const ctx = { window, document, localStorage, matchMedia: undefined, console };
   ctx.window = ctx;
   vm.createContext(ctx);
+  coreScript.runInContext(ctx);
   markdownPreviewScript.runInContext(ctx);
   return ctx.window.HerdrMarkdownPreview;
 }
@@ -55,6 +58,7 @@ function loadRenderModule(parseImpl) {
   ctx = { window: null, document, localStorage: { getItem() { return null; } }, console };
   ctx.window = ctx;
   vm.createContext(ctx);
+  coreScript.runInContext(ctx);
   markdownPreviewScript.runInContext(ctx);
   return { mod: ctx.window.HerdrMarkdownPreview, scripts, links };
 }

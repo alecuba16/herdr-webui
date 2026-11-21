@@ -512,12 +512,7 @@ async function submitWorktreeCreate(input) {
       ),
     });
     closeFn();
-    const result = r.result || {};
-    go(
-      result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
+    navigateWorktreeResult(r);
   } catch (ex) {
     const message = ex.message || String(ex);
     hideBlocking();
@@ -540,6 +535,16 @@ async function confirmContinueWithoutPull(message) {
   // Shared message contract (HerdrAppHelpers.confirmWorktreePullBaseQuestion);
   // the modal asks through the shell's question card.
   return HerdrAppHelpers.confirmWorktreePullBaseQuestion(message, askQuestion) || false;
+}
+// Navigation answer of a worktree create: the workspace plus the tab and
+// root pane the server reports back, so the new view lands focused.
+function navigateWorktreeResult(r) {
+  const result = r.result || {};
+  go(
+    result.workspace.workspace_id,
+    result.tab && result.tab.tab_id,
+    result.root_pane && result.root_pane.pane_id,
+  );
 }
 function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];
@@ -962,12 +967,7 @@ async function createDiscoveredWorktree() {
       }),
     });
     closeWorktreeOpenModal();
-    const result = r.result || {};
-    go(
-      result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
+    navigateWorktreeResult(r);
   } catch (ex) {
     const message = ex.message || String(ex);
     hideBlocking();
@@ -1224,7 +1224,7 @@ async function commitTabRename(id) {
   refresh();
 }
 let closeTabInFlight = false;
-async function closeTab(id) {
+async function closeTab(id, opts) {
   // Guard: double-click on the ✕ button must not fire two close requests
   // (the second would close the next panel too). Claimed at entry, before
   // the await on the modal: a slow question dialog must not open a window
@@ -1234,8 +1234,11 @@ async function closeTab(id) {
   // Terminals are the one tab kind worth a confirm: a dead shell is a
   // lost session. The question modal (Enter confirms, Esc cancels)
   // replaces the old blocking confirm(); file and git tabs close silent.
+  // skipConfirm: the last-panel chip fork already asked its one question
+  // (close the workspace?), so its drain must not stack per-terminal
+  // modals on top of that answer.
   try {
-    const okToClose = await askQuestion({
+    const okToClose = opts && opts.skipConfirm || await askQuestion({
       title: "Close panel",
       message: `Close panel "${panelCloseName(id)}"?`,
       confirmText: "Close",
@@ -1264,10 +1267,12 @@ async function closeTab(id) {
       // The D8 cache parks surfaces on hide, so nothing else frees the
       // socket and wterm instance this tab owned.
       if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseForTab(id);
-      // The closed terminal may have been a split leaf's last tab: drop
-      // the empty pane so the survivor takes the layout back.
-      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
-        window.HerdrWorkspacePanes.collapseLeafForClosedTab(id);
+      // The closed terminal may have been a split leaf's last tab: the
+      // pane module's close-aftermath facade prunes the id, folds any
+      // armed+empty leaf, and paints once (v3.2 auto-close; the sweep's
+      // focused-leaf and last-panel guards live inside that module).
+      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.onTerminalTabClosed)
+        window.HerdrWorkspacePanes.onTerminalTabClosed(id);
       if (closingWorkspaceId && typeof maybeAutoCloseWorkspace === "function")
         maybeAutoCloseWorkspace(closingWorkspaceId);
       if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {

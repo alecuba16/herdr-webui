@@ -13,6 +13,8 @@ function productScript(rel) {
   return new vm.Script(readFileSync(path, "utf8"), { filename: path });
 }
 
+const coreScript = productScript("./shared/core.js");
+
 const require = createRequire(import.meta.url);
 
 // ── shared/terminal_scroll.js ─────────────────────────────────────────
@@ -368,11 +370,6 @@ describe("HerdrWorkspaceSearch coverage", () => {
         normalizeSearchKind: (kind) => (kind === "dir" ? "dir" : "file"),
         searchKindQuery: (kind) => `search_kind=${kind}`,
       },
-      HerdrAppHelpers: {
-        normalizeOrder: (value, allowed) => (Array.isArray(value) ? value : allowed),
-        textValue: (value) => (value != null && String(value).trim() ? String(value).trim() : ""),
-        inputAttrs: () => "",
-      },
       HerdrOptions: { read: () => options },
       fetch: async (url, requestOptions) => {
         requests.push({ url, requestOptions });
@@ -382,6 +379,16 @@ describe("HerdrWorkspaceSearch coverage", () => {
     };
     context.window = context;
     context.globalThis = context;
+    vm.createContext(context);
+    productScript("./shared/core.js").runInNewContext(context);
+    // core.js owns HerdrAppHelpers; restore the stubs the module still
+    // treats as optional overrides (normalizeOrder/textValue) while esc
+    // keeps the real escapeAttr from core.
+    context.HerdrAppHelpers = Object.assign({}, context.HerdrAppHelpers, {
+      normalizeOrder: (value, allowed) => (Array.isArray(value) ? value : allowed),
+      textValue: (value) => (value != null && String(value).trim() ? String(value).trim() : ""),
+      inputAttrs: () => "",
+    });
     workspaceSearchScript.runInNewContext(context);
     return { search: context.HerdrWorkspaceSearch, requests, context };
   }
@@ -558,6 +565,8 @@ describe("HerdrContentSearch coverage", () => {
     ctx.window = ctx;
     ctx.globalThis = ctx;
     vm.createContext(ctx);
+    coreScript.runInContext(ctx);
+    productScript("./shared/line_context.js").runInContext(ctx);
     contentSearchScript.runInContext(ctx);
     return ctx.window.HerdrContentSearch;
   }
@@ -717,6 +726,7 @@ describe("HerdrMarkdownPreview coverage", () => {
     };
     ctx.window = ctx;
     vm.createContext(ctx);
+    coreScript.runInContext(ctx);
     markdownPreviewScript.runInContext(ctx);
     return { mod: ctx.window.HerdrMarkdownPreview, ctx, scripts, links };
   }
@@ -927,6 +937,7 @@ describe("HerdrMarkdownPreview coverage", () => {
     };
     ctx.window = ctx;
     vm.createContext(ctx);
+    coreScript.runInContext(ctx);
     markdownPreviewScript.runInContext(ctx);
     const mod = ctx.window.HerdrMarkdownPreview;
     const container = { innerHTML: "", querySelectorAll: () => [] };
@@ -1028,6 +1039,7 @@ describe("HerdrLsp coverage", () => {
     sandbox.globalThis = sandbox;
     Object.assign(sandbox, overrides);
     vm.createContext(sandbox);
+    coreScript.runInContext(sandbox);
     lspScript.runInContext(sandbox);
     return sandbox;
   }

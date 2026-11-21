@@ -108,7 +108,11 @@ function releaseColumnFocus() {
   const shell = typeof el === "function" ? el("terminalShell") : null;
   const active = typeof document !== "undefined" && document.activeElement;
   if (shell && active && hostContains(active)) {
-    const preferred = shell.querySelector("#terminalImeInput") || shell;
+    // The wterm textareas carry NUMBERED ids (terminalImeInput-1, -2, ...;
+    // split views mount several surfaces), so no fixed id exists. Any
+    // of the shell's IME textareas is a valid landing zone: prefer the
+    // first one the shell owns, else the shell host itself.
+    const preferred = shell.querySelector("textarea[id^=\"terminalImeInput-\"]") || shell;
     if (typeof preferred.focus === "function") preferred.focus();
   }
 }

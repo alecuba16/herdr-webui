@@ -262,11 +262,7 @@
         const file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&max_bytes=262144`);
         if (screenRequestStale(seq)) return;
         file.partialPreview = file.truncated === true;
-        file.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
-        local.file = file;
-        local.editing = false;
-        local.draft = "";
-        local.dirty = false;
+        adoptFileIntoEditor(file, seq);
       } catch (error) {
         if (screenRequestStale(seq)) return;
         local.error = error.message || String(error);
@@ -294,17 +290,24 @@
         const file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&render=lines`);
         if (screenRequestStale(seq)) return;
         file.searchHighlight = searchHighlight || null;
-        file.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
-        local.file = file;
-        local.editing = false;
-        local.draft = "";
-        local.dirty = false;
+        adoptFileIntoEditor(file, seq);
       } catch (error) {
         if (screenRequestStale(seq)) return;
         local.error = error.message || String(error);
       }
       local.loading = false;
       deps.render();
+    }
+
+    // Lands a fetched file into the editor state: gutter/code HTML pairs
+    // become linesHtml, and the editor starts clean (no draft, not dirty).
+    function adoptFileIntoEditor(file, seq) {
+      if (screenRequestStale(seq)) return;
+      file.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
+      local.file = file;
+      local.editing = false;
+      local.draft = "";
+      local.dirty = false;
     }
 
     function canEditFile(file) {
@@ -606,7 +609,11 @@
       return local.contentSearch.files.find((file) => file.path === path) || null;
     }
 
+    // Delegates to the shared search helper; the local shape only covers
+    // harnesses that boot this module without shared/workspace_search.js.
     function matchHighlight(match, query) {
+      const shared = globalThis.HerdrWorkspaceSearch && globalThis.HerdrWorkspaceSearch.matchHighlight;
+      if (shared) return shared(match, query);
       if (!match) return null;
       return {
         line: Math.max(1, Number(match.line || match.start_line || 1)),

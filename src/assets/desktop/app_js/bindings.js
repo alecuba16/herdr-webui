@@ -65,27 +65,41 @@ document.addEventListener("keydown", (e) => {
     }
     return;
   }
-  // Enter creates the first terminal only while no file or Git pane tab
-  // is open. The pane column scope covers the empty body and the leaf card.
-  // Buttons keep their native Enter path (the early return above), so a
-  // focused pane control (the card's own New terminal button, pane strip
-  // buttons) still activates itself: this branch only fires for
-  // non-button targets, which is why the leaf focus claim in
-  // syncWorkspaceEmptyLeaf matters more than the scope check.
+  // Enter opens a terminal from an EMPTY focused panel (collector
+  // model): the focused panel decides, not the global zero-tab state,
+  // so a sibling panel's editor/git tabs never block it. Buttons keep
+  // their native Enter path (the early return above): a focused chip or
+  // + activates itself instead of minting a terminal. Modal guard
+  // mirrors the leaf focus rule (open-workspace dialog, question
+  // modal hold their own focus).
   if (
     e.key === "Enter" &&
     state.ws &&
-    !state.tab &&
-    !workspaceHasOpenFileOrGitTab() &&
     !modalOpen() &&
     !target.closest("input, select, textarea, [contenteditable='true']") &&
     (target === document.body ||
       target === document.documentElement ||
       !!target.closest("#workspacePanes"))
   ) {
-    e.preventDefault();
-    e.stopPropagation();
-    newTab();
+    const panes = window.HerdrWorkspacePanes;
+    const leaf =
+      panes && typeof panes.focusedLeaf === "function" ? panes.focusedLeaf() : null;
+    // Enter is the empty panel's only affordance: the card advertises
+    // it, so the guard is the SAME filtered view the strip and the card
+    // use (paneTabsForTree), not the raw tabs array. The seed
+    // placeholder ("terminal", no backend row yet) renders as an empty
+    // strip with the card, so Enter must mint there; a panel holding
+    // real tabs (including editor/git) ignores Enter at the body level:
+    // its own controls own the key.
+    const leafTabs =
+      leaf && panes && typeof panes.paneTabsForTree === "function"
+        ? panes.paneTabsForTree(leaf)
+        : (leaf && leaf.tabs) || [];
+    if (leaf && !leafTabs.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      panes.newTabForPane(encodeURIComponent(leaf.paneId));
+    }
     return;
   }
 });
@@ -676,6 +690,11 @@ el("optParentCloseMode").onchange = () => {
   saveOptions();
   applyOptions();
 };
+el("optPaneGroupAutoJoin").onchange = () => {
+  options.paneGroupAutoJoin = el("optPaneGroupAutoJoin").value;
+  saveOptions();
+  applyOptions();
+};
 el("optWorkspaceOpenTerminal").onchange = () => {
   options.workspaceOpenTerminal = el("optWorkspaceOpenTerminal").checked;
   saveOptions();
@@ -946,11 +965,7 @@ document.addEventListener(
       }
       return;
     }
-    if (document.getElementById("paneMenu")) {
-      e.preventDefault();
-      e.stopPropagation();
-      closePaneMenu();
-    } else if (pickerBackdropOpen()) {
+    if (pickerBackdropOpen()) {
       // The picker owns its own DOM (removed on close), so it is not in
       // the static-modal list below; close it through its API so focus
       // and any dragged position reset the same way the Close button
@@ -991,20 +1006,6 @@ document.addEventListener(
       if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
       if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
     }
-  },
-  true,
-);
-// Phase 5 pane menu: a click outside [⋮]'s menu (or on its button,
-// which toggles on its own) closes it. Capture phase so the click never
-// reaches a tab or strip control under an open menu.
-document.addEventListener(
-  "mousedown",
-  (e) => {
-    const menu = document.getElementById("paneMenu");
-    if (!menu) return;
-    if (menu.contains && menu.contains(e.target)) return;
-    if (e.target && e.target.closest && e.target.closest(".pane-menu-button")) return;
-    closePaneMenu();
   },
   true,
 );
@@ -1181,6 +1182,12 @@ document.addEventListener("visibilitychange", () => {
     refresh();
     connectEvents();
     loadNoSleep();
+    // Hidden tabs close their sockets after a grace period, so a panes
+    // broadcast that lands while hidden is lost. Server mode re-adopts
+    // the entry on regain (the GET is idempotent and overlays keep the
+    // per-client pointers); local mode ignores it.
+    if (window.HerdrWorkspacePanes && typeof window.HerdrWorkspacePanes.bootFromServer === "function")
+      void window.HerdrWorkspacePanes.bootFromServer();
   }
 });
 window.addEventListener("focus", loadNoSleep);
@@ -1225,6 +1232,12 @@ loadVersions();
 loadServerSettings();
 refresh();
 connectEvents();
+// Shared panes adoption (server-owned panels/groups): fetch the session's
+// entry after the route pin is known so the x-herdr-session header rides
+// the GET. Older servers without the route leave the local model as the
+// truth (the boot helper falls back silently).
+if (window.HerdrWorkspacePanes && typeof window.HerdrWorkspacePanes.bootFromServer === "function")
+  void window.HerdrWorkspacePanes.bootFromServer();
 // First visit in this browser starts the onboarding tour once the first
 // layout lands. The tour module itself persists done/skipped state, so a
 // reload or an explicit skip never replays it; the Help modal's Replay

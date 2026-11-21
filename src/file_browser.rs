@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
 use axum::extract::{ConnectInfo, Query, State};
@@ -623,6 +624,19 @@ fn resolve_root(cwd: &str) -> Result<PathBuf, String> {
         .map_err(|err| format!("invalid root: {err}"))
 }
 
+/// Canonical $HOME, computed once: the empty-cwd effective root and the
+/// read allowance both compare against it, so the alias form (say /Users
+/// vs a symlinked home) must be stable across requests.
+fn canonical_home() -> PathBuf {
+    static HOME: OnceLock<PathBuf> = OnceLock::new();
+    HOME.get_or_init(|| {
+        PathBuf::from(expand_user_path_string("~"))
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(expand_user_path_string("~")))
+    })
+    .clone()
+}
+
 fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
     let joined = root.join(path);
     let canonical = if joined.exists() {
@@ -643,6 +657,92 @@ fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
         return Err("path escapes root".to_string());
     }
     Ok(canonical)
+}
+
+/// How far an absolute path may range when the request carries no cwd
+/// (the editor-tab contract: tabs persist filesystem-absolute paths and
+/// rehydrate with cwd=""). ReadAllowHome keeps the tab flow working by
+/// canonically confining to $HOME; ConfineToRoot is the destructive
+/// contract (write/rename/delete): the effective root only, no allowance.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResolvePolicy {
+    ReadAllowHome,
+    ConfineToRoot,
+}
+
+/// Resolve a client-supplied path against the request root. Relative paths
+/// keep the historic root.join semantics. Absolute paths are honored as-is:
+/// editor tabs and external entry points (search results, pane-tree tab ids)
+/// carry filesystem-absolute paths, and a cwd-less request (empty root) had
+/// its leading slash stripped by clean_relative_path, producing
+/// home/Users/... and a spurious 400. When the request carries a real root,
+/// the absolute target must stay confined under it, same as a relative path.
+/// The confinement check is canonical on both sides so path aliases
+/// (/tmp vs /private/tmp) and in-root symlinks cannot dodge it.
+fn resolve_child_path(root: &Path, cwd: &str, path: &str) -> Result<PathBuf, String> {
+    resolve_child_path_with_policy(root, cwd, path, ResolvePolicy::ConfineToRoot)
+}
+
+fn resolve_child_path_with_policy(
+    root: &Path,
+    cwd: &str,
+    path: &str,
+    policy: ResolvePolicy,
+) -> Result<PathBuf, String> {
+    // Only ~ expansion needs the user-prefix helper: a relative path must
+    // stay relative so resolve_child's root.join keeps owning it (running
+    // it through expand_user_path_string would rebase it on $HOME and
+    // break out of the root).
+    let expanded = if path.starts_with("~/") || path == "~" {
+        expand_user_path_string(path)
+    } else {
+        path.to_string()
+    };
+    if !expanded.starts_with('/') {
+        return resolve_child(root, &expanded);
+    }
+    let cwd_empty = cwd.trim().is_empty();
+    let home = canonical_home();
+    // Empty (or whitespace-only) cwd means "no request root": the effective
+    // root is canonical $HOME, which is exactly the pre-absolute-path
+    // behavior of resolve_root("") + resolve_child. A non-empty root is
+    // canonicalized HERE, not trusted as-given: an alias-spelled root
+    // (/var vs /private/var on macOS) must still contain the canonical
+    // target, the comparison is canonical on both sides (F4).
+    let effective_root: PathBuf = if cwd_empty {
+        home
+    } else {
+        root.canonicalize()
+            .map_err(|err| format!("invalid root: {err}"))?
+    };
+    let target = PathBuf::from(&expanded);
+    let canonical = if target.exists() {
+        target.canonicalize().map_err(|err| err.to_string())?
+    } else {
+        // Missing targets (write-to-new-file, rename into a fresh name)
+        // canonicalize the parent chain; the check below still applies to
+        // the joined result.
+        let parent = target
+            .parent()
+            .ok_or_else(|| "invalid path".to_string())?
+            .canonicalize()
+            .map_err(|err| err.to_string())?;
+        parent.join(
+            target
+                .file_name()
+                .ok_or_else(|| "invalid path".to_string())?,
+        )
+    };
+    if canonical.starts_with(effective_root.as_path()) {
+        return Ok(canonical);
+    }
+    // The one allowance: cwd-less reads stay servable inside $HOME so
+    // persisted editor tabs rehydrate. Destructive callers never pass
+    // this policy, and a read outside $HOME was never the tab contract.
+    if policy == ResolvePolicy::ReadAllowHome && canonical.starts_with(canonical_home()) {
+        return Ok(canonical);
+    }
+    Err("path escapes root".to_string())
 }
 
 /// Like `resolve_child`, but for write targets that may introduce new
@@ -1765,29 +1865,58 @@ fn merge_branch_changes(
     }
 }
 
-/// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
-/// directory walks and search visits never stall the async runtime.
-fn file_browser_tree_payload(
-    query: FileBrowserQuery,
-) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&query.cwd) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
+fn bad_request(err: String) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, err)
+}
+
+/// Resolves the query root and required file path, returning (rel, file, metadata).
+fn file_browser_resolved_file(
+    query: &FileBrowserQuery,
+) -> Result<(String, PathBuf, fs::Metadata), (StatusCode, String)> {
+    let cwd_raw = query.cwd.as_str();
+    let root = resolve_root(cwd_raw).map_err(bad_request)?;
     let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) => rel,
+        Ok(rel) if !rel.is_empty() => rel,
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let dir = match resolve_child(&root, &rel) {
-        Ok(dir) => dir,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
+    let file = resolve_child_path_with_policy(
+        &root,
+        cwd_raw,
+        query.path.as_deref().unwrap_or(rel.as_str()),
+        ResolvePolicy::ReadAllowHome,
+    )
+    .map_err(bad_request)?;
+    if !file.is_file() {
+        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
+    }
+    let metadata = fs::metadata(&file).map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+    Ok((rel, file, metadata))
+}
+
+/// Resolves the query root and directory path, returning (root, dir).
+fn file_browser_resolved_dir(
+    cwd: &str,
+    path: Option<&str>,
+) -> Result<(PathBuf, PathBuf), (StatusCode, String)> {
+    let root = resolve_root(cwd).map_err(bad_request)?;
+    let rel = clean_relative_path(path).map_err(bad_request)?;
+    let dir = resolve_child(&root, &rel).map_err(bad_request)?;
     if !dir.is_dir() {
         return Err((
             StatusCode::BAD_REQUEST,
             "path is not a directory".to_string(),
         ));
     }
+    Ok((root, dir))
+}
+
+/// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
+/// directory walks and search visits never stall the async runtime.
+fn file_browser_tree_payload(
+    query: FileBrowserQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let (root, dir) = file_browser_resolved_dir(&query.cwd, query.path.as_deref())?;
     let dirs_only = query.dirs_only.unwrap_or(false);
     let depth = if dirs_only {
         0
@@ -1978,26 +2107,7 @@ fn file_browser_partial_read_payload(
 fn file_browser_file_payload(
     query: FileBrowserQuery,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&query.cwd) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let file = match resolve_child(&root, &rel) {
-        Ok(file) => file,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    if !file.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
-    }
-    let metadata = match fs::metadata(&file) {
-        Ok(metadata) => metadata,
-        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
-    };
+    let (rel, file, metadata) = file_browser_resolved_file(&query)?;
     // A6: cheap change detection. hash_only skips the content read and
     // returns just the hash/size the browser needs to notice an external
     // change when a tab regains focus.
@@ -2095,26 +2205,7 @@ async fn file_browser_file(
 fn file_browser_outline_payload(
     query: FileBrowserQuery,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&query.cwd) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let file = match resolve_child(&root, &rel) {
-        Ok(file) => file,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    if !file.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
-    }
-    let metadata = match fs::metadata(&file) {
-        Ok(metadata) => metadata,
-        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
-    };
+    let (rel, file, metadata) = file_browser_resolved_file(&query)?;
     // Same cap as the read path: an oversized file cannot be outlined because
     // its full content would have to be parsed to know the headings.
     if metadata.len() > MAX_FILE_BYTES {
@@ -2180,7 +2271,8 @@ fn numbered_lines_html(content: &str) -> (String, String) {
 fn file_browser_write_file_payload(
     body: FileBrowserWriteRequest,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&body.cwd) {
+    let cwd_raw = body.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2190,9 +2282,13 @@ fn file_browser_write_file_payload(
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let file = if body.create_parents {
-        resolve_child_create(&root, &rel)
+        if body.path.starts_with('/') {
+            resolve_child_path(&root, cwd_raw, &body.path)
+        } else {
+            resolve_child_create(&root, &rel)
+        }
     } else {
-        resolve_child(&root, &rel)
+        resolve_child_path(&root, cwd_raw, &body.path)
     };
     let file = match file {
         Ok(file) => file,
@@ -2254,24 +2350,7 @@ fn file_browser_content_search_payload(
     if search.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "query is required".to_string()));
     }
-    let root = match resolve_root(&query.cwd) {
-        Ok(root) => root,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let rel = match clean_relative_path(query.path.as_deref()) {
-        Ok(rel) => rel,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let dir = match resolve_child(&root, &rel) {
-        Ok(dir) => dir,
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    if !dir.is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "path is not a directory".to_string(),
-        ));
-    }
+    let (root, dir) = file_browser_resolved_dir(&query.cwd, query.path.as_deref())?;
     let limit = query
         .limit
         .unwrap_or(DEFAULT_CONTENT_SEARCH_LIMIT)
@@ -2337,7 +2416,8 @@ fn file_browser_content_search_file_payload(
     if search.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "query is required".to_string()));
     }
-    let root = match resolve_root(&query.cwd) {
+    let cwd_raw = query.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2346,7 +2426,16 @@ fn file_browser_content_search_file_payload(
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "file is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let file = match resolve_child(&root, &rel) {
+    let file = match resolve_child_path_with_policy(
+        &root,
+        cwd_raw,
+        query
+            .file
+            .as_deref()
+            .or(query.path.as_deref())
+            .unwrap_or(rel.as_str()),
+        ResolvePolicy::ReadAllowHome,
+    ) {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2405,11 +2494,12 @@ async fn file_browser_content_search_file(
 fn file_browser_rename_payload(
     body: FileBrowserRenameRequest,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&body.cwd) {
+    let cwd_raw = body.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let rel = match clean_relative_path(Some(&body.path)) {
+    let _rel = match clean_relative_path(Some(&body.path)) {
         Ok(rel) if !rel.is_empty() => rel,
         Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -2418,7 +2508,7 @@ fn file_browser_rename_payload(
         Ok(name) => name,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let source = match resolve_child(&root, &rel) {
+    let source = match resolve_child_path(&root, cwd_raw, body.path.as_str()) {
         Ok(path) => path,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2461,16 +2551,12 @@ async fn file_browser_rename(
 fn file_browser_delete_payload(
     body: FileBrowserDeleteRequest,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let root = match resolve_root(&body.cwd) {
+    let cwd_raw = body.cwd.as_str();
+    let root = match resolve_root(cwd_raw) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let rel = match clean_relative_path(Some(&body.path)) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let path = match resolve_child(&root, &rel) {
+    let path = match resolve_child_path(&root, cwd_raw, body.path.as_str()) {
         Ok(path) => path,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
@@ -2509,6 +2595,23 @@ mod tests {
     use super::*;
     use std::time::SystemTime;
 
+    // Outside-$HOME scratch for the confinement pins. std::env::temp_dir
+    // is WRONG here: a dev box can point TMPDIR inside $HOME (this repo's
+    // tooling does), and a target under $HOME is exactly what the
+    // resolver must ALLOW. /private/tmp (canonical /tmp on macOS) or /tmp
+    // is outside any real user HOME.
+    fn outside_home_dir(label: &str) -> PathBuf {
+        let base = if Path::new("/private/tmp").exists() {
+            PathBuf::from("/private/tmp")
+        } else {
+            PathBuf::from("/tmp")
+        };
+        let dir = base.join(format!("herdr-{}-{}", label, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn numbered_lines_html_builds_gutter_and_escaped_code() {
         let (gutter, code) = numbered_lines_html("fn main() {\n    let x = 1 < 2;\n}");
@@ -2526,6 +2629,249 @@ mod tests {
         assert!(clean_relative_path(Some("../secret")).is_err());
         assert!(clean_relative_path(Some("a/../secret")).is_err());
         assert_eq!(clean_relative_path(Some("/a/b")).unwrap(), "a/b");
+    }
+
+    #[test]
+    fn resolve_child_path_honors_abspath_without_cwd() {
+        let home = canonical_home();
+        let root = home.join(format!(
+            "herdr-resolve-abspath-{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("store.rs");
+        std::fs::write(&file, "x").unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let file = file.canonicalize().unwrap();
+
+        // A cwd-less request with an absolute path resolves the file
+        // directly (the editor tab / external entry point case) under
+        // the destructive policy: the file lives under $HOME.
+        assert_eq!(
+            resolve_child_path(&canonical_root, "", file.to_str().unwrap()).unwrap(),
+            file
+        );
+        // The read policy serves the same under-$HOME path.
+        assert_eq!(
+            resolve_child_path_with_policy(
+                &canonical_root,
+                "",
+                file.to_str().unwrap(),
+                ResolvePolicy::ReadAllowHome
+            )
+            .unwrap(),
+            file
+        );
+        // Both policies refuse an absolute path outside $HOME when the
+        // cwd is empty: /etc/hostname was never the tab contract.
+        assert!(resolve_child_path(&canonical_root, "", "/etc/hostname").is_err());
+        assert!(resolve_child_path_with_policy(
+            &canonical_root,
+            "",
+            "/etc/hostname",
+            ResolvePolicy::ReadAllowHome
+        )
+        .is_err());
+        // The same absolute path under a real root stays confined.
+        assert_eq!(
+            resolve_child_path(
+                &canonical_root,
+                canonical_root.to_str().unwrap(),
+                file.to_str().unwrap()
+            )
+            .unwrap(),
+            file
+        );
+        // An absolute path outside a real root is a refusal.
+        assert!(resolve_child_path(
+            &canonical_root,
+            canonical_root.to_str().unwrap(),
+            "/etc/hostname"
+        )
+        .is_err());
+        // Relative paths keep the root.join semantics.
+        assert_eq!(
+            resolve_child_path(
+                &canonical_root,
+                canonical_root.to_str().unwrap(),
+                "store.rs"
+            )
+            .unwrap(),
+            file
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_payload_reads_abspath_with_empty_cwd() {
+        let home = canonical_home();
+        let root = home.join(format!("herdr-webui-file-abspath-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("notes.md");
+        fs::write(&file, "# Hello\n").unwrap();
+
+        let payload = file_browser_file_payload(FileBrowserQuery {
+            cwd: String::new(),
+            path: Some(file.to_string_lossy().to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap();
+        assert_eq!(payload["content"].as_str().unwrap(), "# Hello\n");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_abspath_empty_cwd_refuses_outside_home() {
+        // /etc/hostname exists on every Unix: a cwd-less read of it was
+        // never the editor-tab contract (tabs live under $HOME).
+        let payload = file_browser_file_payload(FileBrowserQuery {
+            cwd: String::new(),
+            path: Some("/etc/hostname".to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        });
+        assert!(payload.is_err());
+    }
+
+    #[test]
+    fn write_abspath_empty_cwd_refuses_outside_home() {
+        let outside = outside_home_dir("write-outside");
+        let target = outside.join("evil.txt");
+        let result = file_browser_write_file_payload(FileBrowserWriteRequest {
+            cwd: String::new(),
+            path: target.to_string_lossy().to_string(),
+            content: "no".to_string(),
+            expected_hash: None,
+            create_parents: false,
+        });
+        assert!(result.is_err());
+        // The refusal must leave nothing behind: the parent-fallback path
+        // is the exact hole this pins (F2).
+        assert!(!target.exists());
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn delete_abspath_empty_cwd_refuses_outside_home() {
+        let outside = outside_home_dir("delete-outside");
+        let result = file_browser_delete_payload(FileBrowserDeleteRequest {
+            cwd: String::new(),
+            path: outside.to_string_lossy().to_string(),
+        });
+        assert!(result.is_err());
+        // rm -rf on a cwd-less absolute path must never run (F1).
+        assert!(outside.exists());
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn rename_abspath_empty_cwd_refuses_outside_home() {
+        let outside = outside_home_dir("rename-outside");
+        let source = outside.join("before.txt");
+        fs::write(&source, "x").unwrap();
+        let result = file_browser_rename_payload(FileBrowserRenameRequest {
+            cwd: String::new(),
+            path: source.to_string_lossy().to_string(),
+            new_name: "after.txt".to_string(),
+        });
+        assert!(result.is_err());
+        assert!(source.exists());
+        assert!(!outside.join("after.txt").exists());
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn real_root_abspath_alias_resolves_inside() {
+        // macOS /tmp is a symlink to /private/tmp: the alias form of an
+        // in-root absolute path must serve, not 400 (F4). The check is
+        // canonical on both sides, so the alias canonicalizes inside.
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let file = root.join("alias-probe.txt");
+        fs::write(&file, "alias").unwrap();
+        // std::env::temp_dir() on macOS is /var/folders/... (already
+        // canonical-friendly); the alias case matters when the root is
+        // expressed in its non-canonical form, so exercise both forms.
+        let canonical_str = root.to_string_lossy().to_string();
+        let non_canonical = canonical_str.replace("/private/", "/");
+        let root_nc = if non_canonical != canonical_str {
+            PathBuf::from(non_canonical)
+        } else {
+            root.clone()
+        };
+        let resolved =
+            resolve_child_path(&root_nc, root_nc.to_str().unwrap(), file.to_str().unwrap());
+        assert_eq!(resolved.unwrap(), file);
+        let _ = fs::remove_file(&file);
+    }
+
+    #[test]
+    fn real_root_abspath_symlink_escape_refused() {
+        // The root is a scratch dir (anywhere) and the escape target must
+        // sit OUTSIDE that root: the in-root symlink points at it.
+        let root = outside_home_dir("symlink-escape");
+        let outside = outside_home_dir("symlink-outside");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let target = root.join("link/newfile.txt");
+        // Write with a real root through an in-root symlink: refused,
+        // nothing created outside (F4-class canonical check).
+        assert!(
+            resolve_child_path(&root, root.to_str().unwrap(), target.to_str().unwrap()).is_err()
+        );
+        assert!(resolve_child_path_with_policy(
+            &root,
+            root.to_str().unwrap(),
+            target.to_str().unwrap(),
+            ResolvePolicy::ReadAllowHome
+        )
+        .is_err());
+        assert!(!outside.join("newfile.txt").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn whitespace_cwd_treated_as_empty() {
+        // " " trims to the empty-cwd branch by design (rejecting would
+        // 400 the legitimate empty-string sends of the tab flow).
+        assert!(resolve_child_path_with_policy(
+            &canonical_home(),
+            " ",
+            "/etc/hostname",
+            ResolvePolicy::ReadAllowHome
+        )
+        .is_err());
+        assert!(resolve_child_path(&canonical_home(), " ", "/etc/hostname").is_err());
     }
 
     #[test]

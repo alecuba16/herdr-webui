@@ -9,6 +9,8 @@ const LSP_SOURCE = readFileSync(new URL("./shared/lsp.js", import.meta.url), "ut
 // Compiled once so coverage attributes lsp.js lines to the real file.
 const LSP_PATH = fileURLToPath(new URL("./shared/lsp.js", import.meta.url));
 const lspScript = new vm.Script(readFileSync(LSP_PATH, "utf8"), { filename: LSP_PATH });
+const CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const coreScript = new vm.Script(readFileSync(CORE_PATH, "utf8"), { filename: CORE_PATH });
 const FILE_BROWSER_SOURCE = readFileSync(
   new URL("./desktop/file_browser.js", import.meta.url),
   "utf8",
@@ -100,6 +102,7 @@ function loadLsp(overrides = {}) {
   const sandbox = createSandbox();
   Object.assign(sandbox, overrides);
   vm.createContext(sandbox);
+  coreScript.runInContext(sandbox);
   lspScript.runInContext(sandbox);
   return sandbox;
 }

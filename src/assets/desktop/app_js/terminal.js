@@ -54,6 +54,16 @@ function connectEvents() {
       if (window.HerdrNotesPanel && window.HerdrNotesPanel.applyRemote)
         window.HerdrNotesPanel.applyRemote(msg);
     }
+    else if (msg.type === "workspace_panes_changed") {
+      // Another client changed the shared panels/groups. The panes module
+      // adopts the full entry and repaints; no scheduleRefresh, a group
+      // drag on a second client must not flicker this client's whole
+      // workspace tree. The sender's own op response already adopted the
+      // same entry, and the adoption overlays this client's subject and
+      // runtime markers, so the frame is idempotent here.
+      if (window.HerdrWorkspacePanes && typeof window.HerdrWorkspacePanes.applyRemoteEntry === "function")
+        window.HerdrWorkspacePanes.applyRemoteEntry(msg.entry || msg);
+    }
     else if (msg.type === "event") {
       const evt = msg.event || {},
         kind = evt.event || evt.type,

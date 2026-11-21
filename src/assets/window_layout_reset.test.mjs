@@ -313,7 +313,25 @@ describe("window layout reset integration", () => {
       "(() => { const out = []; for (const k of Object.keys(localStorage)) out.push(k); return JSON.stringify(out); })()",
       ctx,
     ));
-    assert.ok(!keys.includes("herdr-web-workspace-panes"), "panes store cleared");
+    // Collector model: the reset rebuilds a single pane in place, and
+    // the panes module persists the fresh session tree on that render.
+    // The key re-appearing with a one-leaf session entry is correct; the
+    // invariant is the STALE layout (split tree, maximized id) is gone.
+    const panesStore = vm.runInContext("localStorage.getItem('herdr-web-workspace-panes')", ctx);
+    if (panesStore != null) {
+      const stored = JSON.parse(panesStore);
+      const keys = Object.keys(stored);
+      assert.ok(keys.every((k) => k === "__session__"), "only the session tree persists after reset");
+      // Traced to the one visible view model: the fresh entry is the flat
+      // session entry ({v, panels, groups, visible}), a single panel and
+      // no groups.
+      const session = stored.__session__;
+      assert.ok(session && Array.isArray(session.panels), "reset rebuilds the flat session entry");
+      assert.equal(session.panels.length, 1, "reset rebuilds a single panel");
+      assert.equal(session.panels[0].kind, "pane", "the panel is a pane leaf");
+      assert.deepEqual(session.groups, [], "no group survives the reset");
+      assert.ok(!session.maximizedPaneId, "maximized state cleared");
+    }
     // The reset writes the fresh defaults back through the canonical
     // setters on purpose: shell mode "terminal" (same as absent for the
     // restore reads) and sidebar flags "0". The right sidebar reads
@@ -345,10 +363,11 @@ describe("window layout reset integration", () => {
     const panes = vm.runInContext("JSON.stringify(state.workspacePanes)", ctx);
     const parsed = JSON.parse(panes);
     const key = Object.keys(parsed)[0];
-    // panesStateFor rebuilds the fresh single-leaf tree: kind "pane",
-    // one pane id, no maximized pointer, no split children.
-    assert.equal(parsed[key].root.kind, "pane", "single fresh leaf tree");
-    assert.ok(!parsed[key].root.children, "no split children");
+    // Traced to the one visible view model: the fresh entry is the flat
+    // session entry: one panel leaf, no groups, no maximized pointer.
+    assert.equal(parsed[key].panels.length, 1, "single fresh panel");
+    assert.equal(parsed[key].panels[0].kind, "pane", "single fresh panel leaf");
+    assert.deepEqual(parsed[key].groups, [], "no split children");
     assert.equal(parsed[key].maximizedPaneId, undefined);
 
     const shellMode = vm.runInContext(
@@ -424,8 +443,19 @@ describe("window layout reset integration", () => {
     `, ctx);
     const done = await vm.runInContext("resetWindowLayout({ skipConfirm: true })", ctx);
     assert.equal(done, true);
+    // Collector model: the reset rebuilds a fresh single-pane session
+    // tree in place, so the store re-appears with the fresh entry, not
+    // the stale pre-reset blob ("keep" is gone either way).
     const kept = vm.runInContext("localStorage.getItem('herdr-web-workspace-panes')", ctx);
-    assert.equal(kept, null);
+    assert.notEqual(kept, "keep");
+    if (kept != null) {
+      const stored = JSON.parse(kept);
+      // Traced to the one visible view model: the flat session entry
+      // replaces the old tree root (a single panel, no groups).
+      const session = stored.__session__;
+      assert.ok(session && Array.isArray(session.panels) && session.panels.length === 1, "skipConfirm reset leaves a single pane tree");
+      assert.deepEqual(session.groups, []);
+    }
   });
 
   it("the settings module registers a Window layout section calling the reset", () => {

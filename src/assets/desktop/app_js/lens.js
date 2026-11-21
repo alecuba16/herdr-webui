@@ -337,18 +337,7 @@
       // Session metadata travels on every poll (model/effort refresh
       // even without a new message, reference parity): publish it so the
       // composer status line can render it.
-      sessionMeta = {
-        model: response && response.model ? String(response.model) : null,
-        reasoning_effort:
-          response && response.reasoning_effort
-            ? String(response.reasoning_effort)
-            : null,
-        title: response && response.title ? String(response.title) : null,
-        context_used:
-          response && Number.isFinite(Number(response.context_used))
-            ? Number(response.context_used)
-            : null,
-      };
+      sessionMeta = metaFromConversation(response);
       publishSessionMeta();
       // Pending bubble: remove once the conversation contains a user
       // turn with the same text (the id is not known at submit time).

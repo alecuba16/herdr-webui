@@ -374,10 +374,25 @@ function runPrefixedShortcut(e) {
       return true;
     },
     newPanel: () => {
-      // With no workspace the panel cannot exist yet: route the press to
-      // the open flow instead, mirroring the strip + fallback.
-      if (state.ws) newTab();
-      else window.HerdrLocationBar.openPathPicker();
+      // ALWAYS the workspace picker (locked change 5): the same popover
+      // the bar's + opens, anchored to the + button itself. With no
+      // workspace the panel cannot exist yet: the open flow takes the
+      // press. Harnesses that load no picker module (and an open that
+      // finds no rows) fall back to the direct mint.
+      if (!state.ws) {
+        window.HerdrLocationBar.openPathPicker();
+        return true;
+      }
+      const picker = window.HerdrPaneWorkspacePicker;
+      if (picker && typeof picker.openPicker === "function") {
+        const panes = window.HerdrWorkspacePanes;
+        const leaf = panes && typeof panes.focusedLeaf === "function" ? panes.focusedLeaf() : null;
+        const bar = typeof document !== "undefined" && document.getElementById ? document.getElementById("locationBar") : null;
+        const anchor = bar && bar.querySelector ? bar.querySelector(".pane-new-picker") : null;
+        const paneId = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
+        if (picker.openPicker(anchor, paneId, "new-tab")) return true;
+      }
+      newTab();
       return true;
     },
     openWorktrees: () => {
@@ -432,29 +447,8 @@ function runPrefixedShortcut(e) {
     focusPrev: () => {
       return focusRelativeControl(-1);
     },
-    splitRight: () => {
-      return splitPaneRight();
-    },
-    splitDown: () => {
-      return splitPaneDown();
-    },
     closePane: () => {
       closeActivePane();
-      return true;
-    },
-    moveTabNextPane: () => {
-      return moveActiveTabToNextPane();
-    },
-    maximizePane: () => {
-      return maximizeActivePane();
-    },
-    togglePaneMenu: () => {
-      // The active pane is a tree pointer, not a DOM class: resolve its
-      // element, then the [⋮] inside its strip.
-      const pane = activePaneElement();
-      const button = pane && pane.querySelector ? pane.querySelector(".pane-menu-button") : null;
-      if (!button) return false;
-      togglePaneMenu(button);
       return true;
     },
     sessions: () => {
@@ -493,9 +487,8 @@ function runPrefixedShortcut(e) {
     },
     markdownView: () => {
       // Cycle the active editor tab's markdown view the same way the
-      // strip eye does: preview -> source -> edit -> preview.
-      const pane = activePaneElement();
-      const button = pane && pane.querySelector ? pane.querySelector(".pane-md-button") : null;
+      // bar eye does: preview -> source -> edit -> preview.
+      const button = document.querySelector(".location-bar .pane-bar-controls .pane-md-button");
       if (button) { button.click(); return true; }
       return false;
     },

@@ -34,13 +34,7 @@
     return Date.now() - eventsBus.lastFedAt < DIAGNOSTICS_PUSH_SLOW_POLL_MS;
   }
 
-  function esc(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
+  const esc = globalThis.HerdrAppHelpers.escapeHtml;
 
   async function api(url, opt) {
     // Shared client keeps session/backend headers and 401 handling uniform;

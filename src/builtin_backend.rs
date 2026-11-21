@@ -49,6 +49,7 @@ use crate::builtin_detection::{
 };
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::chat_lens;
+use crate::local_socket::{connect_local_stream, LocalStream};
 use crate::protocol::{
     read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
 };
@@ -293,7 +294,6 @@ fn parse_osc_body(body: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 type LocalListener = interprocess::local_socket::Listener;
-type LocalStream = interprocess::local_socket::Stream;
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuiltinBackendConfig {
@@ -809,6 +809,35 @@ struct PaneRecord {
 }
 
 impl BuiltinState {
+    /// Spawns a pane terminal; must be called outside the `data` lock
+    /// because openpty and process spawn can stall on slow disks.
+    fn spawn_terminal(
+        &self,
+        terminal_id: &str,
+        cwd: &Path,
+        argv: Vec<String>,
+        workspace_id: &str,
+        tab_id: &str,
+        pane_id: &str,
+    ) -> Result<Arc<TerminalRuntime>, String> {
+        TerminalRuntime::spawn(
+            terminal_id.to_string(),
+            cwd.to_path_buf(),
+            argv,
+            30,
+            100,
+            self.events.clone(),
+            PaneEventContext {
+                workspace_id: workspace_id.to_string(),
+                tab_id: tab_id.to_string(),
+                pane_id: pane_id.to_string(),
+                terminal_id: terminal_id.to_string(),
+            },
+            self.jcode_detection_variant,
+        )
+        .map_err(|err| err.to_string())
+    }
+
     fn new(
         _cwd: PathBuf,
         shell: Option<String>,
@@ -1215,25 +1244,14 @@ impl BuiltinState {
         };
         let label = label.unwrap_or_else(|| workspace_label(&cwd));
         if open_terminal {
-            // Spawn outside the lock: openpty can retry with sleeps and
-            // process spawn can stall on slow disks; every other request
-            // would wait on `data` for the whole duration.
-            let terminal = TerminalRuntime::spawn(
-                terminal_id.clone(),
-                cwd.clone(),
+            let terminal = self.spawn_terminal(
+                &terminal_id,
+                &cwd,
                 vec![self.default_shell.clone()],
-                30,
-                100,
-                self.events.clone(),
-                PaneEventContext {
-                    workspace_id: workspace_id.clone(),
-                    tab_id: tab_id.clone(),
-                    pane_id: pane_id.clone(),
-                    terminal_id: terminal_id.clone(),
-                },
-                self.jcode_detection_variant,
-            )
-            .map_err(|err| err.to_string())?;
+                &workspace_id,
+                &tab_id,
+                &pane_id,
+            )?;
             let mut data = self
                 .data
                 .lock()
@@ -1342,23 +1360,14 @@ impl BuiltinState {
                 next_id(&mut data, "term"),
             )
         };
-        // Spawn outside the lock, same reason as create_workspace.
-        let terminal = TerminalRuntime::spawn(
-            terminal_id.clone(),
-            cwd.clone(),
+        let terminal = self.spawn_terminal(
+            &terminal_id,
+            &cwd,
             vec![self.default_shell.clone()],
-            30,
-            100,
-            self.events.clone(),
-            PaneEventContext {
-                workspace_id: workspace_id.clone(),
-                tab_id: tab_id.clone(),
-                pane_id: pane_id.clone(),
-                terminal_id: terminal_id.clone(),
-            },
-            self.jcode_detection_variant,
-        )
-        .map_err(|err| err.to_string())?;
+            &workspace_id,
+            &tab_id,
+            &pane_id,
+        )?;
         let mut data = self
             .data
             .lock()
@@ -1432,23 +1441,14 @@ impl BuiltinState {
                 next_id(&mut data, "term"),
             )
         };
-        // Spawn outside the lock, same reason as create_workspace.
-        let terminal = TerminalRuntime::spawn(
-            terminal_id.clone(),
-            cwd.clone(),
+        let terminal = self.spawn_terminal(
+            &terminal_id,
+            &cwd,
             argv.clone(),
-            30,
-            100,
-            self.events.clone(),
-            PaneEventContext {
-                workspace_id: workspace_id.clone(),
-                tab_id: tab_id.clone(),
-                pane_id: pane_id.clone(),
-                terminal_id: terminal_id.clone(),
-            },
-            self.jcode_detection_variant,
-        )
-        .map_err(|err| err.to_string())?;
+            &workspace_id,
+            &tab_id,
+            &pane_id,
+        )?;
         let mut data = self
             .data
             .lock()
@@ -4121,22 +4121,6 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
 
 fn local_socket_active(path: &Path) -> bool {
     connect_local_stream(path).is_ok()
-}
-
-fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericFilePath};
-        let name = path.to_fs_name::<GenericFilePath>()?;
-        LocalStream::connect(name)
-    }
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericNamespaced};
-        let name = path.to_string_lossy().to_string();
-        let name = name.to_ns_name::<GenericNamespaced>()?;
-        LocalStream::connect(name)
-    }
 }
 
 fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {

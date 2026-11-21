@@ -394,6 +394,29 @@
       .replace(/"/g, "&quot;");
   }
 
+  // escapeHtml plus the single quote, for attribute values that sit in
+  // single-quoted HTML (inline handler payloads).
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/'/g, "&#39;");
+  }
+
+  // Payload safety for single-quoted JS strings inside double-quoted HTML
+  // attributes (onclick="fn('...')"). Two layers, and the ORDER matters:
+  // first the JS-string layer so the payload cannot end or bend the
+  // '...' literal (backslash first, then the quote: a filename like
+  // a');payload;// must not run payload), then escapeHtml on TOP so the
+  // same payload cannot terminate the double-quoted attribute early
+  // (x" onmouseover="...). The browser HTML-decodes the attribute value
+  // before the handler compiles, so &#39; inside the JS string decodes
+  // back to the literal ' after both layers have run.
+  function escapeJsSingleQuoted(value) {
+    return escapeHtml(
+      String(value == null ? "" : value)
+      .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+    );
+  }
+
   // Keyboard guard set for text-like inputs. Some Android keyboards attach
   // autocorrect, grammar suggestions, autocomplete, or capitalization to any
   // text field, so every input the user can type into carries the full set.
@@ -489,6 +512,22 @@
     return theme;
   }
 
+  // Shortcut-key text shared by the desktop app chord maps and the git_ui
+  // drawer (both consume HerdrAppHelpers): strips the Key/Digit code
+  // prefixes and maps bracket/punct code names to their glyphs for help
+  // text and tooltips.
+  function shortcutDisplay(value) {
+    return String(value || "")
+      .replace(/(^|\+)Key/g, "$1")
+      .replace(/(^|\+)Digit/g, "$1")
+      .replace("BracketLeft", "[")
+      .replace("BracketRight", "]")
+      .replace("Slash", "/")
+      .replace("Period", ".")
+      .replace("Comma", ",")
+      .replace("Shift+", "Shift+");
+  }
+
   async function gitApi(url, options) {
     const res = await fetch(
       url,
@@ -507,6 +546,48 @@
     const body = await res.json();
     if (body.error) throw new Error(body.error);
     return body;
+  }
+
+  // Single source for the git shortcut default keys: the desktop app_js
+  // chord map and the git_ui drawer both consume it. Newer actions avoid
+  // every key the WebUI and Git chord maps already use; the editor blocks
+  // cross-scope duplicates, so defaults must be collision-free out of the
+  // box. Factory form so no consumer can mutate the shared table.
+  function gitShortcutDefaults() {
+    return {
+      changes: "Digit1",
+      commit: "Digit2",
+      log: "Digit3",
+      stash: "Digit4",
+      commitAlt: "KeyC",
+      logAlt: "KeyL",
+      refresh: "KeyR",
+      stageAll: "KeyG",
+      stageFile: "KeyY",
+      unstageFile: "KeyU",
+      discardFile: "KeyD",
+      stashFile: "KeyZ",
+      history: "KeyH",
+      blame: "KeyM",
+      edit: "KeyE",
+      compare: "KeyO",
+      branch: "KeyV",
+      focusFile: "KeyI",
+      help: "Digit0",
+      cleanup: "Digit5",
+      pull: "F2",
+      push: "F3",
+      fetch: "F4",
+      pullRebase: "Shift+KeyT",
+      stashPush: "Shift+KeyK",
+      stashApply: "F5",
+      stashPop: "F6",
+      stashDrop: "Shift+KeyQ",
+      conflictOurs: "F7",
+      conflictBase: "F8",
+      conflictTheirs: "Shift+F9",
+      conflictMark: "Shift+KeyN",
+    };
   }
 
   const helpers = {
@@ -534,6 +615,8 @@
     terminalPasteInput,
     stripTerminalMouseReports,
     escapeHtml,
+    escapeAttr,
+    escapeJsSingleQuoted,
     inputAttrs,
     pathBasename,
     hashId,
@@ -548,6 +631,8 @@
     TERMINAL_TOKEN_KEYS,
     terminalThemeColors,
     gitApi,
+    shortcutDisplay,
+    gitShortcutDefaults,
   };
   root.HerdrAppHelpers = helpers;
   if (typeof module !== "undefined" && module.exports) module.exports = helpers;

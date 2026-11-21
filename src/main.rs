@@ -48,6 +48,7 @@ mod file_browser;
 mod git_bin;
 mod git_ui;
 mod jcode_transcript;
+mod local_socket;
 mod lsp;
 mod notes;
 mod password_hashing;
@@ -56,6 +57,7 @@ mod server_settings;
 mod service;
 mod terminal_hub;
 mod terminal_text;
+mod workspace_panes_store;
 
 use assets::{
     app_boot_js, app_html, desktop_css, desktop_directory_picker_css, desktop_directory_picker_js,
@@ -98,7 +100,6 @@ const MIN_BACKEND_VERSION: &str = "0.9.0";
 const MAX_TESTED_BACKEND_VERSION: &str = "0.9.5";
 const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
-type LocalStream = interprocess::local_socket::Stream;
 type BuiltinSessionRegistry =
     Arc<Mutex<HashMap<String, Arc<builtin_backend::BuiltinBackendHandle>>>>;
 /// Canonical names of built-in sessions the user explicitly closed. Close is
@@ -654,6 +655,11 @@ pub(crate) struct WebState {
     /// Broadcasts the full notes snapshot after every notes mutation so
     /// every connected tab converges without polling.
     notes_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Shared panel/group state per herdr session
+    /// (workspace_panes_store.rs): every mutation persists a
+    /// per-session sidecar and fans the new entry out here so every
+    /// connected client of that session converges on one truth.
+    panes_store: Arc<workspace_panes_store::PanesStore>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
     lsp: Arc<lsp::LspRegistry>,
     /// Shared terminal attach hub: one backend attach per
@@ -1080,6 +1086,7 @@ async fn main() -> io::Result<()> {
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
     let notes = Arc::new(Mutex::new(notes::load_notes()));
     let (notes_tx, _) = tokio::sync::broadcast::channel(16);
+    let panes_store = workspace_panes_store::PanesStore::new();
     let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
     let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
     let state = WebState {
@@ -1103,6 +1110,7 @@ async fn main() -> io::Result<()> {
         settings_tx,
         notes,
         notes_tx,
+        panes_store,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: lsp_registry,
         terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
@@ -1147,6 +1155,7 @@ fn resolve_backend_mode(
 // BackendClient so server and client compute byte-identical paths). Local
 // wrappers keep the settings-dir injection server-side and the names the
 // tests use.
+use herdr_webui::local_socket::{connect_local_stream, LocalStream};
 use herdr_webui::socket_paths::{
     builtin_session_dir as builtin_session_dir_in, builtin_socket_paths_in, socket_path_fits,
     SOCKET_PATH_LIMIT,
@@ -1479,6 +1488,7 @@ fn app_router(state: WebState) -> Router {
         .merge(git_ui::routes())
         .merge(lsp::routes())
         .merge(notes::routes())
+        .merge(workspace_panes_store::routes())
         .route(
             "/api/workspaces/{workspace_id}/rename",
             post(rename_workspace),
@@ -2090,22 +2100,6 @@ fn known_sessions(state: &WebState, herdr_compatible: bool) -> Vec<serde_json::V
         sessions.extend(known_builtin_sessions(state));
     }
     sessions
-}
-
-fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericFilePath};
-        let name = path.to_fs_name::<GenericFilePath>()?;
-        LocalStream::connect(name)
-    }
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericNamespaced};
-        let name = path.to_string_lossy().to_string();
-        let name = name.to_ns_name::<GenericNamespaced>()?;
-        LocalStream::connect(name)
-    }
 }
 
 fn read_json_line<T: for<'de> Deserialize<'de>>(
@@ -3150,6 +3144,12 @@ fn mark_closed_builtin_session(state: &WebState, session_name: &str) {
     if session_name == "default" {
         return;
     }
+    // Close is final for tab data too: drop the panes sidecar (panel tab
+    // ids) and the warm store entry, or a same-name relaunch would
+    // resurrect the closed session's panels pointing at dead tabs. The
+    // default slot keeps its sidecar so a fresh default boot keeps the
+    // empty rail shape.
+    workspace_panes_store::cleanup_session_entry(&state.panes_store, session_name);
     // The session slot may exist in two places when the socket pair fell
     // back to /tmp: the canonical dir (journal) and the fallback dir
     // (sockets). Both must go when empty, or a hollow dir keeps the
@@ -3250,74 +3250,102 @@ async fn cleanup_sessions(
     // Probe + remove runs one blocking connect and filesystem ops per
     // session; keep it off the async runtime like the other session probes.
     let probe_state = state.clone();
-    let (removed, kept_running, kept_default) = tokio::task::spawn_blocking(move || {
-        let safe = cleanup_safe_builtin_names(&probe_state);
-        let sessions_dir = builtin_socket_paths(Some("default"))
-            .0
-            .parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| config_dir().join("builtin"));
-        let mut removed = Vec::new();
-        let mut kept_running = 0usize;
-        let mut kept_default = 0usize;
-        let Ok(entries) = fs::read_dir(&sessions_dir) else {
-            return (removed, kept_running, kept_default);
-        };
-        let mut names = Vec::new();
-        for entry in entries.filter_map(Result::ok) {
-            if !entry.path().is_dir() {
-                continue;
+    let (removed, kept_running, kept_default, swept_orphans) =
+        tokio::task::spawn_blocking(move || {
+            let safe = cleanup_safe_builtin_names(&probe_state);
+            let sessions_dir = builtin_socket_paths(Some("default"))
+                .0
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| config_dir().join("builtin"));
+            let mut removed = Vec::new();
+            let mut kept_running = 0usize;
+            let mut kept_default = 0usize;
+            let Ok(entries) = fs::read_dir(&sessions_dir) else {
+                return (removed, kept_running, kept_default, Vec::new());
+            };
+            let mut names = Vec::new();
+            for entry in entries.filter_map(Result::ok) {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if let Ok(name) = entry.file_name().into_string() {
+                    names.push(name);
+                }
             }
-            if let Ok(name) = entry.file_name().into_string() {
-                names.push(name);
+            names.sort();
+            let all_dir_names = names.clone();
+            for name in names {
+                // The default slot is the relaunch target for every fresh
+                // session and the empty-socket state is normal there: never
+                // remove it.
+                if name == "default" {
+                    kept_default += 1;
+                    continue;
+                }
+                // Non-default session names are always safe_socket_component
+                // output, so a different canonical name means the directory is
+                // not a session slot; leave it alone.
+                if name != canonical_session_name(Some(&name)) {
+                    continue;
+                }
+                if safe.contains(&name) {
+                    kept_running += 1;
+                    continue;
+                }
+                let (api_socket, _) = builtin_socket_paths(Some(&name));
+                if connect_local_stream(&api_socket).is_ok() {
+                    kept_running += 1;
+                    continue;
+                }
+                if cleanup_builtin_session_dir(&name) {
+                    removed.push(name);
+                }
             }
-        }
-        names.sort();
-        for name in names {
-            // The default slot is the relaunch target for every fresh
-            // session and the empty-socket state is normal there: never
-            // remove it.
-            if name == "default" {
-                kept_default += 1;
-                continue;
-            }
-            // Non-default session names are always safe_socket_component
-            // output, so a different canonical name means the directory is
-            // not a session slot; leave it alone.
-            if name != canonical_session_name(Some(&name)) {
-                continue;
-            }
-            if safe.contains(&name) {
-                kept_running += 1;
-                continue;
-            }
-            let (api_socket, _) = builtin_socket_paths(Some(&name));
-            if connect_local_stream(&api_socket).is_ok() {
-                kept_running += 1;
-                continue;
-            }
-            if cleanup_builtin_session_dir(&name) {
-                removed.push(name);
-            }
-        }
-        (removed, kept_running, kept_default)
-    })
-    .await
-    .unwrap_or_else(|_| (Vec::new(), 0, 0));
+            // Orphan sweep: sidecars whose session dir is already gone (close
+            // and the loop above both remove dirs) were unreachable before this
+            // pass, and header-routed panes ops can create sidecars for sessions
+            // that never had a backend at all.
+            let swept_orphans = workspace_panes_store::sweep_orphan_panes_sidecars(
+                &probe_state.panes_store,
+                &safe,
+                &all_dir_names,
+                |name| {
+                    let (api_socket, _) = builtin_socket_paths(Some(name));
+                    api_socket.parent().map(Path::to_path_buf)
+                },
+            );
+            (removed, kept_running, kept_default, swept_orphans)
+        })
+        .await
+        // A dead probe task (panic or runtime shutdown) must still answer the
+        // route: an empty result reports nothing removed, nothing kept.
+        .unwrap_or_default();
     debug_assert!(kept_default <= 1, "default session dir is never removed");
     let mut removed_count = 0usize;
     if let Ok(mut closed) = state.closed_builtin_sessions.lock() {
         for name in &removed {
             closed.remove(name);
+            // Also drop each removed session's panes sidecar and in-memory
+            // store entry, or a same-name relaunch would resurrect its old
+            // panels (the sidecar survives the socket-dir cleanup).
+            workspace_panes_store::cleanup_session_entry(&state.panes_store, name);
         }
         removed_count = removed.len();
+        // Swept orphans never had a closed marker or a store entry that
+        // matters anymore, but a same-name relaunch must not find the
+        // evicted sidecar in the warm map either.
+        for name in &swept_orphans {
+            closed.remove(name);
+        }
     }
     Json(json!({
         "ok": true,
         "removed": removed,
         "removed_count": removed_count,
         "kept_running_count": kept_running,
+        "swept_orphans": swept_orphans,
     }))
     .into_response()
 }
@@ -6534,10 +6562,18 @@ async fn events_ws(
         query.backend.as_deref(),
     )
     .await;
-    ws.on_upgrade(move |socket| events_socket(state, api, socket))
+    // Shared panes frames are per-session: the broadcast carries the
+    // session name and each socket drops frames from other sessions.
+    let panes_session = canonical_session_name(query.session.as_deref());
+    ws.on_upgrade(move |socket| events_socket(state, api, socket, panes_session))
 }
 
-async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
+async fn events_socket(
+    state: WebState,
+    api: ApiClient,
+    mut socket: WebSocket,
+    panes_session: String,
+) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     // Settings changes must reach open tabs immediately: a backend disabled
     // mid-session stops being targeted/offered without a page reload.
@@ -6545,6 +6581,9 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     // Notes mutations broadcast the full snapshot; receivers that lag a
     // burst miss frames and self-heal on the next panel-open GET.
     let mut notes_rx = state.notes_tx.subscribe();
+    // Shared panes mutations broadcast the full session entry the same
+    // way; the session filter below keeps other sessions' frames out.
+    let mut panes_rx = state.panes_store.tx.subscribe();
     let subscribe_api = api.clone();
     // backend_info() does a blocking ping over a Unix socket; run it on a
     // blocking thread so it does not stall the async runtime while waiting
@@ -6716,6 +6755,17 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             notes = notes_rx.recv() => {
                 let Ok(notes) = notes else { break; };
                 if socket.send(Message::Text(notes.to_string().into())).await.is_err() { break; }
+            }
+            panes = panes_rx.recv() => {
+                let Ok(panes) = panes else { break; };
+                // Per-session gate: the shared panes entry belongs to one
+                // herdr session; a socket pinned to another session must
+                // not repaint from it.
+                if panes.get("session").and_then(serde_json::Value::as_str) == Some(panes_session.as_str()) {
+                    let mut frame = panes.clone();
+                    frame["type"] = serde_json::json!("workspace_panes_changed");
+                    if socket.send(Message::Text(frame.to_string().into())).await.is_err() { break; }
+                }
             }
             message = socket.recv() => {
                 if message.is_none() { break; }
@@ -7552,6 +7602,9 @@ fn terminal_release_toggle(text: &str, armed: &mut bool) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod panes_routes_tests;
 
 #[cfg(test)]
 mod test_env_guard;

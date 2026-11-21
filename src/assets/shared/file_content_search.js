@@ -1,12 +1,5 @@
 (function () {
-  function esc(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
+  const esc = globalThis.HerdrAppHelpers.escapeAttr;
 
   function arg(value) {
     return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");
@@ -67,26 +60,9 @@
       const rows = matchRows(match, state.query);
       if (!rows.length) continue;
       const chunk = { start: rows[0].line, end: rows[rows.length - 1].line, rows, matches: [match] };
-      if (globalThis.HerdrLineContext && globalThis.HerdrLineContext.pushMergedChunk) globalThis.HerdrLineContext.pushMergedChunk(chunks, chunk);
-      else {
-        const last = chunks[chunks.length - 1];
-        if (last && chunk.start <= last.end + 1) mergeChunk(last, chunk);
-        else chunks.push(chunk);
-      }
+      globalThis.HerdrLineContext.pushMergedChunk(chunks, chunk);
     }
     return chunks;
-  }
-
-  function mergeChunk(target, source) {
-    const byLine = new Map(target.rows.map((row) => [row.line, row]));
-    for (const row of source.rows) {
-      const existing = byLine.get(row.line);
-      if (!existing || (!existing.matched && row.matched)) byLine.set(row.line, row);
-    }
-    target.rows = [...byLine.values()].sort((a, b) => a.line - b.line);
-    target.start = target.rows[0].line;
-    target.end = target.rows[target.rows.length - 1].line;
-    target.matches.push(...source.matches);
   }
 
   function renderLineChunk(file, chunk, state, opts) {

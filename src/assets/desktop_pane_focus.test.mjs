@@ -139,7 +139,9 @@ function buildDom() {
 function loadModules(document, stateWs) {
   const ctx = {
     document,
-    localStorage: { getItem: () => null, setItem() {} },
+    // Recording store: the write-through assertion reads what the panes
+    // module persisted.
+    localStorage: { getItem: () => null, setItem(key, value) { ctx.__stored = String(value); } },
     state: { ws: stateWs, tabs: [], allTabs: [], workspacePanes: {} },
     el: (id) => document.getElementById(id),
     workspaceShellKey: (id) => `ws|${id}`,
@@ -161,25 +163,33 @@ function loadModules(document, stateWs) {
   return ctx;
 }
 
-function buildSplitTree(ctx) {
+function buildGroupedPair(ctx) {
   const panes = ctx.HerdrWorkspacePanes;
-  // p1 | p2 via the real command path. Re-read the root AFTER the split:
-  // splitting the root leaf replaces state.workspacePanes[key].root with
-  // the new split node, so a reference captured before the command is a
-  // stale single-leaf object.
-  assert.equal(panes.splitPaneRight(), true, "split creates the second pane");
-  return { panes, root: panes.paneRootFor() };
+  // Traced to the one visible view model: free splits are gone. Two
+  // panels render together only inside a GROUP subject (the drag gesture
+  // is the only split path). The harness builds the same entry a
+  // label-drop group leaves behind: two members, row layout, group
+  // visible, focus on the second member (the drop focuses the dragged
+  // panel; position is irrelevant here).
+  const entry = panes.panesStateFor();
+  const leafA = { kind: "pane", paneId: "pa", tabs: ["editor:src/a.py"], active: "editor:src/a.py", wsId: "ws-1", groupId: "g1" };
+  const leafB = { kind: "pane", paneId: "pb", tabs: [], active: null, wsId: "ws-1", groupId: "g1" };
+  entry.panels = [leafA, leafB];
+  entry.groups = [{ groupId: "g1", name: null, memberIds: ["pa", "pb"], layout: { kind: "row", sizes: [1, 1], children: ["pa", "pb"] } }];
+  entry.visible = { type: "group", id: "g1" };
+  entry.activePaneId = "pb";
+  return { panes, root: entry };
 }
 
-test("click inside a pane moves the tree's active pointer", () => {
+test("click inside a pane moves the entry's active pointer", () => {
   const { document } = buildDom();
   const ctx = loadModules(document, "ws-1");
-  const { panes, root } = buildSplitTree(ctx);
+  const { panes, root } = buildGroupedPair(ctx);
   panes.renderWorkspacePanes();
   ctx.HerdrPaneFocus.wire();
 
   const leaves = panes.paneLeaves(root);
-  assert.equal(root.activePaneId, leaves[1].paneId, "split focus lands on the fresh leaf");
+  assert.equal(root.activePaneId, leaves[1].paneId, "group focus lands on the focused member");
   assert.ok(paneElementById(ctx, leaves[1].paneId), "second pane element renders");
 
   // Click inside the FIRST pane's content: pointer must move there.
@@ -191,7 +201,7 @@ test("click inside a pane moves the tree's active pointer", () => {
 test("focus ring mirrors the active pane and survives renders, empty panes included", () => {
   const { document } = buildDom();
   const ctx = loadModules(document, "ws-1");
-  const { panes, root } = buildSplitTree(ctx);
+  const { panes, root } = buildGroupedPair(ctx);
   ctx.HerdrPaneFocus.wire();
 
   panes.renderWorkspacePanes();
@@ -200,14 +210,14 @@ test("focus ring mirrors the active pane and survives renders, empty panes inclu
     const pane = paneElementById(ctx, paneId);
     return pane ? pane.classList.contains("is-active") : null;
   };
-  assert.equal(ringOf(leaves[1].paneId), true, "focused leaf carries the ring");
+  assert.equal(ringOf(leaves[1].paneId), true, "focused (empty) leaf carries the ring");
   assert.equal(ringOf(leaves[0].paneId), false, "sibling leaf does not");
 
-  // Click the empty first pane (no tabs): the ring must move there, the
-  // ring is the keyboard anchor for split commands.
+  // Click the empty focused leaf's sibling: the ring must move there, the
+  // ring is the keyboard anchor for the focused-panel commands.
   const firstPane = paneElementById(ctx, leaves[0].paneId);
   containerDispatch(ctx, firstPane.querySelector(".pane-content") || firstPane);
-  assert.equal(ringOf(leaves[0].paneId), true, "empty pane takes the ring on click");
+  assert.equal(ringOf(leaves[0].paneId), true, "clicked pane takes the ring");
   assert.equal(ringOf(leaves[1].paneId), false, "old focused leaf loses the ring");
 
   // A later render pass (poll, reshape) re-derives from the pointer and
@@ -216,10 +226,10 @@ test("focus ring mirrors the active pane and survives renders, empty panes inclu
   assert.equal(ringOf(leaves[0].paneId), true, "render keeps the ring on the pointer's pane");
 });
 
-test("pointer moves persist so keyboard split commands read the clicked pane", () => {
+test("pointer moves persist so focused-panel commands read the clicked pane", () => {
   const { document } = buildDom();
   const ctx = loadModules(document, "ws-1");
-  const { panes, root } = buildSplitTree(ctx);
+  const { panes, root } = buildGroupedPair(ctx);
   ctx.HerdrPaneFocus.wire();
   panes.renderWorkspacePanes();
 
@@ -227,36 +237,39 @@ test("pointer moves persist so keyboard split commands read the clicked pane", (
   const firstPane = paneElementById(ctx, leaves[0].paneId);
   containerDispatch(ctx, firstPane.querySelector(".pane-content") || firstPane);
 
-  // The split command family reads activeLeaf(root); the clicked pane
-  // must be the one that splits. splitActivePane then focuses the FRESH
-  // leaf by design (the new pane is where the user next acts), so find
-  // the new leaf by set difference instead of guessing its position.
-  assert.equal(panes.splitPaneDown(), true, "split-down acts after click-to-focus");
-  const rootAfter = panes.paneRootFor();
-  const leavesAfter = panes.paneLeaves(rootAfter);
-  assert.equal(leavesAfter.length, 3, "tree grew one leaf");
-  assert.ok(leavesAfter.some((leaf) => leaf.paneId === leaves[0].paneId), "clicked pane kept in the tree");
-  const freshLeaf = leavesAfter.find((leaf) => !leaves.some((old) => old.paneId === leaf.paneId));
-  assert.ok(freshLeaf, "a fresh leaf appeared after split");
-  assert.equal(rootAfter.activePaneId, freshLeaf.paneId, "pointer on the fresh leaf");
+  // Traced to the one visible view model: split commands are gone; the
+  // commands that remain (closePane, + placement, the location bar)
+  // read the acting panel through the same pointer the click moved.
+  // activePane() is that read: it must answer the clicked panel.
+  const clicked = panes.paneLeaves(panes.paneRootFor()).find((leaf) => leaf.paneId === leaves[0].paneId);
+  assert.equal(panes.activePane(), clicked, "focused-panel commands read the clicked pane");
+  // A render pass keeps the pointer (no reset to the visible subject's
+  // default member).
+  panes.renderWorkspacePanes();
+  assert.equal(panes.activePane(), clicked, "render keeps the pointer on the clicked pane");
 });
 
-test("rail stubs and unknown pane ids never take the ring", () => {
+test("rail chips and unknown pane ids never take the ring", () => {
   const { document } = buildDom();
   const ctx = loadModules(document, "ws-1");
-  const { panes, root } = buildSplitTree(ctx);
+  const { panes, root } = buildGroupedPair(ctx);
+  // A third ungrouped panel makes the label rail render (rail paints
+  // when more than one subject choice exists).
+  root.panels.push({ kind: "pane", paneId: "pc", tabs: ["editor:src/c.py"], active: "editor:src/c.py", wsId: "ws-1", groupId: null });
   ctx.HerdrPaneFocus.wire();
-
-  // Maximize: the hidden sibling renders as a rail stub.
-  panes.maximizeActivePane();
   panes.renderWorkspacePanes();
+
+  // Traced to the one visible view model: the maximize rail stub is
+  // gone; the label rail (.pane-label-rail with .pane-label-chip and
+  // .pane-panel-group-chip children) replaced it. A press on a chip
+  // is a subject switch, never a pane click: the pointer must stay.
   const home = ctx.el("workspacePanes");
-  const stub = findRailStub(ctx);
-  if (stub) {
-    const fired = containerDispatch(ctx, stub.children[0] || stub);
-    assert.equal(root.activePaneId, undefined || root.activePaneId, "stub click never crashes");
-    assert.ok(Array.isArray(fired), "dispatch contract holds");
-  }
+  const stub = findRailChip(ctx);
+  assert.ok(stub, "label rail renders its chips");
+  assert.ok(![...home.children].some((child) => (child.className || "").split(/\s+/).includes("pane-strip-rail")), "the maximize rail stub is gone");
+  const pointerBefore = root.activePaneId;
+  containerDispatch(ctx, stub.children[0] || stub);
+  assert.equal(root.activePaneId, pointerBefore, "rail chip press never moves the pane pointer");
   // Unknown pane id: the activator refuses instead of writing a pointer
   // no leaf owns (the next render would strand the ring).
   assert.equal(ctx.HerdrPaneFocus.activatePane("p-nope"), false, "unknown id refused");
@@ -265,7 +278,7 @@ test("rail stubs and unknown pane ids never take the ring", () => {
 test("activation persists through the panes store write-through", () => {
   const { document } = buildDom();
   const ctx = loadModules(document, "ws-1");
-  const { panes, root } = buildSplitTree(ctx);
+  const { panes, root } = buildGroupedPair(ctx);
   ctx.HerdrPaneFocus.wire();
   panes.renderWorkspacePanes();
 
@@ -273,13 +286,16 @@ test("activation persists through the panes store write-through", () => {
   const firstPane = paneElementById(ctx, leaves[0].paneId);
   containerDispatch(ctx, firstPane.querySelector(".pane-content") || firstPane);
 
-  // saveWorkspacePanesStates was called (stored tree keeps the pointer).
+  // saveWorkspacePanesStates was called (stored entry keeps the pointer).
   // The state entry itself is the witness: the pointer lives on the
-  // entry object the store writes. The session-global tree lives under
-  // its fixed key (D1).
+  // entry object the store writes. The session entry lives under its
+  // fixed key.
+  // Traced to the one visible view model: the flat entry carries the
+  // activePaneId pointer directly (no tree root wrapper).
   const entry = ctx.state.workspacePanes["__session__"];
   assert.ok(entry, "session tree entry exists");
-  assert.equal(entry.root.activePaneId, leaves[0].paneId, "pointer persisted on the tree");
+  assert.equal(entry.activePaneId, leaves[0].paneId, "pointer persisted on the entry");
+  assert.ok(String(ctx.__stored).includes(`"activePaneId":"${leaves[0].paneId}"`), "store write-through carries the pointer");
 });
 
 test("source contract: capture-phase wiring and render hook exist", () => {
@@ -297,10 +313,11 @@ test("source contract: capture-phase wiring and render hook exist", () => {
   assert.ok(attachClick.includes("attachClickFocus"), "aux surfaces wire input-follows-focus");
 });
 
-// Find the maximize rail stub (direct child of the container).
-function findRailStub(ctx) {
+// Find a label rail chip (direct child of the rail under the container).
+function findRailChip(ctx) {
   const home = ctx.el("workspacePanes");
-  return [...home.children].find((child) => (child.className || "").split(/\s+/).includes("pane-rail-stub")) || null;
+  const rail = [...home.children].find((child) => (child.className || "").split(/\s+/).includes("pane-label-rail")) || null;
+  return rail;
 }
 
 // Find a pane element anywhere under #workspacePanes: split trees nest

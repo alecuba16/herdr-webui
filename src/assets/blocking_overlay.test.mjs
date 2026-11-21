@@ -100,6 +100,11 @@ function context() {
 
 function loadCore(ctx) {
   // Compiled once so coverage attributes core.js lines to the real file.
+  if (!loadCore.shared) {
+    const sharedPath = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+    loadCore.shared = new vm.Script(readFileSync(sharedPath, "utf8"), { filename: sharedPath });
+  }
+  loadCore.shared.runInContext(ctx);
   if (!loadCore.script) {
     const corePath = fileURLToPath(new URL("./desktop/app_js/core.js", import.meta.url));
     loadCore.script = new vm.Script(readFileSync(corePath, "utf8"), { filename: corePath });

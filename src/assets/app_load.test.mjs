@@ -856,8 +856,10 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
 
     // Phase 5: the workspace-row panel field is gone (the pane strip owns
-    // panels), so the new-panel tooltip pins on the strip control instead.
-    ok(source.includes('title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel"'));
+    // panels), so the new-panel tooltip pins on the bar + control instead.
+    // Change 5: the + ALWAYS opens the workspace picker, so the hint rides
+    // the picker entry (single workspace included).
+    ok(source.includes('title="${escapeAttr(titleWithWebuiShortcut("New panel in a workspace", "newPanel"))}" aria-label="New panel in a workspace"'));
 
     const actions = ctx.selectedWorkspaceActionButtons({ workspace_id: "w1", worktree: { checkout_path: "/tmp/wt", is_linked_worktree: true } });
     ok(actions.includes('Ctrl+Q then Shift+X'));
@@ -866,16 +868,14 @@ describe("app bundle load", () => {
     ok(actions.includes('role="button" tabindex="0" data-workspace-action="close"'), "close action is a focusable span button");
     ok(actions.includes('role="button" tabindex="0" data-workspace-action="remove-worktree"'), "remove action is a focusable span button");
 
-    // The zero-tab card and the dashboard pin the same hints: the empty
-    // leaf reuses newPanel, the dashboard reuses newWorkspace/search.
-    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
-    vm.runInContext(
-      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
-      ctx,
-    );
-    ctx.syncWorkspaceEmptyLeaf();
-    ok(emptyLeaf.innerHTML.includes('title="New terminal (Ctrl+Q then P)"'), "empty-leaf button carries the newPanel shortcut");
-    ok(emptyLeaf.innerHTML.includes('aria-label="New terminal (Ctrl+Q then P)"'), "empty-leaf button aria-label carries the shortcut");
+    // The per-leaf empty panel card pins the same hint (collector
+    // model): mountEmptyPanelCard reuses newPanel. The vm harness's
+    // DOM stubs cannot host real pane trees, so pin the markup source
+    // (the runtime card behavior lives in the panes module's own vm
+    // suite, desktop_workspace_panes*.test.mjs).
+    const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
+    ok(panesSource.includes('const newTitle = typeof titleWithWebuiShortcut === "function"\n    ? titleWithWebuiShortcut("New terminal", "newPanel")'), "panel card button derives its title from the newPanel shortcut");
+    ok(panesSource.includes('<button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}"'), "panel card button carries title and aria-label together");
 
     const dashboard = ctx.document.getElementById("projectDashboard");
     vm.runInContext(
@@ -891,7 +891,15 @@ describe("app bundle load", () => {
     ok(dashboard.innerHTML.includes("Actions menu (Ctrl+Q then /)"), "dashboard menu button carries the search shortcut");
   });
 
-  it("hides the empty leaf as file and Git tabs open, then restores it when they close", async () => {
+  it("per-leaf cards own the empty state; the retired global card never shows", async () => {
+    // Collector model: the visibility lifecycle the old test pinned on
+    // the global card (show when the workspace has no tabs, hide while
+    // file/git tabs exist, restore on close) belongs to the per-leaf
+    // card inside each panel's mount (mountPaneTabContent), covered by
+    // the panes module's own vm suite. What this bundle-level test
+    // pins: the retired global node stays hidden through the same
+    // open/close cycle the old test drove, and the pane tree survives
+    // it untouched (no collapse into the empty state).
     const ctx = context();
     runSource(ctx);
     vm.runInContext(
@@ -899,54 +907,41 @@ describe("app bundle load", () => {
       ctx,
     );
     const panes = ctx.window.HerdrWorkspacePanes;
+    // Traced to the one visible view model: panesStateFor() is the flat
+    // session entry ({panels, groups, visible}); there is no tree root.
     const paneState = panes.panesStateFor("ws-1");
-    const root = paneState.root;
-    root.tabs = [];
-    root.active = null;
+    const leaf = paneState.panels[0];
+    leaf.tabs = [];
+    leaf.active = null;
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
 
     ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "empty workspace shows the zero-terminal card");
+    equal(emptyLeaf.hidden, true, "empty workspace: retired global card stays hidden");
 
     ctx.window.HerdrFileBrowser = {
       async openEditorTab(path) { panes.setActivePaneTab(`editor:${path}`); },
     };
     await panes.openEditorTab("src/app.js");
-    equal(emptyLeaf.hidden, true, "opening a file hides the card immediately");
+    equal(emptyLeaf.hidden, true, "opening a file keeps the retired card hidden");
     panes.closeEditorTabImmediate("src/app.js");
-    equal(emptyLeaf.hidden, false, "closing the last file restores the card");
+    equal(emptyLeaf.hidden, true, "closing the last file keeps it hidden too");
 
     ctx.window.HerdrGitUi = { async openViewTab() {} };
     await panes.openGitTab("log");
-    equal(emptyLeaf.hidden, true, "opening Git log hides the card immediately");
-    await panes.openGitTab("changes");
-    equal(emptyLeaf.hidden, true, "opening Changes keeps the card hidden");
+    equal(emptyLeaf.hidden, true, "opening Git log keeps the retired card hidden");
     panes.closeGitTabImmediate("log");
-    equal(emptyLeaf.hidden, true, "another open Git view keeps the card hidden");
-    panes.closeGitTabImmediate("changes");
-    equal(emptyLeaf.hidden, false, "closing the last Git view restores the card");
+    equal(emptyLeaf.hidden, true, "closing the last Git view keeps it hidden");
 
-    paneState.root = {
-      kind: "row",
-      children: [
-        { kind: "pane", paneId: "p1", tabs: ["git:log", "terminal"], active: "terminal" },
-        { kind: "pane", paneId: "p2", tabs: [], active: null },
-      ],
-      sizes: [1, 1],
-      activePaneId: "p2",
-    };
+    // Traced to the one visible view model: the flat entry carries
+    // panels directly; paneLeaves(entry) is the sanctioned walk.
+    paneState.panels = [
+      { kind: "pane", paneId: "p1", tabs: ["git:log", "terminal"], active: "terminal", groupId: null },
+      { kind: "pane", paneId: "p2", tabs: [], active: null, groupId: null },
+    ];
+    paneState.visible = { type: "panel", id: "p1" };
     ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "an open Git tab in another pane hides the global card");
-    const splitRoot = panes.paneRoot();
-    splitRoot.activePaneId = "p1";
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "switching panes does not reveal the card beside an open Git tab");
-    splitRoot.children[0].tabs = ["terminal"];
-    splitRoot.children[0].active = "terminal";
-    splitRoot.activePaneId = "p2";
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "empty split panes retain the card when no file or Git tab remains");
-    equal(panes.paneLeaves(splitRoot).length, 2, "visibility changes do not collapse the split tree");
+    equal(emptyLeaf.hidden, true, "group subjects keep the retired card hidden");
+    equal(panes.paneLeaves(paneState).length, 2, "the sync never drops panels from the flat list");
   });
 
   it("wires the question dialog and span-button keyboard paths", () => {
@@ -980,7 +975,10 @@ describe("app bundle load", () => {
     const html = ctx.helpAndShortcutsBodyHtml();
     match(html, /Activate the focused control: sidebar workspace close\/remove actions, agent Undo\/Dismiss, pane tab ✕, file tree rows, session lines, Git stash entries, Git log commits, and the zero-terminal New terminal card/);
     match(html, /On file tree folder rows, Enter\/Space expands or collapses the folder in place\./);
-    match(html, /Inside the menu, arrows move between items, Esc closes and returns focus to the \[⋮\] button/);
+    // The pane menu (F10, [⋮]) is deleted: its help row must not render.
+    ok(!/Inside the menu, arrows move between items/.test(html), "pane menu row is gone");
+    ok(!html.includes("[⋮]"), "no menu glyph anywhere in the help");
+    match(html, /Every label chip carries a ✕: it closes the panel \(the last one asks whether to close its workspace; cancel keeps the workspace with a fresh empty panel\) and a group chip's ✕ dissolves the split back to the rail\./);
     match(html, /Cancel the confirmation dialog; Enter confirms it\./);
   });
 
@@ -1053,12 +1051,12 @@ describe("app bundle load", () => {
     equal(shell.hidden, false, "workspace open: shell shows");
   });
 
-  it("keeps the zero-tab workspace card up with a drawer open", () => {
-    // The Files/Git/Search drawers host in the right sidebar column, so
-    // they must not blank the center: the empty-leaf card stays mounted
-    // and the terminal shell stays hidden. The live bug: opening Files on
-    // a zero-tab workspace hid the card and stranded a dead Connecting
-    // shell in the pane slot, and closing the drawer never healed it.
+  it("keeps the retired global card hidden and the shell parked while drawers open", () => {
+    // Collector model: the global #workspaceEmptyLeaf card is retired
+    // (per-leaf cards own the empty state inside each panel). What must
+    // hold from the old drawer tests: drawers host in the sidebar, they
+    // never strand a visible Connecting shell in the pane column, and
+    // the retired node never leaks back into view.
     const ctx = context();
     runSource(ctx);
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
@@ -1068,36 +1066,32 @@ describe("app bundle load", () => {
       ctx,
     );
 
-    ctx.window.HerdrFileBrowser = { isVisible: () => true };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with the file drawer open");
-    equal(shell.hidden, true, "shell stays hidden with the file drawer open");
-
-    ctx.window.HerdrGitUi = { isVisible: () => true };
-    ctx.window.HerdrFileBrowser = { isVisible: () => false };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with the git drawer open");
-    equal(shell.hidden, true, "shell stays hidden with the git drawer open");
-
-    ctx.window.HerdrGitUi = { isVisible: () => false };
-    ctx.window.HerdrSearchPanel = { isOpen: () => true };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with the search drawer open");
-    equal(shell.hidden, true, "shell stays hidden with the search drawer open");
-
-    ctx.window.HerdrSearchPanel = { isOpen: () => false };
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, false, "card stays up with no drawer open");
-    equal(shell.hidden, true, "shell stays hidden with no drawer open");
-
-    // A terminal tab landing kills the card and frees the shell again.
-    vm.runInContext(`state.tab = "tab_1";`, ctx);
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "card hides once a terminal tab exists");
-    equal(shell.hidden, false, "shell frees up once a terminal tab exists");
+    for (const [name, drawer] of [
+      ["file", () => { ctx.window.HerdrFileBrowser = { isVisible: () => true }; ctx.window.HerdrGitUi = { isVisible: () => false }; }],
+      ["git", () => { ctx.window.HerdrGitUi = { isVisible: () => true }; ctx.window.HerdrFileBrowser = { isVisible: () => false }; }],
+      ["search", () => { ctx.window.HerdrGitUi = { isVisible: () => false }; ctx.window.HerdrSearchPanel = { isOpen: () => true }; }],
+      ["none", () => { ctx.window.HerdrSearchPanel = { isOpen: () => false }; }],
+    ]) {
+      drawer();
+      // Seed both shell states: the retired sync must leave the shell
+      // alone entirely (the per-leaf mount owns its visibility), so
+      // whatever it was, it stays.
+      shell.hidden = false;
+      ctx.syncWorkspaceEmptyLeaf();
+      equal(shell.hidden, false, `visible shell untouched with the ${name} drawer open`);
+      shell.hidden = true;
+      ctx.syncWorkspaceEmptyLeaf();
+      equal(shell.hidden, true, `hidden shell untouched with the ${name} drawer open`);
+      equal(emptyLeaf.hidden, true, `retired card stays hidden with the ${name} drawer open`);
+    }
   });
 
-  it("focuses the empty-leaf card once per show, not under modals or user focus", () => {
+  it("retired sync never claims focus, under modals, user focus, or body focus", () => {
+    // Collector model: the per-leaf card makes no focus claim. The
+    // document-level Enter handler resolves the focused LEAF (pane
+    // clicks set it), so the old claim-on-show dance (body focus,
+    // stale opener buttons, modal guards, per-show trackers) is gone.
+    // The sync must stay a pure no-op on focus.
     const ctx = context();
     runSource(ctx);
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
@@ -1110,94 +1104,41 @@ describe("app bundle load", () => {
     emptyLeaf.focus = () => {
       focusCalls += 1;
     };
+
     const body = ctx.document.body;
+    ctx.document.activeElement = body;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 0, "body-level focus: no claim");
+
     const inputFocus = { closest: () => null, tagName: "INPUT" };
-
-    // First show with body-level focus claims the leaf once, and the
-    // card carries the Enter hint.
-    ctx.document.activeElement = body;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "first sync with body focus claims the leaf");
-    ok(emptyLeaf.innerHTML.includes('class="workspace-empty-leaf-hint"'), "card carries the hint paragraph");
-    ok(emptyLeaf.innerHTML.includes("<kbd>Enter</kbd>"), "hint wraps the key in kbd");
-
-    // Poll-tick re-syncs never steal focus back, even at body-level
-    // focus: only the per-show tracker blocks this claim.
-    ctx.document.activeElement = body;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "second sync does not re-focus");
-
-    // User focus elsewhere also blocks, and hides nothing.
     ctx.document.activeElement = inputFocus;
     ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "sync leaves user focus alone");
+    equal(focusCalls, 0, "user focus elsewhere: no claim");
 
-    // Hiding resets the tracker, so each guard below is the only thing
-    // standing between a fresh show and a focus claim.
-    vm.runInContext(`state.tab = "tab_1";`, ctx);
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(emptyLeaf.hidden, true, "leaf hides once a tab exists");
-    vm.runInContext(`state.tab = null;`, ctx);
-
-    // Modal up: the leaf still shows under the scrim but claims nothing.
     const settingsModal = ctx.document.getElementById("settingsModal");
     settingsModal.style.display = "grid";
     ctx.document.activeElement = body;
     ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "no focus claim while a modal is up");
-    equal(emptyLeaf.hidden, false, "leaf still shows under the modal scrim");
+    equal(focusCalls, 0, "modal up: no claim");
     settingsModal.style.display = "none";
 
-    // Modal closed but the user focused a real control: no claim.
-    ctx.document.activeElement = inputFocus;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "no focus claim while user focus sits elsewhere");
-
-    // Back at body-level focus the claim lands and the tracker re-arms.
-    ctx.document.activeElement = body;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 2, "focus claimed once body focus returns");
-  });
-
-  it("claims the leaf from a stale opener button after the workspace-open flow", () => {
-    // Live bug: closing the open-workspace modal restores focus to the
-    // button that opened it (header Actions, dashboard card). The leaf
-    // used to refuse the claim then, so Enter natively re-clicked that
-    // button (Actions reopened the palette) instead of creating the
-    // first terminal the card advertises. The claim now takes over from
-    // any button outside the pane column: that focus arrived from the
-    // modal restore, not from the user.
-    const ctx = context();
-    runSource(ctx);
-    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
-    vm.runInContext(
-      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
-      ctx,
-    );
-
-    let focusCalls = 0;
-    emptyLeaf.focus = () => {
-      focusCalls += 1;
-    };
-
+    // The stale opener button case from the old flow: a header button
+    // outside #workspacePanes focused by the modal restore. Enter on it
+    // natively clicks the button; the collector's Enter contract
+    // (target inside #workspacePanes or body) covers the pane side, so
+    // the sync owes nothing here either.
     const headerButton = {
       tagName: "BUTTON",
-      // A header button sits outside #workspacePanes and is no input.
       closest: (sel) =>
         sel === "#workspacePanes" || sel.includes("input") ? null : {},
     };
     ctx.document.activeElement = headerButton;
     ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "leaf claims focus from a stale opener button");
-
-    // The tracker still gates: a later sync with the same button focused
-    // does not re-focus.
-    ctx.document.activeElement = headerButton;
-    ctx.syncWorkspaceEmptyLeaf();
-    equal(focusCalls, 1, "second sync does not re-focus the leaf");
+    equal(focusCalls, 0, "stale opener button: no claim");
+    equal(emptyLeaf.hidden, true, "retired node stays hidden through it all");
   });
 
-  it("fires the zero-tab Enter handler across its guard matrix", () => {
+  it("fires the empty-panel Enter handler across its guard matrix", () => {
     // The fake document drops listeners on the floor, so record them
     // before the bundle runs and drive the real handler by hand.
     const keydowns = [];
@@ -1232,7 +1173,7 @@ describe("app bundle load", () => {
     const body = ctx.document.body;
     body.closest = (sel) => (sel === "#workspacePanes" ? body : null);
     fire(body);
-    equal(newTabCalls, 1, "Enter with body focus mints the first terminal");
+    equal(newTabCalls, 1, "Enter with body focus mints a terminal in the focused empty panel");
 
     const inPanes = {
       tagName: "SECTION",
@@ -1240,6 +1181,15 @@ describe("app bundle load", () => {
     };
     fire(inPanes);
     equal(newTabCalls, 2, "Enter inside the pane column mints a terminal");
+
+    // Buttons keep their native Enter: a focused control activates
+    // itself, never the mint.
+    const buttonInPanes = {
+      tagName: "BUTTON",
+      closest: (sel) => (sel === "#workspacePanes" ? {} : null),
+    };
+    fire(buttonInPanes);
+    equal(newTabCalls, 2, "Enter on a focused button is left to the button");
 
     const outside = { tagName: "SECTION", closest: () => null };
     fire(outside);
@@ -1258,22 +1208,47 @@ describe("app bundle load", () => {
     equal(newTabCalls, 2, "Enter under an open modal is ignored");
     settingsModal.style.display = "none";
 
+    // Collector rule: the FOCUSED panel decides. Tabs in the focused
+    // panel (any kind) block the mint; the global zero-tab guard is
+    // gone, so an empty SIBLING never blocks and a tabbed focused
+    // panel never mints.
     const panes = ctx.window.HerdrWorkspacePanes;
-    const root = panes.paneRoot();
+    const paneState = panes.panesStateFor("ws-1");
+    // Traced to the one visible view model: the flat entry exposes the
+    // acting panel through paneLeaves; the FOCUSED panel still decides.
+    const root = panes.paneLeaves(paneState)[0];
     root.tabs = ["git:log"];
     root.active = "git:log";
     fire(inPanes);
-    equal(newTabCalls, 2, "Enter with an open Git tab is ignored");
+    equal(newTabCalls, 2, "Enter with the focused panel holding a Git tab is ignored");
     root.tabs = ["editor:src/app.js"];
     root.active = "editor:src/app.js";
     fire(inPanes);
-    equal(newTabCalls, 2, "Enter with an open file tab is ignored");
-
-    root.tabs = [];
-    root.active = null;
-    vm.runInContext(`state.tab = "tab_1";`, ctx);
+    equal(newTabCalls, 2, "Enter with the focused panel holding a file tab is ignored");
+    root.tabs = ["tab_1"];
+    root.active = "tab_1";
+    // The terminal id needs a backend row: paneTabsForTree filters
+    // unknown ids (the strip shows nothing for them), and the guard
+    // uses that same view.
+    vm.runInContext(`state.tabs = [{ tab_id: "tab_1", workspace_id: "ws-1" }];`, ctx);
     fire(inPanes);
-    equal(newTabCalls, 2, "Enter with a live terminal tab is ignored");
+    equal(newTabCalls, 2, "Enter with the focused panel holding a terminal tab is ignored");
+
+    // The flat entry: a tabbed panel focused beside an empty sibling
+    // stays inert, and focusing the empty sibling re-arms the mint.
+    const leafA = { kind: "pane", paneId: "pa", tabs: ["tab_1"], active: "tab_1", wsId: "ws-1", groupId: null };
+    const leafB = { kind: "pane", paneId: "pb", tabs: [], active: null, wsId: "ws-1", groupId: null };
+    // Traced to the one visible view model: panels list plus the
+    // activePaneId pointer replace the old split tree root.
+    paneState.panels = [leafA, leafB];
+    paneState.groups = [];
+    paneState.visible = { type: "panel", id: "pa" };
+    paneState.activePaneId = "pa";
+    fire(inPanes);
+    equal(newTabCalls, 2, "empty sibling does not unblock Enter: the focused panel holds tabs");
+    paneState.activePaneId = "pb";
+    fire(inPanes);
+    equal(newTabCalls, 3, "focusing the empty sibling re-arms the Enter mint");
   });
 
   it("keeps file history header scoped to selected files", () => {
@@ -1641,7 +1616,12 @@ describe("app bundle load", () => {
     // shortcutLabel/shortcutDisplay at render time, so a remap in the
     // editor is reflected here on the next open (audit W1).
     const webuiIds = [...source.matchAll(/chord\("([a-zA-Z]+)"\)/g)].map((m) => m[1]);
-    for (const id of ["search", "help", "settings", "sidebar", "rightSidebar", "newWorkspace", "newPanel", "openWorktrees", "createWorktree", "closePanel", "closeWorkspace", "nextAgent", "prevAgent", "focusTerminal", "splitRight", "splitDown", "closePane", "moveTabNextPane", "maximizePane", "togglePaneMenu", "sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) ok(webuiIds.includes(id), `help renders a derived chord row for ${id}`);
+    // Traced to the one visible view model: splitRight/splitDown/
+    // moveTabNextPane/maximizePane chords are removed from core.js;
+    // the registry must NOT carry them (a stale id would render a dead
+    // chord row). Every other id keeps its derived row.
+    for (const id of ["search", "help", "settings", "sidebar", "rightSidebar", "newWorkspace", "newPanel", "openWorktrees", "createWorktree", "closePanel", "closeWorkspace", "nextAgent", "prevAgent", "focusTerminal", "closePane", "sessions", "terminalTail", "lensToggle", "rightRail", "markdownView", "notesNew", "notesBack"]) ok(webuiIds.includes(id), `help renders a derived chord row for ${id}`);
+    for (const gone of ["splitRight", "splitDown", "moveTabNextPane", "maximizePane", "togglePaneMenu"]) ok(!webuiIds.includes(gone), `removed chord ${gone} stays out of the help rows`);
     // Remapping a key changes the rendered text on the next open.
     vm.runInContext('options.webuiShortcuts = Object.assign({}, options.webuiShortcuts, { settings: "F9" });', ctx);
     const remapped = ctx.helpAndShortcutsBodyHtml();
@@ -1865,15 +1845,17 @@ describe("app bundle load", () => {
     equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1");
   });
 
-  it("prefixed pane chords drive the split tree end to end", () => {
+  it("prefixed pane chords drive the panel list end to end", () => {
     const ctx = context();
     runSource(ctx);
-    // The pane-grid chords are plain prefix actions like every other
-    // chord: arm Ctrl+B, press the action key, the tree changes. This
-    // pins the dispatch chain (prefix overlay, chord lookup, action
-    // toast) against the pane tree, not just the shortcut map: a
-    // rewiring that resolves the chord but never reaches the pane
-    // action fails here.
+    // Traced to the one visible view model: free splits are gone, so the
+    // pane-grid chords that still exist are newPanel (opens the workspace
+    // picker; the pick mints the panel) and closePane (drops the active
+    // panel). This pins the dispatch chain (prefix overlay, chord lookup,
+    // action toast) against the flat panel list, not just the shortcut
+    // map. This harness loads no picker module: the chord's fallback
+    // (direct mint family) and the programmatic + helper stay pinned
+    // here; the picker surface lives in its own vm suite.
     vm.runInContext(
       "state.workspaces = [{ workspace_id: 'ws1' }]; state.ws = 'ws1';" +
         "state.tabs = [{ tab_id: 't1', workspace_id: 'ws1' }]; state.tab = 't1';" +
@@ -1912,15 +1894,21 @@ describe("app bundle load", () => {
     };
     const leafCount = () => vm.runInContext("HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRoot()).length", ctx);
 
-    equal(leafCount(), 1, "single pane before any split");
-    const dPress = armAndPress("KeyD", "d");
-    equal(dPress.defaultPrevented, true, "prefix D is consumed");
-    equal(leafCount(), 2, "prefix D splits the active pane to the right");
-    const shiftDPress = armAndPress("KeyD", "D", true);
-    equal(shiftDPress.defaultPrevented, true, "prefix Shift+D is consumed");
-    equal(leafCount(), 3, "prefix Shift+D splits the focused pane downward");
+    equal(leafCount(), 1, "single panel before any chord");
+    // The newPanel chord opens the workspace picker in production (change
+    // 5); no picker module rides this harness, so the equivalent
+    // synchronous surface is the location-bar + helper newPanelForFocused:
+    // it mints an empty focused panel in the current workspace.
+    vm.runInContext("HerdrWorkspacePanes.newPanelForFocused();", ctx);
+    equal(leafCount(), 2, "the + helper mints an empty focused panel");
     const stored = JSON.parse(ctx.localStorage.getItem("herdr-web-workspace-panes"));
-    equal(Object.keys(stored).join(","), "__session__", "splits persist in the session tree entry");
+    equal(Object.keys(stored).join(","), "__session__", "the panel list persists in the session entry");
+    // The split chords are gone from the dispatch: prefix D must not
+    // grow the list (the chord resolves to nothing and the key falls
+    // through as unhandled).
+    const leavesBefore = leafCount();
+    const dPress = armAndPress("KeyD", "d");
+    equal(leafCount(), leavesBefore, "prefix D no longer splits: removed chord stays inert");
   });
 
   it("terminal prefix passthrough off keeps the prefix intercepted on the terminal surface", () => {
@@ -2467,7 +2455,8 @@ describe("app bundle load", () => {
     // click parity), and only standalone harnesses keep the single-panel
     // side+main fallback.
     match(gitUiSource, /function renderMainIntoTab\(version, container\) \{/);
-    match(gitUiSource, /if \(panelIsHosted\(\)\) \{\n      panel\.innerHTML = renderSide\(\) \+ renderContextMenu\(\)/);
+    match(gitUiSource, /function renderSideAndOverlays\(\) \{[\s\S]{0,80}renderSide\(\) \+ renderOverlayMarkup\(\)/);
+    match(gitUiSource, /if \(panelIsHosted\(\)\) \{\n      panel\.innerHTML = renderSideAndOverlays\(\)/);
     ok(!/panelIsHosted\(\)[\s\S]{0,200}releaseToCenter/.test(gitUiSource), "no release handoff remains");
     // Internal state flips heal the pane tree: the stash guard in refresh,
     // the non-git fallback, and the folder switch all sync the strip so the
@@ -2747,7 +2736,10 @@ describe("app bundle load", () => {
     match(lineContextSource, /nextContextSize/);
     match(lineContextSource, /pushMergedChunk/);
     match(fileContentSearchSource, /lineChunks/);
-    match(fileContentSearchSource, /mergeChunk/);
+    // Chunk merging lives only in line_context.js; the renderer calls
+    // HerdrLineContext.pushMergedChunk with no local fallback.
+    match(fileContentSearchSource, /HerdrLineContext\.pushMergedChunk/);
+    ok(!fileContentSearchSource.includes("mergeChunk"));
     ok(!fileContentSearchSource.includes("function renderMatch"));
     ok(!fileContentSearchSource.includes("<article class=\"herdr-content-search-match"));
     ok(!fileContentSearchSource.includes("expandAll"));
@@ -3817,27 +3809,34 @@ describe("app bundle load", () => {
     `, ctx);
     const panes = vm.runInContext("HerdrWorkspacePanes", ctx);
 
-    // Single-workspace tree: every default stays a bare number (D15 gates
-    // on treeIsMixed, so the common case carries zero noise).
-    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
-    equal(panes.foreignWorkspacePrefix("tab9"), "");
+    // Single-workspace tree: the default carries the worktree prefix
+    // (a bare number names nothing), the own row included.
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "main 2");
+    // tab9's row resolves even before any mixed entry exists: the
+    // prefix follows the row's workspace, not the tree's shape.
+    equal(panes.foreignWorkspacePrefix("tab9"), "feat/panels ");
 
-    // Mixed tree: the foreign default prefixes with the branch (the real
-    // worktreeDisplayName chain, no stub), the own default stays bare, and
-    // the custom name never prefixes. state.ws is "ws1": its own rows stay
-    // bare even though leaf 1's own row (tab1) coexists with the foreign
-    // ids in the unfiltered map.
-    vm.runInContext("HerdrWorkspacePanes.splitPaneRight();", ctx);
+    // Mixed list: every default prefixes with its worktree branch (the
+    // real worktreeDisplayName chain, no stub); the custom name never
+    // prefixes. state.ws is "ws1": its own rows prefix the same way,
+    // the origin is part of the identity everywhere now.
+    // Traced to the one visible view model: splitPaneRight is gone, so the
+    // second panel comes from the flat entry itself (two panels, same
+    // shape a + press or a stored session produces).
     vm.runInContext(`
-      const l = HerdrWorkspacePanes.paneLeaves(HerdrWorkspacePanes.paneRootFor());
-      l[0].tabs = ["tab2"];
-      l[0].active = "tab2";
-      l[1].tabs = ["tab9", "tabc"];
-      l[1].active = "tab9";
+      const entry = HerdrWorkspacePanes.panesStateFor();
+      entry.panels = [
+        { kind: "pane", paneId: "p1", tabs: ["tab2"], active: "tab2", groupId: null },
+        { kind: "pane", paneId: "p2", tabs: ["tab9", "tabc"], active: "tab9", groupId: null },
+      ];
+      entry.groups = [];
+      entry.visible = { type: "panel", id: "p1" };
+      entry.activePaneId = "p1";
     `, ctx);
+    const l = panes.paneLeaves(panes.paneRootFor());
     equal(panes.foreignWorkspacePrefix("tab9"), "feat/panels ");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab9", ctx), 0), "feat/panels 1");
-    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "2");
+    equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tab2", ctx), 1), "main 2");
     equal(panes.panelVisibleLabel(vm.runInContext("state.tabsById.tabc", ctx), 1), "build");
 
     // The prefix renders as a muted ::before on the label span: the number
@@ -3850,6 +3849,16 @@ describe("app bundle load", () => {
     match(panesCss, /\.pane-tab-label\[data-ws-prefix\] \{[^}]*display: inline-flex;[^}]*min-width: 0;[^}]*\}/);
     match(panesCss, /\.pane-tab-label\[data-ws-prefix\]::before \{[^}]*content: attr\(data-ws-prefix\);[^}]*color: var\(--muted\);[^}]*text-overflow: ellipsis;[^}]*\}/);
     match(panesCss, /\.pane-tab-label\[data-ws-prefix\]::after \{[^}]*content: "";[^}]*flex: 0 0 auto;[^}]*\}/);
+  });
+
+  it("anchors the JS-positioned drop preview to the panes collector", () => {
+    // positionPanelDropPreview computes top/left against #workspacePanes's
+    // rect, so the absolute preview needs the collector itself as the
+    // containing block. Without the position rule the nearest positioned
+    // ancestor is main.main, which includes the location bar, and the
+    // square paints a location-bar-height below the quadrant it names.
+    const panesCss = readFileSync(new URL("./desktop/app_css/panes.css", import.meta.url), "utf8");
+    match(panesCss, /\.workspace-panes \{[^}]*position: relative;[^}]*\}/);
   });
 
   it("hover titles spell the workspace of foreign panels", () => {
@@ -3883,7 +3892,9 @@ describe("app bundle load", () => {
       "tabHoverInfo({ tab_id: 'tab8', label: 'shell', number: 1, workspace_id: 'ws-2' }, new Map())",
       ctx,
     );
-    equal(foreignDefault, "Workspace feat/panels (ws-2) · 1");
+    // The label already carries the worktree (strip language), so the
+    // hover collapses to the label plus the raw id, no duplicated name.
+    equal(foreignDefault, "feat/panels 1 (ws-2)");
   });
 
   it("window title shows the visible panel name, never the raw shell label", () => {
@@ -3908,7 +3919,9 @@ describe("app bundle load", () => {
     // agentTabLabel stays empty (count <= 1) and the title segment falls
     // through to the strip language (D15), not the raw "shell".
     vm.runInContext("updateTitle(Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w])), state.tabsById, new Map(), null)", ctx);
-    equal(ctx.document.title, "feat/panels • 1");
+    // The panel segment already carries the worktree (strip language),
+    // so the title shows it once, not "feat/panels • feat/panels 1".
+    equal(ctx.document.title, "feat/panels 1");
 
     // Multi-panel foreign workspace keeps the #N disambiguation.
     vm.runInContext(`
@@ -3974,13 +3987,15 @@ describe("app bundle load", () => {
       ctx,
     );
     // Hovering a non-focused tab: the size suffix belongs to state.tab only.
-    equal(foreign, "Workspace feat/panels (ws-2) · 1 · p8 · t-8");
+    // The default label carries the worktree, so the hover collapses the
+    // workspace line to the label plus the raw id.
+    equal(foreign, "feat/panels 1 (ws-2) · p8 · t-8");
     // The focused foreign panel adds the size suffix.
     const foreignFocused = vm.runInContext(
       'state.tab = "tab8"; tabHoverInfo({ tab_id: "tab8", label: "shell", number: 1, workspace_id: "ws-2" }, new Map([["tab8", [{ pane_id: "p8", terminal_id: "t-8" }]]]))',
       ctx,
     );
-    equal(foreignFocused, "Workspace feat/panels (ws-2) · 1 · p8 · t-8 · 120x40");
+    equal(foreignFocused, "feat/panels 1 (ws-2) · p8 · t-8 · 120x40");
     // pane rows exist but the active pane is not among them: the first row
     // in the list backs the suffix (the strip highlight fallback).
     const firstPane = vm.runInContext(
@@ -4002,7 +4017,7 @@ describe("app bundle load", () => {
     // keeps the raw tabTitle. The strip path pins the catch in the pane
     // suite through the throwing harness stub.
     const fallback = vm.runInContext("tabHoverTitle({ tab_id: 'tabZ' })", ctx);
-    equal(fallback, "1", "label-less rows render the number fallback");
+    equal(fallback, "main 1", "label-less rows render the workspace plus number fallback");
   });
 
   it("workspaceHoverName walks record, worktree name, label, then raw id", () => {
@@ -4114,7 +4129,7 @@ describe("app bundle load", () => {
     equal(ctx.document.title, "ws-x • 1");
   });
 
-  it("strip rename input names itself and seeds the current name", () => {
+  it("panel chip rename input names itself and seeds the current name", () => {
     const ctx = context();
     runSource(ctx);
     vm.runInContext(`
@@ -4137,9 +4152,35 @@ describe("app bundle load", () => {
     // checks !hidden), and the render bails. Mirror app.html: the dashboard
     // carries the hidden attribute until syncProjectDashboard shows it.
     ctx.document.getElementById("projectDashboard").hidden = true;
+    // Traced to the one visible view model: the renderer now decouples
+    // pane creation from strip painting (it looks the pane up through
+    // container.children again), so the harness must track children
+    // honestly: the element() stub's appendChild is a no-op. Without it
+    // paneLeafElement answers null and no strip ever paints.
+    const trackChildren = (node) => {
+      node.children = [];
+      node.appendChild = (child) => {
+        if (child.parentNode && child.parentNode.children)
+          child.parentNode.children.splice(child.parentNode.children.indexOf(child), 1);
+        child.parentNode = node;
+        node.children.push(child);
+        return child;
+      };
+      node.insertBefore = (child, reference) => {
+        if (child.parentNode && child.parentNode.children)
+          child.parentNode.children.splice(child.parentNode.children.indexOf(child), 1);
+        child.parentNode = node;
+        const at = reference ? node.children.indexOf(reference) : -1;
+        if (at >= 0) node.children.splice(at, 0, child);
+        else node.children.push(child);
+        return child;
+      };
+      return node;
+    };
+    trackChildren(ctx.document.getElementById("workspacePanes"));
     const realCreateElement = ctx.document.createElement;
     ctx.document.createElement = (tag) => {
-      const node = realCreateElement(tag);
+      const node = trackChildren(realCreateElement(tag));
       let html = node.innerHTML || "";
       Object.defineProperty(node, "innerHTML", {
         configurable: true,
@@ -4152,18 +4193,24 @@ describe("app bundle load", () => {
       return node;
     };
     vm.runInContext("renderWorkspacePanes();", ctx);
-    vm.runInContext("state.editingTab = 't1'; state.editingTabValue = 'build'; renderWorkspacePanes();", ctx);
+    // The stripless model renames PANELS through the rail chip swap
+    // (startPanelChipRename), so the input renders inside the rail: a
+    // second panel makes the rail (the multi-subject surface) render.
+    vm.runInContext("HerdrWorkspacePanes.newPanelForFocused();", ctx);
+    vm.runInContext("state.editingPanelPaneId = HerdrWorkspacePanes.paneRoot().panels[0].paneId; state.editingPanelValue = 'build'; renderWorkspacePanes();", ctx);
     const all = (ctx.__written || []).join("");
-    match(all, /class="tab-rename-input" aria-label="Rename panel"/);
+    match(all, /class="pane-group-rename-input" aria-label="Rename panel"/);
     match(all, /value="build"/);
-    match(all, /onblur="commitTabRename\('t1'\)"/);
-    match(all, /onkeydown="tabRenameKey\(event,'t1'\)"/);
-    // Leaving rename mode restores the plain button with the aria name.
+    match(all, /onblur="commitPanelChipRename\('/);
+    match(all, /onkeydown="panelChipRenameKey\(event,'/);
+    // Leaving rename mode restores the plain chip with the aria name.
     ctx.__written.length = 0;
-    vm.runInContext("state.editingTab = null; renderWorkspacePanes();", ctx);
+    vm.runInContext("state.editingPanelPaneId = null; renderWorkspacePanes();", ctx);
     const restored = (ctx.__written || []).join("");
-    ok(!restored.includes("tab-rename-input"), "input leaves with the editing state");
-    match(restored, /aria-label="Panel build"/);
+    ok(!restored.includes("pane-group-rename-input"), "input leaves with the editing state");
+    // The restored chip speaks the panel identity through its rail title
+    // ("Show panel <name>"), the stripless model's aria surface.
+    match(restored, /aria-label="Show panel build/);
   });
 
   it("keeps session manager buttons on one rounded style", () => {
@@ -5326,7 +5373,7 @@ describe("app bundle load", () => {
     match(html, /workspace-group-main/);
   });
 
-  it("closing the last panel keeps the workspace open", async () => {
+  it("closing the last terminal asks whether to close the workspace: cancel keeps it", async () => {
     const ctx = context();
     runSource(ctx);
 
@@ -5337,9 +5384,15 @@ describe("app bundle load", () => {
         return { result: {} };
       };
       refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
       state.ws = "ws1";
       state.tab = "tab1";
       state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
       state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
       state.allTabs = state.tabs;
       state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
@@ -5347,20 +5400,427 @@ describe("app bundle load", () => {
       ctx,
     );
     await flushMicrotasks();
-    // The question modal is up: terminals ask before closing. Enter
-    // confirms, and the close then proceeds.
+    // First modal: the terminal close confirm. Enter proceeds.
     await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    // Second modal: maybeAutoCloseWorkspace asks about the workspace
+    // (closeWorkspaceOnLastTerminal defaults on, the workspace row
+    // exists, and the last tab is gone). Cancel keeps the workspace.
+    await ctx.closeQuestion(false);
     await flushMicrotasks();
     const calls = await vm.runInContext("calls", ctx);
 
-    // One tab close call, no workspace close: terminals are decoupled
-    // from workspace lifecycle. (The bundle boot also queues workspace
-    // and session fetches; only the close call matters here.)
+    // One tab close call, no workspace close: the answer owns it.
     const closeCalls = calls.filter((call) => call.url.includes("/close"));
     equal(closeCalls.length, 1);
     equal(closeCalls[0].url, "/api/tabs/tab1/close");
     equal(calls.some((call) => call.url.includes("workspaces") && call.method === "POST"), false,
-      "closing the last terminal never posts a workspace close");
+      "a cancelled workspace ask never posts a workspace close");
+    equal(await vm.runInContext("state.ws", ctx), "ws1");
+  });
+
+  it("closing the last terminal asks whether to close the workspace: confirm closes it", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      closeTab("tab1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // The tab close and the workspace close both POST.
+    const closeCalls = calls.filter((call) => call.url.includes("/close"));
+    equal(closeCalls.some((call) => call.url === "/api/tabs/tab1/close"), true);
+    equal(closeCalls.some((call) => call.url === "/api/workspaces/ws1/close"), true,
+      "a confirmed workspace ask posts the workspace close");
+    // closeWorkspaceById resets the selected route (state.ws null).
+    equal(await vm.runInContext("state.ws", ctx), null);
+  });
+
+  it("closing the last panel chip asks to close its workspace: cancel reseeds the panel", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [{ kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" }],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    // ONE modal for the whole fork: the workspace ask. Cancel keeps the
+    // workspace and lands the panel on the fresh seed.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // The drain POSTed the tab close with no per-terminal confirm (the
+    // fork's one ask covers it) and no workspace close posted.
+    const closeCalls = calls.filter((call) => call.url.includes("/close"));
+    equal(closeCalls.some((call) => call.url === "/api/tabs/tab1/close"), true,
+      "the drain closed the tab");
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false,
+      "cancel keeps the workspace open");
+    const entry = await vm.runInContext("HerdrWorkspacePanes.paneRoot()", ctx);
+    equal(entry.panels.length, 1);
+    equal(entry.panels[0].paneId, "p1", "the fresh seed panel stays with the workspace");
+    equal(await vm.runInContext("state.ws", ctx), "ws1");
+  });
+
+  it("closing the last panel chip asks to close its workspace: confirm closes it", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [{ kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" }],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // The workspace close POSTed once (the drain's tab close rode
+    // skipConfirm, so no extra terminal modal stacked in between).
+    equal(calls.filter((call) => call.url === "/api/tabs/tab1/close").length, 1);
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), true,
+      "confirm posts the workspace close");
+    equal(await vm.runInContext("state.ws", ctx), null);
+  });
+
+  it("closing the last panel of a workspace beside another workspace's panel asks: cancel keeps the panel standing", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: [], active: null, groupId: null, wsId: null },
+            { kind: "pane", paneId: "p2", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p2" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p2");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    // ONE ask for the whole fork even with a sibling panel standing:
+    // p2 is ws1's last panel. Cancel keeps the workspace.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    equal(calls.some((call) => call.url === "/api/tabs/tab1/close"), true,
+      "the drain closed the tab with skipConfirm (no per-terminal modal)");
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false,
+      "cancel keeps the workspace open");
+    const entry = await vm.runInContext("HerdrWorkspacePanes.paneRoot()", ctx);
+    equal(entry.panels.length, 2, "the multi-leaf tree keeps both panels");
+    const standing = entry.panels.find((panel) => panel.paneId === "p2");
+    equal(standing.tabs.length, 0, "the drained panel stands empty");
+    equal(standing.wsId, "ws1", "the standing panel keeps its ws binding");
+    equal(await vm.runInContext("state.ws", ctx), "ws1");
+  });
+
+  it("closing the last panel of a workspace beside another workspace's panel asks: confirm closes it", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: [], active: null, groupId: null, wsId: null },
+            { kind: "pane", paneId: "p2", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p2" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p2");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    equal(calls.filter((call) => call.url === "/api/tabs/tab1/close").length, 1,
+      "the tab close rode skipConfirm");
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), true,
+      "confirm posts the workspace close");
+    equal(await vm.runInContext("state.ws", ctx), null,
+      "the confirmed tail resets the selection");
+  });
+
+  it("a workspace with a second panel never asks on chip close", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+            { kind: "pane", paneId: "p2", tabs: [], active: null, groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p2");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    // p1 holds ws1's tab, so closing the EMPTY sibling p2 is a plain
+    // panel close: no ask, no workspace close, the ws keeps its panel.
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false,
+      "a surviving same-ws panel means no workspace ask");
+    equal(await vm.runInContext("document.getElementById('questionModal').classList.contains('show')", ctx), false,
+      "no modal ever opened");
+    const entry = await vm.runInContext("HerdrWorkspacePanes.paneRoot()", ctx);
+    equal(entry.panels.length, 1, "the empty sibling dropped, the ws panel stays");
+    equal(entry.panels[0].paneId, "p1");
+  });
+
+  it("a canceled last-panel ask suppresses the tab.closed SSE echo", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [{ kind: "pane", paneId: "p1", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" }],
+          groups: [],
+          visible: { type: "panel", id: "p1" },
+        },
+      };
+      HerdrWorkspacePanes.closePanelFromChip("p1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    // The fork's one ask: cancel keeps the workspace with the seed.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+    // The SSE echo for the drained terminal arrives inside the claim's
+    // suppression window: no second ask may stack on the given answer.
+    await vm.runInContext(
+      `removeClosedTabFromState = () => {};
+       forgetClosedSelection("tab.closed", { tab_id: "tab1", workspace_id: "ws1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    equal(await vm.runInContext("document.getElementById('questionModal').classList.contains('show')", ctx), false,
+      "the SSE echo never re-asks within the suppression window");
+    equal(await vm.runInContext("(state.workspaces || []).length", ctx), 1,
+      "the workspace survives the canceled ask and its echo");
+    const calls = await vm.runInContext("calls", ctx);
+    equal(calls.some((call) => call.url === "/api/workspaces/ws1/close"), false);
+  });
+
+  it("closing the last workspace empties the session entry at runtime", async () => {
+    const ctx = context();
+    runSource(ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      // The parked boot refresh would resolve through the api stub
+      // above (empty workspaces) and wipe the seeded selection via
+      // fixVanishedWorkspaceSelection; bump the sequence so it aborts
+      // at its first checkpoint instead.
+      refreshSeq = 999;
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      state.workspacePanes = {
+        "__session__": {
+          v: 2,
+          panels: [
+            { kind: "pane", paneId: "p1", tabs: [], active: null, groupId: null, wsId: null },
+            { kind: "pane", paneId: "p2", tabs: ["tab1"], active: "tab1", groupId: null, wsId: "ws1" },
+          ],
+          groups: [],
+          visible: { type: "panel", id: "p2" },
+        },
+      };
+      forgetClosedSelection("workspace.closed", { workspace_id: "ws1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    // Zero workspaces at runtime lands the same empty entry as the boot
+    // conversion: no panels, no ghost seed rail over the dashboard.
+    const entry = await vm.runInContext(
+      "state.workspacePanes['__session__']", ctx);
+    equal(entry.panels.length, 0, "the session entry empties, no ghost seed");
+    const html = await vm.runInContext("document.body.innerHTML", ctx);
+    equal(html.includes("pane-label-chip"), false,
+      "no rail chip paints over the dashboard");
   });
 
   it("closing a panel that vanished server-side still finishes the close flow", async () => {
@@ -9091,6 +9551,41 @@ describe("workspace sidebar order", () => {
     equal(updatedOrder, "ws_b|ws_c|ws_a");
   });
 
+  it("the prefix-P chord opens the workspace picker end to end (change 5)", () => {
+    const ctx = context();
+    vm.runInContext(bundleSource, ctx);
+    vm.runInContext(
+      `state.ws = "ws_a";
+       state.workspaces = [
+         { workspace_id: "ws_a", label: "alpha" },
+         { workspace_id: "ws_b", label: "beta" },
+       ];`,
+      ctx,
+    );
+    // The chord must open the picker (never a direct mint), keyed to the
+    // focused leaf, anchored on the bar's + when the DOM offers it. The
+    // element() stub's querySelector answers a truthy node (the chord
+    // finds an anchor) and its appendChild is a no-op, so record the
+    // popover mount to read the rendered rows: the full chain runs
+    // chord -> picker module -> popover onto the body.
+    vm.runInContext(
+      `globalThis.__mounted = [];
+       const realAppend = document.body.appendChild.bind(document.body);
+       document.body.appendChild = (child) => { globalThis.__mounted.push(child); return realAppend(child); };`,
+      ctx,
+    );
+    const handled = vm.runInContext("runPrefixedShortcut({ code: 'KeyP', key: 'p', shiftKey: false })", ctx);
+    equal(handled, true, "the chord is consumed");
+    equal(vm.runInContext("HerdrPaneWorkspacePicker.isOpen()", ctx), true, "the picker opened instead of minting");
+    // The chord also shows its action toast, so pick the popover out of
+    // the mounts by its class.
+    const rowMatches = vm.runInContext(
+      "(globalThis.__mounted.filter((n) => n.className === 'pane-workspace-picker')[0].innerHTML.match(/class=\"pane-picker-row\"/g) || []).length",
+      ctx,
+    );
+    equal(rowMatches, 2, "one row per workspace, single pick included");
+  });
+
   it("workspace cards expose the dblclick rename from the keyboard", () => {
     const ctx = context();
     vm.runInContext(bundleSource, ctx);
@@ -10184,17 +10679,28 @@ describe("lens terminal toggle force redraw", () => {
 describe("zero-tab enter creates terminal", () => {
   const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
-  it("routes Enter on the zero-tab pane body to newTab", () => {
+  it("routes Enter on the empty focused panel to newTabForPane", () => {
     const bindingsSource = read("./desktop/app_js/bindings.js");
     match(bindingsSource, /#workspacePanes/);
     match(bindingsSource, /target === document\.body \|\|\n\s+target === document\.documentElement \|\|\n\s+!!target\.closest\("#workspacePanes"\)/);
-    // The zero-terminal Enter shortcut follows the same file/Git pane-tab
-    // guard as the empty-leaf visibility rule.
+    // Collector model: the focused panel decides, not the global
+    // zero-tab state. No !state.tab / workspaceHasOpenFileOrGitTab
+    // guard survives: a sibling panel's editor/git tabs never block an
+    // empty panel's Enter.
     match(
       bindingsSource,
-      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!state\.tab &&\n\s+!workspaceHasOpenFileOrGitTab\(\) &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
+      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
     );
-    match(bindingsSource, /newTab\(\);\n\s+return;/);
+    match(bindingsSource, /panes\.focusedLeaf === "function" \? panes\.focusedLeaf\(\) : null;/);
+    match(bindingsSource, /panes\.newTabForPane\(encodeURIComponent\(leaf\.paneId\)\);/);
+    // The empty-panel guard uses the same filtered view the strip
+    // renders (paneTabsForTree): the seed placeholder renders as an
+    // empty panel and must mint; unknown ids never unblock Enter.
+    match(
+      bindingsSource,
+      /typeof panes\.paneTabsForTree === "function"\n\s+\? panes\.paneTabsForTree\(leaf\)\n\s+: \(leaf && leaf\.tabs\) \|\| \[\];/,
+    );
+    match(bindingsSource, /if \(leaf && !leafTabs\.length\) \{/);
   });
 
   it("keeps span-button Enter semantics ahead of the zero-tab branch", () => {
@@ -10215,11 +10721,16 @@ describe("zero-tab enter creates terminal", () => {
 describe("empty leaf hint and focus", () => {
   const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
-  it("renders the Enter hint on the empty-leaf card", () => {
+  it("renders the Enter hint on the per-leaf empty panel card", () => {
+    // Collector model: the hint markup lives in workspace_panes.js now
+    // (mountEmptyPanelCard), one card per empty panel. The global
+    // render.js card is retired: its sync only hides the node.
+    const panesSource = read("./desktop/app_js/workspace_panes.js");
+    match(panesSource, /<p class="workspace-empty-leaf-hint">Press <kbd>Enter<\/kbd> to open a terminal\.<\/p>/, "hint markup minted by mountEmptyPanelCard");
+    match(panesSource, /function mountEmptyPanelCard\(content, leaf\) \{/, "per-leaf card mount exists");
+    match(panesSource, /function removeEmptyPanelCard\(content\) \{/, "stale card removal on tab gain");
     const renderSource = read("./desktop/app_js/render.js");
-    match(renderSource, /<p class="workspace-empty-leaf-hint">Press <kbd>Enter<\/kbd> to open a terminal\.<\/p>/, "hint markup minted by syncWorkspaceEmptyLeaf");
-    match(renderSource, /let emptyLeafFocused = false;/, "focus tracker exists");
-    match(renderSource, /emptyLeafFocused = false;\n\s+return;\n\s+\}/, "tracker resets when the leaf hides");
+    match(renderSource, /emptyLeaf\.hidden = true;/, "global card stays retired");
   });
 
   it("styles the hint and kbd under the empty-leaf card", () => {
@@ -10228,7 +10739,7 @@ describe("empty leaf hint and focus", () => {
     match(baseCss, /\.workspace-empty-leaf-card \.workspace-empty-leaf-hint kbd \{[^}]*background: var\(--panel2\);[^}]*border-bottom-width: 2px;/s, "kbd rule mirrors the shortcut-row recipe");
   });
 
-  it("makes the empty leaf programmatically focusable", () => {
+  it("keeps the app.html empty leaf node hidden as a retired placeholder", () => {
     const appHtml = read("./app.html");
     match(appHtml, /<section class="workspace-empty-leaf" id="workspaceEmptyLeaf" tabindex="-1" hidden><\/section>/, "leaf carries tabindex=-1");
   });

@@ -19,6 +19,7 @@ function productScript(relPath, sourceText) {
   });
 }
 const optionsScript = productScript("./shared/options.js", optionsSource);
+const coreScript = productScript("./shared/core.js", readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"));
 const treeScript = productScript("./shared/file_tree.js", treeSource);
 const workspaceSearchScript = productScript("./shared/workspace_search.js", workspaceSearchSource);
 const fileBrowserScript = productScript("./mobile/file_browser.js", source);
@@ -112,6 +113,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
       return { getValue() { return opts.content || ""; }, setValue() {}, destroy() {} };
     },
   };
+  coreScript.runInNewContext(context);
   optionsScript.runInNewContext(context);
   treeScript.runInNewContext(context);
   workspaceSearchScript.runInNewContext(context);

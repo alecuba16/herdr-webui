@@ -3,7 +3,13 @@
    sizes, and .pane-divider is the draggable gap between them. */
 
 /* ---- center panes ---- */
+/* The JS-positioned drop preview (.panel-drop-preview below), the
+   a11y live region, and rescued (parked) aux surfaces are absolute and
+   anchor here. Without this rule the containing block is main.main (which
+   includes the location bar), so coordinates computed against this
+   container's rect painted the preview a location-bar-height too low. */
 .workspace-panes {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -73,6 +79,27 @@
   background: color-mix(in srgb, var(--accent, transparent) 12%, var(--panel2, var(--panel)));
 }
 
+/* Current-workspace marker: a green border on the pane hosting the
+   selected workspace's panels (mixed trees only; single-workspace
+   trees never apply the class). Green reads as "home" next to the
+   blue focus ring, and never color alone: the strip's workspace badge
+   names the workspace on the same pane. Dashed keeps it distinct from
+   the solid focus ring at a glance. */
+.workspace-pane.pane-owns-current::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 2px dashed var(--git-added-color, var(--accent));
+  border-radius: 4px;
+  z-index: 1;
+}
+
+.workspace-pane.pane-owns-current.is-active::after {
+  border-style: solid;
+  border-color: var(--git-added-color);
+}
+
 .workspace-pane .pane-content {
   flex: 1;
   min-height: 0;
@@ -113,6 +140,11 @@
   height: 30px;
   padding: 0 10px;
   border-radius: 6px 6px 0 0;
+  /* Width floor: a short tab (git/editor/renamed one-char panel) kept
+     the ✕ floating mid-tab with dead space on both sides. The floor
+     puts the label left and the ✕ flush right; the label ellipsizes
+     when content outgrows it. */
+  min-width: 88px;
   /* Shrink to content: the label ellipsizes at the configured character
      budget, so a two-char tab is two chars wide instead of a fixed box. */
   max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 54px);
@@ -123,6 +155,18 @@
     background-color 120ms ease,
     color 120ms ease,
     box-shadow 120ms ease;
+}
+
+/* Tab kind marker "terminal" collides with the terminal SURFACE class
+   `.terminal` (terminal.css: display block, width 100%, min-width 0).
+   That rule loads after this file, same specificity, so it turned every
+   terminal tab into a full-width block that ate the strip. Re-assert the
+   tab box model after the collision, inside the strip scope only. */
+.pane-tab-strip .pane-tab.terminal {
+  display: inline-flex;
+  width: auto;
+  height: 30px;
+  min-width: 88px;
 }
 
 .pane-tab:hover {
@@ -158,6 +202,9 @@
   .pane-tab {
     transition: none;
   }
+  .pane-member-header {
+    transition: none;
+  }
 }
 
 .pane-tab-dot {
@@ -175,6 +222,10 @@
 }
 
 .pane-tab-label {
+  /* Fill the tab's width floor so the ✕ sits flush right instead of
+     floating mid-tab. min-width 0 keeps the ellipsis working. */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -290,6 +341,100 @@
   align-self: center;
 }
 
+/* Panel chip (collector): strip leading edge, click focuses the panel.
+ In a group view the chip drags (re-position inside the split, drop on
+ the rail to leave); on a standalone panel it stays click-only. First
+ child of the strip so it never fights the tab order. Cursor grab only
+ where the drag exists: the attribute rides the markup, the cursor
+ rule keeps the affordance honest. */
+.pane-panel-chip {
+  appearance: none;
+  border: 0;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  margin-right: 4px;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 4px;
+  align-self: center;
+  flex: none;
+}
+
+.pane-panel-chip[draggable="true"] {
+  cursor: grab;
+}
+
+.pane-panel-chip:hover {
+  background: color-mix(in srgb, var(--accent), transparent 78%);
+}
+
+.pane-panel-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pane-panel-chip[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* Group chip (rail): the compound with .pane-label-chip below owns
+ the green/dashed look; this bare rule only carries the property no
+ later rule overrides (tabular count digits). */
+.pane-panel-group-chip {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Rename input: the editing state swaps either rail chip
+   (panel or group) for a plain input. Same metrics as the chip so the
+   rail does not reflow on the swap; the input keeps its own border
+   language (bordered control, not accent slab) so the edit reads as a
+   field. */
+.pane-group-rename-input {
+  appearance: none;
+  background: var(--panel, #fff);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 3px 10px;
+  width: 110px;
+  align-self: center;
+  flex: none;
+  box-sizing: border-box;
+  min-height: 24px;
+}
+
+.pane-group-rename-input:focus {
+  border-color: var(--accent);
+  background: var(--panel, #fff);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Half-region drop preview (v3): a dotted, shaded square over the
+ hovered half of the target pane while a chip or tab drag is in flight.
+ Absolute against the collector (JS positions it per dragover);
+ pointer-events none so it never becomes the drop target itself and
+ the drag events keep hitting the pane under the pointer. */
+.panel-drop-preview {
+  position: absolute;
+  z-index: 30;
+  border: 2px dotted var(--accent);
+  border-radius: var(--radius, 6px);
+  background: color-mix(in srgb, var(--accent), transparent 84%);
+  pointer-events: none;
+  display: none;
+}
+
 .pane-ws-badge:hover {
   background: color-mix(in srgb, var(--accent), transparent 78%);
 }
@@ -380,72 +525,162 @@
   padding: 1px 4px;
 }
 
-/* ---- maximize rail ----
- * While a leaf is maximized, the hidden siblings' tab strips stack in
- * this rail under the flat pane. Stub panes carry no content slot, so
- * the strip is their only child; clicks restore the layout. */
-.pane-strip-rail {
+/* ---- label rail (one-visible-view model) ----
+ * A horizontal row of chips above the visible subject: one chip for
+ * EVERY live panel plus one chip per group RECORD (groups persist,
+ * so a hidden group keeps its chip and pressing it reopens the split).
+ * Pressing a chip switches the subject; dragging a panel chip into the view
+ * forms or grows a group; a group member's strip chip dropped here
+ * leaves the visible group. The rail renders only when more than one
+ * subject choice exists. */
+.pane-label-rail {
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
   background: var(--panel2, var(--panel));
-  max-height: 35%;
-  overflow-y: auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
-.pane-strip-rail .workspace-pane {
+/* Member drag over the rail: the release point for leaving the visible
+   group. The accent underline answers "drop here and the view returns
+   as an independent panel" while the chip payload hovers. */
+.pane-label-rail.pane-rail-drop-target {
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+/* A rail chip is a pill, not a text line: the label sits in a span
+   so the flex item ellipsizes inside max-width instead of clipping
+   hard (text-overflow does not apply to the flex container). */
+.pane-label-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-label-chip {
   flex: 0 0 auto;
-  overflow: visible;
-}
-
-.pane-strip-rail .workspace-pane .pane-tab-strip {
-  border-bottom: 0;
-  background: transparent;
-}
-
-/* ---- pane actions menu (Phase 5) ----
- * The [⋮] strip button opens this overlay on document.body; it is
- * positioned from the button rect in JS. Fixed positioning keeps it on
- * screen when the pane strip scrolls horizontally. */
-.pane-menu {
-  position: fixed;
-  z-index: 60;
-  min-width: 180px;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  min-height: 24px;
+  box-sizing: border-box;
+  padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-}
-
-.pane-menu-item {
-  appearance: none;
-  border: 0;
+  border-radius: 999px;
   background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  display: block;
-  width: 100%;
-  padding: 6px 10px;
-  text-align: left;
+  color: var(--text, inherit);
   font: inherit;
   font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pane-label-chip:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 92%);
+}
+
+.pane-label-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pane-label-chip.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 86%);
+}
+
+/* Pressed state reads darker than hover (92%) and active (86%) so the
+ * three states never collapse into one tint. */
+.pane-label-chip:active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 76%);
+}
+
+.pane-label-chip.active:active {
+  background: color-mix(in srgb, var(--accent), transparent 72%);
+}
+
+.pane-label-chip:disabled,
+.pane-label-chip[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pane-label-chip:disabled:hover,
+.pane-label-chip[aria-disabled="true"]:hover {
+  border-color: var(--border);
+  background: transparent;
+}
+
+.pane-label-chip.pane-label-dragging {
+  opacity: 0.5;
+}
+
+.pane-label-chip.pane-panel-group-chip {
+  /* The group chip reads as a different kind of subject, not a
+     selected panel: green text + dashed border instead of the
+     accent solid border panel chips use. */
+  border: 1px dashed var(--pane-group);
+  color: var(--pane-group);
+  font-weight: 600;
+}
+
+.pane-label-chip.pane-panel-group-chip:hover,
+.pane-label-chip.pane-panel-group-chip.active {
+  border-color: var(--pane-group);
+  background: color-mix(in srgb, var(--pane-group), transparent 90%);
+  /* Light theme: #0f6210 on the state tints drops under AA at 12px
+     (4.28:1 hover, 3.71:1 pressed), so the tinted states darken the
+     text 25% toward black (5.94:1/5.15:1). Dark theme needs nothing:
+     #a6e3a1 stays above 6:1 even pressed. */
+  body.light & {
+    color: color-mix(in srgb, var(--pane-group), black 25%);
+  }
+}
+
+.pane-label-chip.pane-panel-group-chip:active,
+.pane-label-chip.pane-panel-group-chip.active:active {
+  background: color-mix(in srgb, var(--pane-group), transparent 80%);
+  body.light & {
+    color: color-mix(in srgb, var(--pane-group), black 25%);
+  }
+}
+
+/* The pane a11y live region (JS appends #paneA11yLive into
+   #workspacePanes) must never paint: the container is a column
+   flex, an unstyled span would render the announcement as stray
+   text inside the pane area. */
+.pane-a11y-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.pane-label-chip.pane-panel-group-chip:focus-visible {
+  outline: 2px solid var(--pane-group);
+  outline-offset: 1px;
+}
+
+/* ---- expanded group frame ----
+ * A visible group subject paints its split wrapper directly under
+ * #workspacePanes (a single panel renders flat, no wrapper), so the
+ * id-scoped child selector frames exactly the expanded group. The
+ * same dashed green as the group chip delimits the group's area:
+ * everything inside the dashed outline belongs to the group. */
+#workspacePanes > .pane-row,
+#workspacePanes > .pane-column {
+  border: 1px dashed var(--pane-group);
   border-radius: 6px;
-}
-
-.pane-menu-item:hover {
-  background: var(--panel2, var(--panel));
-  color: var(--text);
-}
-
-.pane-menu-item:focus-visible {
-  background: var(--panel2, var(--panel));
-  color: var(--text);
-  outline: none;
-  box-shadow: var(--focus-ring);
+  background: color-mix(in srgb, var(--pane-group), transparent 94%);
 }
 
 /* ---- tab drag between panes (Phase 5) ----
@@ -745,3 +980,60 @@
   height: 0;
   overflow: hidden;
 }
+
+/* Merged member header (locked model): ONE element per split member
+   fusing the member identity (label + accent slab) with its single
+   view. The .pane-panel-chip class carries the accent slab look; this
+   rule only adds the tab-row metrics so the fused header reads like a
+   tab: fixed height, tab-like radius, and the close affordance riding
+   inside. Flats render no strip at all, so this class only ever paints
+   inside a split. */
+.pane-member-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 88px;
+  max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 54px);
+  height: 30px;
+  padding: 0 10px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+/* Hover lifts the header like a tab so the fused element reads as one
+   interactive control, not a chip with a tab glued on. */
+.pane-member-header:hover {
+  background: var(--control-hover);
+  color: var(--fg);
+}
+
+/* The fused view label rides between the member label and the close;
+   it ellipsizes so a long path never pushes the ✕ out of the header. */
+.pane-member-header .pane-member-view {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+/* The accent slab stays readable inside the fused header: the chip
+   base sets border-left + background, but the tab-row height is
+   taller than the old chip line, so the padding balances. The view
+   span also carries the worktree ("wt · view"), so the cap gives both
+   spans room before the ellipsis starts eating the origin. */
+.pane-member-header.pane-panel-chip {
+  padding: 0 10px 0 6px;
+  max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 140px);
+}
+
+/* Close inside the merged header keeps the tab-close affordance; the
+   ungroup exit is a leave, not a kill, so no danger tint on hover: a
+   neutral hover avoids selling the exit as a destructive close. */
+.pane-member-header .pane-tab-close {
+  flex: 0 0 auto;
+}
+

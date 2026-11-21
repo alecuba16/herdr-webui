@@ -1,41 +1,5 @@
 (function () {
-  const DEFAULT_GIT_SHORTCUTS = {
-    changes: "Digit1",
-    commit: "Digit2",
-    log: "Digit3",
-    stash: "Digit4",
-    commitAlt: "KeyC",
-    logAlt: "KeyL",
-    refresh: "KeyR",
-    stageAll: "KeyG",
-    stageFile: "KeyY",
-    unstageFile: "KeyU",
-    discardFile: "KeyD",
-    stashFile: "KeyZ",
-    history: "KeyH",
-    blame: "KeyM",
-    edit: "KeyE",
-    compare: "KeyO",
-    branch: "KeyV",
-    focusFile: "KeyI",
-    help: "Digit0",
-    // Keep in sync with DEFAULT_GIT_SHORTCUTS in desktop/app_js/core.js:
-    // the editor blocks cross-scope duplicates, so defaults must be
-    // collision-free out of the box.
-    cleanup: "Digit5",
-    pull: "F2",
-    push: "F3",
-    fetch: "F4",
-    pullRebase: "Shift+KeyT",
-    stashPush: "Shift+KeyK",
-    stashApply: "F5",
-    stashPop: "F6",
-    stashDrop: "Shift+KeyQ",
-    conflictOurs: "F7",
-    conflictBase: "F8",
-    conflictTheirs: "Shift+F9",
-    conflictMark: "Shift+KeyN",
-  };
+  const DEFAULT_GIT_SHORTCUTS = globalThis.HerdrAppHelpers.gitShortcutDefaults();
 
   function createGitUiShortcuts({
     state,
@@ -141,7 +105,10 @@
       const targetInTerminal = !!(
         event.target &&
         event.target.closest &&
-        (event.target.id === "terminalImeInput" ||
+        // The wterm textareas carry NUMBERED ids (terminalImeInput-1,
+        // -2, ...: split views mount several surfaces), so the guard
+        // matches the shared prefix instead of one fixed id.
+        (String(event.target.id || "").startsWith("terminalImeInput-") ||
           event.target.closest("#terminalShell"))
       );
       const targetInGitUi = !!(
@@ -379,16 +346,9 @@
       alertFn(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.cleanup)} Cleanup tab\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Branch popover in the location bar\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.pull)} Pull update\n${shortcutDisplay(map.push)} Push\n${shortcutDisplay(map.fetch)} Fetch origin\n${shortcutDisplay(map.pullRebase)} Pull with rebase\n${shortcutDisplay(map.stashPush)} Stash push\n${shortcutDisplay(map.stashApply)} Apply selected stash\n${shortcutDisplay(map.stashPop)} Pop selected stash\n${shortcutDisplay(map.stashDrop)} Drop selected stash\n${shortcutDisplay(map.conflictOurs)} Conflict: use HEAD\n${shortcutDisplay(map.conflictBase)} Conflict: use parent\n${shortcutDisplay(map.conflictTheirs)} Conflict: use remote\n${shortcutDisplay(map.conflictMark)} Conflict: mark resolved\n${shortcutDisplay(map.help)} Git shortcut help\n\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nEsc Back / hide`);
     }
 
-    function shortcutDisplay(value) {
-      return String(value || "")
-        .replace(/(^|\+)Key/g, "$1")
-        .replace(/(^|\+)Digit/g, "$1")
-        .replace("BracketLeft", "[")
-        .replace("BracketRight", "]")
-        .replace("Slash", "/")
-        .replace("Period", ".")
-        .replace("Comma", ",");
-    }
+    // Display text lives in shared/core.js (HerdrAppHelpers) so the
+    // desktop chord maps and this drawer render keys identically.
+    const shortcutDisplay = (value) => globalThis.HerdrAppHelpers.shortcutDisplay(value);
 
     function gitShortcutLabel(action) {
       const key = gitShortcutMap()[action];

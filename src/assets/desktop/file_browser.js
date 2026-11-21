@@ -1767,6 +1767,15 @@
   window.HerdrFileBrowser = {
     open,
     openAt,
+    // Rehydrate and other pane-module paths open an editor tab without a
+    // sidebar visit; without this the module's cached state still points at
+    // the last workspace (or nothing after a reload) and the first file
+    // fetch rides an empty cwd.
+    activateWorkspace(workspace) {
+      const cwd = workspaceCwd(workspace);
+      if (!cwd) return;
+      activateState(workspaceKey(workspace), cwd);
+    },
     close: hide,
     hide,
     forgetWorkspace,

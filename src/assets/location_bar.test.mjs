@@ -28,6 +28,7 @@ const locationBarScript = new vm.Script(readFileSync(LOCATION_BAR_PATH, "utf8"),
   filename: LOCATION_BAR_PATH,
 });
 let drawerShortcutsScript = null;
+let drawerCoreScript = null;
 
 function stubNode(id) {
   return {
@@ -1253,11 +1254,15 @@ describe("location bar worktree popover", () => {
         // shortcut guard probes by id and must always hear "none".
         getElementById: () => null,
       },
-      HerdrAppHelpers: { escapeHtml: (value) => String(value) },
     });
     drawer.globalThis = drawer;
     drawer.window = drawer;
     // Compiled once per product file so coverage attributes to the real path.
+    if (!drawerCoreScript) {
+      const corePath = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+      drawerCoreScript = new vm.Script(readFileSync(corePath, "utf8"), { filename: corePath });
+    }
+    drawerCoreScript.runInContext(drawer);
     if (!drawerShortcutsScript) {
       const shortcutsPath = fileURLToPath(new URL("./desktop/git_ui/shortcuts.js", import.meta.url));
       drawerShortcutsScript = new vm.Script(readFileSync(shortcutsPath, "utf8"), { filename: shortcutsPath });
@@ -2843,4 +2848,105 @@ describe("location bar discovery popover", () => {
       equal(bar.innerHTML, before, "late completion does not repaint or close another opening");
     });
   }
+});
+
+describe("location bar pane unsplit wiring", () => {
+  // The bar is the remove affordance for a herdr-pane-tab
+  // drag. The bar module owns the DOM listeners only; the panes module
+  // owns qualification and tree surgery, stubbed here to observe the
+  // handoff.
+  function loadUnsplitBar({ hoverResult = true, dropResult = true } = {}) {
+    const barListeners = {};
+    const bar = stubNode("locationBar");
+    bar.classList = {
+      _set: new Set(),
+      add(token) { this._set.add(token); },
+      remove(token) { this._set.delete(token); },
+      contains(token) { return this._set.has(token); },
+    };
+    bar.addEventListener = (type, handler) => { barListeners[type] = handler; };
+    bar.contains = (node2) => {
+      let cur = node2;
+      while (cur) { if (cur === bar) return true; cur = cur.parentNode; }
+      return false;
+    };
+    const calls = { hover: 0, drop: 0 };
+    const document = {
+      getElementById: (id) => (id === "locationBar" ? bar : null),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: () => ({ rel: "", href: "", set innerHTML(html) { this._html = html; }, get innerHTML() { return this._html || ""; }, firstElementChild: null, replaceWith() {}, querySelector: () => null }),
+      addEventListener: () => {},
+      head: { appendChild: () => {} },
+    };
+    const ctx = {
+      document,
+      setTimeout: (fn) => fn(),
+      state: { ws: "ws1", workspaces: [workspaceOf("/repo")] },
+      fetch: () => Promise.resolve({ ok: true, statusText: "OK", json: () => Promise.resolve({}) }),
+      requestAnimationFrame: (fn) => fn(),
+      confirm: () => true,
+      alert: () => {},
+    };
+    ctx.globalThis = ctx;
+    ctx.window = ctx;
+    ctx.HerdrWorkspacePath = (workspace) => workspace.cwd;
+    ctx.HerdrWorkspacePanes = {
+      paneTabUnsplitHover: (event) => { calls.hover += 1; return hoverResult; },
+      paneTabUnsplitDrop: (event) => { calls.drop += 1; return dropResult; },
+    };
+    const contextObject = vm.createContext(ctx);
+    locationBarScript.runInContext(contextObject);
+    return { ctx, bar, barListeners, calls };
+  }
+
+  it("dragover paints the remove indicator when the panes module qualifies", () => {
+    const { bar, barListeners, calls } = loadUnsplitBar();
+    ok(barListeners.dragover, "the bar wires its dragover listener");
+    let prevented = false;
+    barListeners.dragover({ preventDefault() { prevented = true; }, dataTransfer: { dropEffect: null } });
+    ok(prevented, "a qualified hover cancels so the browser can deliver the drop");
+    ok(bar.classList.contains("location-bar-pane-remove"), "the remove indicator paints");
+    equal(calls.hover, 1, "qualification ran exactly once");
+  });
+
+  it("dragover without qualification leaves the bar untouched", () => {
+    const { bar, barListeners, calls } = loadUnsplitBar({ hoverResult: false });
+    let prevented = false;
+    barListeners.dragover({ preventDefault() { prevented = true; }, dataTransfer: { dropEffect: null } });
+    equal(prevented, false, "an unqualified hover never cancels");
+    ok(!bar.classList.contains("location-bar-pane-remove"), "no indicator paints");
+    equal(calls.hover, 1, "qualification ran exactly once");
+  });
+
+  it("dragleave clears the indicator when the pointer leaves the bar", () => {
+    const { bar, barListeners } = loadUnsplitBar();
+    barListeners.dragover({ preventDefault() {}, dataTransfer: { dropEffect: null } });
+    ok(bar.classList.contains("location-bar-pane-remove"), "indicator painted");
+    // A hop between bar children keeps the indicator (relatedTarget inside).
+    barListeners.dragleave({ relatedTarget: { parentNode: bar } });
+    ok(bar.classList.contains("location-bar-pane-remove"), "child-to-child hop keeps the indicator");
+    // Leaving the bar entirely clears it.
+    barListeners.dragleave({ relatedTarget: null });
+    ok(!bar.classList.contains("location-bar-pane-remove"), "leaving the bar clears the indicator");
+  });
+
+  it("drop hands the event to the panes module and clears the indicator", () => {
+    const { bar, barListeners, calls } = loadUnsplitBar();
+    barListeners.dragover({ preventDefault() {}, dataTransfer: { dropEffect: null } });
+    let prevented = false;
+    barListeners.drop({ preventDefault() { prevented = true; } });
+    equal(calls.drop, 1, "the drop reached the panes module");
+    ok(prevented, "an accepted drop cancels the browser default");
+    ok(!bar.classList.contains("location-bar-pane-remove"), "the indicator cleared after the drop");
+  });
+
+  it("drop without the panes module still clears the indicator", () => {
+    const { ctx, bar, barListeners, calls } = loadUnsplitBar();
+    delete ctx.HerdrWorkspacePanes;
+    barListeners.dragover({ preventDefault() {}, dataTransfer: { dropEffect: null } });
+    barListeners.drop({ preventDefault() {} });
+    equal(calls.drop, 0, "no handoff without the module");
+    ok(!bar.classList.contains("location-bar-pane-remove"), "the indicator cleared anyway");
+  });
 });

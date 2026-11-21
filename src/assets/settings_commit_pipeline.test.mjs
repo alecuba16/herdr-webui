@@ -846,13 +846,8 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
       closeWorkspace = (ws) => { (window.__closedWs = window.__closedWs || []).push(ws); };
       removeWorktree = (ws) => { (window.__removedWt = window.__removedWt || []).push(ws); };
       focusTerminal = () => { window.__focusedTerminal = true; };
-      splitPaneRight = () => { window.__splitRight = true; return true; };
-      splitPaneDown = () => { window.__splitDown = true; return true; };
       closeActivePane = () => { window.__closedPane = true; };
-      moveActiveTabToNextPane = () => { window.__movedTab = true; return true; };
-      maximizeActivePane = () => { window.__maximized = true; return true; };
       activePaneElement = () => null;
-      togglePaneMenu = (btn) => { window.__paneMenu = btn; };
       isWorkingDismissed = () => false;
       selectedWorkspace = () => ({ workspace_id: "ws1" });
       selectedWorkspaceRepoPath = () => "/repo";
@@ -944,6 +939,8 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     vm.runInContext("state.ws = 'ws1';", d.ctx);
     d.arm();
     d.press("Digit1");
+    // This harness loads no picker module: with a workspace the chord
+    // takes its fallback (change 5), the direct panel mint.
     assert.equal(vm.runInContext("window.__newTab", d.ctx), 1, "with a workspace the panel is created");
   });
 
@@ -989,26 +986,29 @@ describe("prefixed shortcut actions (shortcuts.js)", () => {
     assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(window.__removedWt || [])", d.ctx)), ["ws1"], "a linked worktree removes through the alt too");
   });
 
-  it("focusTerminal, split, close pane, move tab, and maximize run their actions", () => {
-    const d = armedContext(`options.webuiShortcuts = { focusTerminal: "Digit1", splitRight: "Digit2", splitDown: "Digit3", closePane: "Digit4", moveTabNextPane: "Digit5", maximizePane: "Digit6" };`);
-    for (const code of ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"]) {
+  it("focusTerminal, close pane, and newPanel run their actions; the split/maximize chords are gone", () => {
+    // Traced to the one visible view model: splitRight/splitDown/
+    // moveTabNextPane/maximizePane chords are removed from the dispatch,
+    // so pressing their keys must be a no-op and the pane-grid surface
+    // keeps only focusTerminal/closePane/newPanel.
+    const d = armedContext(`options.webuiShortcuts = { focusTerminal: "Digit1", closePane: "Digit2", newPanel: "Digit3", splitRight: "Digit4", splitDown: "Digit5", moveTabNextPane: "Digit6", maximizePane: "Digit7" };
+      window.__splitRight = "untouched";
+      window.__splitDown = "untouched";
+      window.__movedTab = "untouched";
+      window.__maximized = "untouched";`);
+    for (const code of ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7"]) {
       d.arm();
       d.press(code);
     }
     assert.equal(vm.runInContext("window.__focusedTerminal", d.ctx), true);
-    assert.equal(vm.runInContext("window.__splitRight", d.ctx), true);
-    assert.equal(vm.runInContext("window.__splitDown", d.ctx), true);
     assert.equal(vm.runInContext("window.__closedPane", d.ctx), true);
-    assert.equal(vm.runInContext("window.__movedTab", d.ctx), true);
-    assert.equal(vm.runInContext("window.__maximized", d.ctx), true);
-  });
-
-  it("togglePaneMenu resolves the active pane strip button", () => {
-    const d = armedContext(`options.webuiShortcuts = { togglePaneMenu: "Digit1" };
-      activePaneElement = () => ({ querySelector: () => "the-button" });`);
-    d.arm();
-    d.press("Digit1");
-    assert.equal(vm.runInContext("window.__paneMenu", d.ctx), "the-button", "the strip button toggles");
+    // No picker module in this harness: newPanel exercises its fallback
+    // mint (change 5 opens the picker in production).
+    assert.equal(vm.runInContext("window.__newTab", d.ctx), 1, "newPanel routes to the newTab panel mint");
+    assert.equal(vm.runInContext("window.__splitRight", d.ctx), "untouched", "splitRight no longer dispatches");
+    assert.equal(vm.runInContext("window.__splitDown", d.ctx), "untouched", "splitDown no longer dispatches");
+    assert.equal(vm.runInContext("window.__movedTab", d.ctx), "untouched", "moveTabNextPane no longer dispatches");
+    assert.equal(vm.runInContext("window.__maximized", d.ctx), "untouched", "maximizePane no longer dispatches");
   });
 
   it("focus cycling walks focusable controls around the document", async () => {

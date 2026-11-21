@@ -656,6 +656,34 @@ pub(super) async fn git_ui_tag(
     git_spawn(move || git_ui_tag_blocking(cwd, tag_name, ref_name)).await
 }
 
+/// Validates an optional branch token, returning a JSON error response on failure.
+// Response-as-Err matches the sibling validators (file.rs, mod.rs).
+#[allow(clippy::result_large_err)]
+fn validated_branch(branch: &Option<String>) -> Result<Option<String>, Response> {
+    match branch.as_deref().filter(|value| !value.trim().is_empty()) {
+        Some(value) => match safe_git_token(value, "branch") {
+            Ok(v) => Ok(Some(v.to_string())),
+            Err(err) => Err(git_json_error(StatusCode::BAD_REQUEST, err)),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Builds the shared remote args tail: optional origin + validated branch.
+fn push_origin_branch(args: &mut Vec<String>, branch: &Option<String>) {
+    if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        args.push("origin".to_string());
+        args.push(branch.to_string());
+    }
+}
+
+fn git_ok_message(cwd: &str, args: &[String]) -> Result<serde_json::Value, (StatusCode, String)> {
+    match git_ui_text_strings(cwd, args) {
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
+}
+
 pub(super) fn git_ui_pull_blocking(
     cwd: String,
     mode: String,
@@ -676,10 +704,7 @@ pub(super) fn git_ui_pull_blocking(
         } else {
             args.push("@{u}".to_string());
         }
-        return match git_ui_text_strings(&cwd, &args) {
-            Ok(text) => Ok(json!({ "ok": true, "message": text })),
-            Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
-        };
+        return git_ok_message(&cwd, &args);
     }
     let mut args = vec!["pull".to_string()];
     match mode.as_str() {
@@ -690,14 +715,8 @@ pub(super) fn git_ui_pull_blocking(
         "force" => args.push("--force".to_string()),
         _ => return Err((StatusCode::BAD_REQUEST, "invalid pull mode".to_string())),
     }
-    if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-        args.push("origin".to_string());
-        args.push(branch.to_string());
-    }
-    match git_ui_text_strings(&cwd, &args) {
-        Ok(text) => Ok(json!({ "ok": true, "message": text })),
-        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
-    }
+    push_origin_branch(&mut args, &branch);
+    git_ok_message(&cwd, &args)
 }
 
 pub(super) async fn git_ui_pull(
@@ -708,16 +727,9 @@ pub(super) async fn git_ui_pull(
 ) -> Response {
     check_auth!(&state, &headers, remote);
     let mode = body.mode.unwrap_or_else(|| "regular".to_string());
-    let branch = match body
-        .branch
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        Some(value) => match safe_git_token(value, "branch") {
-            Ok(v) => Some(v.to_string()),
-            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-        },
-        None => None,
+    let branch = match validated_branch(&body.branch) {
+        Ok(branch) => branch,
+        Err(response) => return response,
     };
     let cwd = body.cwd;
     git_spawn(move || git_ui_pull_blocking(cwd, mode, branch)).await
@@ -744,16 +756,9 @@ pub(super) async fn git_ui_fetch(
     Json(body): Json<GitUiPullPushRequest>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let branch = match body
-        .branch
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        Some(value) => match safe_git_token(value, "branch") {
-            Ok(v) => Some(v.to_string()),
-            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-        },
-        None => None,
+    let branch = match validated_branch(&body.branch) {
+        Ok(branch) => branch,
+        Err(response) => return response,
     };
     let cwd = body.cwd;
     git_spawn(move || git_ui_fetch_blocking(cwd, branch)).await
@@ -779,14 +784,8 @@ pub(super) fn git_ui_push_blocking(
         "force-with-lease" => args.push("--force-with-lease".to_string()),
         _ => return Err((StatusCode::BAD_REQUEST, "invalid push mode".to_string())),
     }
-    if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-        args.push("origin".to_string());
-        args.push(branch.to_string());
-    }
-    match git_ui_text_strings(&cwd, &args) {
-        Ok(text) => Ok(json!({ "ok": true, "message": text })),
-        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
-    }
+    push_origin_branch(&mut args, &branch);
+    git_ok_message(&cwd, &args)
 }
 
 pub(super) async fn git_ui_push(
@@ -797,16 +796,9 @@ pub(super) async fn git_ui_push(
 ) -> Response {
     check_auth!(&state, &headers, remote);
     let mode = body.mode.unwrap_or_else(|| "regular".to_string());
-    let branch = match body
-        .branch
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        Some(value) => match safe_git_token(value, "branch") {
-            Ok(v) => Some(v.to_string()),
-            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
-        },
-        None => None,
+    let branch = match validated_branch(&body.branch) {
+        Ok(branch) => branch,
+        Err(response) => return response,
     };
     let cwd = body.cwd;
     let pull_first = body.pull_first.unwrap_or(false);

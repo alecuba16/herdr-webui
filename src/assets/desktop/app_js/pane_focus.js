@@ -35,9 +35,6 @@
     while (node) {
       const classes = String(node.className || "").split(/\s+/);
       if (classes.indexOf("workspace-pane") >= 0) return node;
-      // Rail stubs share the pane class but act on their leaf's behalf;
-      // they are not layout leaves and never take the ring.
-      if (classes.indexOf("pane-rail-stub") >= 0) return null;
       node = node.parentNode;
     }
     return null;
@@ -57,7 +54,20 @@
     const leaves = (window.HerdrWorkspacePanes.paneLeaves && window.HerdrWorkspacePanes.paneLeaves(root)) || [];
     if (!leaves.some((leaf) => leaf.paneId === paneId)) return false;
     root.activePaneId = paneId;
+    // Group focus memory: the record carries the last member clicked
+    // inside the split, so a subject switch away and back reopens on
+    // the same member. activePaneId alone cannot hold it: every rail
+    // chip press overwrites that pointer.
+    if (window.HerdrWorkspacePanes.rememberGroupFocus)
+      window.HerdrWorkspacePanes.rememberGroupFocus(root, paneId);
     if (window.HerdrWorkspacePanes.saveWorkspacePanesStates) window.HerdrWorkspacePanes.saveWorkspacePanesStates();
+    // Collector model (design: the location bar always mirrors the
+    // focused panel): clicking into a panel writes the route from that
+    // panel through the pane module's shared helper. go() owns the
+    // refresh; this module still never re-renders by itself.
+    const leaf = leaves.find((candidate) => candidate.paneId === paneId);
+    if (window.HerdrWorkspacePanes.writeRouteFromLeaf)
+      window.HerdrWorkspacePanes.writeRouteFromLeaf(leaf);
     return true;
   }
 
@@ -103,7 +113,7 @@
   function walkPanes(node, visit) {
     for (const child of node.children || []) {
       const classes = String(child.className || "").split(/\s+/);
-      if (classes.indexOf("workspace-pane") >= 0 && classes.indexOf("pane-rail-stub") < 0) {
+      if (classes.indexOf("workspace-pane") >= 0) {
         visit(child);
       }
       walkPanes(child, visit);

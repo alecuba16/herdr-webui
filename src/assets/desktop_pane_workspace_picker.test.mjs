@@ -189,6 +189,26 @@ test("pick with scope new-tab falls back to a plain route when the panes module 
   assert.deepEqual(routed, ["ws-2"], "no private creation copy: the route alone");
 });
 
+test("openPicker returns true on a real open, false with no rows", () => {
+  const { ctx, picker, body } = loadPicker();
+  assert.equal(picker.openPicker(makeNode("anchor", "pane-new-picker"), "p3", "new-tab"), true, "real open reports true");
+  picker.close();
+  ctx.state.workspaces = [];
+  assert.equal(picker.openPicker(makeNode("anchor", "pane-new-picker"), "p3", "new-tab"), false, "no rows reports false");
+  assert.equal(body.children.length, 0, "empty picker mounts nothing");
+});
+
+test("chord open without an anchor element pins the popover at the corner", () => {
+  const { picker, body } = loadPicker();
+  picker.openPicker(null, "p3", "new-tab");
+  assert.ok(picker.isOpen(), "null anchor still opens");
+  const popover = body.children.find((c) => c.className === "pane-workspace-picker");
+  assert.ok(popover, "popover mounted on the body");
+  assert.equal(popover.style.position, "fixed", "corner fallback is fixed");
+  assert.equal(popover.style.left, "16px", "corner left");
+  assert.equal(popover.style.top, "48px", "corner top");
+});
+
 test("source contract: capture wiring, idempotent wire, listbox semantics", () => {
   assert.ok(pickerSource.includes('addEventListener("pointerdown", globalPointerDown, true)'), "outside click closes (capture)");
   assert.ok(pickerSource.includes('addEventListener("keydown", globalKeydown, true)'), "global Escape closes");

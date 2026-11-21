@@ -1,5 +1,105 @@
 # Release notes
 
+## Unreleased
+- Flat panels outside a split hold exactly one view and render no
+  strip: their identity lives in the label rail chip and the location
+  bar, and every second-view path auto-splits the host (old left,
+  new right, focus on the fresh member). A visible split renders one
+  merged header per member: the panel label plus accent, the view
+  tab, and the ✕ ride one element (click focuses, double-click or F2
+  renames, the ✕ leaves the split back to the rail, never a close).
+  The view span inside the header carries the worktree and the view
+  ("wt · view": row label, file basename, or Git view label) for
+  every member kind, so the origin stays visible even under a
+  custom panel name; the chip keeps pure identity.
+- Grouped members drop their rail chip while inside a group (the
+  merged header is their identity), and renaming them mounts the
+  input in the header. The chip returns on any exit: drag-out to the
+  rail, the ✕ ungroup, or the group dissolving below two members. A
+  lone group still paints the rail so the drag-out exit stays
+  reachable, so the rail lists ungrouped leaves plus one chip per
+  group record. Empty fresh-mint panels stay reachable and groups
+  survive subject switches as reopenable chips.
+- The file endpoints honor absolute paths: an editor tab or external
+  entry point carrying a filesystem-absolute path (with an empty cwd)
+  resolved against the home directory and 400'd on a real file. Reads,
+  writes, outline, content search, rename, and delete now resolve the
+  absolute target directly, and a request that carries a real root
+  still confines the target under it.
+- Persisted editor tabs rehydrate after a reload: the tab survived in
+  the stored tree but its content container never existed in the fresh
+  document, so the pane rendered an empty slot. The claim pass now
+  routes such a tab through the owning module once (a live open is
+  never duplicated, a deleted file never loops the fetch).
+- Panel close is real close everywhere: the pane menu's close, the
+  flat panel ✕, `prefix E`, and `prefix X` drain each view through
+  its own confirmation path (terminal ask, dirty editor confirm,
+  Git silent), then drop the panel record with its views. No close
+  migrates tabs into a sibling anymore, client or server: the
+  store's `panel.close` splices the panel and its tabs, the
+  under-two dissolve and subject heal stay.
+- The pane menu Rename names the panel through the rail chip swap on
+  every leaf (the tab rename entry is gone), and the merged header
+  carries the same rename on double-click and F2.
+- The dormant move-tab command follows the one-view rule now: a busy
+  next pane gets a fresh split member that lands the tab (the source
+  sheds the id through the shared removal choke point, so it never
+  lives in two leaves), and a rejected server split refuses the move
+  with nothing stranded. The docs dropped the chord rows for split
+  right/down (`D`/`Shift+D`), move tab (`M`), and maximize
+  (`Shift+M`): no such chords or buttons exist in the WebUI, splits
+  are implicit, and maximize left with the stripless rework.
+- The dormant move-tab command is deleted outright (review-round
+  hygiene): its chord was gone and nothing called it; the two tests
+  that pinned its split rule are gone with it.
+- The strip-tab drop honors the one-view rule now: dropping a tab on
+  a busy member's strip grows the split through the shared engine
+  (fresh member beside the target, dropped view lands there, server
+  mode pushes the emptied source's delta before the split ops so no
+  response resurrects it), instead of stacking a second view into the
+  busy member.
+- Destructive file ops (write, rename, delete) refuse any target that
+  escapes the request root, whatever the cwd: an empty or whitespace
+  cwd roots them at the canonical home directory (macOS alias forms
+  like `/tmp` vs `/private/tmp` resolve on both sides), and an in-root
+  symlink pointing outside is refused. Only reads keep the
+  home-allowed policy that persisted editor-tab rehydration needs.
+  Every refusal leaves nothing behind.
+- Inline handler payloads (pane ids, file paths in tab strips, rail
+  chips, rename inputs) escape for the single-quoted JS-string layer
+  AND the double-quoted HTML attribute layer: a filename like
+  `a');payload;//` stays a string argument and `x" onmouseover=` stays
+  inert text. The escaper lives in shared core with the plain
+  attribute escaper beside it.
+- The tab-strip drop recomputes its caret index from the release
+  coordinates instead of a cached dataset slot, the sync pass pushes
+  one `panel.update` per touched leaf (untouched leaves stay quiet),
+  the markdown eye button exposes its edit/source/preview state to the
+  bar repaint signature, and a server-op failure now resyncs from the
+  server entry before demoting to local mode, so a lost response never
+  forks the session against a live server.
+- A corrupt panes sidecar parks its bytes in a `.bak` beside the file
+  before the fresh-seed reset, merged headers carry `aria-selected`
+  with the dangling `pane-<id>` references now backed by real mount
+  ids, rename inputs take focus explicitly, and the member header
+  and sidebar resize handle honor reduced-motion.
+- Closing a built-in session is final for its panel tab data: the
+  server drops the session's `panes-<session>.json` sidecar and the
+  warm store entry along with the journal and dir (the default slot
+  keeps its sidecar), so a same-name relaunch starts clean instead
+  of resurrecting panels pointing at dead tabs. The cleanup pass
+  also sweeps orphaned panes sidecars whose session dir is fully
+  gone (never `default`, never a live name, warm entry, or a session
+  dir the sweep can still see) and reports them in `swept_orphans`.
+- Re-attaching a parked pane terminal no longer duplicates its
+  output: the aux surface keeps its wterm instance across park and
+  return, but the server replay used to append its whole tail into
+  the still-populated buffer on every re-attach, so each park/return
+  or socket-death cycle painted one extra copy of the scrollback.
+  The attach now clears the surface first, the same contract as the
+  primary shell's reset, so the replay repaints the tail exactly
+  once.
+
 ## 0.7.54 Release Notes
 - The terminal hub join race is closed: `start_attach` spawns the
   connect task before the joiner registers its queue, so a fast attach

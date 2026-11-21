@@ -314,14 +314,13 @@ describe("bindings.js keydown delegation (Enter/Space on span role=button)", () 
     assert.equal(clicks, 1, "unrelated keys never synthesize clicks");
   });
 
-  it("Enter on the empty workspace surface creates the first terminal", () => {
+  it("Enter on the empty focused panel creates a terminal; a tabbed panel stays inert", () => {
     const { ctx, getElement } = boot();
     vm.runInContext(
       `window.__newTab = 0;
       newTab = function () { window.__newTab++; };
       state.ws = "ws1";
       state.tab = null;
-      workspaceHasOpenFileOrGitTab = function () { return false; };
       modalOpen = function () { return false; };`,
       ctx,
     );
@@ -330,15 +329,39 @@ describe("bindings.js keydown delegation (Enter/Space on span role=button)", () 
     // span-button lookup hijack the Enter press first
     bodyTarget.closest = (sel) => (sel === "#workspacePanes" ? bodyTarget : null);
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
-    assert.equal(ctx.window.__newTab, 1);
+    assert.equal(ctx.window.__newTab, 1, "empty focused panel mints on Enter");
     // Modal open: Enter passes through.
     vm.runInContext("modalOpen = function () { return true; };", ctx);
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
     assert.equal(ctx.window.__newTab, 1);
-    // Workspace without an open git/file tab: the workspace itself gates it.
-    vm.runInContext("modalOpen = function () { return false; }; state.tab = 'tab1';", ctx);
+    vm.runInContext("modalOpen = function () { return false; };", ctx);
+    // Collector rule: state.tab no longer gates Enter (the focused
+    // panel does). A real tab row in the focused panel blocks it.
+    const panes = ctx.window.HerdrWorkspacePanes;
+    const paneState = panes.panesStateFor("ws1");
+    vm.runInContext(
+      `state.tabs = [{ tab_id: "tab1", workspace_id: "ws1" }];`,
+      ctx,
+    );
+    // Traced to the one visible view model: panesStateFor() is the flat
+    // session entry ({panels, groups, visible}); the acting panel comes
+    // through paneLeaves, not a tree root.
+    const root = panes.paneLeaves(paneState)[0];
+    root.tabs = ["tab1"];
+    root.active = "tab1";
     ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
-    assert.equal(ctx.window.__newTab, 1, "a selected tab blocks the boot Enter");
+    assert.equal(ctx.window.__newTab, 1, "a real tab in the focused panel blocks the Enter mint");
+    // Empty focused panel re-arms the mint (the tab lives in a sibling).
+    const fresh = { kind: "pane", paneId: "pempty", tabs: [], active: null, wsId: "ws1", groupId: null };
+    root.groupId = null;
+    // Traced to the one visible view model: panels list plus the
+    // activePaneId pointer replace the old split tree root.
+    paneState.panels = [root, fresh];
+    paneState.groups = [];
+    paneState.visible = { type: "panel", id: "pempty" };
+    paneState.activePaneId = "pempty";
+    ctx.document.fire("keydown", fakeEvent({ key: "Enter", target: bodyTarget }));
+    assert.equal(ctx.window.__newTab, 2, "an empty focused sibling mints on Enter");
   });
 });
 
@@ -1004,11 +1027,10 @@ describe("bindings.js worktree modal wiring", () => {
 });
 
 describe("bindings.js Escape cascade", () => {
-  it("Escape walks no-sleep menu, pane menu, and the modal stack", () => {
+  it("Escape walks no-sleep menu and the modal stack", () => {
     const { ctx, getElement } = boot();
     vm.runInContext(
-      `closePaneMenu = function () { window.__paneMenuClosed = true; };
-      closeQuestion = function () { window.__questionClosed = true; };
+      `closeQuestion = function () { window.__questionClosed = true; };
       closeWorkspaceCreateModal = function () { window.__wsCreateClosed = true; };
       closeWorktreeOpenModal = function () { window.__wtOpenClosed = true; };
       closeWorktreeCreateModal = function () { window.__wtCreateClosed = true; };
@@ -1016,19 +1038,9 @@ describe("bindings.js Escape cascade", () => {
       hideSessionManager = function () { window.__sessionsHidden = true; };`,
       ctx,
     );
-    // No open modal: Escape is a no-op. The auto-creating getElementById
-    // would invent a paneMenu and fire the real close, so null it first.
-    const menuBackup = ctx.document.getElementById;
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? null : menuBackup(id));
+    // No open modal: Escape is a no-op.
     ctx.document.fire("keydown", fakeEvent({ key: "Escape" }));
-    assert.equal(ctx.window.__paneMenuClosed, undefined);
-    // Pane menu first.
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? getElement("paneMenu") : menuBackup(id));
-    ctx.document.fire("keydown", fakeEvent({ key: "Escape" }));
-    assert.equal(ctx.window.__paneMenuClosed, true);
-    // every later step must skip the pane-menu branch again: the auto-
-    // creating getElementById would re-enter closePaneMenu forever
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? null : menuBackup(id));
+    assert.equal(ctx.window.__questionClosed, undefined);
     // Question modal.
     getElement("questionModal").style.display = "grid";
     ctx.document.fire("keydown", fakeEvent({ key: "Escape" }));
@@ -1080,31 +1092,6 @@ describe("bindings.js Escape cascade", () => {
     assert.equal(menu.hidden, true);
     assert.equal(control.attributes["aria-expanded"], "false");
     assert.equal(control.focused, true);
-  });
-
-  it("mousedown outside an open pane menu closes it", () => {
-    const { ctx, getElement } = boot();
-    vm.runInContext("closePaneMenu = function () { window.__paneMenuClosed = true; };", ctx);
-    const menuBackup = ctx.document.getElementById;
-    const paneMenu = getElement("paneMenu");
-    paneMenu.contains = () => false;
-    // the outside target must answer null to the .pane-menu-button
-    // lookup, the default this-returning closest would skip the close
-    getElement("someButton").closest = () => null;
-    getElement("insideMenu").closest = () => null;
-    ctx.document.getElementById = (id) => (id === "paneMenu" ? paneMenu : menuBackup(id));
-    ctx.document.fire("mousedown", fakeEvent({ target: getElement("someButton") }));
-    assert.equal(ctx.window.__paneMenuClosed, true);
-    // Click on the pane menu button itself: no close.
-    ctx.window.__paneMenuClosed = false;
-    const menuButton = getElement("somePaneMenuButton");
-    menuButton.closest = () => menuButton;
-    ctx.document.fire("mousedown", fakeEvent({ target: menuButton }));
-    assert.notEqual(ctx.window.__paneMenuClosed, true);
-    // Inside the menu: no close.
-    paneMenu.contains = () => true;
-    ctx.document.fire("mousedown", fakeEvent({ target: getElement("insideMenu") }));
-    assert.notEqual(ctx.window.__paneMenuClosed, true);
   });
 });
 
