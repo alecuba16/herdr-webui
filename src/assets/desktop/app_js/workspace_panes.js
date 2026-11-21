@@ -5747,8 +5747,9 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
   const activeIsTerminal = !!activeTab && !isEditorTab(activeTab) && !isGitTab(activeTab);
   const aux = window.HerdrPaneTerminals;
   // D8 cache: a leaf whose active tab is not a terminal anymore parks
-  // its aux surface instead of disposing it (scrollback and the live
-  // view survive an editor stint or an owner flip). Real disposal stays
+  // its aux surface instead of disposing it (the wterm instance and the
+  // live view survive an editor stint or an owner flip; the socket's
+  // replay repaints on return). Real disposal stays
   // on closeTab and the two parked-unrecoverable rules in releaseStale.
   // parkForTab itself no-ops when the tab has no surface.
   const parkAuxForThisLeaf = () => {

@@ -10,8 +10,8 @@
 // The registry is a session-scoped cache (D8), keyed by tab id. A leaf
 // stopping rendering (maximize, editor stint, tab moved to the owner)
 // parks its surface hidden with the socket detached (no sockets for
-// non-visible surfaces) instead of destroying it, so scrollback and
-// the wterm instance survive the flip back and a re-attach replays the
+// non-visible surfaces) instead of destroying it, so the wterm
+// instance survives the flip back and a re-attach replays the
 // view. Only a closed tab disposes for real, plus cap eviction
 // (least-recently-focused first).
 
@@ -136,7 +136,7 @@
   // of disposing it. Parked means hidden, out of the pane slots, and its
   // socket detached (no sockets for non-visible surfaces: the hub replay
   // ring rehydrates the view when the tab returns). The wterm instance
-  // stays, so scrollback survives a maximize, an editor stint, or an
+  // stays, so the surface survives a maximize, an editor stint, or an
   // owner flip. Only a closed tab or cap eviction disposes.
   function park(entry) {
     if (!entry) return;
@@ -163,8 +163,8 @@
 
   // D8 socket rule: no sockets for non-visible surfaces. Detaching
   // drops the hub replay ring and the fan-out slot a parked surface
-  // would otherwise hold; re-attach replays the scrollback back into
-  // the same wterm instance, so nothing visible is lost.
+  // would otherwise hold; re-attach clears the surface and replays the
+  // scrollback into it, so nothing visible is lost.
   function detachSocket(entry) {
     if (!entry || !entry.ws) return;
     const ws = entry.ws;
@@ -329,6 +329,13 @@
     // tail; a socket before the term exists would drop early frames.
     if (!entry.term) return null;
     if (entry.ws) return entry.ws;
+    // The replay paints the whole tail, so a surface still holding its
+    // pre-park content would append a second copy of it (each
+    // park/return or socket-death cycle duplicated the view). Same
+    // contract as the primary surface's resetTerminalConnection(true).
+    if (typeof entry.term.clear === "function") {
+      try { entry.term.clear(); } catch (e) {}
+    }
     const ws = new WebSocket(
       wsUrlFor(
         `/ws/terminal?terminal_id=${encodeURIComponent(entry.terminalId)}&cols=${gridSizeFor(entry.container).cols}&rows=${gridSizeFor(entry.container).rows}`,
@@ -379,8 +386,8 @@
     // Parked surfaces lost their socket by design (no sockets for
     // non-visible); a dead-while-visible socket carries closedAt. One
     // re-attach attempt per backoff window keeps a down backend from
-    // churning sockets at render-pass cadence; the hub replay fills
-    // the same wterm instance either way, scrollback intact.
+    // churning sockets at render-pass cadence; the hub replay refills
+    // the same wterm instance either way.
     const deadWithinBackoff =
       entry.closedAt && Date.now() - entry.closedAt < SOCKET_RETRY_BACKOFF_MS;
     if (!deadWithinBackoff) attachSocket(entry);
@@ -462,7 +469,7 @@
   }
 
   // D8 cache lifecycle: a tab leaving the rendered set parks its surface
-  // (socket detached, wterm and scrollback kept) instead of disposing it.
+  // (socket detached, wterm instance kept) instead of disposing it.
   // Real disposal stays on closeTab and cap eviction (LRF first).
   function releaseStale(renderedTabIds) {
     const keep = new Set(renderedTabIds.map((tabId) => tabKey(tabId)));

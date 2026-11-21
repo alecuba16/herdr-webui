@@ -252,11 +252,15 @@ function makeRendererStub() {
         cols: opts.cols,
         rows: opts.rows,
         writes: [],
+        cleared: 0,
         resized: [],
         themes: [],
         disposed: false,
         write(data) {
           term.writes.push(data);
+        },
+        clear() {
+          term.cleared += 1;
         },
         resize(cols, rows) {
           term.cols = cols;
@@ -485,6 +489,36 @@ test("herdr_error frame drops the socket and re-attach waits out the backoff", a
   assert.equal(renderer.created.length, 1, "re-attach reuses the cached wterm instance");
   assert.equal(WsStub.instances.length, 2, "re-attach opens a fresh socket");
   assert.ok(WsStub.instances[1].url.includes("terminal_id=term-bbb"), "fresh socket targets the same pty");
+});
+
+test("re-attach clears the surface so the hub replay cannot duplicate content", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanes(document, "ws-1");
+  const renderer = makeRendererStub();
+  const panes = bootGroupedTwoTerminals(ctx, renderer);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const term = renderer.created[0];
+  const firstWs = WsStub.instances[0];
+  // First attach clears a fresh instance once (no-op semantically, but
+  // the contract is uniform: every attach starts from an empty grid).
+  assert.equal(term.cleared, 1, "initial attach clears the fresh instance");
+  firstWs.onmessage({ data: "line-one\r\n" });
+  firstWs.onmessage({ data: "line-two\r\n" });
+  // Park detaches the socket; the return re-attaches into the SAME
+  // wterm instance and the hub replay repays the tail.
+  ctx.HerdrPaneTerminals.parkForTab("tab_2");
+  assert.equal(firstWs.closed, true, "park detaches the socket");
+  panes.renderWorkspacePanes();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const secondWs = WsStub.instances[1];
+  assert.ok(secondWs, "return re-attaches a fresh socket");
+  assert.equal(term.cleared, 2, "re-attach clears before the replay lands");
+  // Replay of the same two lines: without the clear the term would now
+  // hold four lines (two copies). The cleared count above is the guard;
+  // this write proves the replay still lands after the clear.
+  secondWs.onmessage({ data: "line-one\r\n" });
+  secondWs.onmessage({ data: "line-two\r\n" });
+  assert.equal(term.writes.length, 4, "replay frames still write through");
 });
 
 // ---- aux surface lifecycle --------------------------------------------
