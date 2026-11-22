@@ -8307,6 +8307,54 @@ fn plain_shift_l_and_shift_c_open_lens_and_composer() {
 }
 
 #[test]
+fn footer_names_the_split_entry_and_the_mode_hints_take_over() {
+    // User report: no way to discover split mode from the regular
+    // single-pane view. The chord (Ctrl+B s) worked all along, but the
+    // resting TerminalMain hint never named it, so the entry was
+    // invisible unless the prefix was armed or the help overlay opened.
+    let mut app = app_with_two_panes();
+    app.main_focused = true;
+
+    // Resting regular view: the hint names the chord, front-loaded so
+    // fit_hint keeps it while the terminal can carry two segments plus
+    // the help tail.
+    let wide = draw(&app, 120, 24);
+    assert!(
+        wide.contains("Ctrl+B s split"),
+        "the resting main hint must name the split entry"
+    );
+    // The classic 80-col terminal cannot fit two segments plus the
+    // protected help tail (47 > 36 budget), so the hint collapses to
+    // the attach action and help, the same line the old hint showed:
+    // no regression, the shrink just starts one segment later.
+    let medium = draw(&app, 100, 24);
+    assert!(
+        medium.contains("Ctrl+B s split"),
+        "100 columns keep the split chord after the shrink"
+    );
+    let narrow = draw(&app, 80, 24);
+    assert!(
+        narrow.contains("Ctrl+B ? help"),
+        "the discovery tail never disappears"
+    );
+
+    // Once a mode takes over, its own hint names the next step and the
+    // resting hint's split entry is not duplicated on screen.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+    let drawn = draw(&app, 120, 24);
+    assert!(
+        drawn.contains("SPLIT ·"),
+        "the split mode hint takes the footer slot"
+    );
+    assert!(
+        !drawn.contains("Ctrl+B s split"),
+        "the mode hint replaces the resting hint, no duplicate chord row"
+    );
+}
+
+#[test]
 fn footer_names_walk_and_scroll_keys_when_split_active() {
     // Review F2: with a split open the TerminalMain footer must swap
     // to the split hint (hjkl walk, Ctrl+j/k scroll); without one the
@@ -9582,13 +9630,13 @@ fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
     app.mode = TuiMode::Navigate;
     app.screen = TuiScreen::Terminal;
 
-    // Main focus (default): pane keys, no stale "j/k select". 120 cols
+    // Main focus (default): pane keys, no stale "j/k select". 180 cols
     // fits the full hint (compact fallback checked on the narrow draw).
     assert!(matches!(
         app.footer_context(),
         crate::tui::FooterContext::TerminalMain
     ));
-    let main = draw(&app, 160, 24);
+    let main = draw(&app, 180, 24);
     assert!(main.contains("Enter attach"), "main hint keeps attach");
     assert!(
         main.contains("Ctrl+B . / , focus sidebar"),
@@ -9597,6 +9645,10 @@ fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
     assert!(
         main.contains("Shift+L lens"),
         "main hint names the lens shortcut"
+    );
+    assert!(
+        main.contains("Ctrl+B s split"),
+        "main hint names the split entry chord"
     );
     assert!(
         main.contains("q quit"),

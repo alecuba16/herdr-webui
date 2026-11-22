@@ -307,7 +307,11 @@ impl FooterContext {
                 " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
             }
             Self::TerminalMain => {
-                " Enter attach · Ctrl+B . / , focus sidebar · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
+                // The split entry is invisible otherwise: the chord lives
+                // behind the prefix and the resting hint named no way in.
+                // It rides the front segments so fit_hint keeps it until
+                // the terminal gets genuinely narrow.
+                " Enter attach · Ctrl+B s split · Ctrl+B . / , focus sidebar · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
             Self::TerminalMainSplit => {
                 " hjkl walk tiles · Ctrl+j/k scroll · Enter attach · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ? help "
