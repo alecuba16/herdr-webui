@@ -447,6 +447,7 @@ function context(pathname = "/", options = {}) {
 const MOBILE_BUNDLE_FILES = [
   "./shared/options.js",
   "./shared/core.js",
+  "./shared/settings_feedback.js",
   "./shared/http.js",
   "./shared/attention.js",
   "./shared/actions.js",

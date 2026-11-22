@@ -15,18 +15,24 @@
     // before HerdrMobile.refresh() re-renders the whole settings screen, so a
     // badge appended to the live DOM would be wiped; instead render() bakes
     // the badge into the row keyed by data-settings-id, and a timer clears it
-    // with one extra re-render.
-    const pendingAppliedFlash = new Map();
-    // Row id -> "saving" while an async backend save (no-sleep mode) is in
-    // flight; render() bakes an amber pending badge instead of the green one.
-    const pendingSavingFlash = new Set();
-    // Row id -> error message for failed async saves; rendered as a red
-    // badge instead of the green applied one (the Energy group also shows
-    // the full error text through its error note).
-    const pendingErrorFlash = new Map();
+    // with one extra re-render. The queue/html model lives in the shared
+    // HerdrSettingsFeedback module; this private copy is boot-order
+    // insurance for harnesses that only load settings.js.
+    let pendingAppliedFlash = new Map();
+    let pendingSavingFlash = new Set();
+    let pendingErrorFlash = new Map();
     let appliedFlashTimer = null;
     let pendingSearchOrderFlash = null;
-    const APPLIED_FLASH_MS = 2500;
+    const feedbackModel = globalThis.HerdrSettingsFeedback
+      ? globalThis.HerdrSettingsFeedback.createModel({
+          escapeHtml,
+          setTimeout: (fn, ms) => setTimeout(fn, ms),
+          clearTimeout: (id) => clearTimeout(id),
+        })
+      : null;
+    const APPLIED_FLASH_MS = feedbackModel
+      ? globalThis.HerdrSettingsFeedback.APPLIED_MS
+      : 2500;
     // Values saved when the settings screen was opened (per row id). A
     // rollback chip appears whenever the saved value drifted from this
     // baseline; the baseline self-heals whenever the current value equals
@@ -115,15 +121,29 @@
 
     function queueAppliedFlash(settingsId, label) {
       if (!settingsId) return;
+      if (feedbackModel) {
+        feedbackModel.queueApplied(settingsId, label);
+        scheduleFallbackClear();
+        return;
+      }
       pendingSavingFlash.delete(String(settingsId));
       pendingErrorFlash.delete(String(settingsId));
       pendingAppliedFlash.set(String(settingsId), { label: label || "Applied" });
+      scheduleFallbackClear();
+    }
+
+    function scheduleFallbackClear() {
       if (appliedFlashTimer) clearTimeout(appliedFlashTimer);
       appliedFlashTimer = setTimeout(clearAppliedFlash, APPLIED_FLASH_MS);
     }
 
     function queueSavingFlash(settingsId) {
       if (!settingsId) return;
+      if (feedbackModel) {
+        feedbackModel.queueSaving(settingsId);
+        if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+        return;
+      }
       pendingAppliedFlash.delete(String(settingsId));
       pendingSavingFlash.add(String(settingsId));
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
@@ -131,22 +151,30 @@
 
     function queueErrorFlash(settingsId, message) {
       if (!settingsId) return;
+      if (feedbackModel) {
+        feedbackModel.queueError(settingsId, message);
+        scheduleFallbackClear();
+        return;
+      }
       pendingSavingFlash.delete(String(settingsId));
       pendingErrorFlash.set(String(settingsId), String(message || "Save failed"));
-      if (appliedFlashTimer) clearTimeout(appliedFlashTimer);
-      appliedFlashTimer = setTimeout(clearAppliedFlash, APPLIED_FLASH_MS);
+      scheduleFallbackClear();
     }
 
     function clearAppliedFlash() {
-      pendingAppliedFlash.clear();
-      pendingSavingFlash.clear();
-      pendingErrorFlash.clear();
+      if (feedbackModel) feedbackModel.clear();
+      else {
+        pendingAppliedFlash.clear();
+        pendingSavingFlash.clear();
+        pendingErrorFlash.clear();
+      }
       appliedFlashTimer = null;
       pendingSearchOrderFlash = null;
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
     function appliedFlashHtml(settingsId) {
+      if (feedbackModel) return feedbackModel.html(settingsId);
       if (pendingSavingFlash.has(String(settingsId)))
         return `<span class="settings-saving" aria-live="polite" data-state="settings-applied-saving">Saving...</span>`;
       const error = pendingErrorFlash.get(String(settingsId));
