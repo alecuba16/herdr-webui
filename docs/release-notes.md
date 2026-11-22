@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.7.56 Release Notes
+- Reload rehydrate waits for the workspaces snapshot instead of
+  burning its one-shot on a workspace-less attempt. The boot renders
+  panes before the workspaces row lands, so the 0.7.55 rehydrate
+  claim resolved no workspace, skipped the file browser activation,
+  fetched with an empty cwd, and its one-shot flag blocked every later
+  render, leaving the tab listed but contentless after a reload. The
+  claim now resolves the workspace row before spending the shot; no
+  row yet means the attempt waits for the next render and rehydrates
+  once the snapshot lands. Verified live across three consecutive
+  reloads with a clean console.
+
 ## 0.7.55 Release Notes
 - Flat panels outside a split hold exactly one view and render no
   strip: their identity lives in the label rail chip and the location
