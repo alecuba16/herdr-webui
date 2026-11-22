@@ -609,6 +609,18 @@ fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     );
 }
 
+/// Centered scroll window: keep `anchor` inside a `visible`-row view
+/// over `len` items, scrolled only when the list overflows the view.
+fn centered_window(anchor: usize, len: usize, visible: usize) -> usize {
+    if len > visible && visible > 0 {
+        anchor
+            .saturating_sub(visible / 2)
+            .min(len.saturating_sub(visible))
+    } else {
+        0
+    }
+}
+
 fn render_files_screen(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     if area.is_empty() {
         return;
@@ -685,11 +697,7 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         inner
     };
     let visible_height = list_area.height as usize;
-    let start = if explorer.entries.len() > visible_height && visible_height > 0 {
-        explorer.selected.saturating_sub(visible_height / 2)
-    } else {
-        0
-    };
+    let start = centered_window(explorer.selected, explorer.entries.len(), visible_height);
     let mut rendered: Vec<Line> = Vec::new();
     for (index, entry) in explorer.entries.iter().enumerate().skip(start) {
         if rendered.len() >= visible_height {
@@ -1440,10 +1448,8 @@ fn render_diff_pane_full(
     let visible = inner.height as usize;
     let len = diff_lines.len();
     let start = match anchor {
-        Some(anchor) if len > visible => anchor
-            .saturating_sub(visible / 2)
-            .min(len.saturating_sub(visible)),
-        _ => 0,
+        Some(anchor) => centered_window(anchor, len, visible),
+        None => 0,
     };
     // When the diff is taller than the pane, the bottom row becomes a
     // position indicator instead of silently hiding the rest.
