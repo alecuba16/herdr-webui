@@ -14,28 +14,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde_json::{json, Value};
 
 use crate::builtin_detection::{
-    amp::detect_amp_status,
-    antigravity::detect_antigravity_status,
-    claude::detect_claude_status,
     claude::has_claude_half_circle_spinner,
-    cline::detect_cline_status,
-    codex::detect_codex_status,
-    copilot::detect_copilot_status,
-    cursor::detect_cursor_status,
-    devin::detect_devin_status,
-    droid::detect_droid_status,
-    gemini::detect_gemini_status,
-    grok::detect_grok_status,
-    hermes::detect_hermes_status,
-    kilo::detect_kilo_status,
-    kimi::detect_kimi_status,
-    kiro::detect_kiro_status,
-    maki::detect_maki_status,
-    opencode::detect_opencode_status,
-    pi::detect_pi_status,
-    qodercli::detect_qodercli_status,
-    qwen::detect_qwen_status,
-    scrape::{
+    detect_agent_status as detect_agent_status_in_registry, scrape::{
         bottom_non_empty_lines, contains_any, contains_braille, is_braille, starts_with_braille,
     },
 };
@@ -5018,28 +4998,7 @@ fn detect_agent_status(
     let lower = text.to_lowercase();
     match agent {
         "jcode" => detect_jcode_status_with_variant(&lower, jcode_variant),
-        "opencode" => detect_opencode_status(&lower),
-        "kilo" => detect_kilo_status(&lower),
-        "amp" => detect_amp_status(&lower),
-        "agy" => detect_antigravity_status(&lower),
-        "claude" => detect_claude_status(&lower),
-        "cline" => detect_cline_status(&lower),
-        "codex" => detect_codex_status(&lower),
-        "cursor" => detect_cursor_status(&lower),
-        "devin" => detect_devin_status(&lower),
-        "droid" => detect_droid_status(&lower),
-        "gemini" => detect_gemini_status(&lower),
-        "copilot" => detect_copilot_status(&lower),
-        "grok" => detect_grok_status(&lower),
-        "hermes" => detect_hermes_status(&lower),
-        "kimi" => detect_kimi_status(&lower),
-        "kiro" => detect_kiro_status(&lower),
-        "maki" => detect_maki_status(&lower),
-        "pi" => detect_pi_status(&lower),
-        "qodercli" => detect_qodercli_status(&lower),
-        "claurst" => crate::builtin_detection::claurst::detect_claurst_status(&lower),
-        "qwen" => detect_qwen_status(&lower),
-        _ => "unknown",
+        _ => detect_agent_status_in_registry(agent, &lower).unwrap_or("unknown"),
     }
 }
 
