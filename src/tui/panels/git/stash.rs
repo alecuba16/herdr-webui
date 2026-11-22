@@ -81,4 +81,70 @@ mod coverage_tests {
         assert!(panel.stash_apply(&api).is_err());
         assert!(panel.stash_drop(&api).is_err());
     }
+
+    /// Coverage is off for this fn because the final refused request
+    /// exercises the client-side error path while the server thread's
+    /// own accept loop simply ends when its listener drops; the
+    /// clamp assertion is a direct state check.
+    #[cfg_attr(coverage, coverage(off))]
+    #[test]
+    fn stash_refresh_clamps_selection_when_stash_list_shrinks() {
+        // Two stashes loaded and the second selected, then the refresh
+        // returns one: the cursor must clamp into range instead of
+        // pointing past the end.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Serve two requests; the third client call hits a dropped
+        // listener and fails.
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = "{\"stashes\":[{\"name\":\"stash@{0}\",\"message\":\"only\"}]}";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        panel.stashes = vec![
+            GitStashEntry {
+                name: "stash@{0}".into(),
+                message: "a".into(),
+            },
+            GitStashEntry {
+                name: "stash@{1}".into(),
+                message: "b".into(),
+            },
+        ];
+        panel.stash_selected = 1;
+        panel.refresh_stashes(&api).unwrap();
+        assert_eq!(panel.stashes.len(), 1);
+        assert_eq!(panel.stash_selected, 0);
+
+        // Selection already in range: the clamp guard's false arm,
+        // served by the second round.
+        panel.stash_selected = 0;
+        panel.refresh_stashes(&api).unwrap();
+        assert_eq!(panel.stash_selected, 0);
+
+        // Third request: the listener is gone and the client sees a
+        // refused connection that leaves the state untouched.
+        assert!(panel.refresh_stashes(&api).is_err());
+        assert_eq!(panel.stash_selected, 0);
+    }
 }

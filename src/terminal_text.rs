@@ -425,6 +425,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn strip_ansi_lone_escape_and_control_chars_fall_through() {
+        // ESC followed by a byte outside CSI/OSC/DCS families and ESC at
+        // end of input: both must drop silently, control chars too.
+        assert_eq!(
+            strip_ansi_lossy("a\u{1b}Bb\u{1b}", StripCarriageReturn::Drop),
+            "ab"
+        );
+        assert_eq!(strip_ansi_lossy("a\u{1}b", StripCarriageReturn::Drop), "ab");
+    }
+
+    #[test]
+    fn vt_drive_handles_backspace_tab_and_lone_escape_tail() {
+        let raw = "ab\u{8}c\td\u{1b}";
+        assert_eq!(
+            terminal_text_lossy(raw, TerminalTextOptions::tui_tail()),
+            "ac      d"
+        );
+    }
+
+    #[test]
+    fn vt_core_apply_csi_ignores_empty_and_unknown_finals() {
+        let mut screen = TextScreen::new(TerminalTextOptions::tui_tail());
+        vt_drive(&mut screen, "");
+        <TextScreen as VtSink>::apply_csi(&mut screen, "");
+        <TextScreen as VtSink>::apply_csi(&mut screen, "Z");
+        <TextScreen as VtSink>::put(&mut screen, 'x');
+        assert_eq!(screen.text(), "x");
+    }
+
+    #[test]
     fn terminal_text_applies_common_rewrites() {
         let raw = "one\rtwo\nthree\u{1b}[2Kfour\u{1b}[1G!\u{1b}]0;title\u{7}";
         assert_eq!(
@@ -578,5 +608,89 @@ mod coverage_tests_round3 {
         // ED1 wipes from the top through the cursor row.
         let out = terminal_text_lossy("a\nb\r\u{1b}[1Jc", TerminalTextOptions::tui_tail());
         assert_eq!(out, "c");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round4 {
+    use super::*;
+
+    #[test]
+    fn control_characters_are_skipped_in_lossy_text() {
+        // A raw NUL and a device-control byte never reach the screen:
+        // they are dropped instead of rendered.
+        let out = terminal_text_lossy("a\u{0}\u{11}b", TerminalTextOptions::tui_tail());
+        assert_eq!(out, "ab");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round13 {
+    use super::*;
+
+    #[test]
+    fn cursor_position_parses_row_col_and_falls_back() {
+        // CUP with explicit row;col, row-only, garbage, and empty params.
+        let out = terminal_text_lossy(
+            "a\u{1b}[3;5Hb\u{1b}[2Hc\u{1b}[x;yd\u{1b}[He",
+            TerminalTextOptions::tui_tail(),
+        );
+        // Row 3 col 5 writes b, row 2 col 1 writes c, the garbage and
+        // empty forms both fall back to 1;1 and append d/e.
+        for ch in ['b', 'c', 'd', 'e'] {
+            assert!(out.contains(ch), "missing {ch} in {out:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round15 {
+    use super::*;
+
+    #[test]
+    fn plain_screen_csi_cursor_moves_and_guards() {
+        // Cursor moves (A/B/C/D/G) on the plain TextScreen copy, plus
+        // the no-final-byte guard for a trailing bare CSI.
+        let out = terminal_text_lossy(
+            "ab\x1b[1D\x1b[3CX\x1b[2AY\x1b[3BY\x1b[5GZ\x1b[",
+            TerminalTextOptions::tui_tail(),
+        );
+        for ch in ['X', 'Y', 'Z'] {
+            assert!(out.contains(ch), "missing {ch} in {out:?}");
+        }
+    }
+
+    #[test]
+    fn plain_screen_trims_scrollback_and_wraps() {
+        // Overflow past max_lines drains the head rows on the plain
+        // copy, and a char past max_cols wraps to a new row.
+        let mut value = String::new();
+        for _ in 0..(TerminalTextOptions::DEFAULT_MAX_LINES + 10) {
+            value.push('\n');
+            value.push('x');
+        }
+        let out = terminal_text_lossy(&value, TerminalTextOptions::tui_tail());
+        let rows: Vec<&str> = out.split('\n').collect();
+        assert!(
+            rows.len() <= TerminalTextOptions::DEFAULT_MAX_LINES,
+            "{}",
+            rows.len()
+        );
+    }
+
+    #[test]
+    fn plain_screen_unknown_erase_mode_falls_through() {
+        // ED with an unhandled mode keeps the text and only erases the
+        // current row; nothing renders from the erased state.
+        let out = terminal_text_lossy("ab\r\x1b[9Jcd", TerminalTextOptions::tui_tail());
+        assert!(out.contains("cd"), "{out:?}");
+    }
+
+    #[test]
+    fn plain_drive_skips_unknown_escape_and_lone_esc() {
+        // ESC followed by an unexpected byte takes the one-byte skip
+        // arm, and a lone trailing ESC hits the None arm.
+        let out = terminal_text_lossy("\x1b\u{7}ok\x1b", TerminalTextOptions::tui_tail());
+        assert!(out.contains("ok"), "{out:?}");
     }
 }

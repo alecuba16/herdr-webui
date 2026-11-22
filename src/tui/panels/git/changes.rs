@@ -561,6 +561,10 @@ mod coverage_tests {
                 );
             }
         });
+        // A dropped connection exercises the accept loop's EOF continue
+        // arm before the real request arrives.
+        let ghost = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        drop(ghost);
         let api = WebApiClient::new("127.0.0.1", port);
         let mut panel = GitPanel::new("/repo");
         panel.diff_title = "a.rs".into();
@@ -747,7 +751,7 @@ mod coverage_tests_round3 {
     use super::super::GitFileEntry;
     use super::*;
 
-    fn panel_with_hunks() -> GitPanel {
+    pub(super) fn panel_with_hunks() -> GitPanel {
         use crate::tui::panels::git::parse_diff_lines_with_meta;
         let mut p = GitPanel::new("/repo");
         p.files = vec![GitFileEntry {
@@ -825,5 +829,89 @@ mod coverage_tests_round3 {
             p.diff_title, "working tree",
             "diff reloaded after the apply"
         );
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round4 {
+    use super::*;
+
+    #[test]
+    fn fake_server_accept_loop_survives_a_closed_connection() {
+        // A client that connects and drops without a request line hits
+        // the read_line == 0 arm; the loop must continue to the next
+        // accept so the real request still gets served.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                    continue;
+                }
+                for _ in 0..64 {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = r#"{"files":[]}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.flush();
+            }
+        });
+        // Connect and drop immediately: the accept loop sees EOF.
+        let ghost = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        drop(ghost);
+        // The next client still gets served.
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut p = GitPanel::new("/repo");
+        p.refresh_diff(&api).unwrap();
+        assert_eq!(p.diff_title, "working tree");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round7 {
+
+    #[test]
+    fn apply_hunk_action_surfaces_apply_and_refresh_errors() {
+        // Dead API: the apply request itself fails.
+        let mut p = super::coverage_tests_round3::panel_with_hunks();
+        let dead = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        assert!(p.apply_hunk_action(&dead).is_err());
+
+        // One-shot server answers the apply, then the listener drops:
+        // the follow-up refresh_view fails.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+            );
+            let _ = stream.flush();
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut p = super::coverage_tests_round3::panel_with_hunks();
+        assert!(p.apply_hunk_action(&api).is_err());
     }
 }

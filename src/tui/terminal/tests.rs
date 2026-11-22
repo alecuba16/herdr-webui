@@ -86,7 +86,7 @@ fn terminal_output_styled_lines_cover_cursor_defaults_and_display_erase_modes() 
 #[test]
 fn terminal_output_styled_lines_cover_sgr_defaults_and_invalid_extended_colors() {
     let lines = terminal_output_styled_lines_lossy(
-        "\x1b[mreset\x1b[38;2;300;4;5;48;5;999mcolor\x1b[38;2;1mkeep\x1b[48;7mstill",
+        "\x1b[mreset\x1b[38;2;300;4;5;48;5;999mcolor\x1b[38;2;1mkeep\x1b[48;7mstill\x1b[38;2;9;8;7;48;2;1;2mrgb\x1b[38;2mbare",
     );
 
     assert_eq!(lines[0][0].text, "reset");
@@ -100,6 +100,15 @@ fn terminal_output_styled_lines_cover_sgr_defaults_and_invalid_extended_colors()
     assert_eq!(lines[0][3].text, "still");
     assert_eq!(lines[0][3].style.fg, None);
     assert_eq!(lines[0][3].style.bg, None);
+    // Complete 38;2 RGB and truncated variants: `38;2` missing the red
+    // component and `48;2;1;2` missing blue each bail with no color,
+    // the complete triple parses as Rgb.
+    assert_eq!(lines[0][4].text, "rgb");
+    assert_eq!(lines[0][4].style.fg, Some(Color::Rgb(9, 8, 7)));
+    assert_eq!(lines[0][4].style.bg, None);
+    // `38;2` with no components at all bails at the red channel.
+    assert_eq!(lines[0][5].text, "bare");
+    assert_eq!(lines[0][5].style.fg, None);
 }
 
 #[test]
@@ -408,4 +417,13 @@ fn styled_terminal_line_handles_emoji_width_correctly() {
     let line = styled_terminal_line(&spans, 5, Color::White);
     let content = line.spans[0].content.as_ref();
     assert_eq!(content, "✅do…");
+}
+
+#[test]
+fn terminal_output_styled_lines_cover_background_sgr_colors() {
+    // The 40..=47 basic background arm plus 49 reset: a red background
+    // lands and clears.
+    let lines = terminal_output_styled_lines_lossy("\x1b[41mbg\x1b[49mafter");
+    assert_eq!(lines[0][0].style.bg, Some(Color::Indexed(1)));
+    assert_eq!(lines[0][1].style.bg, None);
 }

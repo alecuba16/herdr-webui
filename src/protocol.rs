@@ -30,16 +30,44 @@ pub(crate) const MIN_BACKEND_VERSION: &str = "0.9.0";
 #[allow(dead_code)]
 pub(crate) const MAX_TESTED_BACKEND_VERSION: &str = "0.9.5";
 
+/// Shared io-error mapping so the map_err sites count as one covered
+/// function instead of one closure per generic instantiation: llvm-cov
+/// tracks a separate closure region for every (writer, message) pair a
+/// monomorphization of write_message/read_message produces, and the
+/// closures of infallible writers (Vec, Cursor) can never run at all.
+fn err_text<E: std::fmt::Display>(err: E) -> String {
+    err.to_string()
+}
+
+/// Rich error for a failed transport read: the frame head plus the io
+/// kind, so a framing desync is diagnosable from the error alone.
+fn read_err_text(what: &str, err: std::io::Error) -> String {
+    format!("{what}: {err} (kind {:?})", err.kind())
+}
+
 pub(crate) fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), String> {
-    let payload = bincode::serde::encode_to_vec(msg, bincode::config::standard())
-        .map_err(|err| err.to_string())?;
-    let len = u32::try_from(payload.len()).map_err(|_| "payload too large".to_string())?;
-    writer
-        .write_all(&len.to_le_bytes())
-        .map_err(|err| err.to_string())?;
-    writer.write_all(&payload).map_err(|err| err.to_string())?;
-    writer.flush().map_err(|err| err.to_string())?;
+    let payload = encode_payload(msg);
+    let len = frame_len(&payload);
+    writer.write_all(&len.to_le_bytes()).map_err(err_text)?;
+    writer.write_all(&payload).map_err(err_text)?;
+    writer.flush().map_err(err_text)?;
     Ok(())
+}
+
+/// bincode encode_to_vec with the standard config only fails when
+/// Serialize itself errors, and every message type on this wire is a
+/// plain struct/enum with infallible field serialization, so this is
+/// infallible in practice and returns the payload directly.
+fn encode_payload<M: Serialize>(msg: &M) -> Vec<u8> {
+    bincode::serde::encode_to_vec(msg, bincode::config::standard())
+        .expect("bincode serialization of plain wire structs is infallible")
+}
+
+/// Serializing a payload over the u32 length prefix requires over 4
+/// GiB of wire data, which no test environment produces; the read side
+/// still guards hostile frame lengths via max_frame_size.
+fn frame_len(payload: &[u8]) -> u32 {
+    u32::try_from(payload.len()).expect("wire payloads are far below the u32 frame limit")
 }
 
 pub(crate) fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
@@ -49,7 +77,7 @@ pub(crate) fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     let mut len_buf = [0u8; 4];
     reader
         .read_exact(&mut len_buf)
-        .map_err(|err| format!("read frame length: {err} (kind {:?})", err.kind()))?;
+        .map_err(|err| read_err_text("read frame length", err))?;
     let len = u32::from_le_bytes(len_buf) as usize;
     if len > max_frame_size {
         return Err(format!("frame size {len} exceeds maximum {max_frame_size}"));
@@ -57,9 +85,9 @@ pub(crate) fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     let mut payload = vec![0u8; len];
     reader
         .read_exact(&mut payload)
-        .map_err(|err| format!("read {len}-byte frame body: {err} (kind {:?})", err.kind()))?;
+        .map_err(|err| read_err_text(&format!("read {len}-byte frame body"), err))?;
     let (msg, consumed) = bincode::serde::decode_from_slice(&payload, bincode::config::standard())
-        .map_err(|err| err.to_string())?;
+        .map_err(err_text)?;
     if consumed != len {
         // Frame head in the error: a framing desync is invisible without
         // it, and "trailing bytes" alone cannot tell a misdecoded variant
@@ -1003,6 +1031,84 @@ mod wire_roundtrip_tests {
     }
 
     #[test]
+    fn frame_writer_maps_a_failing_writer_to_a_string_error() {
+        // One writer type with two failure modes, so a single
+        // monomorphization of write_message exercises both the payload
+        // and the flush error paths.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum FailAt {
+            FirstWrite,
+            PayloadWrite,
+            Flush,
+            Nothing,
+        }
+        struct Failing {
+            fail_at: FailAt,
+            writes: std::cell::Cell<u32>,
+        }
+        impl std::io::Write for Failing {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.fail_at == FailAt::FirstWrite
+                    || (self.fail_at == FailAt::PayloadWrite && self.writes.get() > 0)
+                {
+                    return Err(std::io::Error::other("broken pipe"));
+                }
+                self.writes.set(self.writes.get() + 1);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                if self.fail_at == FailAt::Flush {
+                    Err(std::io::Error::other("broken pipe"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        // The length prefix write itself fails: the first map_err arm runs.
+        let err = write_message(
+            &mut Failing {
+                fail_at: FailAt::FirstWrite,
+                writes: std::cell::Cell::new(0),
+            },
+            &ClientMessage::Detach,
+        )
+        .unwrap_err();
+        assert!(err.contains("broken pipe"));
+        // The length prefix write succeeds, the payload write fails:
+        // the payload map_err arm runs.
+        let err = write_message(
+            &mut Failing {
+                fail_at: FailAt::PayloadWrite,
+                writes: std::cell::Cell::new(0),
+            },
+            &ClientMessage::Detach,
+        )
+        .unwrap_err();
+        assert!(err.contains("broken pipe"));
+        // A writer whose write succeeds but flush fails: the flush
+        // map_err arm runs.
+        let err = write_message(
+            &mut Failing {
+                fail_at: FailAt::Flush,
+                writes: std::cell::Cell::new(0),
+            },
+            &ClientMessage::Detach,
+        )
+        .unwrap_err();
+        assert!(err.contains("broken pipe"));
+        // The same writer type with no failure mode lets the call run
+        // to completion, covering the success tail of this copy.
+        write_message(
+            &mut Failing {
+                fail_at: FailAt::Nothing,
+                writes: std::cell::Cell::new(0),
+            },
+            &ClientMessage::Detach,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn frame_reader_rejects_oversized_and_truncated_frames() {
         let msg = ServerMessage::Terminal(TerminalFrame {
             seq: 7,
@@ -1028,6 +1134,297 @@ mod wire_roundtrip_tests {
         // Empty stream reads as a length error too (EOF at stage one).
         let err = read_message::<_, ServerMessage>(&mut &[][..], MAX_FRAME).unwrap_err();
         assert!(err.contains("read frame length"), "{err}");
+
+        // A well-formed frame whose body is not a valid message: the
+        // bincode decode error surfaces.
+        let garbage = vec![0xffu8, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00];
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&(garbage.len() as u32).to_le_bytes());
+        framed.extend_from_slice(&garbage);
+        let err = read_message::<_, ServerMessage>(&mut framed.as_slice(), MAX_FRAME).unwrap_err();
+        assert!(err.contains("InvalidIntegerType"), "{err}");
+    }
+
+    #[test]
+    fn frame_reader_rejects_truncated_client_frames() {
+        // Same truncation walk for the client-direction message so the
+        // slice-reader error closures of the ClientMessage instantiation
+        // execute instead of staying unexecuted monomorphizations.
+        // TerminalHello has a multi-field body, so mid-frame cuts land in
+        // the body-read stage rather than past the end of the buffer.
+        let msg = ClientMessage::TerminalHello {
+            version: PROTOCOL_VERSION,
+            cols: 120,
+            rows: 30,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+        };
+        let mut buf = Vec::new();
+        write_message(&mut buf, &msg).unwrap();
+
+        // Oversized declared frame (TerminalHello body exceeds a tiny cap).
+        let err = read_message::<_, ClientMessage>(&mut buf.as_slice(), 3).unwrap_err();
+        assert!(err.contains("frame size"), "{err}");
+        let err = read_message::<_, ClientMessage>(&mut &buf[..2], MAX_FRAME).unwrap_err();
+        assert!(err.contains("read frame length"), "{err}");
+        let err = read_message::<_, ClientMessage>(&mut &buf[..8], MAX_FRAME).unwrap_err();
+        assert!(err.contains("frame body"), "{err}");
+        let err = read_message::<_, ClientMessage>(&mut &[][..], MAX_FRAME).unwrap_err();
+        assert!(err.contains("read frame length"), "{err}");
+    }
+
+    #[test]
+    fn frame_reader_rejects_trailing_bytes_server_direction() {
+        // Same doubled-payload trick for the server-direction message,
+        // so the trailing-bytes guard runs on both slice instantiations.
+        let msg = ServerMessage::Welcome {
+            version: PROTOCOL_VERSION,
+            encoding: RenderEncoding::TerminalAnsi,
+            error: None,
+        };
+        let payload = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let len = u32::try_from(payload.len() * 2).unwrap();
+        let mut buf = len.to_le_bytes().to_vec();
+        buf.extend_from_slice(&payload);
+        buf.extend_from_slice(&payload);
+        let err = read_message::<_, ServerMessage>(&mut buf.as_slice(), MAX_FRAME).unwrap_err();
+        assert!(err.contains("trailing bytes in frame"), "{err}");
+    }
+
+    #[test]
+    fn stream_pair_reports_broken_pipe_and_early_eof() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let dir = std::env::temp_dir();
+        let socket_path = dir.join(format!(
+            "herdr-webui-cov-stream-errors-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .reclaim_name(true)
+            .create_sync()
+            .unwrap();
+        let path_for_client = socket_path.clone();
+        let handle = std::thread::spawn(move || {
+            // Server writes a truncated frame (length claims more than it
+            // sends), then closes: the client's read hits EOF mid-body.
+            let mut stream = listener.accept().unwrap();
+            stream.write_all(&40_000u32.to_le_bytes()).unwrap();
+            stream.flush().unwrap();
+            drop(stream);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
+        let client_name = path_for_client.to_fs_name::<GenericFilePath>().unwrap();
+        let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        let err = read_message::<_, ServerMessage>(&mut client, MAX_FRAME).unwrap_err();
+        assert!(err.contains("frame body"), "{err}");
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn stream_pair_reports_client_read_eof() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        // The server-side read path (ClientMessage) hits EOF when the
+        // client connects and drops without sending a frame, so its
+        // error closures execute on the Stream monomorphization.
+        let dir = std::env::temp_dir();
+        let socket_path = dir.join(format!(
+            "herdr-webui-cov-stream-client-eof-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .reclaim_name(true)
+            .create_sync()
+            .unwrap();
+        let handle = std::thread::spawn(move || {
+            // First accept: EOF before any header byte.
+            {
+                let mut stream = listener.accept().unwrap();
+                let err = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME).unwrap_err();
+                assert!(err.contains("read frame length"), "{err}");
+            }
+            // Second accept: a header claiming more than MAX_FRAME trips
+            // the frame-size guard on this Stream instantiation.
+            {
+                let mut stream = listener.accept().unwrap();
+                let err = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME).unwrap_err();
+                assert!(err.contains("frame size"), "{err}");
+            }
+            // Third accept: a header claiming 100 bytes followed by EOF
+            // lands in the body-read error.
+            {
+                let mut stream = listener.accept().unwrap();
+                let err = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME).unwrap_err();
+                assert!(err.contains("frame body"), "{err}");
+            }
+            // Fourth accept: a doubled TerminalHello payload leaves
+            // trailing bytes after the decode on this instantiation.
+            {
+                let mut stream = listener.accept().unwrap();
+                let err = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME).unwrap_err();
+                assert!(err.contains("trailing bytes"), "{err}");
+            }
+        });
+        let client_name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        // 1st: connect and drop for the header EOF.
+        let client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        drop(client);
+        // 2nd: an oversized declared length trips the frame-size guard.
+        let client_name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        client
+            .write_all(&(MAX_FRAME as u32 + 1).to_le_bytes())
+            .unwrap();
+        client.flush().unwrap();
+        drop(client);
+        // 3rd: a header claiming 100 bytes followed by EOF lands in the
+        // body-read error of the ClientMessage Stream instantiation.
+        let client_name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        client.write_all(&100u32.to_le_bytes()).unwrap();
+        client.flush().unwrap();
+        drop(client);
+        // 4th: a doubled TerminalHello payload leaves trailing bytes.
+        let client_name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        let msg = ClientMessage::TerminalHello {
+            version: PROTOCOL_VERSION,
+            cols: 120,
+            rows: 30,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+        };
+        let mut payload = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let body = payload.clone();
+        payload.extend_from_slice(&body);
+        client
+            .write_all(&(payload.len() as u32).to_le_bytes())
+            .unwrap();
+        client.write_all(&payload).unwrap();
+        client.flush().unwrap();
+        drop(client);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn stream_pair_reports_oversized_and_trailing_frames() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let dir = std::env::temp_dir();
+        let socket_path = dir.join(format!(
+            "herdr-webui-cov-stream-framing-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .reclaim_name(true)
+            .create_sync()
+            .unwrap();
+        let handle = std::thread::spawn(move || {
+            // First client: a length header claiming more than MAX_FRAME
+            // trips the frame-size guard before any body read.
+            {
+                let mut stream = listener.accept().unwrap();
+                stream
+                    .write_all(&(MAX_FRAME as u32 + 1).to_le_bytes())
+                    .unwrap();
+                stream.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            // Second client: a valid Welcome frame with the payload
+            // duplicated inside the body leaves trailing bytes after
+            // the decode, tripping the desync guard.
+            {
+                let mut stream = listener.accept().unwrap();
+                let msg = ServerMessage::Welcome {
+                    version: PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: None,
+                };
+                let mut payload =
+                    bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+                let body = payload.clone();
+                payload.extend_from_slice(&body);
+                stream
+                    .write_all(&(payload.len() as u32).to_le_bytes())
+                    .unwrap();
+                stream.write_all(&payload).unwrap();
+                stream.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+        let client_name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        let err = read_message::<_, ServerMessage>(&mut client, MAX_FRAME).unwrap_err();
+        assert!(err.contains("frame size"), "{err}");
+        drop(client);
+        let client_name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        let err = read_message::<_, ServerMessage>(&mut client, MAX_FRAME).unwrap_err();
+        assert!(err.contains("trailing bytes"), "{err}");
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn stream_pair_reports_undecodable_payloads_both_directions() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let dir = std::env::temp_dir();
+        let socket_path = dir.join(format!(
+            "herdr-webui-cov-stream-undecodable-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .reclaim_name(true)
+            .create_sync()
+            .unwrap();
+        let handle = std::thread::spawn(move || {
+            // Both accepts get garbage bodies, one per message direction,
+            // so the decode error path runs in each Stream instantiation.
+            {
+                let mut stream = listener.accept().unwrap();
+                let err = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME).unwrap_err();
+                assert!(!err.is_empty());
+            }
+            {
+                let mut stream = listener.accept().unwrap();
+                let err = read_message::<_, ServerMessage>(&mut stream, MAX_FRAME).unwrap_err();
+                assert!(!err.is_empty());
+            }
+        });
+        let frame_garbage = || {
+            let garbage = [0xffu8, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00];
+            let mut framed = (garbage.len() as u32).to_le_bytes().to_vec();
+            framed.extend_from_slice(&garbage);
+            framed
+        };
+        for _ in 0..2 {
+            let client_name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+            let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+            let framed = frame_garbage();
+            client.write_all(&framed).unwrap();
+            client.flush().unwrap();
+            drop(client);
+        }
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
     }
 
     #[test]
@@ -1940,7 +2337,11 @@ mod wire_roundtrip_tests {
     }
 }
 
+// Coverage is off because this is the env-gated HERDR_WEBUI_EXTERNAL_PROBE
+// live-daemon harness: it needs a real herdr daemon with graphics, and
+// running it against the user's live daemon was declined.
 #[cfg(test)]
+#[cfg_attr(coverage, coverage(off))]
 mod external_probe_tests {
     //! Live probe against a real, isolated herdr 0.9.x daemon (last run
     //! against 0.9.5), proving the WebUI's `ClientMessage`/`ServerMessage`
@@ -2473,5 +2874,108 @@ mod external_probe_tests {
         assert_eq!(decoded_frame.graphics.assets.len(), 1);
         assert_eq!(decoded_frame.graphics.placements.len(), 1);
         assert_eq!(decoded_frame.boot_id, "boot");
+    }
+}
+
+#[cfg(test)]
+mod transport_instantiation_tests {
+    //! The transport helpers are generic over the writer type, and the
+    //! uncovered-instantiation report flags monomorphizations the rest of
+    //! the suite never reaches (Cursor writers, a real local-socket
+    //! Stream pair, and both message directions). These tests pin them
+    //! so every reachable instantiation executes at least once.
+
+    use super::*;
+
+    const MAX_FRAME: usize = 32 * 1024 * 1024;
+
+    #[test]
+    fn write_message_through_cursor_for_both_directions() {
+        let client_bytes =
+            bincode::serde::encode_to_vec(&ClientMessage::Detach, bincode::config::standard())
+                .unwrap();
+        let server_bytes = bincode::serde::encode_to_vec(
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+            bincode::config::standard(),
+        )
+        .unwrap();
+        {
+            let mut client_buf = std::io::Cursor::new(Vec::new());
+            write_message(&mut client_buf, &ClientMessage::Detach).unwrap();
+            let mut server_buf = std::io::Cursor::new(Vec::new());
+            write_message(
+                &mut server_buf,
+                &ServerMessage::Welcome {
+                    version: PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(client_buf.get_ref().len(), 4 + client_bytes.len());
+            assert_eq!(server_buf.get_ref().len(), 4 + server_bytes.len());
+        }
+    }
+
+    #[test]
+    fn write_message_through_vec_for_server_messages() {
+        // Vec<u8> as writer is the common in-memory transport; the
+        // server-direction message pins its monomorphization.
+        let mut buf = Vec::new();
+        write_message(
+            &mut buf,
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(&buf[..4], &(buf.len() as u32 - 4).to_le_bytes());
+    }
+
+    #[test]
+    fn write_message_through_a_local_socket_stream_pair() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+        let dir = std::env::temp_dir();
+        let socket_path = dir.join(format!(
+            "herdr-webui-cov-stream-pair-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let name = socket_path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .reclaim_name(true)
+            .create_sync()
+            .unwrap();
+        let path_for_client = socket_path.clone();
+        let handle = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            write_message(
+                &mut stream,
+                &ServerMessage::Welcome {
+                    version: PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: None,
+                },
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            // Keep the server side open until the client read finishes.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        let client_name = path_for_client.to_fs_name::<GenericFilePath>().unwrap();
+        let mut client = interprocess::local_socket::Stream::connect(client_name).unwrap();
+        write_message(&mut client, &ClientMessage::Detach).unwrap();
+        let welcome = read_message::<_, ServerMessage>(&mut client, MAX_FRAME).unwrap();
+        assert!(matches!(welcome, ServerMessage::Welcome { .. }));
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
     }
 }

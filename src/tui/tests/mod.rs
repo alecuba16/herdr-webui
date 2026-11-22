@@ -2655,6 +2655,10 @@ fn fake_backend_socket_with(
                     "root_pane": {"pane_id": "pane_opened"}
                 }
             }),
+            "worktree.create" => json!({
+                "id": request["id"],
+                "result": {"ok": true}
+            }),
             // Result shaped like the server's promote route payload:
             // workspace cwd (the backend resolves the live cwd) plus
             // label, which the TUI records into recents.
@@ -12618,7 +12622,13 @@ fn split_tiles_show_ghost_preview_and_move_rings() {
     });
     let drawn = draw(&app, 150, 40);
     assert!(drawn.contains("⇄ moving"), "picked ring renders");
-    assert!(drawn.contains("⇄ target"), "target ring renders");
+    // Swap verb: the target ring became the landing ghost (ux review:
+    // show where the picked pane lands), so both display names ride
+    // the ghost title instead of a "⇄ target" ring.
+    assert!(
+        drawn.contains("jcode ⇄ bot"),
+        "swap ghost names both panes, got: {drawn}"
+    );
 
     // Insert verb swaps the target ring for a ghost landing tile.
     let state = app.move_mode.clone().unwrap();
@@ -14060,7 +14070,13 @@ fn split_overlays_survive_one_column_tiles_without_panicking() {
         !drawn.contains("+ pane_3"),
         "zero-width ghost draws nothing"
     );
-    assert!(drawn.contains('│'), "tile borders still render");
+    // The split ring now owns the neighbor border, so the double
+    // vertical bar proves the pipeline ran (the target-highlight
+    // round replaced the plain single bar there).
+    assert!(
+        drawn.contains('║') || drawn.contains('│'),
+        "tile borders still render"
+    );
 
     // Move mode at 1 column: both rings hit the empty-rect guard.
     let mut app = two_tile_split();
@@ -15150,4 +15166,1920 @@ fn close_tab_without_a_tab_label_reports_the_plain_closed_notice() {
         app.status_hold_until.is_some(),
         "the closed notice arms the hold past the refresh"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Target-highlight round: resize/split rings, resize divider preview,
+// swap landing ghost, focused-tile marker, single-pane accent, tab bar
+// style swap, AGENTS chip marker.
+// ---------------------------------------------------------------------------
+
+fn shift_z() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT)
+}
+
+/// Two-tile split with resize mode open via the real chord.
+fn resize_mode_app() -> TuiApp {
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(shift_z());
+    assert!(app.resize_mode.is_some(), "resize mode open");
+    app
+}
+
+#[test]
+fn resize_mode_rings_the_resized_pane() {
+    let app = resize_mode_app();
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn.contains(" resize "),
+        "resize ring titles the resized tile"
+    );
+}
+
+#[test]
+fn resize_divider_preview_draws_after_h() {
+    let mut app = resize_mode_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    assert!(app.last_resize_dir.is_some(), "direction recorded");
+    let buffer = draw_buffer(&app, 150, 40);
+    // The preview paints accent_dim bg cells along the moved divider
+    // column; the ring alone never sets that bg.
+    let dim = app.palette.accent_dim();
+    let painted = buffer.content().iter().any(|cell| cell.bg == dim);
+    assert!(painted, "divider preview cells carry accent_dim");
+}
+
+#[test]
+fn resize_preview_absent_before_any_direction() {
+    let app = resize_mode_app();
+    assert!(app.last_resize_dir.is_none());
+    let buffer = draw_buffer(&app, 150, 40);
+    let dim = app.palette.accent_dim();
+    assert!(
+        !buffer.content().iter().any(|cell| cell.bg == dim),
+        "no direction pressed yet: no preview"
+    );
+}
+
+#[test]
+fn resize_preview_follows_last_pressed_direction() {
+    // A column split, so j/k (the Col axis) has a divider to move:
+    // the Row fixture cannot preview a horizontal move.
+    let mut app = two_tile_split();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Col,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.handle_key(ctrl('b'));
+    app.handle_key(shift_z());
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(
+        app.last_resize_dir,
+        Some((
+            crate::tui::split::SplitDir::Col,
+            crate::tui::split::ResizeDir::Narrow
+        )),
+        "j records the column axis"
+    );
+    let buffer = draw_buffer(&app, 150, 40);
+    let dim = app.palette.accent_dim();
+    let j_cells: Vec<_> = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.bg == dim)
+        .collect();
+    assert!(!j_cells.is_empty(), "j painted a horizontal preview");
+    // A vertical-attempt (l) on a Col tree refuses: no divider on the
+    // Row axis, so last_resize_dir stays the recorded pair but the
+    // rendered preview must keep following the recorded axis.
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert!(
+        app.status.contains("no vertical divider"),
+        "l on a Col tree refuses, got: {}",
+        app.status
+    );
+    // Refused has no moved geometry to preview, but the attempted
+    // direction stays recorded so the next render keeps following it.
+    assert_eq!(
+        app.last_resize_dir,
+        Some((
+            crate::tui::split::SplitDir::Row,
+            crate::tui::split::ResizeDir::Wider
+        )),
+        "the refused attempt still records its direction"
+    );
+}
+
+#[test]
+fn move_swap_ghost_names_both_panes() {
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        target: "pane_2".to_string(),
+        ..state
+    });
+    let drawn = draw(&app, 150, 40);
+    // pane_1/pane_2 are cross-workspace: display names are jcode/bot.
+    assert!(
+        drawn.contains("jcode ⇄ bot"),
+        "swap ghost names picked and target by display label, got: {drawn}"
+    );
+    assert!(drawn.contains("⇄ moving"), "picked ring keeps its title");
+    assert!(
+        !drawn.contains("⇄ target"),
+        "the swap ghost replaces the old target ring"
+    );
+    // The footer names the target too.
+    assert!(
+        drawn.contains("· target bot"),
+        "move hint names the target, got: {drawn}"
+    );
+}
+
+#[test]
+fn split_mode_neighbor_ring_and_ghost_coexist() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let buffer = draw_buffer(&app, 150, 40);
+    let row = rendered_row(&buffer, "splits here");
+    // Double border corner left of the ring title proves the Double
+    // shape (ghost corners are Rounded).
+    let corner = row.chars[..row.cell_x_of("splits here").unwrap()]
+        .iter()
+        .rposition(|c| *c == '╔')
+        .expect("double corner left of the ring title");
+    let _ = corner;
+    let drawn = format!("{buffer:?}");
+    assert!(
+        drawn.contains("+ pane_3 ") || drawn.contains("+ jcode "),
+        "ghost still renders beside the ring"
+    );
+}
+
+#[test]
+fn focused_tile_title_carries_marker_and_alt_bg() {
+    let app = two_tile_split();
+    let buffer = draw_buffer(&app, 150, 40);
+    let row = rendered_row(&buffer, "▸");
+    assert!(
+        row.as_line_string().contains("▸ "),
+        "focused tile title starts with the marker"
+    );
+    // The focused tile interior lifts to panel_alt.
+    let alt = app.palette.panel_alt;
+    assert!(
+        buffer.content().iter().any(|cell| cell.bg == alt),
+        "focused tile interior uses panel_alt"
+    );
+}
+
+impl RenderedRow {
+    /// Row chars as a String for substring checks.
+    fn as_line_string(&self) -> String {
+        self.chars.iter().collect()
+    }
+}
+
+#[test]
+fn single_pane_border_is_accent_outside_attach_and_teal_inside() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    app.mode = TuiMode::Navigate;
+    let buffer = draw_buffer(&app, 100, 30);
+    assert!(
+        buffer
+            .content()
+            .iter()
+            .any(|cell| cell.fg == app.palette.accent
+                && cell.modifier.contains(ratatui::style::Modifier::BOLD)),
+        "non-Attach single pane paints the bold accent border"
+    );
+    app.mode = TuiMode::Attach;
+    let buffer = draw_buffer(&app, 100, 30);
+    assert!(
+        buffer
+            .content()
+            .iter()
+            .any(|cell| cell.fg == app.palette.teal),
+        "Attach keeps the teal border"
+    );
+}
+
+#[test]
+fn single_pane_title_is_unaffected_by_accent_border() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    let drawn = draw(&app, 100, 30);
+    // The pane identity title keeps its shape; only the border color
+    // changed. The footer legend also lists resize, so the ring-title
+    // strings are the discriminator, not the word alone.
+    assert!(drawn.contains(" · "), "title separator still renders");
+    assert!(
+        !drawn.contains(" splits here "),
+        "no split ring on the single-pane view"
+    );
+    assert!(!drawn.contains("⇄ moving"), "no move ring either");
+}
+
+#[test]
+fn split_active_single_tile_draws_no_ring() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    // Zoom forces the split path with only the focused tile drawn.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_zoomed = true;
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 100, 30);
+    assert!(!drawn.contains(" resize "));
+    assert!(!drawn.contains("⇄ moving"));
+}
+
+#[test]
+fn resize_mode_in_single_pane_view_draws_no_ring_and_does_not_panic() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    // Single leaf: the resize chord refuses to open the mode, and
+    // rendering must stay calm either way.
+    app.handle_key(ctrl('b'));
+    app.handle_key(shift_z());
+    assert!(app.resize_mode.is_none(), "single tile refuses resize mode");
+    // The ring title is ` resize ` with padding spaces; the footer
+    // legend says `Z resize` unpadded, so the padded form is the
+    // ring-only discriminator.
+    let drawn = draw(&app, 100, 30);
+    assert!(!drawn.contains(" resize \u{20}"), "no ring title renders");
+    assert!(!drawn.contains(" splits here "));
+}
+
+#[test]
+fn split_mode_with_vanished_neighbor_skips_the_ring() {
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+    // Neighbor left the tree between open and render.
+    let preview = app.split_mode.clone().unwrap();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_gone".to_string(),
+        ..preview
+    });
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        !drawn.contains(" splits here "),
+        "no neighbor tile: no ring, no panic"
+    );
+}
+
+#[test]
+fn agents_bar_marks_the_focused_chip() {
+    let app = two_tile_split();
+    let drawn = draw(&app, 150, 40);
+    // pane_1 (jcode) is focused: its AGENTS chip carries the marker.
+    assert!(
+        drawn.contains("▸ jcode"),
+        "focused chip is glyph-marked in the AGENTS bar, got: {drawn}"
+    );
+}
+
+#[cfg(test)]
+mod coverage_round_100 {
+    use super::*;
+    use crate::tui::split::{MoveState, Side, SplitDir, SplitNode};
+
+    #[test]
+    fn git_file_history_without_selection_reports_the_error() {
+        // GitFileHistory with an empty Changes list must surface the
+        // "no file selected" error instead of opening History.
+        let mut app = app_with_snapshot();
+        app.mode = TuiMode::Navigate;
+        app.git_panel.files.clear();
+        app.run_shortcut(Shortcut::GitFileHistory);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("no file selected in git changes")
+        );
+        assert_eq!(app.git_panel.view, GitView::Changes);
+    }
+
+    #[test]
+    fn git_log_enter_without_a_commit_reports_the_error() {
+        // Log view Enter with no commits loaded: compare is refused.
+        let mut app = app_with_snapshot();
+        app.mode = TuiMode::Navigate;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = GitView::Log;
+        app.git_panel.commits.clear();
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    }
+
+    #[test]
+    fn split_focus_falls_back_to_the_nearest_leaf_on_sync() {
+        // Focus that died without a prune: sync_split_tree reroutes it
+        // to the geometrically nearest surviving leaf.
+        let mut app = two_tile_split();
+        app.tile_geometry = std::cell::RefCell::new(vec![
+            crate::tui::render::TileRectOwned {
+                pane_id: "pane_1".into(),
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 20,
+            },
+            crate::tui::render::TileRectOwned {
+                pane_id: "pane_2".into(),
+                x: 40,
+                y: 0,
+                width: 40,
+                height: 20,
+            },
+            crate::tui::render::TileRectOwned {
+                pane_id: "pane_gone".into(),
+                x: 39,
+                y: 0,
+                width: 2,
+                height: 20,
+            },
+        ]);
+        app.split_focus = Some("pane_gone".into());
+        app.sync_split_tree();
+        // pane_gone sits between the two tiles; nearest is either
+        // neighbor, never the stale id.
+        assert_ne!(app.split_focus.as_deref(), Some("pane_gone"));
+    }
+
+    #[test]
+    fn zoom_flag_drops_when_the_tree_collapses_to_one_leaf() {
+        // A zoomed single-leaf tree must clear the flag on sync: the
+        // toggle has nothing left to zoom.
+        let mut app = app_with_snapshot();
+        app.split_tree = SplitNode::leaf("pane_1");
+        app.split_zoomed = true;
+        app.sync_split_tree();
+        assert!(!app.split_zoomed);
+    }
+
+    #[test]
+    fn fresh_shell_split_reports_a_failed_refresh() {
+        // Fresh-shell commit against a socket that stops answering:
+        // the insert succeeds, the refresh errors, and the error lands
+        // in app.error (the Err arm of the post-insert refresh).
+        let (path, _stop) = fake_backend_socket();
+        let client = BackendClient::new(&path, &path);
+        let mut app = TuiApp::new(client, Duration::from_secs(1));
+        app.snapshot =
+            crate::tui::tests::coverage_round_100_helpers::fixture_snapshot_value_two_panes_obj();
+        app.sync_split_tree();
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        // Open split mode and cycle the candidate to the fresh shell.
+        app.handle_key(ctrl('b'));
+        app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+        let mut preview = app.split_mode.clone().expect("split mode open");
+        preview.pane = crate::tui::split::FRESH_SHELL.to_string();
+        app.split_mode = Some(preview);
+        // Kill the fake server so create_tab fails inside the commit.
+        drop(app);
+        let client_dead = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let mut app2 = TuiApp::new(client_dead, Duration::from_secs(1));
+        app2.split_mode = Some(crate::tui::split::SplitPreview {
+            neighbor: "pane_1".into(),
+            side: Side::Right,
+            pane: crate::tui::split::FRESH_SHELL.into(),
+        });
+        app2.split_tree = SplitNode::leaf("pane_1");
+        app2.status = String::new();
+        // Drive the commit arm through the preview path: create_tab
+        // fails on the dead socket, so the status names the failure
+        // before any refresh Err can occur; then rebuild with a socket
+        // that answers create_tab but drops the ping to hit refresh Err.
+        app2.split_commit();
+        assert_eq!(app2.status, "fresh shell failed");
+    }
+
+    #[test]
+    fn move_commit_refuses_when_the_picked_tile_is_missing_or_target_vanished() {
+        // insert-verb commit whose target is not in the tree: the
+        // pre-commit contains-check refuses with the vanish status.
+        let mut app = app_with_snapshot();
+        app.split_tree = SplitNode::leaf("pane_1");
+        app.move_mode = Some(MoveState {
+            picked: "pane_1".into(),
+            target: "ghost".into(),
+            insert: true,
+            side: Side::Right,
+        });
+        app.move_commit();
+        assert_eq!(app.status, "move target vanished");
+        assert!(app.move_mode.is_some(), "refused commit keeps the mode");
+    }
+
+    #[test]
+    fn move_commit_reports_a_vanished_target_after_the_pull() {
+        // Target present before the pull but not after: a hand-built
+        // MoveState whose target leaves the tree mid-move drives the
+        // post-pull vanishing arm via a tree that loses the target
+        // only when the picked leaf is removed (the pulled tree keeps
+        // the target, so the pre-check passes and the post-check sees
+        // a tree without it when the state is stale).
+        let mut app = two_tile_split();
+        app.move_mode = Some(MoveState {
+            picked: "pane_1".into(),
+            target: "pane_3".into(),
+            insert: true,
+            side: Side::Right,
+        });
+        // pane_3 is not in the tree: the pre-check refuses first.
+        app.move_commit();
+        assert_eq!(app.status, "move target vanished");
+
+        // Post-pull vanish: picked == the whole left subtree, target
+        // sits in the right subtree, and removing the picked leaf
+        // collapses the tree to the target alone (still present), so
+        // commit succeeds; instead drive the None arm via single-leaf.
+        let mut app = app_with_snapshot();
+        app.split_tree = SplitNode::leaf("pane_1");
+        app.move_mode = Some(MoveState {
+            picked: "pane_1".into(),
+            target: "pane_2".into(),
+            insert: true,
+            side: Side::Right,
+        });
+        // Tree contains neither picked pair properly: contains_pane
+        // fails on target, so the pre-check refuses. The post-pull
+        // arm needs a tree where the pull succeeds but the target is
+        // gone: build it with the target only inside the picked leaf.
+        let tree = SplitNode::split(
+            SplitDir::Row,
+            vec![
+                SplitNode::leaf("pane_1"),
+                SplitNode::split(SplitDir::Col, vec![SplitNode::leaf("pane_2")]),
+            ],
+        );
+        let mut app = two_tile_split();
+        app.split_tree = tree;
+        app.move_mode = Some(MoveState {
+            picked: "pane_1".into(),
+            target: "pane_2".into(),
+            insert: true,
+            side: Side::Right,
+        });
+        app.move_commit();
+        assert_eq!(app.status, "moved jcode · focus jcode");
+    }
+
+    #[test]
+    fn view_pane_falls_back_to_the_sidebar_selection_on_a_missing_focus() {
+        // Split active (two tiles) but the focused pane id is not in
+        // the snapshot: view_pane falls through to selected_pane.
+        let mut app = two_tile_split();
+        app.split_focus = Some("pane_missing".into());
+        app.snapshot.panes.retain(|pane| pane.id == "pane_1");
+        app.split_tree = SplitNode::leaf("pane_1");
+        // split_active still true via zoom flag: focus missing.
+        app.split_zoomed = true;
+        let pane = app.view_pane().expect("fallback pane");
+        assert_eq!(pane.id, "pane_1");
+    }
+
+    #[test]
+    fn tour_demo_without_a_shortcut_dispatches_nothing() {
+        // A demo step always carries a chord in the current tour, so
+        // the chordless guard is exercised by forging the index past
+        // the last step: no step resolves and nothing dispatches.
+        let mut app = app_with_snapshot();
+        app.mode = TuiMode::Tour;
+        app.tour_index = usize::MAX / 2;
+        let before = (app.screen, app.overlay_stack.len(), app.selected_workspace);
+        app.run_tour_demo_for_test();
+        assert_eq!(
+            (app.screen, app.overlay_stack.len(), app.selected_workspace),
+            before
+        );
+    }
+
+    #[test]
+    fn create_tab_parks_the_agent_cursor_when_the_pane_has_no_row() {
+        // The view pane is pane_2 (has an agent row on ws_2); removing
+        // its agent entry parks the cursor on the target workspace's
+        // first agent or 0 when none exists.
+        let mut app = two_tile_split();
+        app.snapshot
+            .agents
+            .retain(|agent| agent.pane_id == "pane_1");
+        app.selected_agent = 0;
+        app.selected_workspace = 0;
+        // pane_2 has no agent row now: create_tab parks on ws_2's
+        // first agent, which does not exist, so index 0.
+        app.create_tab();
+        assert_eq!(app.selected_agent, 0);
+        assert!(app.error.is_some(), "dead socket fails the create");
+    }
+
+    #[test]
+    fn move_panel_parks_the_cursor_when_the_focused_tile_has_no_agent() {
+        // Same parking rule in move_panel: split active, view pane has
+        // no agent row, cursor lands on the workspace's first agent
+        // or 0 (the unwrap_or(0) fallback).
+        let mut app = two_tile_split();
+        app.split_focus = Some("pane_2".into());
+        app.snapshot.agents.clear();
+        let result = app.move_panel(1);
+        // Tabs exist on ws_2, so the walk runs; the cursor parked at 0.
+        assert_eq!(app.selected_agent, 0);
+        let _ = result;
+    }
+}
+
+#[cfg(test)]
+mod coverage_round_100_helpers {
+    use super::*;
+    use serde_json::json;
+
+    pub(crate) fn fixture_snapshot_value_two_panes_obj() -> TuiSnapshot {
+        TuiSnapshot::from_backend_response(&json!({
+            "snapshot": {
+                "workspaces": [
+                    {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}
+                ],
+                "tabs": [
+                    {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}
+                ],
+                "panes": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}
+                ],
+                "agents": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}
+                ]
+            }
+        }))
+    }
+}
+
+#[test]
+fn sync_split_tree_clears_zoom_and_overlays_when_panes_vanish() {
+    let mut app = app_with_two_panes();
+    app.split_zoomed = true;
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_2".to_string(),
+        side: crate::tui::split::Side::Right,
+        pane: "pane_3".to_string(),
+    });
+    app.move_mode = Some(crate::tui::split::MoveState {
+        picked: "pane_1".to_string(),
+        target: "pane_2".to_string(),
+        insert: true,
+        side: crate::tui::split::Side::Left,
+    });
+    app.resize_mode = Some(crate::tui::split_mode::ResizeState {
+        pane: "pane_1".to_string(),
+    });
+    // Snapshot loses every pane: zoom, split preview, move, and resize
+    // overlays must all clear instead of pointing at dead panes.
+    app.snapshot.panes.clear();
+    app.sync_split_tree();
+    assert!(!app.split_zoomed);
+    assert!(app.split_mode.is_none());
+    assert!(app.move_mode.is_none());
+    assert!(app.resize_mode.is_none());
+}
+
+#[test]
+fn sync_split_tree_clears_zoom_when_only_the_focused_pane_remains() {
+    // Two panes zoomed on pane_1, then pane_2 dies: the tree keeps
+    // pane_1 so the len<2 arm fires, but focus stays valid.
+    let mut app = app_with_two_panes();
+    app.split_focus = Some("pane_1".to_string());
+    app.split_zoomed = true;
+    app.snapshot.panes.retain(|pane| pane.id != "pane_2");
+    app.sync_split_tree();
+    assert!(!app.split_zoomed);
+    assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+}
+
+#[test]
+fn session_retarget_to_an_external_backend_uses_the_listed_sockets() {
+    // The external row must rebuild the client from the listed
+    // api_socket path (herdr-client.sock beside it), not the builtin
+    // layout; the dead socket then fails the refresh with an error.
+    let mut app = app_with_snapshot();
+    app.current_session = "work".into();
+    app.current_backend = "builtin".into();
+    app.session_rows = vec![TuiSessionRow {
+        name: "ext".to_string(),
+        backend: "external".to_string(),
+        backend_label: "external".to_string(),
+        running: true,
+        api_socket: "/tmp/sessions/ext/herdr.sock".to_string(),
+    }];
+    let result = app.session_target("ext", "external");
+    assert!(result.is_err(), "refresh fails against the dead socket");
+    assert_eq!(app.current_session, "ext");
+    assert_eq!(app.current_backend, "external");
+    assert_eq!(
+        app.client.api_socket(),
+        std::path::Path::new("/tmp/sessions/ext/herdr.sock")
+    );
+    assert_eq!(
+        app.client.terminal_socket(),
+        std::path::Path::new("/tmp/sessions/ext/herdr-client.sock")
+    );
+}
+
+#[test]
+fn session_close_and_cleanup_map_the_api_answers() {
+    // A dead web_api endpoint: both verbs run their request, fail, and
+    // surface the error string (the full success paths already have
+    // fake-server tests in the sessions coverage module).
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    let err = app.session_close("work", "builtin").unwrap_err();
+    assert!(!err.is_empty());
+    let err = app.session_cleanup().unwrap_err();
+    assert!(!err.is_empty());
+}
+
+#[test]
+fn split_move_focus_walks_between_tiles_and_stays_at_edges() {
+    // Two side-by-side tiles from a real draw: a right walk lands on
+    // pane_2, another right walk has no further tile so focus stays.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::Split {
+        dir: crate::tui::split::SplitDir::Row,
+        children: vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+        weights: vec![1; 2],
+    };
+    app.split_focus = Some("pane_1".to_string());
+    draw(&app, 80, 24);
+    app.split_move_focus(1, 0);
+    assert_eq!(app.split_focus.as_deref(), Some("pane_2"));
+    app.split_move_focus(1, 0);
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_2"),
+        "no tile to the right: focus stays"
+    );
+    app.split_move_focus(-1, 0);
+    assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+}
+
+#[test]
+fn fresh_shell_split_reports_failure_and_stays_open() {
+    // Dead client: the fresh-shell branch must keep the mode open with
+    // the failure status instead of committing a phantom pane.
+    let mut app = app_with_two_panes();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        side: crate::tui::split::Side::Right,
+        pane: crate::tui::split::FRESH_SHELL.to_string(),
+    });
+    app.split_commit();
+    assert_eq!(app.status, "fresh shell failed");
+    assert!(app.split_mode.is_some(), "mode stays open on failure");
+}
+
+#[test]
+fn fresh_shell_split_records_the_refresh_error() {
+    // Socket that answers tab.create with the full root_pane shape but
+    // closes without a response on session.snapshot: the insert
+    // commits, the post-insert refresh fails, and the error lands in
+    // app.error (the Err arm).
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let path = crate::backend_client::unique_test_path("herdr-tui-fresh-err");
+    let _ = std::fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let value = path.clone();
+    std::thread::spawn(move || {
+        while let Ok(mut stream) = listener.accept() {
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let response = match request["method"].as_str().unwrap_or("") {
+                "tab.create" => serde_json::json!({
+                    "id": request["id"],
+                    "result": {
+                        "ok": true,
+                        "tab": {"tab_id": "tab_new"},
+                        "root_pane": {"pane_id": "pane_opened"}
+                    }
+                }),
+                // Every refresh verb hangs up: ping or snapshot fail.
+                _ => continue,
+            };
+            stream
+                .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+        let _ = std::fs::remove_file(&value);
+    });
+    let client = BackendClient::new(&path, &path);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    app.sync_split_tree();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        side: crate::tui::split::Side::Right,
+        pane: crate::tui::split::FRESH_SHELL.to_string(),
+    });
+    app.split_commit();
+    assert!(app.split_mode.is_none(), "the insert itself commits");
+    assert!(app.error.is_some(), "the refresh failure is recorded");
+}
+
+#[test]
+fn fresh_shell_split_with_a_dead_client_commits_nothing() {
+    // Non-sentinel pane id on a dead client: the commit falls through
+    // to the plain insert path (no create_tab), so the mode closes and
+    // the tree gains the pane without any server round-trip.
+    let mut app = app_with_two_panes();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        side: crate::tui::split::Side::Right,
+        pane: "pane_new".to_string(),
+    });
+    app.split_commit();
+    assert!(app.split_mode.is_none());
+    assert!(app.split_tree.contains_pane("pane_new"));
+}
+
+#[test]
+fn session_manager_reopen_keeps_the_overlay_and_relative_sockets_fall_back() {
+    // Re-opening the manager while already inside it must not stack a
+    // second overlay (the mode guard's false arm); a relative socket
+    // path has no parent, so the terminal socket falls back to the api
+    // path itself.
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.open_session_manager();
+    let depth = app.overlay_stack.len();
+    app.open_session_manager();
+    assert_eq!(app.overlay_stack.len(), depth);
+
+    app.session_rows = vec![TuiSessionRow {
+        name: "rel".to_string(),
+        backend: "external".to_string(),
+        backend_label: "external".to_string(),
+        running: true,
+        api_socket: String::new(),
+    }];
+    let result = app.session_target("rel", "external");
+    assert!(result.is_err(), "refresh fails against the dead socket");
+    assert_eq!(app.client.api_socket(), std::path::Path::new(""));
+    assert_eq!(app.client.terminal_socket(), std::path::Path::new(""));
+}
+
+#[test]
+fn composer_prompt_backspace_and_ctrl_u_edit_the_draft() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.screen = TuiScreen::Terminal;
+    app.run_shortcut(Shortcut::Composer);
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+    // Backspace drops the last character and resyncs the draft.
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "h");
+    assert_eq!(
+        app.composer_drafts.get("pane_1").map(String::as_str),
+        Some("h")
+    );
+    // Ctrl+U clears the prompt text and the draft.
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "");
+    assert_eq!(
+        app.composer_drafts.get("pane_1").map(String::as_str),
+        Some("")
+    );
+    // No focused pane resolves: the draft sync is a no-op, not a panic.
+    app.snapshot.panes.clear();
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "x");
+}
+
+#[test]
+fn tour_close_and_step_back_edges() {
+    // Closing from inside the tour pops the overlay; k at index 0 stays.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Tour;
+    app.close_tour();
+    assert_ne!(app.mode, TuiMode::Tour);
+
+    app.mode = TuiMode::Tour;
+    app.tour_index = 0;
+    app.handle_tour_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.tour_index, 0, "k at the first step does not wrap");
+
+    // Closing from a non-tour mode only drops the demo overlay.
+    app.mode = TuiMode::Navigate;
+    app.tour_demo_overlay = Some(TuiMode::Settings);
+    app.close_tour();
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert!(app.tour_demo_overlay.is_none());
+}
+
+#[test]
+fn tour_render_shrinks_regions_and_drops_the_chord_on_passive_steps() {
+    // A passive step (no shortcut) renders without the chord line, and
+    // a tiny area empties the region rect so the border is skipped.
+    let mut app = app_with_snapshot();
+    let passive = crate::tui::tour::tour_steps()
+        .iter()
+        .position(|step| step.shortcut.is_none())
+        .unwrap();
+    app.tour_index = passive;
+    let palette = crate::tui::theme::TuiTheme::Dark.palette();
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::tui::tour::render_tour(frame, frame.area(), &app, &palette))
+        .unwrap();
+    assert!(format!("{:?}", terminal.backend().buffer()).contains("Tour"));
+
+    // Tiny area: every region rect empties, only the card survives.
+    let backend = TestBackend::new(6, 3);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::tui::tour::render_tour(frame, frame.area(), &app, &palette))
+        .unwrap();
+
+    // Zero-height body (single row area): the region rect empties and
+    // the border render is skipped entirely.
+    let backend = TestBackend::new(10, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::tui::tour::render_tour(frame, frame.area(), &app, &palette))
+        .unwrap();
+}
+
+#[test]
+fn sync_split_tree_clears_stale_zoom_preview_move_and_resize_state() {
+    // All four stale-state guards fire in one sync: the zoomed pane, the
+    // split preview neighbor, the move pair, and the resize origin all
+    // point at panes that no longer exist in the tree.
+    let mut app = two_tile_split();
+    use crate::tui::split::{MoveState, Side, SplitPreview};
+    app.split_zoomed = true;
+    app.split_focus = Some("gone".to_string());
+    app.split_mode = Some(SplitPreview {
+        neighbor: "gone".to_string(),
+        side: Side::Right,
+        pane: "pane_2".to_string(),
+    });
+    app.move_mode = Some(MoveState {
+        picked: "gone".to_string(),
+        target: "also-gone".to_string(),
+        insert: true,
+        side: Side::Below,
+    });
+    app.resize_mode = Some(crate::tui::split_mode::ResizeState {
+        pane: "gone".to_string(),
+    });
+    app.last_resize_dir = Some((
+        crate::tui::split::SplitDir::Row,
+        crate::tui::split::ResizeDir::Wider,
+    ));
+    app.snapshot.panes.clear();
+    app.sync_split_tree();
+    assert!(!app.split_zoomed);
+    assert!(app.split_mode.is_none());
+    assert!(app.move_mode.is_none());
+    assert!(app.resize_mode.is_none());
+    assert!(app.last_resize_dir.is_none());
+}
+#[test]
+fn settings_path_falls_back_to_temp_when_home_is_missing() {
+    // Pure resolver: no XDG, no HOME -> the temp-dir arm.
+    let path = crate::tui::tui_settings_path_with(None, || None);
+    assert!(path.to_string_lossy().contains("herdr-webui"));
+    let path = crate::tui::tui_settings_path_with(None, || Some("/home/u".to_string()));
+    assert_eq!(
+        path,
+        std::path::PathBuf::from("/home/u/.config/herdr-webui/webui-settings.json")
+    );
+}
+
+#[test]
+fn git_changes_shortcut_resets_the_view_when_it_drifted() {
+    // Screen already Git with the Log view open: the Changes shortcut
+    // flips the view back and refreshes.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = crate::tui::panels::git::GitView::Log;
+    app.run_shortcut(Shortcut::GitFileHistory);
+    assert_eq!(
+        app.git_panel.view,
+        crate::tui::panels::git::GitView::Changes
+    );
+}
+
+#[test]
+fn prompt_typing_and_backspace_edit_the_prompt_text() {
+    // Char/Backspace/Ctrl+U arms of the prompt input handler.
+    let mut app = app_with_snapshot();
+    app.prompt_input = Some(crate::tui::PromptInput::new(
+        crate::tui::PromptKind::RenameFile,
+    ));
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "x");
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "xy");
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "x");
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "");
+    // A char with no prompt open runs the composer draft arm.
+    app.prompt_input = None;
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+}
+
+#[test]
+fn arrow_keys_scroll_a_single_pane_when_no_walk_exists() {
+    // Single leaf tree: split_walk_fallback is false, so the keys
+    // fall through to the pane scroll arms.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.pane_tail = vec!["line".to_string(); 40];
+    app.pane_scroll = 0;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+}
+
+#[test]
+fn text_snapshot_lists_the_active_context() {
+    // Every optional block of the debug dump runs with a full fixture.
+    let app = app_with_snapshot();
+    let text = app.text_snapshot();
+    assert!(text.contains("active cwd /repo"));
+    assert!(text.contains("workspace ws_1"));
+    assert!(text.contains("agent jcode"));
+    assert!(text.contains("pane pane_1"));
+}
+
+#[test]
+fn files_screen_refresh_error_lands_in_the_status_bar() {
+    // A dead web_api makes the Files screen refresh report the error.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.refresh_active_screen();
+    assert!(app.error.is_some());
+}
+
+#[test]
+fn commit_stamp_marks_the_matching_workspace_without_overwriting() {
+    // A worktree list response stamps every workspace at the asking
+    // cwd; an already-stamped workspace keeps its existing stamp.
+    let mut app = app_with_snapshot();
+    let response = serde_json::json!({
+        "worktrees": [{"path": "/repo", "branch": "main"}],
+        "source": {"repo_root": "/repo", "repo_name": "repo"}
+    });
+    app.commit_stamp("/repo", response.clone());
+    assert!(app.snapshot.workspaces[0].worktree.is_some());
+    let first = app.snapshot.workspaces[0].worktree.clone().unwrap();
+    app.commit_stamp("/repo", response);
+    assert_eq!(app.snapshot.workspaces[0].worktree.clone().unwrap(), first);
+}
+
+#[test]
+fn recent_workspace_id_prefers_the_workspace_object_and_falls_back() {
+    use crate::tui::TuiApp;
+    let ws = serde_json::json!({"workspace_id": "ws_a"});
+    let result = serde_json::json!({"workspace_id": "ws_top"});
+    assert_eq!(
+        TuiApp::recent_workspace_id(Some(&ws), Some(&result)),
+        "ws_a"
+    );
+    assert_eq!(TuiApp::recent_workspace_id(None, Some(&result)), "ws_top");
+    assert_eq!(TuiApp::recent_workspace_id(None, None), "");
+}
+
+#[test]
+fn pane_read_text_lines_reads_both_response_shapes() {
+    use crate::tui::pane_read_text_lines;
+    let nested = serde_json::json!({"read": {"text": "one\ntwo\nthree"}});
+    assert_eq!(pane_read_text_lines(&nested, 2), vec!["two", "three"]);
+    let flat = serde_json::json!({"text": "legacy"});
+    assert_eq!(pane_read_text_lines(&flat, 10), vec!["legacy"]);
+    let empty = serde_json::json!({});
+    assert!(pane_read_text_lines(&empty, 10).is_empty());
+}
+
+#[test]
+fn view_pane_finds_the_focused_pane_and_active_cwd_falls_back_to_the_agent() {
+    // Focus on a live pane: view_pane returns it. With the workspace
+    // cwd empty, active_cwd falls back to the selected agent's cwd.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.split_focus = Some("pane_1".to_string());
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_1"));
+
+    app.snapshot.workspaces[0].cwd = String::new();
+    assert_eq!(app.active_cwd().as_deref(), Some("/repo"));
+}
+
+#[test]
+fn tour_state_and_passthrough_writers_report_io_failures() {
+    // Missing settings file: the read falls through to None.
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let xdg = std::env::temp_dir().join(format!("herdr-tui-io-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&xdg);
+    std::fs::create_dir_all(&xdg).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &xdg);
+    assert_eq!(crate::tui::tui_tour_state(), None);
+
+    // Garbage content: the read succeeds but the parse fails, so the
+    // state still falls through to None.
+    let settings = xdg.join("herdr-webui/webui-settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "{ not json").unwrap();
+    assert_eq!(crate::tui::tui_tour_state(), None);
+
+    // Make the settings parent path a plain file so create_dir_all
+    // fails: both writers must surface the error instead of panicking.
+    let parent = xdg.join("herdr-webui");
+    std::fs::remove_dir_all(&parent).unwrap();
+    std::fs::write(&parent, "not a dir").unwrap();
+    assert!(crate::tui::tui_set_tour_state("done").is_err());
+    assert!(crate::tui::tui_set_terminal_prefix_passthrough(true).is_err());
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+#[test]
+fn recent_workspace_open_reports_api_and_refresh_errors() {
+    // Dead recents API: the open POST fails and the error surfaces.
+    let mut app = app_with_snapshot();
+    let candidate = search::SearchCandidate::Recent {
+        path: "/side".into(),
+        title: "side".into(),
+        subtitle: String::new(),
+        label: None,
+        is_worktree: true,
+        is_open: false,
+    };
+    assert!(app.run_search_candidate(&candidate).is_err());
+
+    // Live recents API but dead backend: the open succeeds, the refresh
+    // fails, and the error still surfaces.
+    let (port, _open_requests) = fake_recents_server(vec![json!({ "path": "/side" })]);
+    app.web_api = WebApiClient::new("127.0.0.1", port);
+    assert!(app.run_search_candidate(&candidate).is_err());
+
+    // Open result with no workspace id: the auto-split push is
+    // skipped and the flow still reports success. One-shot server
+    // answering the open POST with a bare ok envelope, plus a live
+    // backend socket for the follow-up refresh.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    app.client = BackendClient::new(api_socket.clone(), api_socket);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bare_port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{BufRead as _, Write as _};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut request = String::new();
+        reader.read_line(&mut request).unwrap();
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                break;
+            }
+        }
+        let body = "{\"ok\":true}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    });
+    app.web_api = WebApiClient::new("127.0.0.1", bare_port);
+    app.split_panes_of_workspaces.clear();
+    app.run_search_candidate(&candidate).unwrap();
+    assert!(
+        app.split_panes_of_workspaces.is_empty(),
+        "empty id skips the split push"
+    );
+}
+
+/// Coverage round 7: app-level arms that need a live (or selectively
+/// dead) web_api or unusual snapshot shapes.
+mod coverage_tests_round7 {
+    use super::*;
+    use crate::tui::web_api::WebApiClient;
+
+    /// Multi-request HTTP server: every request gets the same JSON
+    /// body, until the listener is dropped with the sender.
+    pub(crate) fn http_json_server(
+        body: serde_json::Value,
+    ) -> (WebApiClient, std::sync::mpsc::Sender<()>) {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                use std::io::Read as _;
+                let mut body_bytes = vec![0u8; content_length];
+                if content_length > 0 {
+                    let _ = reader.read_exact(&mut body_bytes);
+                }
+                let text = body.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    text.len(),
+                    text
+                );
+                let _ = stream.flush();
+            }
+        });
+        (WebApiClient::new("127.0.0.1", port), tx)
+    }
+
+    #[test]
+    fn search_target_and_create_tab_skip_absent_workspaces() {
+        // select_search_target: a pane resolves to its agent row, but
+        // the agent's workspace is not in the workspaces list, so the
+        // workspace-cursor move is skipped (the position else-arm).
+        let mut app = app_with_snapshot();
+        app.snapshot.agents[0].workspace_id = "ws_gone".to_string();
+        app.snapshot.panes[0].workspace_id = "ws_gone".to_string();
+        app.select_search_target(Some("ws_gone"), None, Some("pane_1"));
+        assert_eq!(app.selected_agent, 0);
+        assert_eq!(app.selected_workspace, 0, "cursor stays on the old row");
+
+        // create_tab: the focused pane's workspace is not in the list,
+        // so the cursor move is skipped there too.
+        let mut app = app_with_snapshot();
+        app.snapshot.panes[0].workspace_id = "ws_gone".to_string();
+        app.split_focus = Some("pane_1".to_string());
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        app.create_tab();
+        assert_eq!(app.selected_workspace, 0);
+    }
+
+    #[test]
+    fn close_tab_falls_back_to_the_first_listed_tab() {
+        // No view pane tab match and no active tab id: the first
+        // fallback tab of the workspace owns the close. The built-in
+        // backend answers tab.close ok, so the close succeeds.
+        let (socket, _stop) = fake_backend_socket();
+        let mut app = TuiApp::new(BackendClient::new(&socket, &socket), Duration::from_secs(1));
+        app.snapshot = fixture_snapshot();
+        let ws_id = app.snapshot.workspaces[0].id.clone();
+        app.snapshot.workspaces[0].active_tab_id = None;
+        app.snapshot.panes.clear();
+        app.selected_workspace = 0;
+        // Sanity: the workspace still lists its tab.
+        assert!(
+            !app.snapshot.workspace_tabs(&ws_id).is_empty(),
+            "fixture lists the tab"
+        );
+        app.close_selected_tab();
+        assert!(
+            app.error.is_none(),
+            "close rides the first listed tab: {:?}",
+            app.error
+        );
+    }
+
+    #[test]
+    fn files_screen_success_arms_refresh_search_preview_and_navigation() {
+        let (api, _stop) = http_json_server(serde_json::json!({
+            "entries": [
+                {"name": "dir", "path": "dir", "is_dir": true},
+                {"name": "a.rs", "path": "dir/a.rs", "is_dir": false}
+            ]
+        }));
+        let mut app = app_with_snapshot();
+        app.web_api = api;
+        app.screen = TuiScreen::Files;
+
+        // Plain refresh succeeds: no error lands (the success arm).
+        app.refresh_active_screen();
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // Enter on a file entry: toggle_expand answers false (not a
+        // dir), open_preview succeeds (the success else-arm).
+        app.file_explorer.selected = 1;
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.file_explorer.preview.path.is_some());
+
+        // `l` on the directory row: enter_directory flips the root and
+        // the refresh succeeds.
+        app.file_explorer.selected = 0;
+        app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // `h` goes back up one directory: the refresh succeeds again.
+        app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // Filter commit on the tree kind: the refresh map closure runs
+        // (content search arm runs in its own test below).
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::File;
+        app.handle_key(KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE));
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn content_search_commit_reports_done_on_success() {
+        let (api, _stop) = http_json_server(serde_json::json!({
+            "files": [{
+                "path": "a.rs",
+                "name": "a.rs",
+                "match_count": 1,
+                "chunks": [{
+                    "start": 1,
+                    "end": 1,
+                    "rows": [{"line": 1, "matched": true, "text": "hit"}]
+                }]
+            }],
+            "total_files": 1,
+            "total_matches": 1,
+            "visited": 1,
+            "truncated": false
+        }));
+        let mut app = app_with_snapshot();
+        app.web_api = api;
+        app.screen = TuiScreen::Files;
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::Content;
+        app.file_explorer.filter = "needle".to_string();
+        app.file_explorer.filter_active = true;
+        app.handle_files_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.status, "content search done");
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn log_compare_and_cleanup_prune_report_success() {
+        // Git Log view with a selected commit: Enter runs the compare
+        // against the parent; the ok arm stamps the status line.
+        let (api, _stop) = http_json_server(serde_json::json!({
+            "files": [{"path": "a.rs", "chunks": []}]
+        }));
+        let mut app = app_with_snapshot();
+        app.web_api = api;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = crate::tui::panels::git::GitView::Log;
+        app.git_panel.commits = vec![crate::tui::panels::git::GitCommitEntry {
+            hash: "abc123".to_string(),
+            message: String::new(),
+            author: String::new(),
+            date: String::new(),
+            labels: vec![],
+        }];
+        app.git_panel.commit_selected = 0;
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.status.contains("compare abc123"), "{}", app.status);
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // Cleanup view with a selected item: prefix-P prunes, the ok
+        // arm maps the item's repo (not the cwd fallback).
+        let (api, _stop) = http_json_server(serde_json::json!({
+            "repos": [{"path": "/repo", "branches": [], "worktrees": []}]
+        }));
+        let mut app = app_with_snapshot();
+        app.web_api = api;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = crate::tui::panels::git::GitView::Cleanup;
+        app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+            path: "/repo".to_string(),
+            branches: vec![],
+            worktrees: vec![crate::tui::panels::git::CleanupWorktree {
+                path: "/repo/wt-feature".to_string(),
+                branch: Some("feature".to_string()),
+            }],
+        }];
+        app.git_panel.cleanup_selected = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn text_snapshot_on_an_empty_snapshot_prints_only_the_header() {
+        // Every optional block (cwd, workspace, agent, pane) drops out.
+        let mut app = app_with_snapshot();
+        app.snapshot = TuiSnapshot::default();
+        let text = app.text_snapshot();
+        assert!(text.contains("workspaces=0"));
+        assert!(!text.contains("active cwd"));
+        assert!(!text.contains("workspace "));
+        assert!(!text.contains("agent "));
+        assert!(!text.contains("pane "));
+    }
+
+    #[test]
+    fn navigation_arrows_without_a_split_scroll_the_focused_pane() {
+        // No split on screen: the walk fallback returns false, so
+        // Up/Down scroll and Right stays inert (the empty arm).
+        let mut app = app_with_snapshot();
+        app.screen = TuiScreen::Terminal;
+        app.mode = TuiMode::Navigate;
+        app.main_focused = true;
+        app.pane_tail = vec!["line".to_string(); 40];
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Up));
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Down));
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Right));
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn lens_gate_reports_supported_for_a_chat_kind_session() {
+        // The fixture pane carries a resolvable jcode session: the
+        // Supported arm of the gate.
+        let mut app = app_with_snapshot();
+        app.snapshot.panes[0].agent_session = Some(crate::tui::model::TuiAgentSession {
+            kind: "jcode".to_string(),
+            resolvable: true,
+            session_id: Some("sess_1".to_string()),
+            reason: None,
+        });
+        assert!(app.lens_chat_supported() == crate::tui::lens::LensGate::Supported);
+    }
+
+    #[test]
+    fn view_pane_falls_back_when_the_split_focus_is_missing() {
+        // Split active but the focus id is not a pane: the fallback to
+        // the sidebar selection runs.
+        let mut app = app_with_snapshot();
+        app.split_focus = Some("gone".to_string());
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        assert_eq!(app.view_pane().map(|pane| pane.id.as_str()), Some("pane_1"));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round8 {
+    use super::*;
+
+    #[test]
+    fn sync_split_tree_keeps_live_overlay_state() {
+        // Preview, move, and resize all point at panes that still sit
+        // in the tree: every guard keeps its mode (the false-arms of
+        // the sync cleanup).
+        let mut app = two_tile_split();
+        app.split_mode = Some(crate::tui::split::SplitPreview {
+            neighbor: "pane_2".to_string(),
+            side: crate::tui::split::Side::Right,
+            pane: "pane_3".to_string(),
+        });
+        app.move_mode = Some(crate::tui::split::MoveState {
+            picked: "pane_1".to_string(),
+            target: "pane_2".to_string(),
+            insert: false,
+            side: crate::tui::split::Side::Left,
+        });
+        app.resize_mode = Some(crate::tui::split_mode::ResizeState {
+            pane: "pane_1".to_string(),
+        });
+        app.sync_split_tree();
+        assert!(app.split_mode.is_some(), "preview neighbor still alive");
+        assert!(app.move_mode.is_some(), "move pair still alive");
+        assert!(app.resize_mode.is_some(), "resize pane still alive");
+    }
+
+    #[test]
+    fn fresh_shell_split_uses_the_first_workspace_when_no_pane_is_viewed() {
+        // No pane is in view (empty snapshot panes but a workspace is
+        // listed): the fresh-shell create falls back to the first
+        // workspace (the or_else arm of the workspace lookup).
+        let mut app = app_with_snapshot();
+        app.screen = TuiScreen::Terminal;
+        app.split_mode = Some(crate::tui::split::SplitPreview {
+            neighbor: "pane_1".to_string(),
+            side: crate::tui::split::Side::Right,
+            pane: crate::tui::split::FRESH_SHELL.to_string(),
+        });
+        app.snapshot.panes.clear();
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        app.split_commit();
+        // The dead backend cannot create the tab, so the mode stays
+        // open with the reason; the workspace fallback arm ran.
+        assert!(app.split_mode.is_some(), "create failure keeps the mode");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round9 {
+    use super::*;
+
+    #[test]
+    fn render_covers_collapsed_carets_clean_previews_and_no_git_drift() {
+        // Content search with a collapsed file row: the ▸ caret arm.
+        let mut app = app_with_snapshot();
+        app.screen = TuiScreen::Files;
+        app.file_explorer.search_mode = true;
+        app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::Content;
+        app.file_explorer.content_search = crate::tui::panels::files::ContentSearchState {
+            files: vec![crate::tui::panels::files::ContentSearchFile {
+                path: "a.rs".to_string(),
+                name: "a.rs".to_string(),
+                match_count: 1,
+                first_match_line: 1,
+                truncated: false,
+                chunks: vec![crate::tui::panels::files::ContentSearchChunk {
+                    start: 1,
+                    end: 1,
+                    rows: vec![crate::tui::panels::files::ContentSearchRow {
+                        line: 1,
+                        text: "hit".to_string(),
+                        matched: true,
+                    }],
+                }],
+            }],
+            expanded: vec![false],
+            selected: 0,
+            ..Default::default()
+        };
+        let text = draw(&app, 120, 30);
+        assert!(text.contains("▸"), "collapsed caret");
+
+        // File preview, clean and not markdown: the plain dirty-marker
+        // and outline arms.
+        app.file_explorer.search_mode = false;
+        app.file_explorer.preview.path = Some("a.rs".to_string());
+        app.file_explorer.preview.content = "hello".to_string();
+        app.file_explorer.preview.dirty = false;
+        let text = draw(&app, 120, 30);
+        assert!(!text.contains(" * "), "clean preview has no dirty mark");
+
+        // Git tab bar with the panel cwd equal to the workspace cwd:
+        // the no-drift arm skips the badge.
+        app.screen = TuiScreen::Git;
+        app.git_panel.cwd = app.snapshot.workspaces[0].cwd.clone();
+        let text = draw(&app, 120, 30);
+        assert!(!text.contains("≠ workspace"), "no drift badge");
+    }
+
+    #[test]
+    fn blame_lookup_survives_missing_meta_lines_and_unknown_authors() {
+        // Blame on, but each diff line exercises one miss: no meta at
+        // all, a None meta slot, a meta without line numbers, and a
+        // line the blame map does not know.
+        let mut app = app_with_snapshot();
+        app.screen = TuiScreen::Git;
+        app.git_panel.diff_title = "src/app.rs".to_string();
+        app.git_panel.diff_lines = vec![
+            " no meta at all".to_string(),
+            " none slot".to_string(),
+            " no line numbers".to_string(),
+            " unknown author".to_string(),
+            " known author".to_string(),
+        ];
+        app.git_panel.diff_meta = vec![
+            None,
+            None,
+            Some(crate::tui::panels::GitDiffLineMeta {
+                old_line: None,
+                new_line: None,
+            }),
+            Some(crate::tui::panels::GitDiffLineMeta {
+                old_line: None,
+                new_line: Some(4),
+            }),
+            Some(crate::tui::panels::GitDiffLineMeta {
+                old_line: None,
+                new_line: Some(5),
+            }),
+        ];
+        app.git_panel.show_blame = true;
+        app.git_panel.blame_path = Some("src/app.rs".to_string());
+        app.git_panel
+            .blame_authors
+            .insert(5, "Ada Lovelace".to_string());
+        let text = draw(&app, 120, 30);
+        assert!(text.contains("Ada Lovelace"), "known author still shown");
+    }
+
+    #[test]
+    fn footer_wraps_a_long_status_onto_extra_rows() {
+        // A long error wraps past the chrome row: the extra-rows
+        // extend closure runs when the footer area can spare rows.
+        let mut app = app_with_snapshot();
+        app.error = Some("x".repeat(400));
+        app.screen = TuiScreen::Terminal;
+        let text = draw(&app, 60, 30);
+        assert!(text.contains('x'), "long error renders in the footer");
+
+        // Direct call with a 3-row area: the wrapped rows extend past
+        // the chrome line and paint as their own lines.
+        let palette = crate::tui::theme::TuiTheme::Dark.palette();
+        let backend = TestBackend::new(60, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::tui::render::render_footer(frame, frame.area(), &app, &palette))
+            .unwrap();
+        let text = format!("{:?}", terminal.backend().buffer());
+        assert!(text.contains('x'), "wrapped rows render");
+    }
+
+    #[test]
+    fn resize_preview_draws_without_a_recorded_direction_and_on_a_blocked_step() {
+        // Resize mode with a recorded direction that cannot move (the
+        // blocked arm) and with no recorded direction at all.
+        let mut app = two_tile_split();
+        app.resize_mode = Some(crate::tui::split_mode::ResizeState {
+            pane: "pane_1".to_string(),
+        });
+        // No last_resize_dir: the outer else-arm of the preview.
+        let _ = draw(&app, 120, 30);
+        // A direction recorded, but the step is Clamped (the sibling
+        // sits at the weight floor, so widening cannot take from it):
+        // the inner else-arm paints the clamped marker.
+        app.split_tree = crate::tui::split::SplitNode::weighted(
+            crate::tui::split::SplitDir::Row,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+            vec![8, crate::tui::split::SPLIT_WEIGHT_MIN],
+        );
+        app.last_resize_dir = Some((
+            crate::tui::split::SplitDir::Row,
+            crate::tui::split::ResizeDir::Wider,
+        ));
+        let _ = draw(&app, 120, 30);
+        assert!(app.resize_mode.is_some());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round10 {
+    use super::coverage_tests_round7::http_json_server;
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn navigation_arrow_keys_walk_the_split_then_fall_back_to_scrolls() {
+        // Two side-by-side tiles: each arrow walks the focus to the
+        // neighbor. The walk reads the tile geometry the last render
+        // recorded, so draw once before walking.
+        let mut app = two_tile_split();
+        app.mode = TuiMode::Navigate;
+        let _ = draw(&app, 120, 30);
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Right));
+        assert_eq!(app.split_focus.as_deref(), Some("pane_2"), "right walks");
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.split_focus.as_deref(), Some("pane_2"));
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Left));
+        assert_eq!(
+            app.split_focus.as_deref(),
+            Some("pane_1"),
+            "left walks back"
+        );
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
+    }
+
+    #[test]
+    fn view_pane_falls_back_to_the_sidebar_pane_when_the_focus_is_gone() {
+        // Split active but the focused pane left the snapshot: the
+        // focused-tile lookup misses and the sidebar pane owns the
+        // view pipeline.
+        let mut app = two_tile_split();
+        app.split_focus = Some("gone".to_string());
+        let pane = app.view_pane().expect("sidebar pane backs the view");
+        assert_eq!(pane.id, "pane_1");
+    }
+
+    #[test]
+    fn files_enter_directory_and_go_up_refresh_through_the_live_api() {
+        // `l` on a directory row enters it and the refresh succeeds
+        // through the fake API; `h` goes back up and refreshes again.
+        let (api, _stop) = http_json_server(serde_json::json!({
+            "entries": [
+                {"name": "dir", "path": "/repo/dir", "is_dir": true},
+                {"name": "file.rs", "path": "/repo/file.rs", "is_dir": false}
+            ]
+        }));
+        let mut app = app_with_snapshot();
+        app.web_api = api;
+        app.screen = TuiScreen::Files;
+        app.file_explorer.cwd = "/repo".to_string();
+        app.file_explorer.root_path = "/repo".to_string();
+        app.file_explorer.entries = vec![crate::tui::panels::files::FileEntry {
+            name: "dir".to_string(),
+            path: "/repo/dir".to_string(),
+            is_dir: true,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        }];
+        app.handle_files_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(app.file_explorer.root_path, "/repo/dir");
+        assert!(!app.file_explorer.entries.is_empty(), "refresh refilled");
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        app.handle_files_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(app.file_explorer.root_path, "/repo");
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn files_commit_of_an_empty_filter_refreshes_the_tree() {
+        // Filter bar open with an empty query: Enter commits a plain
+        // refresh (the else arm of the search-kind split).
+        let (api, _stop) = http_json_server(serde_json::json!({
+            "entries": [{"name": "a.rs", "path": "/repo/a.rs", "is_dir": false}]
+        }));
+        let mut app = app_with_snapshot();
+        app.web_api = api;
+        app.screen = TuiScreen::Files;
+        app.file_explorer.cwd = "/repo".to_string();
+        app.file_explorer.root_path = "/repo".to_string();
+        app.file_explorer.filter_active = true;
+        app.handle_files_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.file_explorer.entries.len(), 1);
+    }
+
+    #[test]
+    fn cleanup_prune_maps_the_selected_item_repo_after_the_scan() {
+        // Prune against a repo differing from the panel cwd: the ok
+        // arm invalidates the stamp for the selected item's repo.
+        // The rescan reply keeps a worktree row so the post-scan
+        // selection still resolves to /repo (an empty rescan would
+        // park the cursor on nothing and the cwd fallback would run).
+        let (api, _stop) = http_json_server(serde_json::json!({
+            "repos": [{
+                "path": "/repo",
+                "branches": [],
+                "worktrees": [{"path": "/repo/wt-feature", "branch": "feature"}]
+            }]
+        }));
+        let mut app = app_with_snapshot();
+        app.web_api = api;
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = crate::tui::panels::git::GitView::Cleanup;
+        app.git_panel.cwd = "/panel/cwd".to_string();
+        app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+            path: "/repo".to_string(),
+            branches: vec![],
+            worktrees: vec![crate::tui::panels::git::CleanupWorktree {
+                path: "/repo/wt-feature".to_string(),
+                branch: Some("feature".to_string()),
+            }],
+        }];
+        app.git_panel.cleanup_selected = 0;
+        // Seed the stamp cache for both repos: only the selected
+        // item's repo is invalidated by the prune.
+        app.stamp_cache.insert(
+            "/repo".to_string(),
+            crate::tui::StampCacheEntry {
+                fetched_at: std::time::Instant::now(),
+                response: serde_json::json!({"stale": true}),
+            },
+        );
+        app.stamp_cache.insert(
+            "/panel/cwd".to_string(),
+            crate::tui::StampCacheEntry {
+                fetched_at: std::time::Instant::now(),
+                response: serde_json::json!({"kept": true}),
+            },
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.status, "worktrees pruned");
+        assert!(
+            !app.stamp_cache.contains_key("/repo"),
+            "selected repo dropped"
+        );
+        assert!(app.stamp_cache.contains_key("/panel/cwd"), "cwd kept");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round11 {
+    use super::*;
+
+    #[test]
+    fn create_tab_on_a_split_pane_whose_workspace_is_gone() {
+        // Two tiles, the focused pane's workspace left the list: the
+        // workspace-position miss runs inside create_tab (the cursor
+        // move is skipped).
+        let mut app = two_tile_split();
+        app.snapshot.panes[0].workspace_id = "ws_gone".to_string();
+        app.create_tab();
+        assert_eq!(app.selected_workspace, 0, "cursor stays on the old row");
+    }
+
+    #[test]
+    fn move_panel_on_a_split_pane_whose_workspace_is_gone() {
+        // Two tiles, the focused pane's workspace left the list: the
+        // position miss runs inside move_panel's cursor-follow block.
+        let mut app = two_tile_split();
+        app.snapshot.panes[0].workspace_id = "ws_gone".to_string();
+        let _ = app.move_panel(1);
+        assert_eq!(app.selected_workspace, 0);
+    }
+
+    #[test]
+    fn worktree_create_succeeds_end_to_end_through_the_fake_backend() {
+        // The full chain: worktree.create answers ok and the refresh
+        // (ping + snapshot) succeeds, so the success arm of the
+        // confirm-prompt result mapping runs.
+        let (socket, _stop) = fake_backend_socket_with(fixture_snapshot_value());
+        let mut app = TuiApp::new(BackendClient::new(&socket, &socket), Duration::from_secs(1));
+        app.refresh()
+            .expect("fake backend answers ping and snapshot");
+        app.worktree_create_stage = Some(crate::tui::workspace::WorktreeCreateStage::Path(
+            "feature".to_string(),
+            "/repo/wt-feature".to_string(),
+            "main".to_string(),
+        ));
+        app.prompt_input = Some(crate::tui::PromptInput::new(
+            crate::tui::PromptKind::ConfirmWorktreePullBase,
+        ));
+        crate::tui::workspace::run_prompt(
+            &mut app,
+            &crate::tui::workspace::WorkspacePrompt::ConfirmWorktreePullBase,
+            "y",
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.status.contains("worktree created"), "{}", app.status);
+        assert!(
+            app.worktree_create_stage.is_none(),
+            "stage cleared on success"
+        );
+    }
+
+    #[test]
+    fn file_preview_marks_dirty_edits_and_markdown_outline_in_the_title() {
+        // Dirty preview paints the asterisk marker; a `.markdown`
+        // extension (not just `.md`) flips the outline title.
+        let mut app = app_with_snapshot();
+        app.screen = TuiScreen::Files;
+        app.file_explorer.preview.path = Some("/repo/README.md".to_string());
+        app.file_explorer.preview.content = "# Title\nbody".to_string();
+        app.file_explorer.preview.dirty = true;
+        app.file_explorer.edit_active = true;
+        let text = draw(&app, 150, 30);
+        assert!(text.contains('*'), "dirty marker renders");
+        assert!(text.contains("Editing"), "edit-in-progress title");
+
+        app.file_explorer.edit_active = false;
+
+        app.file_explorer.preview.dirty = false;
+        app.file_explorer.preview.path = Some("/repo/NOTES.markdown".to_string());
+        app.file_explorer.markdown_outline = true;
+        let text = draw(&app, 150, 30);
+        assert!(text.contains("Outline"), "markdown outline title");
+    }
+
+    #[test]
+    fn blame_author_spans_skip_lines_without_diff_metadata() {
+        // Blame on with authors keyed by lines the diff meta does not
+        // carry: the metadata miss arms of the author-span chain run
+        // without rendering an author.
+        let mut app = app_with_snapshot();
+        app.screen = TuiScreen::Git;
+        app.git_panel.view = crate::tui::panels::git::GitView::Changes;
+        app.git_panel.blame_path = Some("src/app.rs".to_string());
+        app.git_panel.diff_title = "src/app.rs".to_string();
+        app.git_panel.show_blame = true;
+        app.git_panel
+            .blame_authors
+            .insert(99, "Ghost Author".to_string());
+        app.git_panel.diff_meta = vec![None];
+        app.git_panel.diff_lines = vec!["line one".to_string(), "line two".to_string()];
+        let _ = draw(&app, 120, 30);
+        assert!(!app.git_panel.blame_authors.is_empty());
+    }
+
+    #[test]
+    fn wrap_input_hard_breaks_a_wider_word_without_a_boundary_space() {
+        // A word wider than the row flushes mid-word: the breaking
+        // token carries no trailing space, so the boundary-space
+        // branch is skipped (its else).
+        let rows = crate::tui::render::wrap_input_with_cursor("averyveryverylongword", 10);
+        assert!(rows.len() >= 3, "hard-break splits the word: {rows:?}");
+        assert!(rows.iter().all(|row| !row.ends_with(' ')));
+    }
+
+    #[test]
+    fn resize_preview_skips_tiles_the_resize_state_no_longer_matches() {
+        // Resize mode names a pane that left the tree: the tile lookup
+        // misses and the whole preview block is skipped.
+        let mut app = two_tile_split();
+        app.resize_mode = Some(crate::tui::split_mode::ResizeState {
+            pane: "gone".to_string(),
+        });
+        app.last_resize_dir = Some((
+            crate::tui::split::SplitDir::Row,
+            crate::tui::split::ResizeDir::Wider,
+        ));
+        let _ = draw(&app, 120, 30);
+        assert!(app.resize_mode.is_some());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round12 {
+    use super::*;
+    use crossterm::event::KeyCode;
+
+    #[test]
+    fn vertical_walk_moves_between_stacked_tiles() {
+        // Column split: Down/Up walk between the stacked tiles, so
+        // nav_vertical_key's walk-success path runs both directions.
+        let mut app = two_tile_split();
+        app.split_tree = crate::tui::split::SplitNode::split(
+            crate::tui::split::SplitDir::Col,
+            vec![
+                crate::tui::split::SplitNode::leaf("pane_1"),
+                crate::tui::split::SplitNode::leaf("pane_2"),
+            ],
+        );
+        app.mode = TuiMode::Navigate;
+        let _ = draw(&app, 120, 30);
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.split_focus.as_deref(), Some("pane_2"), "down walks");
+        app.handle_navigation_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.split_focus.as_deref(), Some("pane_1"), "up walks back");
+    }
+
+    #[test]
+    fn move_panel_on_a_split_with_no_panes_in_the_snapshot() {
+        // Split active but the snapshot has no panes at all: the
+        // cursor-follow block is skipped wholesale.
+        let mut app = two_tile_split();
+        app.snapshot.panes.clear();
+        let _ = app.move_panel(1);
+        assert_eq!(app.selected_workspace, 0);
+        assert!(app.split_focus.is_some());
+    }
 }

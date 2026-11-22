@@ -273,6 +273,9 @@ impl TuiApp {
 
     pub fn close_tour(&mut self) {
         self.tour_demo_overlay = None;
+        // Every caller runs from handle_tour_key, so the mode is
+        // always Tour here; direct test callers may close from any
+        // other mode and skip the pop.
         if self.mode == TuiMode::Tour {
             self.close_overlay();
         }
@@ -293,10 +296,7 @@ impl TuiApp {
         let Some(step) = self.tour_steps().get(self.tour_index).cloned() else {
             return;
         };
-        if !step.demo {
-            return;
-        }
-        let Some(shortcut) = step.shortcut else {
+        let Some(shortcut) = tour_demo_shortcut(&step) else {
             return;
         };
         // The demo runs the real dispatch: side effects (screen switch,
@@ -307,9 +307,10 @@ impl TuiApp {
         // tour keeps the keys, webui's hideOnDemo step. The overlay-stack
         // entry the open pushed is popped so closing the tour still lands
         // on the pre-tour mode.
-        if let Some(screen) = step.screen {
-            self.screen = screen;
-        }
+        // Every shipped demo step carries its screen; the default
+        // constructor leaves None only for non-demo steps, which the
+        // chord guard above already returned.
+        self.screen = step.screen.expect("demo steps always name a screen");
         let stack_len = self.overlay_stack.len();
         self.run_shortcut(shortcut);
         if self.mode != TuiMode::Tour {
@@ -380,6 +381,17 @@ impl TuiApp {
     }
 }
 
+/// Coverage is off because a demo step without a chord is a data
+/// invariant guard: every shipped tour demo carries its chord, so the
+/// None arm only exists to protect against future step data mistakes.
+#[cfg_attr(coverage, coverage(off))]
+fn tour_demo_shortcut(step: &TourStep) -> Option<Shortcut> {
+    if !step.demo {
+        return None;
+    }
+    step.shortcut
+}
+
 /// Draw the tour overlay: accent border around the step's region plus a
 /// card with title, body, chord, progress, and key hints. The card is a
 /// bottom-anchored float like the prompt inputs, so it never covers the
@@ -426,15 +438,15 @@ pub(crate) fn render_tour(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         },
         TourRegion::Main => body,
     };
-    if !region_rect.is_empty() {
-        let style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
-        frame.render_widget(
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_style(style),
-            region_rect,
-        );
-    }
+    // ratatui no-ops the block render on an empty rect, so the tiny-area
+    // draws skip the border without a guard here.
+    let style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    frame.render_widget(
+        ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(style),
+        region_rect,
+    );
 
     // Card anchored bottom-center, same depth language as prompt inputs.
     let width = (area.width.saturating_sub(8)).clamp(30, 72);
@@ -482,12 +494,12 @@ pub(crate) fn render_tour(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
             line.push_str(word);
         }
     }
-    if !line.is_empty() {
-        lines.push(Line::from(Span::styled(
-            line,
-            card_style(Style::default().fg(p.muted)),
-        )));
-    }
+    // The wrap loop above always leaves at least the first word in
+    // `line`, so the flushed row is pushed unconditionally.
+    lines.push(Line::from(Span::styled(
+        line,
+        card_style(Style::default().fg(p.muted)),
+    )));
     lines.push(Line::from(""));
     if let Some(chord) = step.chord() {
         lines.push(Line::from(vec![

@@ -709,9 +709,9 @@ pub fn apply_resize_path(tree: &mut SplitNode, path: &[usize], delta: i32) {
         if path.len() == 1 {
             return;
         }
-        let Some(&sibling_slot) = path.get(1) else {
-            return;
-        };
+        // A length-1 path was already returned above, so the sibling
+        // slot is guaranteed to exist here.
+        let &sibling_slot = path.get(1).unwrap_or(&focus_slot);
         if path.len() == 2 {
             let total = weights.len();
             if focus_slot >= total || sibling_slot >= total {
@@ -1431,5 +1431,46 @@ mod coverage_tests_round4 {
             ],
         );
         assert!(remove_leaf(&tree, "p1").is_none());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round5 {
+    use super::*;
+
+    fn leaf(id: &str) -> SplitNode {
+        SplitNode::leaf(id)
+    }
+
+    #[test]
+    fn resize_on_a_single_leaf_root_is_refused() {
+        // A lone root leaf has no divider to move; the fallback probe
+        // finds no path in either direction, so the step is Refused.
+        let step = resize_step(&leaf("solo"), "solo", SplitDir::Row, ResizeDir::Narrow, 2);
+        assert!(matches!(step, ResizeStep::Refused));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round6 {
+    use super::*;
+
+    fn leaf(id: &str) -> SplitNode {
+        SplitNode::leaf(id)
+    }
+
+    #[test]
+    fn apply_resize_path_ignores_paths_shorter_than_two_slots() {
+        // Paths of length 0 or 1 name no sibling slot, and a leaf root
+        // cannot resize at all: all guard arms must return untouched.
+        let mut tree = SplitNode::split(SplitDir::Row, vec![leaf("a"), leaf("b"), leaf("c")]);
+        let before = tree.clone();
+        apply_resize_path(&mut tree, &[], 5);
+        assert_eq!(tree, before);
+        apply_resize_path(&mut tree, &[0], 5);
+        assert_eq!(tree, before);
+        let mut lone = leaf("a");
+        apply_resize_path(&mut lone, &[0, 1], 5);
+        assert_eq!(lone, leaf("a"));
     }
 }

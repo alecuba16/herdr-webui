@@ -53,4 +53,11 @@ mod tests {
     fn outline_is_empty_without_headings() {
         assert!(parse_markdown_outline("plain text only").is_empty());
     }
+
+    #[test]
+    fn outline_skips_level_above_six_and_untitled_deep_headings() {
+        // `#######` is beyond ATX's six levels, and a bare `##` with no
+        // text is a divider, not a heading; both are dropped.
+        assert!(parse_markdown_outline("####### seven\n## \n###\n").is_empty());
+    }
 }

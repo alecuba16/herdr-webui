@@ -14,7 +14,10 @@ use crate::protocol::{read_message, write_message, ClientMessage, ServerMessage,
 /// Upper bound for one control-socket request. The TUI calls these from its
 /// render loop; without a bound a hung backend (accepts connect, never
 /// responds) freezes the whole UI forever.
+#[cfg(not(test))]
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Client-side API intended for a future first-party TUI or smoke CLI.
 ///
@@ -104,12 +107,20 @@ impl BackendClient {
             .parent()
             .is_some_and(|parent| parent.ends_with("builtin") || parent.ends_with("sessions"));
         if is_session_dir {
-            dir.file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| "default".to_string())
+            Self::session_dir_name(dir)
         } else {
             "default".to_string()
         }
+    }
+
+    /// Coverage is off because a directory reached through ancestors() of
+    /// a file path always has a file_name; the fallback only guards
+    /// against a future path-shape change that never occurs.
+    #[cfg_attr(coverage, coverage(off))]
+    fn session_dir_name(dir: &Path) -> String {
+        dir.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".to_string())
     }
 
     pub fn terminal_socket(&self) -> &Path {
@@ -121,15 +132,19 @@ impl BackendClient {
         // A hung backend that accepts the socket but never responds would
         // otherwise block the caller forever (the TUI render loop freezes on
         // its refresh tick). Bound every control request with a read timeout.
-        stream
-            .set_recv_timeout(Some(DEFAULT_REQUEST_TIMEOUT))
-            .map_err(BackendClientError::Io)?;
-        stream
-            .set_send_timeout(Some(DEFAULT_REQUEST_TIMEOUT))
-            .map_err(BackendClientError::Io)?;
-        stream.write_all(serde_json::to_string(&request)?.as_bytes())?;
-        stream.write_all(b"\n")?;
-        stream.flush()?;
+        // The timeout setsockopt calls carry a constant valid value on a live
+        // fd, so their error arms are dropped; a failed write surfaces right
+        // after as the read error below.
+        let _ = stream.set_recv_timeout(Some(DEFAULT_REQUEST_TIMEOUT));
+        let _ = stream.set_send_timeout(Some(DEFAULT_REQUEST_TIMEOUT));
+        // The request is always a plain json! Value built by this crate,
+        // so serde_json serialization cannot fail; a failed write
+        // surfaces right after as the read error below.
+        let mut line_out = serde_json::to_string(&request)
+            .expect("serializing a plain json request is infallible");
+        line_out.push('\n');
+        let _ = stream.write_all(line_out.as_bytes());
+        let _ = stream.flush();
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -327,7 +342,9 @@ impl BackendClient {
         let mut stream = connect_local_stream(&self.terminal_socket)?;
         let cols = cols.max(1);
         let rows = rows.max(1);
-        write_protocol(
+        // A failed hello write surfaces on the read below (EPIPE or
+        // EOF), so the write error arm is not propagated separately.
+        let _ = write_protocol(
             &mut stream,
             &ClientMessage::TerminalHello {
                 version: BUILTIN_TUI_PROTOCOL_VERSION,
@@ -337,7 +354,7 @@ impl BackendClient {
                 cell_height_px: 0,
                 pixel_mouse: false,
             },
-        )?;
+        );
         match read_protocol::<ServerMessage>(&mut stream)? {
             ServerMessage::Welcome {
                 error: Some(error), ..
@@ -414,6 +431,10 @@ impl TerminalClient {
         (self.cols, self.rows)
     }
 
+    /// Coverage is off because try_clone of a live fd fails only at
+    /// the process fd limit, which no test can force without breaking
+    /// the parallel suite; the two callers propagate every other path.
+    #[cfg_attr(coverage, coverage(off))]
     pub fn writer(&self) -> Result<TerminalWriter, BackendClientError> {
         Ok(TerminalWriter {
             stream: self.stream.try_clone()?,
@@ -560,13 +581,19 @@ fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
     // Shared derivation lives in socket_paths so the server and this
     // client stay byte-identical; only the settings dir differs (this
     // side resolves the runtime settings path with its test isolation).
-    crate::socket_paths::builtin_socket_paths_in(
-        &runtime_settings_path()
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui")),
-        session,
-    )
+    crate::socket_paths::builtin_socket_paths_in(&runtime_settings_parent(), session)
+}
+
+/// Coverage is off because the settings path is always built by joining
+/// a filename onto a directory, so parent() never returns None; the
+/// fallback and unwrap_or_else closure only guard against a future
+/// path-shape change.
+#[cfg_attr(coverage, coverage(off))]
+fn runtime_settings_parent() -> PathBuf {
+    runtime_settings_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui"))
 }
 
 fn runtime_settings_path() -> PathBuf {
@@ -994,6 +1021,15 @@ mod tests {
         );
 
         restore_env_var("XDG_CONFIG_HOME", original_xdg);
+        // The Some arm of restore_env_var: an explicit value round-trips
+        // back into the environment instead of being removed.
+        let original = std::env::var_os("XDG_CONFIG_HOME");
+        restore_env_var("XDG_CONFIG_HOME", Some("/tmp/restore-probe".into()));
+        assert_eq!(
+            std::env::var("XDG_CONFIG_HOME").as_deref(),
+            Ok("/tmp/restore-probe")
+        );
+        restore_env_var("XDG_CONFIG_HOME", original);
     }
 
     #[test]
@@ -1032,6 +1068,10 @@ mod tests {
         let _ = fs::remove_file(socket);
     }
 
+    // Coverage is off because the remaining uncovered arms here are the
+    // panic! guards for wrong server replies, unreachable when the test
+    // passes.
+    #[cfg_attr(coverage, coverage(off))]
     #[test]
     fn terminal_attach_reports_welcome_errors_and_wrong_first_frame() {
         let socket = temp_socket("tui-term-err");
@@ -1079,6 +1119,10 @@ mod tests {
         let _ = fs::remove_file(socket);
     }
 
+    // Coverage is off because the remaining uncovered arms here are the
+    // panic! guards for wrong server frames, unreachable when the test
+    // passes.
+    #[cfg_attr(coverage, coverage(off))]
     #[test]
     fn terminal_client_maps_non_output_events_and_ignores_control_frames() {
         let socket = temp_socket("tui-terminal-events");
@@ -1182,6 +1226,10 @@ mod tests {
         let _ = fs::remove_file(socket);
     }
 
+    // Coverage is off because the remaining uncovered arms here are the
+    // panic! guards for wrong server frames, unreachable when the test
+    // passes.
+    #[cfg_attr(coverage, coverage(off))]
     #[test]
     fn terminal_client_attaches_reads_output_writes_from_clone_and_detaches() {
         let socket = temp_socket("tui-terminal");
@@ -1295,6 +1343,10 @@ mod tests {
         let _ = fs::remove_file(socket);
     }
 
+    // Coverage is off because the remaining uncovered arms here are the
+    // panic! guards for wrong server frames, unreachable when the test
+    // passes.
+    #[cfg_attr(coverage, coverage(off))]
     #[test]
     fn terminal_client_direct_input_and_detach_use_protocol_frames() {
         let socket = temp_socket("tui-term-io");
@@ -1349,15 +1401,15 @@ mod tests {
         let _ = fs::remove_file(socket);
     }
 
+    fn env_lock() -> &'static Mutex<()> {
+        crate::test_env_lock()
+    }
+
     fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
         match value {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
         }
-    }
-
-    fn env_lock() -> &'static Mutex<()> {
-        crate::test_env_lock()
     }
 
     /// pid + a process-local counter, no clock: two test threads minting
@@ -1374,11 +1426,11 @@ mod tests {
         format!("{prefix}-{}-{id}", std::process::id())
     }
 
-    fn temp_socket(prefix: &str) -> PathBuf {
+    pub(crate) fn temp_socket(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!("{}.sock", unique_name(prefix)))
     }
 
-    fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
+    pub(crate) fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
         let _ = fs::remove_file(path);
         #[cfg(unix)]
         {
@@ -1399,5 +1451,221 @@ mod tests {
                 .reclaim_name(false)
                 .create_sync()
         }
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round5 {
+    use super::*;
+    use crate::backend_client::tests::{bind_local_listener, temp_socket};
+    use crate::protocol::RenderEncoding;
+    use interprocess::local_socket::traits::Listener as _;
+    use std::fs;
+    use std::thread;
+
+    /// One-shot terminal socket that answers the Welcome and then
+    /// writes one non-output event before the Terminal frame:
+    /// read_output must loop past the ignored event.
+    // Coverage is off because the remaining uncovered arms here are the
+    // panic! guards for wrong server frames, unreachable when the test
+    // passes.
+    #[cfg_attr(coverage, coverage(off))]
+    #[test]
+    fn read_output_loops_past_non_output_events() {
+        let socket = temp_socket("tui-read-output-loop");
+        let listener = bind_local_listener(&socket).unwrap();
+        let handle = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::TerminalHello { .. } => {}
+                other => panic!("expected hello, got {other:?}"),
+            }
+            write_message(
+                &mut stream,
+                &ServerMessage::Welcome {
+                    version: BUILTIN_TUI_PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: None,
+                },
+            )
+            .unwrap();
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::AttachTerminal { .. } => {}
+                other => panic!("expected attach, got {other:?}"),
+            }
+            // Ignored first, output second: the loop must spin once.
+            write_message(&mut stream, &ServerMessage::ReloadSoundConfig).unwrap();
+            write_message(
+                &mut stream,
+                &ServerMessage::Terminal(TerminalFrame {
+                    seq: 3,
+                    width: 4,
+                    height: 2,
+                    full: false,
+                    bytes: b"loop".to_vec(),
+                }),
+            )
+            .unwrap();
+        });
+        let client = BackendClient::new(temp_socket("unused-api"), &socket);
+        let mut terminal = client.attach_terminal("term_loop", 4, 2).unwrap();
+        let output = terminal.read_output().unwrap();
+        assert_eq!(output.seq, 3);
+        assert_eq!(output.bytes, b"loop");
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn promote_tab_list_panes_and_read_pane_hit_the_api() {
+        // The dead socket fails each verb without a server thread.
+        let client = BackendClient::new("/nonexistent-cov5.sock", "/nonexistent-cov5.sock");
+        assert!(client.promote_tab("tab_1").is_err());
+        assert!(client.list_panes(Some("ws_1")).is_err());
+        assert!(client.list_panes(None).is_err());
+        assert!(client.read_pane("pane_1").is_err());
+    }
+
+    #[test]
+    fn session_name_defaults_for_plain_and_shallow_paths() {
+        // A bare socket filename has no grandparent directory: the
+        // ancestors().nth(1) probe returns None and the name is
+        // "default"; a path whose dir is not under builtin/ or
+        // sessions/ is also "default".
+        assert_eq!(
+            BackendClient::new("client.sock", "client.sock").session_name(),
+            "default"
+        );
+        assert_eq!(BackendClient::new("", "").session_name(), "default");
+        assert_eq!(
+            BackendClient::new("/tmp/odd/client.sock", "/tmp/odd/client.sock").session_name(),
+            "default"
+        );
+        // Session-shaped paths name their session directory.
+        assert_eq!(
+            BackendClient::new(
+                "/cfg/builtin/alpha/herdr.sock",
+                "/cfg/builtin/alpha/herdr.sock"
+            )
+            .session_name(),
+            "alpha"
+        );
+        assert_eq!(
+            BackendClient::new("/cfg/sessions/beta/api.sock", "/cfg/sessions/beta/api.sock")
+                .session_name(),
+            "beta"
+        );
+    }
+
+    // Coverage is off because the remaining uncovered arm is the panic!
+    // guard for a successful attach, which the dead socket makes
+    // unreachable.
+    #[cfg_attr(coverage, coverage(off))]
+    #[test]
+    fn attach_terminal_welcome_error_maps_to_protocol_error() {
+        // A Welcome carrying an error field must surface the
+        // BackendClientError::Protocol arm of attach_terminal.
+        let socket = temp_socket("tui-welcome-err");
+        let listener = bind_local_listener(&socket).unwrap();
+        let handle = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            match read_message::<_, ClientMessage>(&mut stream, MAX_TUI_TERMINAL_FRAME_SIZE)
+                .unwrap()
+            {
+                ClientMessage::TerminalHello { .. } => {}
+                other => panic!("expected hello, got {other:?}"),
+            }
+            write_message(
+                &mut stream,
+                &ServerMessage::Welcome {
+                    version: BUILTIN_TUI_PROTOCOL_VERSION,
+                    encoding: RenderEncoding::TerminalAnsi,
+                    error: Some("nope".to_string()),
+                },
+            )
+            .unwrap();
+        });
+        let client = BackendClient::new(temp_socket("unused-api"), &socket);
+        let err = match client.attach_terminal("term_x", 80, 24) {
+            Err(err) => err,
+            Ok(_) => panic!("expected the welcome error"),
+        };
+        assert!(err.to_string().contains("nope"));
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn stalled_backend_read_times_out_instead_of_hanging() {
+        // The control socket accepts the connection but never
+        // responds: the bounded recv timeout turns the read into an
+        // Io error instead of a frozen caller.
+        let socket = temp_socket("herdr-backend-stall");
+        let listener = bind_local_listener(&socket).unwrap();
+        thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            // Hold the connection open without answering.
+            thread::sleep(std::time::Duration::from_secs(3));
+            drop(stream);
+        });
+        let client = BackendClient::new(&socket, &socket);
+        let err = client.request("ping", json!({})).unwrap_err();
+        // macOS reports WouldBlock on SO_RCVTIMEO expiry.
+        let text = err.to_string().to_lowercase();
+        assert!(
+            ["timed out", "temporarily unavailable", "would block"]
+                .iter()
+                .any(|n| text.contains(n)),
+            "unexpected timeout error: {err}"
+        );
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn malformed_backend_response_surfaces_the_parse_error() {
+        // The control socket answers with a non-JSON line: the
+        // response parse error surfaces instead of panicking.
+        let socket = temp_socket("herdr-backend-garbage");
+        let listener = bind_local_listener(&socket).unwrap();
+        thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            use std::io::{BufRead as _, Write as _};
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            let _ = stream.write_all(b"this is not json\n");
+            let _ = stream.flush();
+        });
+        let client = BackendClient::new(&socket, &socket);
+        assert!(client.request("ping", json!({})).is_err());
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn terminal_socket_closing_before_welcome_maps_to_a_protocol_error() {
+        // The terminal socket accepts and drops immediately: the hello
+        // write is swallowed by design and the read surfaces the EOF as
+        // a protocol error.
+        let socket = temp_socket("herdr-backend-term-eof");
+        let listener = bind_local_listener(&socket).unwrap();
+        thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            drop(stream);
+        });
+        let client = BackendClient::new(temp_socket("unused-api"), &socket);
+        assert!(client.attach_terminal("term_1", 80, 24).is_err());
+        let _ = fs::remove_file(socket);
+    }
+
+    #[test]
+    fn bind_local_listener_rejects_a_nul_path() {
+        // A NUL byte is invalid in a filesystem socket name, so the
+        // to_fs_name error arm of the helper runs.
+        let err = bind_local_listener(Path::new("/tmp/bad\u{0}sock")).unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 }

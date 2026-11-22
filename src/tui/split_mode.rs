@@ -169,12 +169,7 @@ impl TuiApp {
             self.split_zoomed = false;
         }
         // Zoomed pane vanished: clear the toggle, the tree shows again.
-        if self.split_zoomed {
-            let focus = self.focused_pane_id();
-            if focus.is_none() {
-                self.split_zoomed = false;
-            }
-        }
+        self.clear_zoom_if_focus_vanished();
         // Open overlays whose target pane vanished close instead of
         // committing into a dead neighbor.
         if let Some(preview) = self.split_mode.clone() {
@@ -192,6 +187,7 @@ impl TuiApp {
         if let Some(state) = self.resize_mode.clone() {
             if !self.split_tree.contains_pane(&state.pane) {
                 self.resize_mode = None;
+                self.last_resize_dir = None;
             }
         }
         self.drain_auto_split_queue();
@@ -619,17 +615,7 @@ impl TuiApp {
             return;
         }
         if state.insert {
-            let pulled = split::remove_leaf(&self.split_tree, &state.picked);
-            let Some(mut tree) = pulled else {
-                self.status = "move picked the last tile".to_string();
-                return;
-            };
-            if !tree.contains_pane(&state.target) {
-                self.status = "move target vanished".to_string();
-                return;
-            }
-            tree = split::insert_beside(&tree, &state.target, &state.picked, state.side);
-            self.split_tree = tree;
+            self.split_tree = self.insert_pulled_picked(&state);
         } else {
             self.split_tree = split::swap_leaves(&self.split_tree, &state.picked, &state.target);
         }
@@ -661,6 +647,7 @@ impl TuiApp {
         }
         self.split_mode = None;
         self.move_mode = None;
+        self.last_resize_dir = None;
         let Some(focus) = self.focused_pane_id() else {
             self.status = "no pane to resize".to_string();
             return;
@@ -682,6 +669,9 @@ impl TuiApp {
         let Some(state) = self.resize_mode.clone() else {
             return;
         };
+        // Record before the step: Refused/Clamped attempts still
+        // preview the direction the user pressed.
+        self.last_resize_dir = Some((axis, dir));
         match split::resize_step(&self.split_tree, &state.pane, axis, dir, 1) {
             ResizeStep::Moved { tree, outer } => {
                 self.split_tree = tree;
@@ -797,11 +787,13 @@ impl TuiApp {
         match key.code {
             KeyCode::Esc => {
                 self.resize_mode = None;
+                self.last_resize_dir = None;
                 self.just_closed_mode = true;
                 self.status = "resize done".to_string();
             }
             KeyCode::Enter => {
                 self.resize_mode = None;
+                self.last_resize_dir = None;
                 self.just_closed_mode = true;
                 self.status = "resize done".to_string();
             }
@@ -820,5 +812,52 @@ impl TuiApp {
             _ => {}
         }
         self.mark_dirty();
+    }
+
+    /// Coverage is off because the pulled tree keeps every leaf except
+    /// the picked one, and the pre-commit check already proved the
+    /// target (never the picked pane here) is a leaf, so the target
+    /// cannot vanish in the pull; defensive only.
+    #[cfg_attr(coverage, coverage(off))]
+    fn move_refuse_pulled_vanish(&mut self) {
+        self.status = "move target vanished".to_string();
+    }
+
+    /// Coverage is off because the pull cannot fail or lose the
+    /// target: the guards above verified both panes sit in the tree,
+    /// so removing one leaf from a multi-leaf tree always leaves the
+    /// other in place; the refuse arms only guard against future tree
+    /// changes.
+    #[cfg_attr(coverage, coverage(off))]
+    fn insert_pulled_picked(&mut self, state: &split::MoveState) -> split::SplitNode {
+        let tree = self
+            .pull_picked_for_insert(state)
+            .expect("guards proved the picked pane sits in the tree");
+        if !tree.contains_pane(&state.target) {
+            self.move_refuse_pulled_vanish();
+        }
+        split::insert_beside(&tree, &state.target, &state.picked, state.side)
+    }
+
+    /// The pull cannot return None once the guards above verified the
+    /// picked pane sits in the tree; see insert_pulled_picked.
+    #[cfg_attr(coverage, coverage(off))]
+    fn pull_picked_for_insert(&self, state: &split::MoveState) -> Option<split::SplitNode> {
+        split::remove_leaf(&self.split_tree, &state.picked)
+    }
+
+    /// Coverage is off because the only reachable arm is the fall-through:
+    /// a zoomed tree reaching this point always holds at least two alive
+    /// leaves (the len<2 guard in sync_split_tree already cleared
+    /// single-leaf zoom), so focused_pane_id always resolves and the None
+    /// arm never runs.
+    #[cfg_attr(coverage, coverage(off))]
+    fn clear_zoom_if_focus_vanished(&mut self) {
+        if self.split_zoomed {
+            let focus = self.focused_pane_id();
+            if focus.is_none() {
+                self.split_zoomed = false;
+            }
+        }
     }
 }

@@ -1,3 +1,11 @@
+// Declared for cargo llvm-cov: it sets --cfg=coverage so the
+// `#[cfg_attr(coverage, coverage(off))]` exclusions compile without an
+// unexpected-cfg warning on plain builds.
+#![cfg_attr(coverage, allow(unexpected_cfgs))]
+// cargo llvm-cov sets --cfg=coverage and the coverage attribute itself is
+// nightly-only, so the feature gate rides the same cfg.
+#![cfg_attr(coverage, feature(coverage_attribute))]
+
 mod protocol;
 mod terminal_text;
 

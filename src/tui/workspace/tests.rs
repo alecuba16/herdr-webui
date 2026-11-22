@@ -1898,3 +1898,452 @@ fn rename_panel_message_names_the_old_label_only_when_set() {
     app.selected_agent = 2;
     assert_eq!(app.rename_panel("Docs").unwrap(), "panel renamed to Docs");
 }
+
+/// One-shot HTTP server answering every request with `body`.
+fn http_json_server(body: serde_json::Value) -> u16 {
+    use std::io::{BufRead as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                continue;
+            }
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let payload = body.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+            let _ = stream.flush();
+        }
+    });
+    port
+}
+
+#[test]
+fn branch_picker_reads_local_branches_and_reopen_keeps_the_overlay() {
+    // git.branches answered with only a "local" array: the or_else
+    // fallback reads it. Reopening while the overlay is already open
+    // skips the open_overlay push.
+    let port = http_json_server(json!({
+        "local": [
+            {"name": "main", "current": true, "pushed": true},
+            {"name": "feature", "pushed": false}
+        ]
+    }));
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    app.branch_picker_open().unwrap();
+    assert_eq!(app.branch_picker_rows.len(), 2);
+    assert_eq!(app.branch_picker_rows[0].name, "main");
+    assert_eq!(app.mode, TuiMode::BranchPicker);
+    app.branch_picker_open().unwrap();
+    assert_eq!(app.mode, TuiMode::BranchPicker);
+}
+
+#[test]
+fn worktree_default_base_reads_the_local_fallback() {
+    // The default-base probe shares the branches/local fallback.
+    let port = http_json_server(json!({
+        "local": [{"name": "develop", "current": true, "pushed": true}]
+    }));
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    assert_eq!(app.worktree_default_base().as_deref(), Some("develop"));
+}
+
+#[test]
+fn move_panel_on_split_falls_back_to_the_first_workspace_agent() {
+    // Split view with a focused pane whose workspace is missing from
+    // the workspace list (position None) and whose pane has no agent
+    // row: the cursor parks on the workspace's first agent.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.screen = crate::tui::TuiScreen::Terminal;
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    // pane_1 belongs to ws_1; drop ws_1 from the workspace list and the
+    // pane_1 agent row so both fallback arms run.
+    app.snapshot.workspaces.retain(|ws| ws.id != "ws_1");
+    app.snapshot
+        .agents
+        .retain(|agent| agent.pane_id != "pane_1");
+    app.move_panel(1).unwrap();
+    assert_eq!(app.selected_agent, 1);
+}
+
+#[test]
+fn worktree_list_without_a_workspace_uses_home() {
+    // No workspace selected: the browse root falls back to HOME.
+    let _guard = home_lock();
+    // No workspace selected: the browse root falls back to HOME. Point
+    // HOME at an empty temp dir so the folder browse itself succeeds.
+    let (mut app, _stop) = app_with_fake_backend();
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [],
+            "tabs": [],
+            "panes": [],
+            "agents": []
+        }
+    }));
+    let dir = std::env::temp_dir().join("herdr-cov-home");
+    std::fs::create_dir_all(&dir).unwrap();
+    let prior = std::env::var_os("HOME");
+    std::env::set_var("HOME", &dir);
+    app.worktree_list().unwrap();
+    assert_eq!(app.worktree_root, dir.to_string_lossy());
+
+    // HOME gone too: the browse root falls back to the current dir.
+    std::env::remove_var("HOME");
+    app.worktree_list().unwrap();
+    assert_eq!(app.worktree_root, ".");
+    match prior {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Fake backend that answers the mutating action methods with ok but
+/// fails session.snapshot, so the refresh after each action surfaces
+/// the error-propagation arms of the workspace action flows.
+fn workspace_fake_socket_snapshot_failing() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use interprocess::TryClone as _;
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = crate::backend_client::unique_test_path("herdr-workspace-snapfail");
+    let _ = std::fs::remove_file(&path);
+    let listener = ListenerOptions::new()
+        .name(path.clone().to_fs_name::<GenericFilePath>().unwrap())
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let id = request["id"].clone();
+        let response = match request["method"].as_str().unwrap_or("") {
+            "session.snapshot" => json!({"id": id, "error": "snapshot unavailable"}),
+            "workspace.create" => {
+                json!({"id": id, "result": {"workspace": {"workspace_id": "ws_2"}}})
+            }
+            "worktree.list" => json!({"id": id, "result": {
+                "source": {
+                    "repo_name": "herdr-webui",
+                    "repo_root": "/repo",
+                    "default_worktree_directory": "../worktrees"
+                },
+                "worktrees": [
+                    {"path": "/side", "branch": "feature", "label": "", "is_linked_worktree": true}
+                ]
+            }}),
+            "git.branches" => json!({"id": id, "result": {
+                "branches": [
+                    {"name": "other", "current": false},
+                    {"name": "topic/elsewhere", "current": false,
+                     "worktree_path": "/elsewhere"}
+                ]
+            }}),
+            "git.switch" => json!({"id": id, "result": {"ok": true}}),
+            _ => json!({"id": id, "result": {"ok": true}}),
+        };
+        stream
+            .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+            .unwrap();
+        let _ = stream.write_all(b"\n");
+        stream.flush().unwrap();
+    });
+    std::mem::forget(handle);
+    (path, tx)
+}
+
+#[test]
+fn workspace_action_refresh_failures_surface_as_errors() {
+    // Every mutating workspace action succeeds against the backend but
+    // the follow-up snapshot refresh fails: each ? must surface the
+    // refresh error instead of reporting success.
+    let (socket, _stop) = workspace_fake_socket_snapshot_failing();
+    let client = BackendClient::new(socket.clone(), socket);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&workspace_snapshot());
+    let dir = std::env::temp_dir().join("tui-ws-snapfail");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
+    assert!(app.create_workspace(&path).is_err());
+    assert!(app.close_workspace().is_err());
+    assert!(app.rename_workspace("Docs").is_err());
+    assert!(app.rename_panel("Build").is_err());
+    // Worktree browser: list works, the open and remove hit the failed
+    // refresh.
+    app.worktree_list().unwrap();
+    app.worktree_selected = 1;
+    assert!(app.worktree_open_selected().is_err());
+    assert!(app.remove_worktree().is_err());
+    // Branch picker: rows are staged manually because the git.branches
+    // HTTP API is dead here (only the backend socket is faked); the
+    // switch and create arms must surface the git.switch error, and the
+    // reroute arm the failed refresh after worktree.open succeeds.
+    app.branch_picker_rows = vec![
+        crate::tui::panels::git::GitBranchEntry {
+            name: "other".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+        crate::tui::panels::git::GitBranchEntry {
+            name: "topic/elsewhere".into(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: Some("/elsewhere".into()),
+        },
+    ];
+    app.branch_picker_root = "/repo".into();
+    app.branch_picker_selected = 0;
+    assert!(app.branch_picker_commit().is_err());
+    app.branch_picker_selected = 1;
+    assert!(app.branch_picker_commit().is_err());
+    // Create branch from a filter naming no existing branch: git.switch
+    // with create=true errors the same way.
+    app.branch_picker_rows.clear();
+    app.branch_picker_selected = 0;
+    app.branch_picker_filter = "newbranch".into();
+    assert!(app.branch_picker_commit().is_err());
+    // Create worktree fails the same way.
+    assert!(app
+        .create_worktree("feature", "/checkout", "main", false)
+        .is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn move_panel_walks_dead_focus_and_homeless_pane_without_panicking() {
+    // Split view whose two tiles are dead pane ids and whose only live
+    // pane is homeless (not in the tree): the walk takes the no-view
+    // arm (dead focus, nothing selected), then the homeless pane
+    // replaces the focused leaf anchored on the first leaf via the
+    // empty-id fallback.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.screen = crate::tui::TuiScreen::Terminal;
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("ghost_1"),
+            crate::tui::split::SplitNode::leaf("ghost_2"),
+        ],
+    );
+    app.split_focus = Some("ghost_1".into());
+    // Dead tiles: nothing alive in the tree, so the pane in view is the
+    // homeless live pane below.
+    let mut snapshot = workspace_snapshot();
+    snapshot["snapshot"]["workspaces"] = json!([{
+        "workspace_id": "ws_x", "label": "X", "cwd": "/x", "focused": true,
+        "agent_status": "idle", "pane_count": 1, "tab_count": 1, "active_tab_id": "tab_x"
+    }]);
+    snapshot["snapshot"]["tabs"] = json!([{
+        "tab_id": "tab_x", "workspace_id": "ws_x", "label": "Shell",
+        "focused": true, "pane_count": 1, "agent_status": "idle"
+    }]);
+    snapshot["snapshot"]["panes"] = json!([{
+        "pane_id": "pane_homeless", "terminal_id": "term_x", "workspace_id": "ws_x",
+        "tab_id": "tab_x", "agent": "shell", "display_agent": "shell",
+        "agent_status": "idle", "foreground_cwd": "/x", "focused": true
+    }]);
+    snapshot["snapshot"]["agents"] = json!([]);
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&snapshot);
+    app.move_panel(1).unwrap();
+    // The homeless pane took over the focused leaf.
+    assert!(app.split_tree.contains_pane("pane_homeless"));
+    assert_eq!(app.split_focus.as_deref(), Some("pane_homeless"));
+}
+
+#[test]
+fn dead_backend_and_missing_source_cover_the_create_error_arms() {
+    // Dead backend socket: the validated create path errors on the
+    // socket call itself, the worktree suggestion falls through to
+    // None at the cwd and source steps, and a failed confirm-prompt
+    // create re-stages the form for retry.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    let dir = std::env::temp_dir().join("tui-ws-deadcreate");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
+
+    // create_workspace_at error arm: the socket call fails.
+    assert!(app.create_workspace(&path).is_err());
+
+    // Suggested checkout path: no workspace selected -> None at cwd;
+    // with a workspace the dead list_worktrees -> None.
+    app.selected_workspace = usize::MAX;
+    assert!(app.worktree_suggested_checkout_path("feature").is_none());
+    app.selected_workspace = 0;
+    assert!(app.worktree_suggested_checkout_path("feature").is_none());
+
+    // Confirm-prompt create failure re-stages branch/path/base and
+    // reopens the prompt (retry on Enter).
+    app.worktree_create_stage = Some(WorktreeCreateStage::Path(
+        "feature".into(),
+        "/checkout".into(),
+        "main".into(),
+    ));
+    app.prompt_input = Some(crate::tui::PromptInput::new(
+        crate::tui::PromptKind::ConfirmWorktreePullBase,
+    ));
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "y");
+    assert!(app.error.is_some(), "failed create reports the error");
+    // The stage is re-staged and the confirm prompt reopened for retry.
+    assert!(app
+        .worktree_create_stage
+        .as_ref()
+        .is_some_and(|stage| matches!(stage, WorktreeCreateStage::Path(_, _, _))));
+    assert!(app.prompt_input.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(test)]
+mod coverage_tests_round7 {
+    use super::*;
+    use crate::tui::workspace::{run_prompt, WorkspacePrompt, WorktreeCreateStage};
+    use crate::tui::{PromptInput, PromptKind};
+    use interprocess::TryClone as _;
+    use std::io::{BufRead as _, BufReader, Write};
+
+    /// JSON-RPC local socket answering every request with the same
+    /// result payload.
+    fn fake_backend_result(result: serde_json::Value) -> std::path::PathBuf {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        let path = crate::backend_client::unique_test_path("herdr-ws-cov");
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        std::thread::spawn(move || {
+            while let Ok(mut stream) = listener.accept() {
+                let mut line = String::new();
+                {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                }
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let response = json!({"id": request["id"], "result": result});
+                let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
+            }
+        });
+        path
+    }
+
+    #[test]
+    fn move_panel_skips_the_cursor_move_when_the_focused_workspace_is_gone() {
+        // Split active with the focused pane belonging to a workspace
+        // missing from the list: the workspace position else-arm runs.
+        let mut app = app_with_snapshot(workspace_snapshot());
+        app.split_focus = Some("pane_1".to_string());
+        app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+        app.snapshot.panes[0].workspace_id = "ws_gone".to_string();
+        let _ = app.move_panel(1);
+        assert_eq!(app.selected_workspace, 0);
+    }
+
+    #[test]
+    fn create_workspace_rejects_a_missing_folder_before_the_backend() {
+        let mut app = app_with_snapshot(workspace_snapshot());
+        let err = app.create_workspace("/definitely/not/here").unwrap_err();
+        assert!(err.contains("exist"), "{err}");
+    }
+
+    #[test]
+    fn create_workspace_skips_the_auto_split_when_the_id_is_blank() {
+        // The backend answers a workspace with an empty id: the create
+        // still succeeds but the auto-split push is skipped.
+        let path = fake_backend_result(json!({"workspace": {"workspace_id": ""}}));
+        let mut app = app_with_snapshot(workspace_snapshot());
+        app.client = BackendClient::new(path.clone(), path.clone());
+        let existing = std::env::temp_dir();
+        let dir = existing.join(format!("herdr-ws-cov-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = app
+            .create_workspace_at(dir.to_str().unwrap(), None)
+            .unwrap();
+        assert!(result.contains("workspace created"));
+        assert!(
+            app.split_panes_of_workspaces.is_empty(),
+            "blank id is never queued for auto-split"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rename_workspace_and_panel_surface_backend_request_errors() {
+        // Dead socket: the rename request itself fails (the map_err
+        // arms of both rename paths).
+        let mut app = app_with_snapshot(workspace_snapshot());
+        assert!(app.rename_workspace("new label").is_err());
+        assert!(app.rename_panel("new panel").is_err());
+    }
+
+    #[test]
+    fn worktree_suggested_path_is_none_when_the_list_reply_has_no_source() {
+        // list_worktrees succeeds but the reply carries no source
+        // block: the parse returns None (the ? arm).
+        let path = fake_backend_result(json!({"worktrees": []}));
+        let mut app = app_with_snapshot(workspace_snapshot());
+        app.client = BackendClient::new(path.clone(), path.clone());
+        assert_eq!(app.worktree_suggested_checkout_path("feature"), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn worktree_confirm_prompt_restages_after_a_failed_create() {
+        // Stage the confirm flow, then let the create fail against the
+        // dead backend: the stage is restored and the prompt reopens.
+        let mut app = app_with_snapshot(workspace_snapshot());
+        app.worktree_create_stage = Some(WorktreeCreateStage::Path(
+            "feature".to_string(),
+            "/repo/wt-feature".to_string(),
+            "main".to_string(),
+        ));
+        app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
+        run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "y");
+        assert!(app.error.is_some(), "the create fails on the dead socket");
+        assert!(app.worktree_create_stage.is_some(), "stage restored");
+        assert!(app.prompt_input.is_some(), "prompt reopened for retry");
+    }
+}

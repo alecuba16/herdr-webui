@@ -269,11 +269,16 @@ pub(crate) fn jcode_shell_prompt_line(line: &str) -> bool {
 /// segments; a fresh session at 2% renders only `▱`) or trailing model
 /// facts, so require one of those alongside the ratio.
 fn is_overscroll_status_line(line: &str) -> bool {
-    let has_token_ratio = line.split_whitespace().any(|word| {
+    let mut ratio_idx = None;
+    let has_token_ratio = line.split_whitespace().enumerate().any(|(i, word)| {
         let Some((used, limit)) = word.split_once('/') else {
             return false;
         };
-        compact_number(used) && compact_number(limit)
+        let hit = compact_number(used) && compact_number(limit);
+        if hit {
+            ratio_idx = Some(i);
+        }
+        hit
     });
     // No ratio: the only other always-rendered shape ends in a context
     // percentage behind the context bar. At zero filled segments the bar
@@ -281,9 +286,27 @@ fn is_overscroll_status_line(line: &str) -> bool {
     if !has_token_ratio {
         return line.ends_with('%') && (line.contains('▰') || line.contains('▱'));
     }
-    // The real line always pairs the ratio with the context bar. A ratio in
-    // prose ("74k/256k tokens used") must not match.
-    line.contains('▰') || line.contains('▱')
+    // The ratio normally pairs with the context bar. A ratio in prose
+    // ("74k/256k tokens used") must not match.
+    if line.contains('▰') || line.contains('▱') {
+        return true;
+    }
+    // jcode's overscroll compaction ladder (ui_input.rs OVERSCROLL_LADDER,
+    // since the Oct 30 usage-bars commit) drops the bar glyphs before the
+    // token counts when the line gets wide, leaving `74k/256k 29%`. That
+    // compacted shape still identifies the line: a bare percentage token
+    // immediately after the ratio exists only in the context group, prose
+    // never produces it.
+    let words: Vec<&str> = line.split_whitespace().collect();
+    ratio_idx.is_some_and(|i| {
+        words.get(i + 1).is_some_and(|next| {
+            next.ends_with('%')
+                && next
+                    .trim_end_matches('%')
+                    .chars()
+                    .all(|ch| ch.is_ascii_digit())
+        })
+    })
 }
 
 /// `74k`, `256k`, `1.2m`, or a plain number, as `overscroll_format_tokens`
@@ -444,6 +467,28 @@ mod tests {
                     ~/…/app main… ±37 ▱▱▱▱ 2% llmg-coding together/revolut glm 5 2 nvfp4 max";
         assert_eq!(detect(tail, JcodeDetectionVariant::Vanilla), "idle");
         assert_eq!(detect(tail, JcodeDetectionVariant::InfoFields), "idle");
+    }
+
+    #[test]
+    fn vanilla_idle_with_compacted_context_no_bar() {
+        // The overscroll compaction ladder drops the ▰▱ bar glyphs before
+        // the token counts when the line gets wide (live capture from a
+        // real jcode boot in a 100-col PTY: dir, git, ratio, percentage,
+        // provider, account bar cells all compacted).
+        let tail = "Starting server...\n\
+                    1>\n\
+                    ~/…/split_ux_review_fixes  target_high… ±6 3.1k/262k 1% Together_ai/revolut Ltd/large 1 max";
+        assert_eq!(detect(tail, JcodeDetectionVariant::Vanilla), "idle");
+    }
+
+    #[test]
+    fn overscroll_prose_ratio_is_not_a_status_line() {
+        // A ratio in prose, without the bar glyphs and without a bare
+        // percentage right after it, must not read as idle chrome.
+        let tail = "reading the docs\n\
+                    1>\n\
+                    note: 74k/256k tokens used so far";
+        assert_eq!(detect(tail, JcodeDetectionVariant::Vanilla), "unknown");
     }
 
     #[test]

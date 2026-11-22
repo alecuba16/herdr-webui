@@ -123,6 +123,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ),
     (
         "src/tui/web_api.rs",
+        "restore_xdg",
+        "helper restores under the caller's lock_env guard; std sync Mutex is not reentrant so locking here would deadlock",
+    ),
+    (
+        "src/tui/web_api.rs",
         "persisted_session_tokens_filters_expired_records_and_keeps_open_ended_ones",
         "takes tests::lock_env (the file's wrapper over crate::test_env_lock) before the first set_var; the guard's resolver cannot prove a lock fn imported cross-module via `use super::tests::lock_env`, a resolver blind spot not a race",
     ),

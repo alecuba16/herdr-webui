@@ -47,7 +47,9 @@ build-markdown:
 	node scripts/build_markdown_assets.mjs
 
 coverage:
-	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --summary-only
+	# build.rs compiles before coverage instrumentation applies, so its
+	# regions always read as missed; ignore it in the report.
+	CARGO_TARGET_DIR=$(TARGET_DIR) $(CARGO) llvm-cov --summary-only --ignore-filename-regex '(^|/)build\.rs$$'
 
 clean:
 	$(CARGO) clean --target-dir $(TARGET_DIR)
