@@ -339,7 +339,10 @@ function loadPanes(document, stateWs) {
     terminalTheme: () => ({}),
     terminalFontFamily: () => "monospace",
     currentSessionBackend: () => "",
-    wsUrl: null,
+    // terminal.js owns window.wsUrl in the real bundle (a delegation to the
+    // shared HerdrHttp builder); the harness pins the injected builder the
+    // tests were written against.
+    wsUrl: (path) => `ws://127.0.0.1:8787${path}`,
     location: { protocol: "http:", host: "localhost:8787" },
     // schedulePtyResize debounces on real timers; the vm realm has no
     // setTimeout unless provided. Tests assert before the timer fires

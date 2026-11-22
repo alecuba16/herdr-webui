@@ -13,6 +13,17 @@ function getTerminalScript() {
   }
   return terminalScript;
 }
+// terminal.js builds socket URLs through HerdrHttp.wsUrl (shared/http.js
+// loads before the desktop bundle in production); the harness loads the
+// real shared client so wsUrl() resolves the same URLs.
+let httpScript = null;
+function getHttpScript() {
+  if (!httpScript) {
+    const httpPath = fileURLToPath(new URL("./shared/http.js", import.meta.url));
+    httpScript = new vm.Script(readFileSync(httpPath, "utf8"), { filename: httpPath });
+  }
+  return httpScript;
+}
 
 // Regression test for the cross-display terminal geometry bug: moving a
 // browser window with an active terminal between monitors (UWQHD@1x ->
@@ -219,6 +230,7 @@ function loadTerminalModule() {
   });
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  getHttpScript().runInContext(sandbox);
   // core.js fragment: declare the bundle-globals terminal.js assigns/reads.
   // terminal.js is a fragment of the concatenated desktop bundle; these
   // declarations normally live in core.js.

@@ -21,6 +21,17 @@ function getTerminalScript() {
   }
   return terminalScript;
 }
+// terminal.js builds socket URLs through HerdrHttp.wsUrl (shared/http.js
+// loads before the desktop bundle in production); the harness loads the
+// real shared client so wsUrl() resolves the same URLs.
+let httpScript = null;
+function getHttpScript() {
+  if (!httpScript) {
+    const httpPath = fileURLToPath(new URL("./shared/http.js", import.meta.url));
+    httpScript = new vm.Script(readFileSync(httpPath, "utf8"), { filename: httpPath });
+  }
+  return httpScript;
+}
 
 function stubElement(id = "") {
   const classes = new Set();
@@ -155,6 +166,7 @@ function loadTerminalModule() {
   });
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  getHttpScript().runInContext(sandbox);
   // core.js owns these module-scoped bindings in the real bundle.
   vm.runInContext(
     `

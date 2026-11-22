@@ -147,6 +147,7 @@ function loadSource() {
   // Match the actual DESKTOP_JS concat order from assets.rs,
   // plus search.js which is loaded as a separate file in the browser
   const files = [
+    "./shared/http.js",
     "./shared/core.js",
     "./shared/actions.js",
     "./shared/terminal_fit.js",
@@ -185,6 +186,7 @@ const HOIST_REWIRE = new vm.Script(
   { filename: "hoist-rewire.js" },
 );
 const RESTORE_FILES = [
+  "./shared/http.js",
   "./shared/core.js",
   "./shared/actions.js",
   "./shared/terminal_fit.js",

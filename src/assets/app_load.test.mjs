@@ -10816,7 +10816,12 @@ describe("notes rail static pins", () => {
     match(assetsRs, /include_str!\("assets\/desktop\/notes\.js"\)/, "notes.js embedded");
     match(assetsRs, /include_str!\("assets\/desktop\/notes\.css"\)/, "notes.css embedded");
     const notesRs = read("../notes.rs");
-    ok(notesRs.includes("crate::require_auth"), "notes handlers sit behind require_auth");
+    // Auth guard: either the direct require_auth call or the extracted
+    // route_helpers guard (notes_auth alias, same check).
+    ok(
+      notesRs.includes("crate::require_auth") || notesRs.includes("route_auth as notes_auth"),
+      "notes handlers sit behind an auth guard",
+    );
     const guards = (notesRs.match(/notes_auth\(&state, &headers, remote\)/g) || []).length;
     ok(guards >= 5, "every notes route checks auth: " + guards);
   });

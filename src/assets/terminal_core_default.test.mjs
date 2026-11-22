@@ -67,6 +67,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
     // so coverage attributes each file's lines to its real disk path.
     const bundleFiles = [
       "./shared/options.js",
+      "./shared/http.js",
       "./shared/core.js",
       "./shared/actions.js",
       "./shared/terminal_fit.js",

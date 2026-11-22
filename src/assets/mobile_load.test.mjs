@@ -1749,8 +1749,9 @@ describe("mobile bundle load", () => {
     // provider so every request carries the selected backend/session.
     match(mobileSource, /HerdrHttp\.configure\(\(\) => \(\{[\s\S]*?backend: currentSessionBackend\(\)/);
     match(mobileSource, /if \(globalThis\.HerdrHttp\) return globalThis\.HerdrHttp\.request\(url, opt\)/);
-    match(mobileSource, /params\.push\("backend=" \+ encodeURIComponent\(currentSessionBackend\(\)\)\)/);
-    match(mobileSource, /params\.join\("&"\)/);
+    // The socket URL builder is shared too (HerdrHttp.wsUrl): mobile passes
+    // the live session/backend as the override so the pin rides the query.
+    match(mobileSource, /HerdrHttp\.wsUrl\(path, \{[\s\S]*?backend: currentSessionBackend\(\),/);
     match(backendSource, /state\.backendMode = settings\.backend_mode/);
   });
 
