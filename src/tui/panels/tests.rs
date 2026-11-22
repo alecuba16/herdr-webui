@@ -304,6 +304,85 @@ fn edit_key_moves_cursor_with_left_right_home_end() {
 }
 
 #[test]
+fn edit_key_moves_cursor_lines_with_up_down_and_page_keys() {
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let mut explorer = FileExplorer::new("/repo");
+    explorer.preview = preview("l1 abc\nl2\nl3 xy\nl4");
+    explorer.start_edit().unwrap();
+    // Cursor at the end (line 4, column 2). Up keeps column 2 on
+    // line 3.
+    explorer.edit_cursor = "l1 abc\nl2\nl3 xy\nl4".len();
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::Up), &api)
+        .unwrap();
+    assert_eq!(
+        explorer.edit_cursor,
+        "l1 abc\nl2\nl3".len(),
+        "Up keeps column 2 on line 3"
+    );
+    // Up onto the short middle line: column clamps to the line end
+    // (column 2 beats `l2`'s length).
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::Up), &api)
+        .unwrap();
+    assert_eq!(
+        explorer.edit_cursor,
+        "l1 abc\nl2".len(),
+        "column clamps on a shorter line"
+    );
+    // Up onto line 1 keeps the clamped column 2 (the column comes
+    // from the landing position, there is no remembered goal column).
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::Up), &api)
+        .unwrap();
+    assert_eq!(explorer.edit_cursor, "l1".len());
+    // Up at the top line keeps the cursor in place.
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::Up), &api)
+        .unwrap();
+    assert_eq!(explorer.edit_cursor, "l1".len());
+    // Down onto line 2 clamps column 2 to `l2`'s end.
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::Down), &api)
+        .unwrap();
+    assert_eq!(explorer.edit_cursor, "l1 abc\nl2".len());
+    // Down past the last line stays at the buffer end (line 4).
+    explorer.edit_cursor = "l1 abc\nl2\nl3 xy".len();
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::Down), &api)
+        .unwrap();
+    assert_eq!(
+        explorer.edit_cursor,
+        "l1 abc\nl2\nl3 xy\nl4".len(),
+        "Down past the end clamps to the last line"
+    );
+    // PageUp from the last line jumps 10 lines up: the buffer only
+    // has 4, so it lands on line 1 keeping the column.
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::PageUp), &api)
+        .unwrap();
+    assert_eq!(explorer.edit_cursor, "l1".len());
+    // PageDown back to the bottom.
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::PageDown), &api)
+        .unwrap();
+    assert_eq!(
+        explorer.edit_cursor,
+        "l1 abc\nl2\nl3 xy\nl4".len(),
+        "PageDown clamps at the buffer end"
+    );
+    // Multibyte column walk: the column counts characters, so the
+    // two-byte 'é' is one column and the cursor stays on a boundary.
+    explorer.preview = preview("café\nnaïve rest");
+    explorer.edit_cursor = "café".len();
+    explorer
+        .edit_key(key(crossterm::event::KeyCode::Down), &api)
+        .unwrap();
+    assert_eq!(explorer.edit_cursor, "café\nnaïv".len());
+    assert!("café\nnaïve rest".is_char_boundary(explorer.edit_cursor));
+}
+
+#[test]
 fn edit_key_esc_stops_and_guards_refuse_unsafe_previews() {
     let api = WebApiClient::new("127.0.0.1", 1);
     let mut explorer = FileExplorer::new("/repo");

@@ -341,12 +341,58 @@ impl FileExplorer {
         Ok(())
     }
 
+    /// Byte cursor of the line `count` lines away from the cursor's
+    /// line, keeping the current column where the target line is long
+    /// enough and clamping to its end otherwise. `count` negative = up.
+    /// The walk stays on char boundaries: the column advance steps by
+    /// whole characters, never by raw bytes.
+    fn edit_cursor_line_offset(&self, count: isize) -> usize {
+        let content = &self.preview.content;
+        let cursor = self.edit_cursor;
+        // Line containing the cursor: the last `\n` at or before it,
+        // so a cursor sitting on a `\n` itself counts as its line's
+        // end, matching how the renderer numbers rows.
+        let line_start = content[..cursor].rfind('\n').map_or(0, |i| i + 1);
+        let column = content[line_start..cursor].chars().count();
+        let mut target_start = line_start;
+        let up = count < 0;
+        let mut remaining = count.unsigned_abs();
+        while remaining > 0 {
+            if up {
+                if target_start == 0 {
+                    break;
+                }
+                target_start = content[..target_start - 1].rfind('\n').map_or(0, |i| i + 1);
+            } else {
+                match content[target_start..].find('\n') {
+                    Some(i) => target_start = target_start + i + 1,
+                    None => break,
+                }
+            }
+            remaining -= 1;
+        }
+        // Column on the target line: advance by characters until the
+        // column is spent or the line (or buffer) ends.
+        let mut byte = target_start;
+        let mut col = column;
+        for ch in content[target_start..].chars() {
+            if ch == '\n' || col == 0 {
+                break;
+            }
+            byte += ch.len_utf8();
+            col -= 1;
+        }
+        byte
+    }
+
     /// Handle one key while editing. Returns Err only for save failures;
     /// Ctrl-S saves, Esc stops editing (dirty state is kept). The cursor is
     /// a byte offset into `preview.content`; char-boundary-safe helpers keep
     /// multibyte UTF-8 intact. Enter inserts a line break (crossterm
     /// reports it as `KeyCode::Enter`, not `Char('\n')`), and control- or
     /// alt-modified chars are ignored so Ctrl combos never reach the file.
+    /// Up/Down move between lines keeping the column, PageUp/PageDown
+    /// jump 10 lines like the rest of the TUI.
     pub fn edit_key(
         &mut self,
         key: crossterm::event::KeyEvent,
@@ -396,6 +442,21 @@ impl FileExplorer {
                 self.preview.content.insert(self.edit_cursor, '\n');
                 self.edit_cursor += 1;
                 self.preview.dirty = true;
+            }
+            KeyCode::Up => {
+                self.edit_cursor = self.edit_cursor_line_offset(-1);
+            }
+            KeyCode::Down => {
+                self.edit_cursor = self.edit_cursor_line_offset(1);
+            }
+            // Page keys follow the TUI convention (10 lines, same as
+            // the pane scroll and the lens) instead of a screen-sized
+            // jump the editor cannot know.
+            KeyCode::PageUp => {
+                self.edit_cursor = self.edit_cursor_line_offset(-10);
+            }
+            KeyCode::PageDown => {
+                self.edit_cursor = self.edit_cursor_line_offset(10);
             }
             KeyCode::Left => {
                 self.edit_cursor = self.preview.content[..self.edit_cursor]
