@@ -15,7 +15,8 @@ use serde_json::{json, Value};
 
 use crate::builtin_detection::{
     claude::has_claude_half_circle_spinner,
-    detect_agent_status as detect_agent_status_in_registry, scrape::{
+    detect_agent_status as detect_agent_status_in_registry,
+    scrape::{
         bottom_non_empty_lines, contains_any, contains_braille, is_braille, starts_with_braille,
     },
 };

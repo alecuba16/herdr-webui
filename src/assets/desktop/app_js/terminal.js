@@ -1614,29 +1614,24 @@ window.addEventListener("focus", () => {
 window.addEventListener("blur", () => {
   if (window.HerdrGraphicsBridge) window.HerdrGraphicsBridge.focus(false);
 });
+// window.wsUrl stays a desktop-bundle API (graphics_bridge and the lazy
+// pane-terminal surfaces resolve it from the window), but the URL building
+// itself lives once in the shared client: the override carries this
+// bundle's live session/backend so the socket pins the same context the
+// HTTP headers send.
 function wsUrl(path) {
-  const params = [];
-  if (state.session && state.session !== "default")
-    params.push("session=" + encodeURIComponent(state.session));
-  if (typeof currentSessionBackend === "function" && currentSessionBackend())
-    params.push("backend=" + encodeURIComponent(currentSessionBackend()));
-  const suffix = params.length
-    ? (path.includes("?") ? "&" : "?") + params.join("&")
-    : "";
-  return (
-    (location.protocol === "https:" ? "wss://" : "ws://") +
-    location.host +
-    path +
-    suffix
-  );
+  return HerdrHttp.wsUrl(path, {
+    session: state.session,
+    backend: typeof currentSessionBackend === "function" ? currentSessionBackend() : "",
+  });
 }
 // escapeHtml/escapeAttr come from the shared core (HerdrAppHelpers), which
-// app_boot.js loads before the desktop bundle; the local copies here were
-// byte-level duplicates.
+// app_boot.js loads before the desktop bundle. The hoisted function form
+// (not a const) keeps the names visible on window for the lazily loaded
+// feature modules that reference them bare (search.js escapeAttr etc.);
+// same trick core.js's top-level bundle scope relies on.
 function escapeHtml(s) {
-  return globalThis.HerdrAppHelpers
-    ? globalThis.HerdrAppHelpers.escapeHtml(s)
-    : String(s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  return HerdrAppHelpers.escapeHtml(s);
 }
 function escapeAttr(s) {
   return escapeHtml(s).replace(/'/g, "&#39;");

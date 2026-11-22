@@ -10,7 +10,9 @@ use serde_json::json;
 use super::check_auth;
 use super::diff::parse_unified_diff;
 use super::git_spawn;
-use super::{git_json_error, git_ui_text, required_cwd, safe_git_token, safe_repo_path, GitUiCwdQuery};
+use super::{
+    git_json_error, git_ui_text, required_cwd, safe_git_token, safe_repo_path, GitUiCwdQuery,
+};
 use crate::{require_auth, WebState};
 
 #[derive(Deserialize)]

@@ -69,9 +69,9 @@
 
     // ---- helpers ----
 
-    function escapeAttr(value) {
-      return escapeHtml(String(value == null ? "" : value)).replace(/'/g, "&#39;");
-    }
+    // escapeAttr comes from the shared core (HerdrAppHelpers); escapeHtml
+    // is the injected dependency above.
+    const escapeAttr = (value) => escapeHtml(String(value == null ? "" : value)).replace(/'/g, "&#39;");
 
     function cssEscape(value) {
       if (typeof CSS !== "undefined" && CSS && CSS.escape) return CSS.escape(value);

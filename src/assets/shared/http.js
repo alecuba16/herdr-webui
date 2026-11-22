@@ -79,7 +79,26 @@
     return body || {};
   }
 
-  const HerdrHttp = { configure, options, request, errorMessage };
+  // Single wsUrl builder (session + backend query params ride the socket
+  // URL, same contract the old per-module copies implemented). Callers pass
+  // an explicit context override ({session, backend}) because the shell
+  // state lives in each bundle's scope; without one the configured context
+  // provider supplies the same fields.
+  function wsUrl(path, override) {
+    const ctx = Object.assign({}, context(), override || {});
+    const params = [];
+    if (ctx.session && ctx.session !== "default")
+      params.push("session=" + encodeURIComponent(ctx.session));
+    if (ctx.backend) params.push("backend=" + encodeURIComponent(ctx.backend));
+    const suffix = params.length
+      ? (path.includes("?") ? "&" : "?") + params.join("&")
+      : "";
+    const proto = root.location && root.location.protocol === "https:" ? "wss://" : "ws://";
+    const host = root.location ? root.location.host : "";
+    return proto + host + path + suffix;
+  }
+
+  const HerdrHttp = { configure, options, request, errorMessage, wsUrl };
   if (root && typeof root === "object") root.HerdrHttp = HerdrHttp;
   if (typeof module !== "undefined" && module.exports) module.exports = HerdrHttp;
 })(globalThis);
