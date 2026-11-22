@@ -154,6 +154,8 @@ fn tour_steps_cover_the_main_areas_in_the_webui_order() {
             "Agents",
             "Main screen",
             "Terminal screen",
+            "Split tiles",
+            "The tile language",
             "Sidebar collapse",
             "Help overlay",
             "The prefix language",
@@ -203,7 +205,7 @@ fn tour_renders_on_a_tiny_terminal_without_panicking() {
     let screen = draw(&app, 10, 8);
     assert!(screen.contains("Tour"));
     // A wide terminal still renders the full card.
-    assert!(draw(&app, 100, 30).contains("Tour 1 / 8"));
+    assert!(draw(&app, 100, 30).contains("Tour 1 / 10"));
 }
 
 #[test]
@@ -327,4 +329,46 @@ fn tour_render_covers_every_region_and_the_chordless_footer() {
     app.tour_index = tour::tour_steps().len() + 5;
     let guard = draw(&app, 80, 24);
     assert!(!guard.contains("Tour"), "no step: no card drawn");
+}
+
+#[test]
+fn split_steps_demo_the_real_split_mode_and_teach_the_tile_language() {
+    // The "Split tiles" step runs open_split_mode through the real
+    // dispatch: with the fixture's two workspaces the ghost proposes
+    // pane_2 (the other workspace's pane) beside the focused tile,
+    // and the split mode renders below the tour card.
+    let mut app = open_tour_app();
+    app.tour_index = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Split tiles")
+        .unwrap();
+    app.run_tour_demo_for_test();
+    let preview = app
+        .split_mode
+        .clone()
+        .expect("split step opened the real split mode");
+    assert_eq!(preview.pane, "pane_2");
+    assert_eq!(preview.neighbor, "pane_1");
+    // Split mode is field state, not a TuiMode overlay: the tour keeps
+    // the mode and no demo overlay gets recorded.
+    assert_eq!(app.mode, TuiMode::Tour);
+    assert_eq!(app.tour_demo_overlay, None);
+    // The card renders with the split chord and the ghost on screen.
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Ctrl+B s"), "split chord shown");
+
+    // "The tile language" step is passive: no demo side effects, the
+    // zoom chord it names renders on the card.
+    let mut app = open_tour_app();
+    app.tour_index = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "The tile language")
+        .unwrap();
+    app.run_tour_demo_for_test();
+    assert!(app.split_mode.is_none(), "passive step opens nothing");
+    assert!(!app.split_zoomed, "passive step zooms nothing");
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Ctrl+B z"), "zoom chord shown");
+    assert!(screen.contains("Ctrl+B m"), "move chord shown");
+    assert!(screen.contains("Ctrl+B Shift+Z"), "resize chord shown");
 }

@@ -107,6 +107,12 @@ pub(crate) fn shortcut_key_hint(shortcut: Shortcut) -> &'static str {
         Shortcut::Lens => "L",
         Shortcut::Composer => "C",
         Shortcut::SessionManager => "Shift+P",
+        // Split-panel chords (Terminal screen): the split tour steps
+        // teach the tile language with these.
+        Shortcut::SplitPane => "s",
+        Shortcut::MovePane => "m",
+        Shortcut::ZoomPane => "z",
+        Shortcut::ResizePane => "Shift+Z",
         // Git chords removed in the chord reduction; the tour teaches the
         // in-screen git keys instead (Tab cycle + c/l).
         Shortcut::GitSwitchBranch => "v",
@@ -161,6 +167,26 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
             shortcut: Some(Shortcut::Terminal),
             demo: true,
             screen: Some(TuiScreen::Files),
+        },
+        TourStep {
+            title: "Split tiles",
+            body: "Ctrl+B s opens split mode: a ghost tile previews where the new pane lands. hjkl or arrows move it, Tab flips row/column, p cycles the candidate pane (a fresh shell when every pane is already shown), Enter commits, Esc cancels.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::SplitPane),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "The tile language",
+            body: "With a split active and the main region focused, j/k walk tile to tile and Ctrl+j/k scroll the focused pane. Ctrl+B m moves a tile, Ctrl+B z zooms it fullscreen, Ctrl+B Shift+Z resizes it, and closing a pane hands focus to the nearest surviving tile.",
+            region: TourRegion::Main,
+            // Passive on purpose: the walk/move/zoom chords need a live
+            // multi-tile session with keyboard focus, which the demo
+            // runner cannot hand over mid-tour. Every demo step still
+            // drives a real chord; this one teaches the map.
+            shortcut: Some(Shortcut::ZoomPane),
+            demo: false,
+            screen: Some(TuiScreen::Terminal),
         },
         TourStep {
             title: "Sidebar collapse",
