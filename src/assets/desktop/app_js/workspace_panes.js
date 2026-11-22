@@ -5862,7 +5862,16 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
       // refused fetch (deleted file) must not loop the render.
       const rehydratePath = editorTabPath(activeTab);
       const triedKey = "__herdrEditorRehydrated:" + rehydratePath;
-      if (rehydratePath && !leaf[triedKey] && !editorOpensInFlight.has(rehydratePath)) {
+      // The workspace row must resolve BEFORE the one-shot is spent: the
+      // boot renders panes before the workspaces snapshot lands (seen
+      // live: the activation was skipped, the fetch rode an empty cwd,
+      // and the flag blocked every later render). No row yet means the
+      // claim waits for a later render instead of consuming its shot.
+      const rehydrateWsId = leafWorkspaceId(leaf) || state.ws;
+      const rehydrateWorkspace = rehydrateWsId
+        ? (state.workspaces || []).find((w) => w && w.workspace_id === rehydrateWsId) || null
+        : null;
+      if (rehydratePath && rehydrateWorkspace && !leaf[triedKey] && !editorOpensInFlight.has(rehydratePath)) {
         leaf[triedKey] = true;
         editorOpensInFlight.add(rehydratePath);
         void (async () => {
@@ -5875,11 +5884,7 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
             // 400s. activateWorkspace runs the same activateState(key,
             // cwd) an openAt tree click pays, without swinging the Files
             // sidebar open on a passive rehydrate.
-            const wsId = leafWorkspaceId(leaf) || state.ws;
-            const workspace = wsId
-              ? (state.workspaces || []).find((w) => w && w.workspace_id === wsId) || null
-              : null;
-            if (workspace && registry.activateWorkspace) registry.activateWorkspace(workspace);
+            if (registry.activateWorkspace) registry.activateWorkspace(rehydrateWorkspace);
             await registry.openEditorTab(rehydratePath);
           } catch (_) {
             // A failed fetch leaves the tab listed but contentless; the
