@@ -794,30 +794,18 @@
   padding: 6px 8px;
   text-align: left;
 }
+/* The backdrop and card reuse the shared .modal-backdrop/.modal classes
+   (app_css/modals.css). Git keeps only its deltas here. z-index comes from
+   the shared .modal-backdrop (1100): bindings.js Tab scoping and the
+   directory picker (1200) depend on that stacking. */
 .git-ui-modal-backdrop {
-  align-items: center;
-  background: rgba(0, 0, 0, 0.42);
-  bottom: 0;
   display: flex;
-  justify-content: center;
-  left: 0;
   padding: 24px;
-  position: fixed;
-  right: 0;
-  top: 0;
-  z-index: 1100;
 }
 .git-ui-modal {
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  border-radius: 12px;
-  box-sizing: border-box;
-  box-shadow: 0 20px 60px #0008;
   display: grid;
   gap: 12px;
   max-width: 520px;
-  min-width: 0;
-  padding: 14px;
   width: min(520px, calc(100vw - 48px));
 }
 .git-ui-modal label {
