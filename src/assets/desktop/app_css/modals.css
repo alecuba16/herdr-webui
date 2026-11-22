@@ -316,12 +316,7 @@
   border: 2px solid currentColor;
   border-top-color: transparent;
   border-radius: 50%;
-  animation: settings-saving-spin 0.7s linear infinite;
-}
-@keyframes settings-saving-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: herdr-spin 0.7s linear infinite;
 }
 .settings-applied {
   color: var(--git-added-color);

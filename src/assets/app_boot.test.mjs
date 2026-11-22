@@ -9,6 +9,7 @@ let appBootScript = null;
 
 const SHARED_STYLES = [
   "/assets/shared/colors.css",
+  "/assets/shared/palette.css",
   "/assets/shared/tokens.css",
   "/assets/shared/skeleton.css",
   "/assets/shared/primitives.css",

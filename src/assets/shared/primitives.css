@@ -68,14 +68,33 @@
     opacity: 0.35;
   }
 }
-/* Single shared spin: mobile app.css and desktop terminal.css had
-   byte-identical rotate(360deg) copies under three different names
-   (mobile-spin, herdr-mobile-terminal-spin, settings-saving-spin, spin,
-   lens-spin, app-refresh-spin keep their size/duration variants in their
-   own files; only the keyframe itself lives here). */
+/* Single shared spin: every layout module (login, file browser, git ui,
+   notes, modals, terminal, content search) references this one body;
+   each site keeps its own duration/size. Long refresh cycles use
+   herdr-spin-double below. */
 @keyframes herdr-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+/* Two-turn spin for the long refresh cycles (2s+): one canonical body
+   instead of the notes/app-refresh/git-ui copies. */
+@keyframes herdr-spin-double {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(720deg);
+  }
+}
+/* Composer hold-to-send ring: mobile app.css and desktop terminal.css
+   kept byte-identical copies; the clip-path sweep lives here once. */
+@keyframes herdr-hold-ring {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
   }
 }
 

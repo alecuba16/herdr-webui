@@ -911,8 +911,8 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.cm-matchingBracket/);
     match(mobileCss, /\.cm-nonmatchingBracket/);
     match(mobileCss, /\.cm-editor \.cm-cursor,[\s\S]*?border-left: 2px solid var\(--editor-caret\)/);
-    match(mobileCss, /--editor-caret:/);
-    match(mobileCss, /--editor-caret-dim:/);
+    match(readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8"), /--editor-caret:/);
+    match(readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8"), /--editor-caret-dim:/);
     match(mobileCss, /\.cm-selectionBackground/);
     match(mobileCss, /--accent-1:/);
     match(mobileCss, /--accent-2:/);
@@ -1157,9 +1157,11 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.mobile-context \.mobile-backend-badge\.backend-builtin \{[\s\S]*?color: var\(--backend-builtin\)/);
     match(mobileCss, /\.mobile-context \.mobile-backend-badge\.backend-herdr \{[\s\S]*?color: var\(--backend-herdr\)/);
     // Herdr keeps a distinct mauve hue; built-in stays in the accent family.
-    match(mobileCss, /--backend-builtin: var\(--accent\)/);
-    match(mobileCss, /--backend-herdr: #cba6f7/);
-    match(mobileCss, /--backend-herdr: #8839ef/);
+    // The hue definitions live in shared/palette.css, loaded for both layouts.
+    const paletteCss = readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8");
+    match(paletteCss, /--backend-builtin: var\(--accent\)/);
+    match(paletteCss, /--backend-herdr: #cba6f7/);
+    match(paletteCss, /--backend-herdr: #8839ef/);
 
     // The badge switches label and class when the backend changes. The fallback
     // to built-in on refresh is covered elsewhere; here we exercise the badge

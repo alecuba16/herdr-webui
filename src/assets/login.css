@@ -98,16 +98,11 @@ button:disabled {
   border: 2px solid #11111b;
   border-top-color: transparent;
   border-radius: 50%;
-  animation: login-spin 0.7s linear infinite;
+  animation: herdr-spin 0.7s linear infinite;
   vertical-align: -2px;
 }
 button.busy .login-spinner {
   display: inline-block;
-}
-@keyframes login-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 p {
   color: #f38ba8;

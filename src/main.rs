@@ -151,7 +151,7 @@ use assets::{
     shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
     shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js, shared_http_js,
     shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
-    shared_options_js, shared_primitives_css, shared_settings_confirm_js,
+    shared_options_js, shared_palette_css, shared_primitives_css, shared_settings_confirm_js,
     shared_settings_feedback_js, shared_skeleton_css, shared_skeleton_js,
     shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
     shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js,
@@ -1422,6 +1422,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
         .route("/assets/shared/file-tree.css", get(shared_file_tree_css))
         .route("/assets/shared/colors.css", get(shared_colors_css))
+        .route("/assets/shared/palette.css", get(shared_palette_css))
         .route("/assets/shared/tokens.css", get(shared_tokens_css))
         .route("/assets/shared/primitives.css", get(shared_primitives_css))
         .route(

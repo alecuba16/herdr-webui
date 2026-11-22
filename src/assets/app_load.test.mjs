@@ -2796,8 +2796,8 @@ describe("app bundle load", () => {
     match(editorSource, /searchHighlightExtensions/);
     match(editorSource, /scrollToSearchHighlight/);
     ok(!editorSource.includes("defaultHighlightStyle"));
-    match(readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
-    match(readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
+    match(readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
+    match(readFileSync(new URL("./app_boot.js", import.meta.url), "utf8"), /\/assets\/shared\/palette\.css/);
     match(source, /id="optFileBrowserLineNumbers"/);
     ok(!source.includes("optFileBrowserPathSearch"));
     match(source, /id="optFileBrowserSearchPageSize"/);
@@ -4826,9 +4826,7 @@ describe("app bundle load", () => {
     const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
     const workspacesCss = desktopWorkspacesCss;
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
-    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
-
-    // Herdr keeps a distinct mauve hue; built-in stays in the accent family.
+    const baseCss = readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8");
     match(baseCss, /--backend-builtin: var\(--accent\)/);
     match(baseCss, /--backend-herdr: #cba6f7/);
     match(baseCss, /--backend-herdr: #8839ef/);
