@@ -181,7 +181,15 @@ fn render_workspace_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pa
     } else {
         " Workspaces "
     };
-    render_list_panel(frame, area, items, app.selected_workspace, panel(title, p), "▸ ", p);
+    render_list_panel(
+        frame,
+        area,
+        items,
+        app.selected_workspace,
+        panel(title, p),
+        "▸ ",
+        p,
+    );
 }
 
 fn render_agent_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -213,7 +221,15 @@ fn render_agent_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palett
     } else {
         " Agents "
     };
-    render_list_panel(frame, area, items, app.selected_agent, panel(title, p), "▸ ", p);
+    render_list_panel(
+        frame,
+        area,
+        items,
+        app.selected_agent,
+        panel(title, p),
+        "▸ ",
+        p,
+    );
 }
 
 fn render_main(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
