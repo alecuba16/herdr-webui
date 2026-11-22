@@ -132,6 +132,57 @@ pub fn builtin_session_dir(settings_dir: &Path, session: Option<&str>) -> PathBu
 mod tests {
     use super::*;
 
+    /// Same process-wide lock the other HOME/XDG tests take: env is
+    /// global and tests run in parallel. Poison recovery mirrors
+    /// tui/workspace so one panicking test does not cascade. Coverage
+    /// is off because the poison arm only runs after a panic inside
+    /// another env-mutating test, which the harness reports as its own
+    /// failure long before the recovery matters.
+    #[cfg_attr(coverage, coverage(off))]
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    #[test]
+    fn home_dir_resolves_and_errors_without_home() {
+        let _guard = env_lock();
+        // Set arm: a defined $HOME must come back verbatim.
+        let prev = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", "/tmp/herdr-home-check") };
+        assert_eq!(home_dir().unwrap(), PathBuf::from("/tmp/herdr-home-check"));
+        // Error arm: no $HOME surfaces the NotFound error instead of
+        // panicking, so server startup can report it.
+        unsafe { std::env::remove_var("HOME") };
+        let err = home_dir().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert_eq!(err.to_string(), "HOME is required");
+        // HOME is always set under the test harness, so restore it
+        // verbatim the way the other HOME tests do (tui/workspace uses
+        // the same expect); the harness would have failed long before a
+        // missing HOME could matter here.
+        let home = prev.expect("HOME set in tests");
+        unsafe { std::env::set_var("HOME", home) };
+    }
+
+    #[test]
+    fn settings_dir_fallback_returns_parent_and_temp_for_empty() {
+        // Parent arm: a normal settings path falls back to its parent.
+        let settings = Path::new("/tmp/herdr-settings/webui-settings.json");
+        assert_eq!(
+            settings_dir_fallback(settings),
+            PathBuf::from("/tmp/herdr-settings")
+        );
+        // Fallback arm: parent() is None only for an empty path; every
+        // real caller joins a filename onto a directory, so this arm
+        // guards against future path-shape changes.
+        assert_eq!(
+            settings_dir_fallback(Path::new("")),
+            std::env::temp_dir().join("herdr-webui")
+        );
+    }
+
     #[test]
     fn session_dir_stays_canonical_when_sockets_fall_back() {
         // Long settings path forces the socket pair into the hashed /tmp
