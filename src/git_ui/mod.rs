@@ -547,6 +547,8 @@ pub(super) fn git_ui_repo(cwd: &str) -> Result<String, String> {
 }
 
 /// Runs `git rev-parse --show-toplevel` in the expanded cwd, returning the root.
+/// Kept local (not git_bin::rev_parse_toplevel) because its git_failure
+/// stderr detail rides 400 responses; the shared helper only yields None.
 fn rev_parse_toplevel(expanded: &str) -> Result<String, String> {
     let output = crate::git_bin::command()
         .arg("-C")
