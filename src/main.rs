@@ -1,3 +1,10 @@
+// Same crate-root gate as lib.rs: cargo llvm-cov sets --cfg=coverage and
+// the coverage attribute is nightly-only, so the feature gate rides the
+// same cfg. The bin crate compiles protocol.rs (coverage(off) sites)
+// through its own `mod protocol`, so it needs its own gate.
+#![cfg_attr(coverage, allow(unexpected_cfgs))]
+#![cfg_attr(coverage, feature(coverage_attribute))]
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
