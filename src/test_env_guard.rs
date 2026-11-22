@@ -147,7 +147,7 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
 /// factories. Any other unit-mutex static is a private lock island (R3).
 const CANONICAL_LOCK_FNS: [(&str, &str); 2] = [
     ("src/lib.rs", "test_env_lock"),
-    ("src/tests.rs", "env_lock"),
+    ("src/tests/mod.rs", "env_lock"),
 ];
 
 /// In `tests/` each integration binary owns one lock convention of its own
@@ -1122,7 +1122,7 @@ fn canonical_module(caller_file: &str, qualifier: &str) -> Option<(String, Strin
         return None;
     }
     match module {
-        "tests" => Some(("src/tests.rs".to_string(), "tests".to_string())),
+        "tests" => Some(("src/tests/mod.rs".to_string(), "tests".to_string())),
         "tui" => Some(("src/tui.rs".to_string(), "tui".to_string())),
         other => Some((format!("src/{other}.rs"), other.to_string())),
     }
