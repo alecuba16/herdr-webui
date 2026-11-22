@@ -176,6 +176,7 @@ assert.equal(
 const CORE_SOURCE = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
 const SHARED_SOURCE_FILES = [
   "./shared/actions.js",
+  "./shared/backend_state.js",
   "./shared/http.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",

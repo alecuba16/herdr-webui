@@ -688,6 +688,7 @@ const MOBILE_BUNDLE_FILES = [
   "./shared/http.js",
   "./shared/attention.js",
   "./shared/actions.js",
+  "./shared/backend_state.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
   "./shared/line_context.js",

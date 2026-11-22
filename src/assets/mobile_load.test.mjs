@@ -641,6 +641,7 @@ const MOBILE_BUNDLE_FILES = [
   "./shared/http.js",
   "./shared/attention.js",
   "./shared/actions.js",
+  "./shared/backend_state.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
   "./shared/line_context.js",
@@ -786,6 +787,8 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./shared/attention.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8") +
     "\n" +

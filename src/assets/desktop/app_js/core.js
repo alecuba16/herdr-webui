@@ -3225,9 +3225,23 @@ function updateFooterSessionButton() {
 function currentSessionBackend() {
   return state.sessionBackend || state.backendMode || "builtin";
 }
+  // Session backend enablement + retargeting live in shared/backend_state.js
+  // (HerdrBackendState); the desktop copies delegate and keep only their
+  // layout-specific side effects (footer button, events socket).
+  const sharedBackendState = window.HerdrBackendState
+    ? window.HerdrBackendState.create({
+        state,
+        writeSessionBackend,
+        onRetarget: () => {
+          updateFooterSessionButton();
+          if (eventWs && typeof cycleEventsSocket === "function") cycleEventsSocket();
+        },
+      })
+    : null;
 // True when the server settings allow the given backend. Unknown (null, from
 // an older server that omits enabled_backends) never disables anything.
 function backendEnabled(backend) {
+  if (sharedBackendState) return sharedBackendState.backendEnabled(backend);
   const enabled = state.backendsEnabled && state.backendsEnabled[backend];
   return enabled !== false;
 }
@@ -3237,6 +3251,7 @@ function backendEnabled(backend) {
 // request (labels and offers would keep claiming Herdr while the server
 // actually serves built-in).
 function syncSessionBackendFromServer() {
+  if (sharedBackendState) return sharedBackendState.syncSessionBackendFromServer();
   if (!state.sessionBackend) return;
   if (backendEnabled(state.sessionBackend)) return;
   // Prefer the server's configured default when it is still enabled, then

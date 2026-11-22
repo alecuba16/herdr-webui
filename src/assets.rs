@@ -16,6 +16,7 @@ const SHARED_ALERT_CARD_JS: &str = include_str!("assets/shared/alert_card.js");
 const SHARED_ALERT_CARD_CSS: &str = include_str!("assets/shared/alert_card.css");
 const SHARED_OPTIONS_JS: &str = include_str!("assets/shared/options.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
+const SHARED_BACKEND_STATE_JS: &str = include_str!("assets/shared/backend_state.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
 const SHARED_FILE_TREE_CSS: &str = include_str!("assets/shared/file_tree.css");
@@ -295,6 +296,14 @@ pub(crate) async fn shared_actions_js(headers: HeaderMap) -> Response {
     static_text(
         &headers,
         SHARED_ACTIONS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_backend_state_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_BACKEND_STATE_JS,
         "application/javascript; charset=utf-8",
     )
 }

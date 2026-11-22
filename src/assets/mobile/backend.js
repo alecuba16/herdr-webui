@@ -158,7 +158,23 @@
     }
     // True when the server settings allow the given backend. Unknown (null,
     // from an older server that omits enabled_backends) never disables anything.
+    // Enablement + retargeting live in shared/backend_state.js (HerdrBackendState);
+    // this wrapper keeps the mobile-specific events-socket cycle.
+    const sharedBackendState = globalThis.HerdrBackendState
+      ? globalThis.HerdrBackendState.create({
+          state,
+          writeSessionBackend,
+          onRetarget: () => {
+            const events = getMobileEvents && getMobileEvents();
+            if (events) {
+              events.closeEventWs();
+              events.scheduleEventReconnect();
+            }
+          },
+        })
+      : null;
     function backendEnabled(backend) {
+      if (sharedBackendState) return sharedBackendState.backendEnabled(backend);
       const enabled = state.backendsEnabled && state.backendsEnabled[backend];
       return enabled !== false;
     }
@@ -169,6 +185,7 @@
     // broadcast) when still enabled, then built-in, then whichever remains
     // enabled (the server enforces at least one enabled backend).
     function syncSessionBackendFromServer() {
+      if (sharedBackendState) return sharedBackendState.syncSessionBackendFromServer();
       if (!state.sessionBackend) return;
       if (backendEnabled(state.sessionBackend)) return;
       const fallback =
