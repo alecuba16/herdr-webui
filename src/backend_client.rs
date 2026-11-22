@@ -590,10 +590,7 @@ fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
 /// path-shape change.
 #[cfg_attr(coverage, coverage(off))]
 fn runtime_settings_parent() -> PathBuf {
-    runtime_settings_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui"))
+    crate::socket_paths::settings_dir_fallback(&runtime_settings_path())
 }
 
 fn runtime_settings_path() -> PathBuf {

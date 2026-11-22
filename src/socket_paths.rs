@@ -7,7 +7,24 @@
 //! (the server resolves `server_settings_path()`, the client resolves
 //! `runtime_settings_path()` with its test-isolation fallback).
 
+use std::io;
 use std::path::{Path, PathBuf};
+
+/// $HOME lookup shared by the binary and lib crates.
+pub fn home_dir() -> io::Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is required"))
+}
+
+/// Parent directory of a settings path, with the temp-dir fallback used
+/// by server, journal, and client-side socket derivations.
+pub fn settings_dir_fallback(settings_path: &Path) -> PathBuf {
+    settings_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui"))
+}
 
 /// Maximum socket path length the OS can bind/connect. Unix sun_path is
 /// 104 bytes on macOS (108 on Linux) but the built-in backend deliberately

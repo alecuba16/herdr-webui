@@ -588,9 +588,7 @@ fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
 }
 
 fn home_dir() -> io::Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is required"))
+    herdr_webui::socket_paths::home_dir()
 }
 
 fn print_help() {
@@ -1166,10 +1164,7 @@ fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
     // Server side resolves its settings dir; the client side resolves
     // the runtime settings path with its test isolation.
     builtin_socket_paths_in(
-        &server_settings_path()
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui")),
+        &herdr_webui::socket_paths::settings_dir_fallback(&server_settings_path()),
         session,
     )
 }
@@ -1180,10 +1175,7 @@ fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
 /// close and cleanup find it.
 fn builtin_session_dir(session: Option<&str>) -> PathBuf {
     builtin_session_dir_in(
-        &server_settings_path()
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui")),
+        &herdr_webui::socket_paths::settings_dir_fallback(&server_settings_path()),
         session,
     )
 }

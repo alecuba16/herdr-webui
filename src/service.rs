@@ -443,9 +443,7 @@ pub fn restart_service() -> io::Result<()> {
 }
 
 fn home_dir() -> io::Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is required"))
+    herdr_webui::socket_paths::home_dir()
 }
 
 fn local_bin_dir() -> io::Result<PathBuf> {
