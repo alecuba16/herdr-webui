@@ -379,7 +379,7 @@ impl BackendClient {
     }
 }
 
-pub const BUILTIN_TUI_PROTOCOL_VERSION: u32 = 22;
+pub(crate) use crate::protocol::PROTOCOL_VERSION as BUILTIN_TUI_PROTOCOL_VERSION;
 pub const MAX_TUI_TERMINAL_FRAME_SIZE: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
