@@ -171,6 +171,10 @@ pub struct GitPanel {
     /// `a/` side; rename source). `None` while no per-file diff is
     /// loaded (working-tree diff or another view's diff).
     pub diff_old_path: Option<String>,
+    /// Scope the Changes diff was last rendered with (`working`,
+    /// `staged`, or `all`), resent by hunk applies so the server
+    /// regenerates the identical diff (webui chunk selector parity).
+    pub diff_scope: String,
     /// Hunk cursor for the Changes diff (gap 14): ordinal into the
     /// `@@` headers of `diff_lines`. `J`/`K` move it, `H` applies the
     /// webui hunk action (stage when unstaged, unstage when staged).
@@ -274,6 +278,7 @@ impl GitPanel {
             diff_title: String::new(),
             diff_meta: Vec::new(),
             diff_old_path: None,
+            diff_scope: String::new(),
             diff_hunk_selected: 0,
             show_blame: false,
             blame_authors: HashMap::new(),

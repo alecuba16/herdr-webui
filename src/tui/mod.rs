@@ -1792,16 +1792,19 @@ impl TuiApp {
                     Some(head) => (head.to_string(), true),
                     None => (text.to_string(), false),
                 };
-                let count = self.file_explorer.editor_find.ranges.len();
                 match self.file_explorer.editor_replace(&replacement, all) {
-                    Ok(()) => {
+                    Ok((replaced, total)) => {
                         self.status = if all {
-                            format!("replaced {count} matches")
+                            format!("replaced {replaced} matches")
                         } else {
-                            format!("replaced 1 of {count} matches")
+                            format!("replaced 1 of {total} matches")
                         };
-                        // Stay in edit mode with the find bar alive so
-                        // Ctrl+S persists and Enter keeps cycling.
+                        // Reopen the find bar so the replace→cycle loop
+                        // the webui has actually exists: Enter cycles the
+                        // remaining matches, Esc returns to plain editing.
+                        // Without this the bar stays closed and Enter hit
+                        // edit_key, inserting a stray newline instead.
+                        self.file_explorer.editor_find_open();
                         self.file_explorer.edit_active = true;
                     }
                     Err(err) => self.error = Some(err.to_string()),
@@ -2291,6 +2294,9 @@ impl TuiApp {
         let shift = key
             .modifiers
             .contains(crossterm::event::KeyModifiers::SHIFT);
+        let ctrl = key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
                 self.file_explorer.editor_find_close();
@@ -2310,6 +2316,15 @@ impl TuiApp {
                 };
             }
             KeyCode::Backspace => self.file_explorer.pop_find_char(),
+            // Replace stays reachable while the find bar is open (the
+            // webui find bar carries the replace input inline), so the
+            // replace→cycle loop never dead-ends with the bar closed.
+            KeyCode::Char('h') if ctrl => {
+                self.prompt_input = Some(PromptInput {
+                    kind: PromptKind::ReplaceInFile,
+                    text: String::new(),
+                });
+            }
             // Match-case / regex toggles (webui toolbar checkboxes).
             KeyCode::Char('A') => {
                 self.file_explorer.editor_find.match_case =
@@ -5359,23 +5374,42 @@ pub(crate) mod prompt_action_tests {
         assert!(app.error.is_some());
 
         // One match: replace-one reports 1 of 1. The replace writes
-        // through the server, so the preview needs real content.
+        // through the server, so the preview needs real content, and
+        // the query must be set like Ctrl+F leaves it (the replace
+        // recomputes ranges from the query, never trusting stored ones).
         let (api, _stop) = fake_api_server(&[]);
         let mut app = app_with_api(api);
         app.file_explorer = explorer_with_selection();
         app.file_explorer.preview.content = "old line".to_string();
-        app.file_explorer.editor_find.ranges = vec![(0, 3)];
+        app.file_explorer.editor_find.query = "old".to_string();
         app.run_prompt_action(PromptKind::ReplaceInFile, "new");
         assert_eq!(app.status, "replaced 1 of 1 matches");
+        // The find bar reopens (webui replace bar stays up): Enter
+        // cycles the remaining matches instead of typing a newline.
+        assert!(app.file_explorer.editor_find.active);
+        assert_eq!(app.file_explorer.editor_find.ranges, Vec::new());
 
         // `!` suffix replaces all.
         let (api, _stop) = fake_api_server(&[]);
         let mut app = app_with_api(api);
         app.file_explorer = explorer_with_selection();
         app.file_explorer.preview.content = "old old".to_string();
-        app.file_explorer.editor_find.ranges = vec![(0, 3), (4, 7)];
+        app.file_explorer.editor_find.query = "old".to_string();
         app.run_prompt_action(PromptKind::ReplaceInFile, "new!");
         assert_eq!(app.status, "replaced 2 matches");
+        assert!(app.file_explorer.editor_find.active);
+
+        // Stale ranges from a shrunk buffer no longer panic: the replace
+        // recomputes from the query and reports what it actually saw.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.file_explorer.preview.content = "ol".to_string();
+        app.file_explorer.editor_find.query = "old".to_string();
+        // Offsets past the end of the shrunk buffer (the pre-fix panic).
+        app.file_explorer.editor_find.ranges = vec![(0, 3)];
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new");
+        assert!(app.error.is_some(), "no live match in the shrunk buffer");
     }
 
     #[test]

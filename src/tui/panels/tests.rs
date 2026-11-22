@@ -1667,7 +1667,9 @@ fn apply_hunk_action_builds_webui_hunk_patch() {
     assert_eq!(panel.hunk_count(), 2);
 
     // H applies the webui stageHunk for an unstaged file: cached, not
-    // reverse, and the patch carries the second hunk after J.
+    // reverse, and the body is the chunk selector; the server rebuilds
+    // the patch (preserving `\ No newline at end of file` markers that
+    // client-side patch rebuilds dropped).
     assert!(panel.move_hunk_selection(1));
     panel.apply_hunk_action(&api).unwrap();
     let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
@@ -1675,11 +1677,11 @@ fn apply_hunk_action_builds_webui_hunk_patch() {
     assert_eq!(request["cwd"], "/repo");
     assert_eq!(request["cached"], true);
     assert_eq!(request["reverse"], false);
-    let patch = request["patch"].as_str().unwrap();
-    assert_eq!(
-        patch,
-        "diff --git a/old.rs b/new.rs\n--- a/old.rs\n+++ b/new.rs\n@@ -9,1 +9,2 @@\n-gone\n"
-    );
+    assert_eq!(request["file"], "new.rs");
+    assert_eq!(request["chunk_index"], 1);
+    assert_eq!(request["scope"], "working");
+    assert_eq!(request["context"], 3);
+    assert!(request.get("patch").is_none(), "no client-rebuilt patch");
 
     // Unstaged scope unstage arm: a staged file sends reverse + cached.
     panel.files[0].status = GitFileStatus::Staged;
@@ -1689,9 +1691,11 @@ fn apply_hunk_action_builds_webui_hunk_patch() {
     let request: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(request["cached"], true);
     assert_eq!(request["reverse"], true);
-    let patch = request["patch"].as_str().unwrap();
-    assert!(patch.starts_with("diff --git a/old.rs b/new.rs\n"));
-    assert!(patch.contains("@@ -1,2 +1,3 @@\n ctx\n+added\n"));
+    assert_eq!(request["chunk_index"], 0);
+    // The scope stays the one the diff was rendered with (the webui
+    // sends view.diffScope the same way).
+    assert_eq!(request["scope"], "working");
+    assert!(request.get("patch").is_none(), "no client-rebuilt patch");
 
     // No per-file diff: the guard errors instead of calling the API.
     panel.diff_title = "working tree".to_string();

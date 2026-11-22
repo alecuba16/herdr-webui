@@ -935,6 +935,39 @@ impl WebApiClient {
         )
     }
 
+    /// Chunk-based apply (webui stageHunk/unstageHunk body): the server
+    /// rebuilds the single-chunk patch from the same diff args the client
+    /// rendered, so `\ No newline at end of file` markers survive and
+    /// what gets applied matches the hunk the user selected. A rebuilt
+    /// client-side patch loses those markers and git rejects the result.
+    pub fn git_apply_patch_chunk(
+        &self,
+        cwd: &str,
+        file: &str,
+        chunk_index: usize,
+        scope: &str,
+        context: usize,
+        reverse: bool,
+        cached: bool,
+    ) -> Result<Value, WebApiError> {
+        let body = json!({
+            "cwd": cwd,
+            "file": file,
+            "chunk_index": chunk_index,
+            "scope": scope,
+            "context": context,
+            "reverse": reverse,
+            "cached": cached,
+        });
+        self.call(
+            "POST",
+            "/api/git-ui/apply-patch",
+            Some(&body),
+            "git.apply_patch",
+            body.clone(),
+        )
+    }
+
     pub fn git_unstage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "paths": paths });
         self.call(

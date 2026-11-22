@@ -126,10 +126,23 @@ impl FileExplorer {
 
     /// Replace the current match (or all matches) with `replacement`
     /// and re-run the search (webui replace-one / replace-all buttons).
-    pub fn editor_replace(&mut self, replacement: &str, all: bool) -> Result<(), WebApiError> {
+    /// The ranges may be stale (the find bar keeps them after Esc and
+    /// buffer edits do not recompute them), so they are rebuilt against
+    /// the current content first; splicing by stale offsets would panic
+    /// on a shrunk buffer or corrupt a grown one. Returns
+    /// `(replaced, total)`: how many matches were replaced and how
+    /// many the refreshed search saw, so the caller's status line never
+    /// reports a count from before the recompute.
+    pub fn editor_replace(
+        &mut self,
+        replacement: &str,
+        all: bool,
+    ) -> Result<(usize, usize), WebApiError> {
+        self.refresh_find();
         if self.editor_find.ranges.is_empty() {
             return Err(WebApiError::Io("no find matches to replace".to_string()));
         }
+        let total = self.editor_find.ranges.len();
         if all {
             // Replace from the end so earlier offsets stay valid.
             for (start, end) in self.editor_find.ranges.iter().rev() {
@@ -141,7 +154,7 @@ impl FileExplorer {
         }
         self.preview.dirty = true;
         self.refresh_find();
-        Ok(())
+        Ok((if all { total } else { 1 }, total))
     }
 
     /// Save after a replace ran through the prompt (Ctrl+S parity is
@@ -193,12 +206,38 @@ mod tests {
         explorer.preview.content = "one two one".to_string();
         explorer.editor_find.query = "one".to_string();
         explorer.refresh_find();
-        explorer.editor_replace("X", false).unwrap();
+        let (replaced, total) = explorer.editor_replace("X", false).unwrap();
+        assert_eq!((replaced, total), (1, 2));
         assert_eq!(explorer.preview.content, "X two one");
         assert!(explorer.preview.dirty);
-        explorer.editor_replace("Y", true).unwrap();
+        let (replaced, total) = explorer.editor_replace("Y", true).unwrap();
+        assert_eq!((replaced, total), (1, 1));
         assert_eq!(explorer.preview.content, "X two Y");
         assert!(explorer.editor_find.ranges.is_empty());
+    }
+
+    #[test]
+    fn replace_recomputes_stale_ranges_instead_of_splicing_them() {
+        // Ctrl+H is reachable with the find bar closed, so `ranges`
+        // can predate buffer edits. Splicing those offsets panicked
+        // on a shrunk buffer and corrupted a grown one; the replace
+        // must recompute from the query instead.
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview.content = "aa".to_string();
+        explorer.editor_find.query = "aa".to_string();
+        // Offsets from the pre-shrink buffer: (0,4) is out of bounds.
+        explorer.editor_find.ranges = vec![(0, 4)];
+        explorer.editor_replace("b", false).unwrap();
+        assert_eq!(explorer.preview.content, "b");
+
+        // Grown buffer: the recomputed range lands on the real match,
+        // not the stale offset that would splice mid-line.
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview.content = "x aa y aa z".to_string();
+        explorer.editor_find.query = "aa".to_string();
+        explorer.editor_find.ranges = vec![(0, 2)];
+        explorer.editor_replace("bb", false).unwrap();
+        assert_eq!(explorer.preview.content, "x bb y aa z");
     }
 
     #[test]

@@ -21,7 +21,6 @@ pub(crate) use split_tiles::split_active;
 pub(crate) use split_tiles::TileRectOwned;
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const MAX_DIFF_LINES: usize = 400;
 
 pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     let p = &app.palette;
@@ -1040,7 +1039,9 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             // Cursor past the last rendered line (content ends with a
             // newline, the state `start_edit` leaves): the caret row
             // would never paint, so show a virtual line whose padding
-            // space carries the inverted cell.
+            // space carries the inverted cell. It always fits: the
+            // cursor follow-scroll starts at cursor_line - (visible -
+            // 1), so at most visible - 1 real rows come before it.
             if lines.len() < visible {
                 lines.push(Line::from(vec![
                     Span::styled(
@@ -1407,8 +1408,29 @@ fn render_diff_pane_full(
     let block = panel_block(diff_title, p);
     let inner = block.inner(diff_area);
     frame.render_widget(block, diff_area);
+    // Follow-scroll: keep the search hit or the hunk cursor inside the
+    // window, centered. The old fixed top-of-diff window highlighted
+    // anchors below the fold where they stayed invisible.
+    let anchor = active_match.or(active_hunk);
+    let visible = inner.height as usize;
+    let len = diff_lines.len();
+    let start = match anchor {
+        Some(anchor) if len > visible => anchor
+            .saturating_sub(visible / 2)
+            .min(len.saturating_sub(visible)),
+        _ => 0,
+    };
+    // When the diff is taller than the pane, the bottom row becomes a
+    // position indicator instead of silently hiding the rest.
+    let show_position = len > visible;
+    let rows = if show_position {
+        visible.saturating_sub(1)
+    } else {
+        visible
+    };
     let mut lines = Vec::new();
-    for (index, line) in diff_lines.iter().take(MAX_DIFF_LINES).enumerate() {
+    let content_rows = len.saturating_sub(start).min(rows);
+    for (index, line) in diff_lines.iter().enumerate().skip(start).take(content_rows) {
         let mut style = match line.chars().next() {
             Some('+') => Style::default().fg(p.green),
             Some('-') => Style::default().fg(p.red),
@@ -1459,6 +1481,12 @@ fn render_diff_pane_full(
             style,
         ));
         lines.push(Line::from(spans));
+    }
+    if show_position {
+        lines.push(Line::from(Span::styled(
+            format!(" lines {}-{} of {len} ", start + 1, start + content_rows),
+            Style::default().fg(p.muted),
+        )));
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(

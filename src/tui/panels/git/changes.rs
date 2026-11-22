@@ -8,6 +8,11 @@ use super::{
     parse_blame_authors, parse_diff_lines_with_meta, parse_diff_old_path, GitFileStatus, GitPanel,
 };
 
+/// Diff context lines, matching the webui default (`diffContext: 3`)
+/// and the server-side clamp (0..=200). Hunk applies resend it so the
+/// server regenerates the identical diff the cursor was rendered from.
+const DIFF_CONTEXT: usize = 3;
+
 impl GitPanel {
     pub fn refresh_diff(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
         let file = self
@@ -23,6 +28,9 @@ impl GitPanel {
             Some(GitFileStatus::Staged) => "staged",
             _ => "working",
         };
+        // Remember the scope the diff was rendered with: hunk applies
+        // resend it so the server regenerates the identical diff.
+        self.diff_scope = scope.to_string();
         let data = api.git_diff(&self.cwd, scope, file.as_deref())?;
         let (lines, meta) = parse_diff_lines_with_meta(&data);
         self.diff_lines = lines;
@@ -192,10 +200,11 @@ impl GitPanel {
 
     /// Apply the webui hunk action to the hunk under the cursor
     /// (`stageHunk` when the shown diff is working-tree scope,
-    /// `unstageHunk` reverse-cached when it is staged). Mirrors
-    /// `git_ui.js applyHunk` + `hunkPatch`: a single-chunk patch
-    /// rebuilt from the parsed diff lines, posted to
-    /// `/api/git-ui/apply-patch`, then the view and diff refresh.
+    /// `unstageHunk` reverse-cached when it is staged). Uses the webui
+    /// chunk selector ({file, chunk_index, scope, context}) instead of a
+    /// client-rebuilt patch: the server regenerates the diff with the
+    /// same args and rebuilds the exact chunk, preserving markers like
+    /// `\ No newline at end of file` that line-by-line rebuilds drop.
     pub fn apply_hunk_action(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
         let file = self.diff_title.trim().to_string();
         if file.is_empty() || file == "working tree" {
@@ -204,23 +213,10 @@ impl GitPanel {
             ));
         }
         let hunks = self.hunk_headers();
-        let Some(&start) = hunks.get(self.diff_hunk_selected.min(hunks.len().saturating_sub(1)))
-        else {
+        if hunks.is_empty() {
             return Err(WebApiError::Io("no hunk selected".to_string()));
-        };
-        let end = hunks
-            .get(self.diff_hunk_selected + 1)
-            .copied()
-            .unwrap_or(self.diff_lines.len());
-        let old_path = self.diff_old_path.clone().unwrap_or_else(|| file.clone());
-        let mut patch = String::new();
-        patch.push_str(&format!("diff --git a/{old_path} b/{file}\n"));
-        patch.push_str(&format!("--- a/{old_path}\n"));
-        patch.push_str(&format!("+++ b/{file}\n"));
-        for line in &self.diff_lines[start..end] {
-            patch.push_str(line);
-            patch.push('\n');
         }
+        let index = self.diff_hunk_selected.min(hunks.len() - 1);
         // Working-tree diff stages the hunk; a staged diff unstages it
         // (webui renders exactly one button per scope, never a toggle).
         let staged = self
@@ -228,7 +224,15 @@ impl GitPanel {
             .iter()
             .find(|entry| entry.path == file)
             .is_some_and(|entry| entry.status == GitFileStatus::Staged);
-        api.git_apply_patch(&self.cwd, &patch, staged, true)?;
+        api.git_apply_patch_chunk(
+            &self.cwd,
+            &file,
+            index,
+            &self.diff_scope,
+            DIFF_CONTEXT,
+            staged,
+            true,
+        )?;
         self.refresh_view(api)?;
         self.refresh_diff(api)
     }
@@ -503,6 +507,93 @@ mod coverage_tests {
         })];
         let err = panel.apply_hunk_action(&api).unwrap_err();
         assert!(matches!(err, WebApiError::Io(ref msg) if msg == "no hunk selected"));
+    }
+
+    #[test]
+    fn apply_hunk_action_sends_the_chunk_selector_body() {
+        // Hunk applies use the webui chunk selector so the server
+        // regenerates the patch (preserving `\ No newline at end of
+        // file`); the client must send file, chunk_index, scope, and
+        // context in the apply-patch body.
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header
+                        .trim()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut payload = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut payload).unwrap();
+                }
+                let full = format!("{request}{}", String::from_utf8_lossy(&payload));
+                let _ = tx.send(full);
+                let response = if request.starts_with("POST /api/git-ui/apply-patch") {
+                    "{\"ok\":true}".to_string()
+                } else if request.starts_with("GET /api/git-ui/status") {
+                    "{\"branch\":\"main\",\"files\":[]}".to_string()
+                } else {
+                    "{\"files\":[]}".to_string()
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+            }
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut panel = GitPanel::new("/repo");
+        panel.diff_title = "a.rs".into();
+        panel.diff_scope = "working".into();
+        panel.diff_lines = vec![
+            "@@ -1,2 +1,3 @@".into(),
+            " ctx".into(),
+            "@@ -9,2 +9,3 @@".into(),
+            " tail".into(),
+        ];
+        panel.diff_meta = vec![None, None, None, None];
+        panel.diff_hunk_selected = 1;
+        panel.files.push(crate::tui::panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Unstaged,
+        });
+        panel.apply_hunk_action(&api).unwrap();
+        let apply_request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(
+            apply_request.starts_with("POST /api/git-ui/apply-patch"),
+            "{apply_request}"
+        );
+        assert!(apply_request.contains("\"file\":\"a.rs\""));
+        assert!(apply_request.contains("\"chunk_index\":1"));
+        assert!(apply_request.contains("\"scope\":\"working\""));
+        assert!(apply_request.contains("\"context\":3"));
+        // Unstaged file: stage the hunk (cached, not reverse).
+        assert!(apply_request.contains("\"cached\":true"));
+        assert!(apply_request.contains("\"reverse\":false"));
+        assert!(
+            !apply_request.contains("\"patch\""),
+            "no rebuilt patch text"
+        );
     }
 }
 

@@ -35,6 +35,12 @@ pub(super) struct GitDiffLine {
     pub(super) content: String,
     old_line_number: Option<usize>,
     new_line_number: Option<usize>,
+    /// `\ No newline at end of file` follows the line it applies to.
+    /// Kept out of the wire format (the webui renders it inline in the
+    /// raw text), but chunk_patch needs it to rebuild an applicable
+    /// patch: without it, staging a no-EOL hunk fails or corrupts.
+    #[serde(skip_serializing)]
+    pub(super) no_newline: bool,
 }
 
 #[derive(Serialize)]
@@ -291,6 +297,14 @@ pub(super) fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
                     lines: Vec::new(),
                     rows: Vec::new(),
                 });
+            } else if line.starts_with("\\") {
+                // `\ No newline at end of file` follows the line it
+                // applies to (old or new side), so mark that last line.
+                if let Some(chunk) = current.as_mut() {
+                    if let Some(last) = chunk.lines.last_mut() {
+                        last.no_newline = true;
+                    }
+                }
             } else if let Some(chunk) = current.as_mut() {
                 let Some(prefix) = line.chars().next() else {
                     continue;
@@ -308,6 +322,7 @@ pub(super) fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
                     content: line[1..].to_string(),
                     old_line_number: (line_type != "add").then_some(old_line),
                     new_line_number: (line_type != "delete").then_some(new_line),
+                    no_newline: false,
                 });
                 if line_type != "add" {
                     old_line += 1;

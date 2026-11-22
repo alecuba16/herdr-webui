@@ -5231,6 +5231,61 @@ fn git_lists_paint_the_selected_row_inverted_in_both_themes() {
 }
 
 #[test]
+fn git_diff_pane_follows_the_hunk_cursor_and_shows_the_position() {
+    // A diff taller than the pane used to render only the top slice:
+    // the highlighted hunk header (and search hits) below the fold
+    // stayed invisible. The pane now centers the window on the active
+    // anchor and prints a position row when content is hidden.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.files = vec![GitFileEntry {
+        path: "zz_scroll_file.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    // One line per hunk header ordinal: 60 @@ headers with body lines,
+    // far taller than any pane at 140x30.
+    let mut diff_lines = Vec::new();
+    let mut diff_meta = Vec::new();
+    for i in 0..60 {
+        diff_lines.push(format!("@@ -{i},1 +{i},1 @@"));
+        diff_meta.push(None);
+        diff_lines.push(format!(" body-{i}"));
+        diff_meta.push(Some(crate::tui::panels::GitDiffLineMeta::default()));
+    }
+    app.git_panel.diff_lines = diff_lines;
+    app.git_panel.diff_meta = diff_meta;
+    app.git_panel.diff_hunk_selected = 50;
+
+    let buffer = draw_buffer(&app, 140, 30);
+    // The selected hunk header must be on screen.
+    let hunk_row = rendered_row(&buffer, "@@ -50");
+    assert!(hunk_row.y > 0, "hunk anchor rendered inside the pane");
+    // Top-of-diff lines scrolled out.
+    let mut saw_top = false;
+    for y in 0..buffer.area.height as usize {
+        let line: String = (0..buffer.area.width as usize)
+            .map(|x| {
+                buffer[(x as u16, y as u16)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+            })
+            .collect();
+        if line.contains("@@ -0,1") {
+            saw_top = true;
+        }
+    }
+    assert!(!saw_top, "top of the diff scrolled out of view");
+    // The position row is present and honest.
+    let pos_row = rendered_row(&buffer, "of 120");
+    assert!(
+        pos_row.y > hunk_row.y,
+        "position row sits under the content"
+    );
+}
+
+#[test]
 fn renders_missed_git_diff_log_stash_and_prompt_branches() {
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Git;
