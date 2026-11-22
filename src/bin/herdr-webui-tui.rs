@@ -116,11 +116,11 @@ fn run_interactive(
                 Event::Resize(width, height) => {
                     app.set_terminal_size(width, height);
                     if let Some(live) = live_terminal.as_mut() {
-                        let (cols, rows) = herdr_webui::tui::render::pane_viewport_size(
-                            width,
-                            height,
-                            app.sidebar_collapsed,
-                        );
+                        // attach_viewport follows the split: the live
+                        // pty resizes to the focused tile's inner rect
+                        // when one is on screen, not the full-window
+                        // single-pane viewport.
+                        let (cols, rows) = app.attach_viewport();
                         if live.needs_resize(cols, rows) {
                             live.resize(cols, rows);
                         }
@@ -265,6 +265,10 @@ fn dispatch_key(
     cols: u16,
     rows: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Fresh size every event: attach_viewport reads it, and the
+    // terminal-size fallback (0, 0) would size the pty at the legacy
+    // 120x32 instead of the real viewport.
+    app.set_terminal_size(cols, rows);
     let in_terminal_attach = app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal;
     // The Ctrl+B prefix always wins, including terminal attach
     // mode, so shortcuts stay available while typing.
@@ -278,7 +282,7 @@ fn dispatch_key(
         let Some(bytes) = key_to_terminal_bytes(key) else {
             return Ok(());
         };
-        ensure_live_terminal(live_terminal, app, cols, rows)?;
+        ensure_live_terminal(live_terminal, app)?;
         if let Some(live) = live_terminal.as_ref() {
             live.send_input(bytes);
             app.set_status_notice("sent input".to_string());
@@ -288,7 +292,7 @@ fn dispatch_key(
     }
     app.handle_key(key);
     if app.mode == TuiMode::Attach && app.screen == TuiScreen::Terminal {
-        ensure_live_terminal(live_terminal, app, cols, rows)?;
+        ensure_live_terminal(live_terminal, app)?;
     }
     Ok(())
 }
@@ -296,19 +300,25 @@ fn dispatch_key(
 fn ensure_live_terminal(
     live_terminal: &mut Option<LiveTerminal>,
     app: &TuiApp,
-    cols: u16,
-    rows: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(terminal_id) = app.selected_terminal_id().map(str::to_string) else {
+    // The tile view owns focus while a split is on screen: Enter
+    // attaches the focused tile (view_pane), so typed input must land
+    // there too. `selected_terminal_id` follows the sidebar cursor,
+    // which sits on another pane the moment the walk moves the tile
+    // focus: input then ran in the sidebar pane while its echo painted
+    // the focused tile, and the sidebar pane kept a full-window pty
+    // after detach that reflowed its preview.
+    let Some(terminal_id) = app.view_terminal_id().map(str::to_string) else {
         return Ok(());
     };
-    // The pty must be sized to the pane viewport, never the full
-    // TUI window: the tail renders inside the pane (minus footer, tab
-    // bar, borders, header lines), and a wider pty wraps lines the
-    // pane cannot show (duplicated continuation rows, prompt pushed
-    // out of view).
-    let (viewport_cols, viewport_rows) =
-        herdr_webui::tui::render::pane_viewport_size(cols, rows, app.sidebar_collapsed);
+    // The pty must be sized to the viewport the tail renders into,
+    // never the full TUI window: the focused tile's inner rect when a
+    // split is active, else the single-pane viewport (window minus
+    // sidebar, footer, tab bar, borders, header lines). A wider pty
+    // wraps lines the view cannot show (duplicated continuation rows,
+    // prompt pushed out of view). attach_viewport reads the screen
+    // size the dispatch loop records on every event.
+    let (viewport_cols, viewport_rows) = app.attach_viewport();
     if let Some(live) = live_terminal.as_mut() {
         if live.terminal_id == terminal_id {
             // Same pane: keep the recorded geometry in sync with the

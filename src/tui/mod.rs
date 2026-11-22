@@ -8021,6 +8021,55 @@ mod batch12_coverage_tests {
     }
 
     #[test]
+    fn view_terminal_id_follows_tile_focus_not_the_sidebar_cursor() {
+        // Regression (command ran in "the same view" despite the split):
+        // the binary's live attach binds view_terminal_id, and that must
+        // follow the focused tile, never the sidebar cursor. The old bin
+        // path bound selected_terminal_id: with the sidebar on pane_1
+        // and tile focus on pane_2, typed input ran in pane_1 while its
+        // echo painted the focused tile, so every command looked like
+        // it ran in "the same view".
+        let mut app = two_pane_split_app();
+        // Give pane_2 a real pane row so the split focus resolves.
+        app.snapshot.panes.push(crate::tui::model::TuiPane {
+            id: "pane_2".to_string(),
+            terminal_id: "term_2".to_string(),
+            workspace_id: "ws_1".to_string(),
+            tab_id: "tab_2".to_string(),
+            agent: Some("claude".to_string()),
+            display_agent: Some("claude".to_string()),
+            agent_status: "idle".to_string(),
+            cwd: "/repo".to_string(),
+            label: None,
+            terminal_title: None,
+            focused: false,
+            agent_session: None,
+        });
+        // Sidebar cursor on pane_1's agent row, tile focus on pane_2.
+        app.selected_agent = 0;
+        app.split_focus = Some("pane_2".to_string());
+        assert_eq!(app.view_terminal_id(), Some("term_2"));
+        assert_eq!(
+            app.selected_terminal_id(),
+            Some("term_1"),
+            "the sidebar cursor keeps its own pane"
+        );
+        // Attach geometry follows the same focus: the focused tile's
+        // rect, here recorded narrower than the window.
+        app.set_terminal_size(100, 30);
+        app.tile_geometry
+            .borrow_mut()
+            .push(crate::tui::render::TileRectOwned {
+                pane_id: "pane_2".to_string(),
+                x: 50,
+                y: 0,
+                width: 50,
+                height: 30,
+            });
+        assert_eq!(app.attach_viewport(), (48, 25));
+    }
+
+    #[test]
     fn attach_viewport_uses_the_focused_tile_geometry() {
         let mut app = two_pane_split_app();
         // Split active but no geometry yet: the fallback keeps the
