@@ -123,6 +123,38 @@ fn render_sidebar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
     render_agent_list(frame, agents, app, p);
 }
 
+/// Shared list rendering for every ListState-driven panel: selection
+/// guard, row-inverted highlight (webui `.selected` parity), and the
+/// panel block. Sidebar lists use "▸ ", git panels use "> ".
+fn render_list_panel<'a, I>(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    items: I,
+    selected: usize,
+    title: impl Into<Block<'a>>,
+    highlight_symbol: &'a str,
+    p: &Palette,
+) where
+    I: IntoIterator<Item = ListItem<'a>>,
+{
+    let mut state = ListState::default();
+    let items: Vec<ListItem<'a>> = items.into_iter().collect();
+    if !items.is_empty() {
+        state.select(Some(selected));
+    }
+    let list = List::new(items)
+        .block(title.into())
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(highlight_symbol);
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
 fn render_workspace_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let items = app
         .snapshot
@@ -144,30 +176,12 @@ fn render_workspace_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pa
             ])])
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(app.selected_workspace));
-    }
     let title = if app.sidebar_focus == SidebarFocus::Workspaces {
         " Workspaces* "
     } else {
         " Workspaces "
     };
-    let list = List::new(items)
-        .block(panel(title, p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Selected row highlight (ux fix: the bare "▸" symbol + accent
-        // foreground was easy to miss on dim terminals): the whole row
-        // gets the accent background like the webui `.selected` class,
-        // the same inversion the active tab already uses.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, area, &mut state);
+    render_list_panel(frame, area, items, app.selected_workspace, panel(title, p), "▸ ", p);
 }
 
 fn render_agent_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -194,29 +208,12 @@ fn render_agent_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palett
             ]))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(app.selected_agent));
-    }
     let title = if app.sidebar_focus == SidebarFocus::Agents {
         " Agents* "
     } else {
         " Agents "
     };
-    let list = List::new(items)
-        .block(panel(title, p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Same full-row highlight as the workspace list (ux fix): the
-        // selected agent row inverts instead of only recoloring its
-        // symbol, so the cursor row is visible at a glance.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, area, &mut state);
+    render_list_panel(frame, area, items, app.selected_agent, panel(title, p), "▸ ", p);
 }
 
 fn render_main(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -432,8 +429,7 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
 fn render_lens(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let width = area.width.min(88);
     let height = area.height.saturating_sub(4);
-    let rect = overlay_rect(area, width, height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, width, height, p);
     let pane_label = app
         .view_pane()
         .map(|pane| {
@@ -1212,29 +1208,21 @@ fn render_git_history(
             ]))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(panel.commit_selected));
-    }
     let file = panel.history_file.as_deref().unwrap_or("");
     let title = if file.is_empty() {
         " History ".to_string()
     } else {
         format!(" History · {} ", truncate(file, 40))
     };
-    let list = List::new(items)
-        .block(panel_block(&title, p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Row-inverted selection (same fix as the sidebar lists): the
-        // foreground-only accent was easy to miss on light terminals.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, list_area, &mut state);
+    render_list_panel(
+        frame,
+        list_area,
+        items,
+        panel.commit_selected,
+        panel_block(&title, p),
+        "> ",
+        p,
+    );
 
     let diff_title = format!(" Diff · {} ", truncate(&panel.diff_title, 40));
     render_diff_pane(
@@ -1339,25 +1327,16 @@ fn render_git_changes(
             ]))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(panel.file_selected));
-    }
     let title = format!(" Changes · {} files ", panel.files.len());
-    let list = List::new(items)
-        .block(panel_block(&title, p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Row-inverted selection (same fix as the sidebar lists): a
-        // foreground-only accent is easy to miss on light terminals,
-        // the selected row inverts like the webui `.selected` class.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, list_area, &mut state);
+    render_list_panel(
+        frame,
+        list_area,
+        items,
+        panel.file_selected,
+        panel_block(&title, p),
+        "> ",
+        p,
+    );
 
     let diff_title = if panel.diff_search_active {
         format!(
@@ -1573,10 +1552,6 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
             ]))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(panel.commit_selected));
-    }
     // Title mirrors the webui log toolbar: scope, the HEAD vs base
     // comparison chip, load-more hint and the file filter when the log
     // is file-scoped.
@@ -1597,19 +1572,15 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
         }
         _ => format!(" Log · {scope}{comparison}{more} "),
     };
-    let list = List::new(items)
-        .block(panel_block(&title, p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Row-inverted selection (same fix as the sidebar lists): the
-        // foreground-only accent was easy to miss on light terminals.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, list_area, &mut state);
+    render_list_panel(
+        frame,
+        list_area,
+        items,
+        panel.commit_selected,
+        panel_block(&title, p),
+        "> ",
+        p,
+    );
 
     let diff_title = format!(" Compare · {} ", truncate(&panel.diff_title, 40));
     render_diff_pane(
@@ -1654,26 +1625,18 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             ]))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(panel.branch_selected));
-    }
-    let list = List::new(items)
-        .block(panel_block(
+    render_list_panel(
+        frame,
+        area,
+        items,
+        panel.branch_selected,
+        panel_block(
             " Branches · Enter switches · Ctrl+B v switches selected ",
             p,
-        ))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Row-inverted selection (same fix as the sidebar lists): the
-        // foreground-only accent was easy to miss on light terminals.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, area, &mut state);
+        ),
+        "> ",
+        p,
+    );
 }
 
 fn render_git_stash(
@@ -1697,23 +1660,15 @@ fn render_git_stash(
             ]))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(panel.stash_selected));
-    }
-    let list = List::new(items)
-        .block(panel_block(" Stash · Enter diff · a apply · x drop ", p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Row-inverted selection (same fix as the sidebar lists): the
-        // foreground-only accent was easy to miss on light terminals.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, list_area, &mut state);
+    render_list_panel(
+        frame,
+        list_area,
+        items,
+        panel.stash_selected,
+        panel_block(" Stash · Enter diff · a apply · x drop ", p),
+        "> ",
+        p,
+    );
 
     let title = if panel.stash_diff_title.is_empty() {
         " Stash diff ".to_string()
@@ -1769,23 +1724,15 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
             )))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(panel.conflict_selected));
-    }
-    let list = List::new(items)
-        .block(panel_block(" Conflicts ", p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Row-inverted selection (same fix as the sidebar lists): the
-        // foreground-only accent was easy to miss on light terminals.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, list_area, &mut state);
+    render_list_panel(
+        frame,
+        list_area,
+        items,
+        panel.conflict_selected,
+        panel_block(" Conflicts ", p),
+        "> ",
+        p,
+    );
 }
 
 /// Cleanup view (webui cleanup tab): repos with merged branches and
@@ -1825,10 +1772,6 @@ fn render_git_cleanup(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
             ]))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(panel.cleanup_selected));
-    }
     let root = panel.cleanup_root.as_deref().unwrap_or("");
     let title = if root.is_empty() {
         " Cleanup · Space mark · x delete · B prune ".to_string()
@@ -1838,19 +1781,15 @@ fn render_git_cleanup(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
             truncate(root, 32)
         )
     };
-    let list = List::new(items)
-        .block(panel_block(&title, p))
-        .style(Style::default().fg(p.text).bg(p.panel_bg))
-        // Row-inverted selection (same fix as the sidebar lists): the
-        // foreground-only accent was easy to miss on light terminals.
-        .highlight_style(
-            Style::default()
-                .fg(p.panel_bg)
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, area, &mut state);
+    render_list_panel(
+        frame,
+        area,
+        items,
+        panel.cleanup_selected,
+        panel_block(&title, p),
+        "> ",
+        p,
+    );
 }
 
 /// Render the active prompt modal. Only called while `app.prompt_input`
@@ -2026,8 +1965,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     let hint_rows = wrap_plain(prompt.kind.hint(), inner_width.max(1));
     // subject + hint + borders; the box centers per row count.
     let height = (visible_input + hint_rows.len() as u16 + 5).min(area.height);
-    let rect = overlay_rect(area, box_width, height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, box_width, height, p);
     let mut lines = vec![Line::from(Span::styled(
         truncate(&subject, (rect.width.saturating_sub(4)) as usize),
         Style::default().fg(p.muted),
@@ -2209,8 +2147,7 @@ fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     let input_lines = wrap_input_with_cursor(&commit.text, inner_width.max(1));
     let visible_input = (input_lines.len() as u16).min(8);
     let height = (visible_input + 5).min(area.height);
-    let rect = overlay_rect(area, box_width, height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, box_width, height, p);
     let title = if commit.amend {
         " Amend commit message "
     } else {
@@ -2613,13 +2550,27 @@ fn overlay_rect(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
+/// Centers an overlay of `width` x `height` inside `area`, clamped to
+/// the available size, and paints its shadow. Every overlay window uses
+/// this so they all sit on the same spot and drop the same shadow.
+fn centered_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    width: u16,
+    height: u16,
+    p: &Palette,
+) -> Rect {
+    let rect = overlay_rect(area, width, height);
+    render_shadow(frame, rect, p);
+    rect
+}
+
 fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scroll: usize) {
     let rows = crate::tui::keys::filtered_help_rows(filter);
     // One extra line for the filter query while it is active.
     let filter_height = if filter.is_empty() { 0 } else { 1 };
     let height = (rows.len() as u16 + 4 + filter_height).min(50);
-    let rect = overlay_rect(area, area.width.min(72), height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, area.width.min(72), height, p);
     let mut lines = vec![Line::from(Span::styled(
         "Herdr WebUI TUI",
         Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
@@ -2674,8 +2625,7 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
     let rows = app.filtered_browser_rows();
     let filter_height = if app.worktree_filter.is_empty() { 0 } else { 1 };
     let height = ((rows.len() as u16 + 5 + filter_height).min(24)).max(7 + filter_height);
-    let rect = overlay_rect(area, area.width.min(80), height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, area.width.min(80), height, p);
     let mut lines = vec![Line::from(vec![
         Span::styled(
             " Open workspace or worktree ",
@@ -2799,8 +2749,7 @@ fn render_branch_picker(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
         1
     };
     let height = ((rows.len() as u16 + 5 + filter_height).min(24)).max(7 + filter_height);
-    let rect = overlay_rect(area, area.width.min(72), height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, area.width.min(72), height, p);
     let mut lines = vec![Line::from(vec![
         Span::styled(
             " Switch branch ",
@@ -2879,8 +2828,7 @@ fn render_search_palette(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pa
     let rows = palette.results.len();
     // border + title + query line + rows (+1 slack), capped at 20.
     let height = ((rows as u16) + 5).clamp(5, 20);
-    let rect = overlay_rect(area, area.width.min(72), height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, area.width.min(72), height, p);
     let mut lines = vec![Line::from(vec![
         Span::styled(
             " Search ",
@@ -2986,8 +2934,7 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
         0
     };
     let height = ((rows.len() as u16 + 5 + error_height).min(20)).max(7 + error_height);
-    let rect = overlay_rect(area, area.width.min(76), height);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, area.width.min(76), height, p);
     let mut lines = vec![Line::from(vec![
         Span::styled(
             " Sessions ",
@@ -3069,8 +3016,7 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
 /// informational (webui stores the rest in browser storage, which has
 /// no TUI equivalent yet).
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let rect = overlay_rect(area, area.width.min(64), 14);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, area.width.min(64), 14, p);
     let git_cwd = app.git_panel.cwd.clone();
     let files_cwd = app.file_explorer.cwd.clone();
     // Values wrap instead of clipping at the box edge (a long base
@@ -3156,8 +3102,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
 /// the destructive typed-`y` prompts, this one stays light: y/Enter
 /// quits, n/Esc (or any other key) stays, Ctrl+C also quits.
 fn render_confirm_quit(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
-    let rect = overlay_rect(area, area.width.min(48), 7);
-    render_shadow(frame, rect, p);
+    let rect = centered_overlay(frame, area, area.width.min(48), 7, p);
     let highlight = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(Span::styled(
