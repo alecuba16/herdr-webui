@@ -92,17 +92,17 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "helper restores under the caller's env_lock guard; std sync Mutex is not reentrant so locking here would deadlock",
     ),
     (
-        "src/builtin_backend.rs",
+        "src/builtin_backend/tests.rs",
         "builtin_pane_child_env_advertises_kitty_hint_and_scrubs_inherited_kitty_id",
         "pane spawn force-inserts TERM_PROGRAM=ghostty and scrubs KITTY_WINDOW_ID before the child env is built, so a leaked value cannot mislead anything (PR #240 worst-case export run: bin suite 602/0)",
     ),
     (
-        "src/builtin_backend.rs",
+        "src/builtin_backend/tests.rs",
         "builtin_panes_advertise_kitty_env_and_scrub_inherited_hints",
         "same spawn-site scrub covers the child PTY; validated with worst-case inherited values in the PR #240 audit",
     ),
     (
-        "src/builtin_backend.rs",
+        "src/builtin_backend/tests.rs",
         "drop",
         "RestoreEnvVar::drop restores JCODE_HOME/JCODE_NO_* while its creator (live_jcode_tui_detection_end_to_end) still holds crate::tests::lock_env(); the test drops the guards before releasing _guard, so the write is serialized under the shared lock",
     ),
