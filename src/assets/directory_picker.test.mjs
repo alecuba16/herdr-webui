@@ -16,6 +16,10 @@ const TREE_PATH = fileURLToPath(new URL("./shared/file_tree.js", import.meta.url
 const treeScript = new vm.Script(readFileSync(TREE_PATH, "utf8"), { filename: TREE_PATH });
 const CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
 const coreScript = new vm.Script(readFileSync(CORE_PATH, "utf8"), { filename: CORE_PATH });
+// api()/postJson() route through the shared HerdrHttp client now; the
+// harness loads the real shared/http.js (it forwards to the stubbed fetch).
+const HTTP_PATH = fileURLToPath(new URL("./shared/http.js", import.meta.url));
+const httpScript = new vm.Script(readFileSync(HTTP_PATH, "utf8"), { filename: HTTP_PATH });
 const PICKER_PATH = fileURLToPath(new URL("./desktop/directory_picker.js", import.meta.url));
 let pickerScript = null;
 
@@ -120,6 +124,7 @@ function loadPicker({ fetchImpl, defaultFolder, explorationDefault } = {}) {
   }
   coreScript.runInContext(ctx);
   treeScript.runInContext(ctx);
+  httpScript.runInContext(ctx);
   pickerScriptForRun().runInContext(ctx);
   return harness;
 }

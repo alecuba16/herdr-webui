@@ -20,6 +20,10 @@ const OPEN_FOLDER_FLOW_PATH = fileURLToPath(new URL("./desktop/app_js/open_folde
 const openFolderFlowScript = new vm.Script(readFileSync(OPEN_FOLDER_FLOW_PATH, "utf8"), {
   filename: OPEN_FOLDER_FLOW_PATH,
 });
+// api() routes through the shared HerdrHttp client now; the harness loads
+// the real shared/http.js (it forwards to the stubbed fetch below).
+const HTTP_PATH = fileURLToPath(new URL("./shared/http.js", import.meta.url));
+const httpScript = new vm.Script(readFileSync(HTTP_PATH, "utf8"), { filename: HTTP_PATH });
 
 function loadFlow(overrides = {}) {
   const calls = { api: [], go: [], blocking: [] };
@@ -58,6 +62,7 @@ function loadFlow(overrides = {}) {
   ctx.window = ctx;
   if (overrides.workspacePath) ctx.HerdrWorkspacePath = overrides.workspacePath;
   const contextObject = vm.createContext(ctx);
+  httpScript.runInContext(contextObject);
   openFolderFlowScript.runInContext(contextObject);
   return { ctx, calls };
 }

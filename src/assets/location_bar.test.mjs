@@ -29,6 +29,11 @@ const locationBarScript = new vm.Script(readFileSync(LOCATION_BAR_PATH, "utf8"),
 });
 let drawerShortcutsScript = null;
 let drawerCoreScript = null;
+// api() routes through the shared HerdrHttp client now; the harness loads
+// the real shared/http.js before the module (it forwards to the stubbed
+// fetch each context provides).
+const HTTP_PATH = fileURLToPath(new URL("./shared/http.js", import.meta.url));
+const httpScript = new vm.Script(readFileSync(HTTP_PATH, "utf8"), { filename: HTTP_PATH });
 
 function stubNode(id) {
   return {
@@ -60,6 +65,7 @@ function loadBar(overrides = {}) {
   if (overrides.gitUi) ctx.HerdrGitUi = overrides.gitUi;
   if (overrides.loadCss) ctx.HerdrLoadCss = overrides.loadCss;
   const contextObject = vm.createContext(ctx);
+  httpScript.runInContext(contextObject);
   locationBarScript.runInContext(contextObject);
   return { ctx, bar };
 }
@@ -353,6 +359,7 @@ describe("location bar branch popover", () => {
     ctx.HerdrWorkspacePath = (workspace) => workspace.cwd;
     ctx.HerdrOptions = { read: () => ({ gitUiRemoteBranchPreload: 10 }) };
     const contextObject = vm.createContext(ctx);
+    httpScript.runInContext(contextObject);
     locationBarScript.runInContext(contextObject);
     return { ctx, bar, calls };
   }
@@ -1000,6 +1007,7 @@ describe("location bar worktree popover", () => {
       openFolderAsWorkspace: openFolder || (async () => {}),
     };
     const contextObject = vm.createContext(ctx);
+    httpScript.runInContext(contextObject);
     locationBarScript.runInContext(contextObject);
     return { ctx, bar, calls };
   }
@@ -1742,6 +1750,7 @@ describe("location bar discovery popover", () => {
       buildWorktreeCreateBody: ctx.HerdrAppHelpers.buildWorktreeCreateBody,
     });
     vm.runInContext(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), contextObject);
+    httpScript.runInContext(contextObject);
     locationBarScript.runInContext(contextObject);
     return { ctx, bar, calls, listeners };
   }
@@ -2016,10 +2025,9 @@ describe("location bar discovery popover", () => {
     const { ctx, bar, calls } = loadDiscovery({
       routes: {
         "/api/worktrees": { result: { worktrees: [] } },
-        "/api/git-ui/branches": () => {
-          const err = new Error("fatal: not a git repository (or any of the parent directories): .git");
-          return Promise.reject(err);
-        },
+        "/api/git-ui/branches": () =>
+          // Real server shape: a JSON error body, not a transport failure.
+          Promise.resolve({ error: "fatal: not a git repository (or any of the parent directories): .git" }),
       },
     });
     const flowCalls = [];
@@ -2896,6 +2904,7 @@ describe("location bar pane unsplit wiring", () => {
       paneTabUnsplitDrop: (event) => { calls.drop += 1; return dropResult; },
     };
     const contextObject = vm.createContext(ctx);
+    httpScript.runInContext(contextObject);
     locationBarScript.runInContext(contextObject);
     return { ctx, bar, barListeners, calls };
   }

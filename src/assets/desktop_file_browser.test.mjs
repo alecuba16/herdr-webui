@@ -22,6 +22,12 @@ const coreScript = new vm.Script(
   readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"),
   { filename: fileURLToPath(new URL("./shared/core.js", import.meta.url)) },
 );
+// api() routes through the shared HerdrHttp client now; the harness
+// loads the real shared/http.js (it forwards to the stubbed fetch).
+const httpScript = new vm.Script(
+  readFileSync(new URL("./shared/http.js", import.meta.url), "utf8"),
+  { filename: fileURLToPath(new URL("./shared/http.js", import.meta.url)) },
+);
 
 function makeNode(id = "") {
   const node = {
@@ -123,6 +129,7 @@ function loadFileBrowser() {
   };
   context.window = context;
   context.globalThis = context;
+  httpScript.runInNewContext(context);
   fileBrowserScript.runInNewContext(context);
   return { context, nodes, remembered, getSearchClosed: () => searchClosed };
 }
@@ -369,6 +376,7 @@ function makeFilterDomContext() {
   // to be in the context before the module source runs. Reload the
   // module with the real tree in place, keeping the same harness nodes.
   iconScript.runInNewContext(context);
+  httpScript.runInNewContext(context);
   coreScript.runInNewContext(context);
   treeScript.runInNewContext(context);
   fileBrowserScript.runInNewContext(context);
