@@ -132,7 +132,7 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "takes tests::lock_env (the file's wrapper over crate::test_env_lock) before the first set_var; the guard's resolver cannot prove a lock fn imported cross-module via `use super::tests::lock_env`, a resolver blind spot not a race",
     ),
     (
-        "src/tui/tests/mod.rs",
+        "src/tui/tests/common.rs",
         "drop",
         "SettingsEnvGuard::drop restores XDG_CONFIG_HOME while the guard still holds crate::test_env_lock() as its _lock field (fields drop after the Drop body), so the write stays serialized under the shared lock",
     ),
