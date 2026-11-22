@@ -16,6 +16,7 @@ use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen, TuiWorkspace};
 use crate::HERDR_WEBUI_VERSION;
 
 mod split_tiles;
+pub(crate) use split_tiles::pane_display_name;
 pub(crate) use split_tiles::split_active;
 pub(crate) use split_tiles::TileRectOwned;
 
@@ -2985,9 +2986,14 @@ fn panel<'a>(title: &'a str, p: &Palette) -> Block<'a> {
 }
 
 fn status_dot(status: &str, p: &Palette) -> (&'static str, Style) {
+    // Every state carries a distinct glyph shape (design doc:
+    // "Glyph shape differs too, so status never rides on color
+    // alone"), so color-blind users and low-contrast themes can
+    // still tell blocked/working/done apart in tile titles and the
+    // AGENTS summary bar.
     match status {
-        "blocked" => ("●", Style::default().fg(p.red)),
-        "working" => ("●", Style::default().fg(p.yellow)),
+        "blocked" => ("✕", Style::default().fg(p.red)),
+        "working" => ("◐", Style::default().fg(p.yellow)),
         "idle" => ("○", Style::default().fg(p.green)),
         "done" => ("●", Style::default().fg(p.teal)),
         _ => ("·", Style::default().fg(p.muted)),

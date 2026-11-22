@@ -106,6 +106,9 @@ impl TuiApp {
     /// `split_focus` onto the next panel's pane, so the chord stays
     /// visible (it used to move only the hidden sidebar cursor).
     pub fn move_panel(&mut self, delta: isize) -> WorkspaceResult {
+        // Set when a homeless pane takes over the focused tile: the
+        // closing status names the replacement (ux review finding).
+        let mut replaced_tile: Option<String> = None;
         // Mixed-workspace splits: the walk owns the focused tile's
         // workspace (webui selectRelativePanel walks state.ws's tabs
         // while the routed panel anchors the index). Reading the
@@ -245,6 +248,7 @@ impl TuiApp {
                     self.split_tree =
                         crate::tui::split::replace_leaf(&self.split_tree, &old, &pane.id);
                     self.split_focus = Some(pane.id.clone());
+                    replaced_tile = Some(pane.id.clone());
                 }
             }
         }
@@ -252,6 +256,17 @@ impl TuiApp {
         // loads the new panel's tail and resets scroll/buffers on the
         // pane switch.
         self.refresh_tail();
+        // A homeless pane took over the focused tile: say so, the
+        // replacement is otherwise invisible (the tile just changes
+        // content with a bare "panel n/len").
+        if let Some(pane_id) = replaced_tile {
+            let label = crate::tui::render::pane_display_name(self, &pane_id);
+            return Ok(format!(
+                "panel {}/{} · tile now shows {label}",
+                next + 1,
+                len
+            ));
+        }
         Ok(format!("panel {}/{}", next + 1, len))
     }
 

@@ -16,7 +16,7 @@ works on every screen, including while attached.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | move the workspace/agent selection (split active: walk tile focus; `Ctrl+hjkl` scrolls the focused pane) |
+| `j` / `k`, arrows | move the workspace/agent selection (split active, main region focused: walk tile focus; `Ctrl+j/k` scrolls the focused pane) |
 | `Tab` / `BackTab` | switch workspace/agent list focus |
 | `w` | focus workspaces |
 | `a` | focus agents |
@@ -123,7 +123,7 @@ answered from the webui's chat lens card. The server-side parser
 | `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
 | `Shift+Z` | terminal: resize mode (`h`/`l` narrow/widen, `j`/`k` shorten/lengthen, `Enter`/`Esc` close) |
 | `z` | git: stash the selected file · terminal: zoom the focused tile (resize mode closes it first) |
-| `hjkl` / arrows | terminal (split active): walk tile focus, single tile keeps pane scroll · `Ctrl+hjkl` scrolls the focused pane |
+| `hjkl` / arrows | terminal (split active, main region focused): walk tile focus, single tile keeps pane scroll · `Ctrl+j/k` scrolls the focused pane up/down |
 | `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |
 | `I` | git cwd: type a repo path |

@@ -48,8 +48,10 @@ enum SplitDir { Row, Col }
   wraps the leaf in a new 50/50 split.
 - Pull rule: removing a leaf collapses a single-child split to the
   survivor.
-- Resize: not in v1; sizes stay equal ratios. The mock's `split_area`
-  helper shows how ratios map to `Constraint::Ratio`.
+- Resize (Ctrl+B Shift+Z): h/l narrow/widen the focused tile, j/k
+  shorten/lengthen it. Weights live on the tree like the webui's
+  flex sizes, clamped at a readable floor (a side never shrinks
+  below a quarter share of its axis).
 
 ## Interaction (approved)
 

@@ -8040,12 +8040,24 @@ fn footer_names_walk_and_scroll_keys_when_split_active() {
     assert_eq!(app.split_tree.leaves().len(), 2);
     let split = app.footer_context().hint();
     assert!(
-        split.contains("hjkl walk"),
+        split.contains("hjkl walk") && !split.contains("ZOOM"),
         "split hint names the walk keys"
     );
     assert!(
         split.contains("Ctrl+j/k scroll"),
         "split hint names the scroll escape"
+    );
+
+    // Zoom flips the footer to the zoom copy: the walk is disabled
+    // while one tile owns the screen, so the hint must not claim it
+    // (mode hints live in the render path, not the static context).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("ZOOM"), "zoom names itself");
+    assert!(
+        !drawn.contains("hjkl walk"),
+        "zoom hint must not advertise the disabled walk"
     );
 }
 
@@ -10504,9 +10516,18 @@ fn move_mode_swaps_and_inserts_tiles() {
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert!(app.move_mode.as_ref().unwrap().insert);
 
-    // Tab back to swap; Enter with picked == target is a no-op cancel.
+    // Tab back to swap; Enter with picked == target is refused with a
+    // reason and the mode stays open (finding: keep modes open so the
+    // user can pick a real target instead of a silent cancel).
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.move_mode.is_some());
+    assert_eq!(
+        app.status,
+        "target is the picked tile: hjkl moves the target"
+    );
+    // Esc still cancels the refused mode.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(app.move_mode.is_none());
 
     // Reopen and swap pane_1 with pane_2 via a walk: with only two
@@ -10565,8 +10586,9 @@ fn sync_split_tree_prunes_dead_panes_and_reseeds() {
     };
     app.split_focus = Some("gone_pane".to_string());
     app.sync_split_tree();
-    // Dead leaf pruned, single-child split collapsed, focus falls back
-    // to the surviving leaf.
+    // Dead leaf pruned, single-child split collapsed, focus falls
+    // to the surviving leaf (nearest-leaf fallback: no recorded
+    // geometry in a unit test, so the first alive leaf wins).
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
     assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
 
@@ -10898,7 +10920,12 @@ fn split_and_move_modes_never_coexist() {
     app.split_focus = Some("pane_1".to_string());
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
-    assert!(app.split_mode.is_none(), "no candidate: both panes on tree");
+    assert!(
+        app.split_mode
+            .as_ref()
+            .is_some_and(|m| m.pane == crate::tui::split::FRESH_SHELL),
+        "both panes on tree: the fresh shell sentinel is the candidate"
+    );
 
     // Give the tree a third pane to open and re-open both modes.
     app.snapshot.panes.push(crate::tui::model::TuiPane {
@@ -10999,7 +11026,7 @@ fn move_insert_commit_status_names_the_new_focus() {
     });
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
-    assert_eq!(app.status, "moved pane_1 · focus pane_1");
+    assert_eq!(app.status, "moved jcode · focus jcode");
 }
 
 #[test]
@@ -11288,7 +11315,7 @@ fn resize_mode_narrows_with_h_and_reports_clamps() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
-        vec![1, 15],
+        vec![2, 15],
     );
     app.split_focus = Some("pane_1".to_string());
     app.handle_key(ctrl('b'));
@@ -11300,7 +11327,7 @@ fn resize_mode_narrows_with_h_and_reports_clamps() {
     let crate::tui::split::SplitNode::Split { weights, .. } = &app.split_tree else {
         panic!("row split survives resize");
     };
-    assert_eq!(weights, &[1, 15]);
+    assert_eq!(weights, &[2, 15]);
 
     // Widening still works: weight flows in from pane_2.
     app.handle_key(KeyEvent::from(KeyCode::Char('l')));
@@ -11308,7 +11335,7 @@ fn resize_mode_narrows_with_h_and_reports_clamps() {
     let crate::tui::split::SplitNode::Split { weights, .. } = &app.split_tree else {
         panic!("row split survives resize");
     };
-    assert_eq!(weights, &[2, 14]);
+    assert_eq!(weights, &[3, 14]);
 }
 
 #[test]
@@ -11379,8 +11406,7 @@ fn resize_mode_hint_names_the_pane() {
     app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
     let drawn = draw(&app, 150, 40);
     assert!(
-        drawn
-            .contains("RESIZE · pane_1 · h/l narrower/wider · j/k shorter/taller · Enter/Esc done"),
+        drawn.contains("RESIZE · jcode · h/l narrower/wider · j/k shorter/taller · Enter/Esc done"),
         "footer shows the resize hint, got: {drawn}"
     );
 }
@@ -12103,9 +12129,12 @@ fn split_tiles_show_ghost_preview_and_move_rings() {
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert!(app.split_mode.is_some());
     let drawn = draw(&app, 150, 40);
-    assert!(drawn.contains("SPLIT · open pane_3"), "hint names the pane");
     assert!(
-        drawn.contains("+ pane_3 "),
+        drawn.contains("SPLIT · open jcode"),
+        "hint names the pane by its display label, got: {drawn}"
+    );
+    assert!(
+        drawn.contains("+ jcode ") || drawn.contains("+ pane_3 "),
         "ghost tile titles the incoming pane, got: {drawn}"
     );
 
@@ -12409,9 +12438,15 @@ fn split_mode_keys_drive_the_ghost_and_cycle_candidates() {
     assert_eq!(preview.neighbor, "pane_1");
     assert_eq!(preview.pane, "pane_2", "cross-workspace first");
 
-    // p cycles candidates: pane_2 -> pane_3 -> wrap pane_2.
+    // p cycles candidates: pane_2 -> pane_3 -> fresh shell sentinel
+    // -> wrap pane_2 (the sentinel is the last entry).
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.split_mode.as_ref().unwrap().pane, "pane_3");
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().pane,
+        crate::tui::split::FRESH_SHELL
+    );
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.split_mode.as_ref().unwrap().pane, "pane_2");
 
@@ -12458,15 +12493,17 @@ fn split_mode_cycle_without_candidates_reports_and_keeps_the_ghost() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert!(app.split_mode.is_some());
-    // Only pane_1 exists and it is the neighbor: no candidates, but
-    // the status is overwritten by the key loop's refresh state
-    // ("connecting" on the dead socket), so assert on the ghost.
+    // Only pane_1 exists and it is the neighbor: no real candidates,
+    // the cycle lands on the fresh-shell sentinel instead of a
+    // refusal (design: "then a fresh shell"). The status is
+    // overwritten by the key loop's refresh state ("connecting" on
+    // the dead socket), so assert on the ghost.
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert!(app.split_mode.is_some(), "ghost stays open");
     assert_eq!(
         app.split_mode.as_ref().unwrap().pane,
-        "pane_2",
-        "no cycle possible, candidate unchanged"
+        crate::tui::split::FRESH_SHELL,
+        "no real candidate: the sentinel is the cycle's last entry"
     );
 }
 
@@ -12479,7 +12516,8 @@ fn split_commit_refuses_vanished_and_duplicate_targets() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
 
-    // Neighbor gone from the tree: commit refuses.
+    // Neighbor gone from the tree: commit refuses and the mode
+    // stays open with the reason (refused Enter is not a cancel).
     let preview = app.split_mode.clone().unwrap();
     app.split_mode = Some(crate::tui::split::SplitPreview {
         neighbor: "gone".to_string(),
@@ -12487,18 +12525,20 @@ fn split_commit_refuses_vanished_and_duplicate_targets() {
     });
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.status, "split target vanished");
-    assert!(app.split_mode.is_none(), "commit consumed the ghost");
+    assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
 
-    // Candidate already on the tree: commit refuses.
-    app.handle_key(ctrl('b'));
-    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    // Candidate already on the tree: commit refuses, mode stays.
+    // The neighbor must be live so the second guard is the one that
+    // fires.
     let preview = app.split_mode.clone().unwrap();
     app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
         pane: "pane_1".to_string(),
-        ..preview
+        side: preview.side,
     });
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.status, "pane already on screen");
+    assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
 }
 
 #[test]
@@ -12995,7 +13035,9 @@ fn split_ghost_moves_between_tiles_and_flips_side_family_only_on_axis_break() {
 #[test]
 fn split_cycle_pane_reports_when_no_alternative_exists() {
     let mut app = app_with_two_panes();
-    // Both panes on the tree after a commit: no off-tree candidate.
+    // Both panes on the tree after a commit: no off-tree candidate,
+    // so the cycle lands on the fresh-shell sentinel instead of a
+    // refusal (design: "then a fresh shell").
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -13006,8 +13048,19 @@ fn split_cycle_pane_reports_when_no_alternative_exists() {
         side: crate::tui::split::Side::Right,
     });
     app.split_cycle_pane();
-    assert_eq!(app.status, "no other pane to open");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().pane,
+        crate::tui::split::FRESH_SHELL
+    );
     assert!(app.split_mode.is_some(), "preview stays up");
+
+    // The sentinel is the only candidate here: cycling stays on it
+    // instead of refusing (a dead p key would hide the feature).
+    app.split_cycle_pane();
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().pane,
+        crate::tui::split::FRESH_SHELL
+    );
 
     // No preview at all: silent return.
     app.split_mode = None;
@@ -13376,10 +13429,11 @@ fn split_mode_commit_refuses_when_the_neighbor_vanished() {
     });
     app.split_commit();
     assert_eq!(app.status, "split target vanished");
-    assert!(app.split_mode.is_none());
+    assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"], "tree untouched");
 
     // No preview at all: silent return.
+    app.split_mode = None;
     app.split_commit();
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
 }
@@ -13809,7 +13863,7 @@ fn move_mode_guards_pick_eq_target_missing_mode_and_last_leaf_insert() {
     app.move_commit();
     assert!(app.move_mode.is_none());
 
-    // Picked equals target: silent no-op (mode consumed).
+    // Picked equals target: refused with a reason, mode stays open.
     app.move_mode = Some(crate::tui::split::MoveState {
         picked: "pane_1".into(),
         target: "pane_1".into(),
@@ -13817,7 +13871,12 @@ fn move_mode_guards_pick_eq_target_missing_mode_and_last_leaf_insert() {
         side: crate::tui::split::Side::Right,
     });
     app.move_commit();
-    assert!(app.move_mode.is_none());
+    assert!(app.move_mode.is_some());
+    assert_eq!(
+        app.status,
+        "target is the picked tile: hjkl moves the target"
+    );
+    app.move_mode = None;
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
 
     // Toggle with no mode: silent.
