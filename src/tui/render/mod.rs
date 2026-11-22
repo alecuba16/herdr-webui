@@ -16,11 +16,11 @@ use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen, TuiWorkspace};
 use crate::HERDR_WEBUI_VERSION;
 
 mod split_tiles;
+pub(crate) use split_tiles::pane_display_name;
 pub(crate) use split_tiles::split_active;
 pub(crate) use split_tiles::TileRectOwned;
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const MAX_DIFF_LINES: usize = 400;
 
 pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     let p = &app.palette;
@@ -71,11 +71,19 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         render_help(frame, area, p, &app.help_filter, app.help_scroll);
     }
     if app.mode == TuiMode::Tour {
-        // The step's demo surface (search palette) renders below the
-        // tour card like the webui palette under the spotlight; the
-        // card keeps the keys and the explanation.
+        // The step's demo surface renders below the tour card like
+        // the webui palette under the spotlight: the card keeps the
+        // keys and the explanation. The lens demo is field state (no
+        // TuiMode), so it renders through the shared active-lens arm
+        // above instead of a tour_demo_overlay match.
         if app.tour_demo_overlay == Some(TuiMode::SearchPalette) {
             render_search_palette(frame, area, app, p);
+        }
+        if app.tour_demo_overlay == Some(TuiMode::Settings) {
+            render_settings(frame, area, app, p);
+        }
+        if app.tour_demo_overlay == Some(TuiMode::SessionManager) {
+            render_session_manager(frame, area, app, p);
         }
         crate::tui::tour::render_tour(frame, area, app, p);
     }
@@ -943,6 +951,17 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         } else {
             0
         };
+        // Byte offset of each rendered line's start: `lines()` loses
+        // offsets, so the walk tracks them for the cursor cell split.
+        let line_starts: Vec<usize> = {
+            let mut offsets = Vec::new();
+            let mut byte = 0;
+            for line in preview.content.lines() {
+                offsets.push(byte);
+                byte += line.len() + 1;
+            }
+            offsets
+        };
         let visible = inner.height as usize;
         let start = if explorer.edit_active {
             cursor_line.saturating_sub(visible.saturating_sub(1))
@@ -967,15 +986,73 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             } else {
                 Style::default().fg(p.text)
             };
-            lines.push(Line::from(vec![
-                Span::styled(number, number_style),
-                Span::styled(
-                    truncate(line, (inner.width as usize).saturating_sub(6)),
-                    line_style,
-                ),
-            ]));
+            let spans = if explorer.edit_active && index == cursor_line {
+                // Edit cursor (ux fix): invert the character cell at the
+                // cursor's row and column like a terminal caret, so the
+                // position is visible on every theme. Past the line end
+                // the caret rides a padding space. No terminal cursor
+                // is placed (ratatui would hide it anyway on redraws
+                // that do not call set_cursor).
+                let cursor_byte = explorer
+                    .edit_cursor
+                    .min(preview.content.len())
+                    .saturating_sub(line_starts.get(index).copied().unwrap_or(0));
+                let (before, at, after) = split_line_at_cursor(line, cursor_byte);
+                // Same width budget as the plain rows, split across
+                // the three spans so a long line cannot overflow the
+                // panel now that it skips the single-span truncate.
+                // When the cursor sits deep in a long line the window
+                // keeps the tail of `before` (what the caret sees),
+                // like an editor's horizontal scroll.
+                let budget = (inner.width as usize).saturating_sub(6);
+                let at_width = at.width();
+                let before_budget = budget.saturating_sub(at_width);
+                let before_shown = if before.width() > before_budget {
+                    tail_visible(&before, before_budget)
+                } else {
+                    before.clone()
+                };
+                let after_budget = budget
+                    .saturating_sub(before_shown.width())
+                    .saturating_sub(at_width);
+                vec![
+                    Span::styled(number, number_style),
+                    Span::styled(before_shown, line_style),
+                    Span::styled(at, Style::default().fg(p.panel_bg).bg(p.accent)),
+                    Span::styled(truncate(&after, after_budget), line_style),
+                ]
+            } else {
+                vec![
+                    Span::styled(number, number_style),
+                    Span::styled(
+                        truncate(line, (inner.width as usize).saturating_sub(6)),
+                        line_style,
+                    ),
+                ]
+            };
+            lines.push(Line::from(spans));
             if lines.len() >= visible {
                 break;
+            }
+        }
+        if explorer.edit_active && cursor_line >= line_starts.len() {
+            // Cursor past the last rendered line (content ends with a
+            // newline, the state `start_edit` leaves): the caret row
+            // would never paint, so show a virtual line whose padding
+            // space carries the inverted cell. It always fits: the
+            // cursor follow-scroll starts at cursor_line - (visible -
+            // 1), so at most visible - 1 real rows come before it.
+            if lines.len() < visible {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{:>4} ", line_starts.len() + 1),
+                        Style::default().fg(p.muted),
+                    ),
+                    Span::styled(
+                        " ".to_string(),
+                        Style::default().fg(p.panel_bg).bg(p.accent),
+                    ),
+                ]));
             }
         }
         if explorer.edit_active {
@@ -1115,7 +1192,14 @@ fn render_git_history(
     let list = List::new(items)
         .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Row-inverted selection (same fix as the sidebar lists): the
+        // foreground-only accent was easy to miss on light terminals.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 
@@ -1230,7 +1314,15 @@ fn render_git_changes(
     let list = List::new(items)
         .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Row-inverted selection (same fix as the sidebar lists): a
+        // foreground-only accent is easy to miss on light terminals,
+        // the selected row inverts like the webui `.selected` class.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 
@@ -1316,8 +1408,29 @@ fn render_diff_pane_full(
     let block = panel_block(diff_title, p);
     let inner = block.inner(diff_area);
     frame.render_widget(block, diff_area);
+    // Follow-scroll: keep the search hit or the hunk cursor inside the
+    // window, centered. The old fixed top-of-diff window highlighted
+    // anchors below the fold where they stayed invisible.
+    let anchor = active_match.or(active_hunk);
+    let visible = inner.height as usize;
+    let len = diff_lines.len();
+    let start = match anchor {
+        Some(anchor) if len > visible => anchor
+            .saturating_sub(visible / 2)
+            .min(len.saturating_sub(visible)),
+        _ => 0,
+    };
+    // When the diff is taller than the pane, the bottom row becomes a
+    // position indicator instead of silently hiding the rest.
+    let show_position = len > visible;
+    let rows = if show_position {
+        visible.saturating_sub(1)
+    } else {
+        visible
+    };
     let mut lines = Vec::new();
-    for (index, line) in diff_lines.iter().take(MAX_DIFF_LINES).enumerate() {
+    let content_rows = len.saturating_sub(start).min(rows);
+    for (index, line) in diff_lines.iter().enumerate().skip(start).take(content_rows) {
         let mut style = match line.chars().next() {
             Some('+') => Style::default().fg(p.green),
             Some('-') => Style::default().fg(p.red),
@@ -1329,10 +1442,15 @@ fn render_diff_pane_full(
         if active_match == Some(index) {
             style = Style::default().fg(p.panel_bg).bg(p.accent);
         }
-        // Hunk cursor highlight (gap 14): the selected `@@` header gets
-        // the accent treatment, matching the search hit emphasis.
+        // Hunk cursor highlight (gap 14): the selected `@@` header
+        // inverts like the search hit and the list selections, so the
+        // hunk H will act on is visible on light terminals too
+        // (foreground-only teal/accent was easy to miss).
         if active_hunk == Some(index) {
-            style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+            style = Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD);
         }
         // Blame annotation (webui `blameName`): the author for the line
         // number, first two words, shown when blame is toggled on for
@@ -1363,6 +1481,12 @@ fn render_diff_pane_full(
             style,
         ));
         lines.push(Line::from(spans));
+    }
+    if show_position {
+        lines.push(Line::from(Span::styled(
+            format!(" lines {}-{} of {len} ", start + 1, start + content_rows),
+            Style::default().fg(p.muted),
+        )));
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -1445,7 +1569,14 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
     let list = List::new(items)
         .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Row-inverted selection (same fix as the sidebar lists): the
+        // foreground-only accent was easy to miss on light terminals.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 
@@ -1502,7 +1633,14 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             p,
         ))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Row-inverted selection (same fix as the sidebar lists): the
+        // foreground-only accent was easy to miss on light terminals.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -1535,7 +1673,14 @@ fn render_git_stash(
     let list = List::new(items)
         .block(panel_block(" Stash · Enter diff · a apply · x drop ", p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Row-inverted selection (same fix as the sidebar lists): the
+        // foreground-only accent was easy to miss on light terminals.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 
@@ -1600,7 +1745,14 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
     let list = List::new(items)
         .block(panel_block(" Conflicts ", p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Row-inverted selection (same fix as the sidebar lists): the
+        // foreground-only accent was easy to miss on light terminals.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 }
@@ -1658,7 +1810,14 @@ fn render_git_cleanup(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
     let list = List::new(items)
         .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Row-inverted selection (same fix as the sidebar lists): the
+        // foreground-only accent was easy to miss on light terminals.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -2864,7 +3023,7 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
 /// informational (webui stores the rest in browser storage, which has
 /// no TUI equivalent yet).
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let rect = overlay_rect(area, area.width.min(64), 13);
+    let rect = overlay_rect(area, area.width.min(64), 14);
     render_shadow(frame, rect, p);
     let git_cwd = app.git_panel.cwd.clone();
     let files_cwd = app.file_explorer.cwd.clone();
@@ -2882,7 +3041,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
         .map(|value| wrap_plain(value, value_budget).len().saturating_sub(1))
         .sum::<usize>() as u16;
     let rect = {
-        let height = (13 + wrapped_extra).min(area.height);
+        let height = (14 + wrapped_extra).min(area.height);
         Rect::new(
             rect.x,
             rect.y + rect.height.saturating_sub(height) / 2,
@@ -2917,9 +3076,17 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
                 "off"
             },
         ),
+        row(
+            "onboarding tour",
+            match crate::tui::tui_tour_state().as_deref() {
+                Some("done") => "already run (finished)",
+                Some("skipped") => "already run (skipped early)",
+                _ => "not run yet",
+            },
+        ),
         Line::from(""),
         Line::from(Span::styled(
-            " t theme · p passthrough · Esc closes ",
+            " t theme · p passthrough · T replay tour · Esc closes ",
             Style::default().fg(p.accent),
         )),
         Line::from(Span::styled(
@@ -2985,9 +3152,14 @@ fn panel<'a>(title: &'a str, p: &Palette) -> Block<'a> {
 }
 
 fn status_dot(status: &str, p: &Palette) -> (&'static str, Style) {
+    // Every state carries a distinct glyph shape (design doc:
+    // "Glyph shape differs too, so status never rides on color
+    // alone"), so color-blind users and low-contrast themes can
+    // still tell blocked/working/done apart in tile titles and the
+    // AGENTS summary bar.
     match status {
-        "blocked" => ("●", Style::default().fg(p.red)),
-        "working" => ("●", Style::default().fg(p.yellow)),
+        "blocked" => ("✕", Style::default().fg(p.red)),
+        "working" => ("◐", Style::default().fg(p.yellow)),
         "idle" => ("○", Style::default().fg(p.green)),
         "done" => ("●", Style::default().fg(p.teal)),
         _ => ("·", Style::default().fg(p.muted)),
@@ -3052,6 +3224,57 @@ pub(crate) fn filter_name_spans(name: &str, needle: &str, filter_on: bool) -> Ve
     .collect()
 }
 
+/// The last `max_width` display columns of `value` (char-boundary
+/// safe), so a horizontal-scroll window can show what sits right
+/// before the cursor when the line start scrolled away.
+fn tail_visible(value: &str, max_width: usize) -> String {
+    if value.width() <= max_width {
+        return value.to_string();
+    }
+    let mut start = value.len();
+    let mut width = 0;
+    while start > 0 {
+        let prev = value[..start]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let ch_width = value[prev..]
+            .chars()
+            .next()
+            .map(|ch| ch.width().unwrap_or(0))
+            .unwrap_or(0);
+        if width + ch_width > max_width {
+            break;
+        }
+        width += ch_width;
+        start = prev;
+    }
+    value[start..].to_string()
+}
+
+/// Split a source line at the editor cursor for the inverted caret
+/// cell: `(before, caret, after)` where `caret` is the character at
+/// the cursor column (or a padding space past the line end, so an
+/// end-of-line cursor still paints a visible cell). `cursor_byte` is
+/// relative to this line; a byte offset inside a multibyte character
+/// snaps forward to the boundary instead of panicking.
+fn split_line_at_cursor(line: &str, cursor_byte: usize) -> (String, String, String) {
+    let cursor = line.len().min(cursor_byte);
+    if cursor >= line.len() {
+        return (line.to_string(), " ".to_string(), String::new());
+    }
+    let mut split = cursor;
+    while split < line.len() && !line.is_char_boundary(split) {
+        split += 1;
+    }
+    let before = line[..split].to_string();
+    let rest = &line[split..];
+    let ch = rest.chars().next().map(String::from).unwrap_or_default();
+    let after = rest[ch.len()..].to_string();
+    (before, ch, after)
+}
+
 fn truncate(value: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -3080,8 +3303,125 @@ fn truncate(value: &str, max_width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_hint, wrap_plain};
+    use super::{
+        filter_name_spans, fit_hint, split_line_at_cursor, tail_visible, truncate, wrap_plain,
+    };
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn match_span_helpers_cover_windows_and_cursor_splits() {
+        // Long `before` window: keep only the tail that fits the budget.
+        assert_eq!(tail_visible("abcdefghij", 4), "ghij");
+        // Fits the budget: returned unchanged.
+        assert_eq!(tail_visible("ab", 10), "ab");
+        // Char-boundary safe: a 2-wide char never gets sliced mid-byte.
+        assert_eq!(tail_visible("a\u{4e2d}\u{4e2d}", 2), "\u{4e2d}");
+        // Budget 0 stops before consuming any column.
+        assert_eq!(tail_visible("ab", 0), "");
+
+        // Cursor at a char boundary splits (before, caret, after).
+        assert_eq!(
+            split_line_at_cursor("abcd", 2),
+            ("ab".to_string(), "c".to_string(), "d".to_string())
+        );
+        // Cursor past the line end rides a padding space.
+        assert_eq!(
+            split_line_at_cursor("ab", 9),
+            ("ab".to_string(), " ".to_string(), String::new())
+        );
+        assert_eq!(
+            split_line_at_cursor("", 0),
+            ("".to_string(), " ".to_string(), String::new())
+        );
+        // Byte offset inside a multibyte char snaps forward to the boundary.
+        assert_eq!(
+            split_line_at_cursor("a\u{4e2d}b", 2),
+            ("a\u{4e2d}".to_string(), "b".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn truncate_zero_budget_and_column_limits() {
+        // Zero budget returns empty instead of paying for the ellipsis.
+        assert_eq!(truncate("abc", 0), "");
+        // Fits: unchanged.
+        assert_eq!(truncate("abc", 5), "abc");
+        // Overflow clips by display columns and reserves one for the ellipsis.
+        assert_eq!(truncate("abcdef", 4), "abc\u{2026}");
+        // A 2-wide char pays 2 columns before the ellipsis fits.
+        assert_eq!(truncate("a\u{4e2d}bcd", 3), "a\u{2026}");
+    }
+
+    #[test]
+    fn filter_name_spans_plain_and_highlight_rows() {
+        // Filter off: one plain span.
+        assert_eq!(
+            filter_name_spans("main.rs", "main", false),
+            vec![("main.rs".to_string(), false)]
+        );
+        // Occurrence splits into before/matched/after, empty spans dropped.
+        assert_eq!(
+            filter_name_spans("main.rs", "MAIN", true),
+            vec![("main".to_string(), true), (".rs".to_string(), false)]
+        );
+        assert_eq!(
+            filter_name_spans("src/main.rs", "main", true),
+            vec![
+                ("src/".to_string(), false),
+                ("main".to_string(), true),
+                (".rs".to_string(), false)
+            ]
+        );
+        // No visible occurrence: one plain span.
+        assert_eq!(
+            filter_name_spans("main.rs", "zzz", true),
+            vec![("main.rs".to_string(), false)]
+        );
+        // Whitespace-only needle: treated as no filter.
+        assert_eq!(
+            filter_name_spans("main.rs", "  ", true),
+            vec![("main.rs".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn edit_cursor_render_keeps_short_before_and_truncates_long_lines() {
+        // Wide enough for the sidebar (34 cols) plus the 90-column
+        // tree/preview split inside the files screen.
+        let backend = TestBackend::new(130, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let client = crate::backend_client::BackendClient::builtin_session(None);
+        let mut app = crate::tui::TuiApp::new(client, std::time::Duration::from_secs(1));
+        app.screen = crate::tui::TuiScreen::Files;
+        app.file_explorer.preview = crate::tui::panels::FilePreview {
+            path: Some("notes.md".to_string()),
+            content: "line one\nline two".to_string(),
+            truncated: false,
+            binary: false,
+            hash: "h1".to_string(),
+            dirty: false,
+        };
+        app.file_explorer.edit_active = true;
+        // Cursor mid-line: `before` fits the budget, so the else branch
+        // clones it whole instead of scrolling a tail window.
+        app.file_explorer.edit_cursor = 5;
+
+        terminal.draw(|frame| super::render(frame, &app)).unwrap();
+        let rendered = format!("{:?}", terminal.backend().buffer());
+        assert!(rendered.contains("line "));
+        assert!(rendered.contains("one"));
+
+        // Cursor deep in a line wider than the pane: `before` overflows
+        // the budget, so tail_visible keeps only the tail of `before`.
+        let long_line = "aaaa bbbb cccc dddd ".repeat(6);
+        app.file_explorer.preview.content = long_line.clone();
+        app.file_explorer.edit_cursor = long_line.len() - 1;
+        terminal.draw(|frame| super::render(frame, &app)).unwrap();
+        let rendered = format!("{:?}", terminal.backend().buffer());
+        assert!(rendered.contains("dddd"));
+    }
 
     #[test]
     fn wrap_plain_zero_budget_word_wrap_and_no_blank_rows() {

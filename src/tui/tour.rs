@@ -107,6 +107,12 @@ pub(crate) fn shortcut_key_hint(shortcut: Shortcut) -> &'static str {
         Shortcut::Lens => "L",
         Shortcut::Composer => "C",
         Shortcut::SessionManager => "Shift+P",
+        // Split-panel chords (Terminal screen): the split tour steps
+        // teach the tile language with these.
+        Shortcut::SplitPane => "s",
+        Shortcut::MovePane => "m",
+        Shortcut::ZoomPane => "z",
+        Shortcut::ResizePane => "Shift+Z",
         // Git chords removed in the chord reduction; the tour teaches the
         // in-screen git keys instead (Tab cycle + c/l).
         Shortcut::GitSwitchBranch => "v",
@@ -148,9 +154,25 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
         },
         TourStep {
             title: "Main screen",
-            body: "The main area renders the focused pane. The files explorer (Ctrl+B f) and the git panel (Ctrl+B g) live here as their own screens.",
+            body: "The main area renders the focused pane. The files explorer (Ctrl+B f) and the git panel (Ctrl+B g) live here as their own screens; the next two steps open each one.",
             region: TourRegion::Main,
             shortcut: Some(Shortcut::Files),
+            demo: false,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Files screen",
+            body: "Ctrl+B f opens the file tree of the focused workspace. j/k moves, l or Right enters a directory, h/u goes up, Enter previews (e edits, Ctrl+F finds, Ctrl+H replaces), L shows the file's git log.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::Files),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Git screen",
+            body: "Ctrl+B g opens the git surface: Tab cycles changes, log, branches, stash, history, conflicts, cleanup. j/k moves, J/K walk hunks, H stages or unstages a hunk, / searches the diff, c commits.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::Git),
             demo: true,
             screen: Some(TuiScreen::Terminal),
         },
@@ -160,7 +182,27 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
             region: TourRegion::Main,
             shortcut: Some(Shortcut::Terminal),
             demo: true,
-            screen: Some(TuiScreen::Files),
+            screen: Some(TuiScreen::Git),
+        },
+        TourStep {
+            title: "Split tiles",
+            body: "Ctrl+B s opens split mode: a ghost tile previews where the new pane lands. hjkl or arrows move it, Tab flips row/column, p cycles the candidate pane (a fresh shell when every pane is already shown), Enter commits, Esc cancels.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::SplitPane),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "The tile language",
+            body: "With a split active and the main region focused, j/k walk tile to tile and Ctrl+j/k scroll the focused pane. Ctrl+B m moves a tile, Ctrl+B z zooms it fullscreen, Ctrl+B Shift+Z resizes it, Ctrl+B x closes the focused tile, and closing a pane hands focus to the nearest surviving tile.",
+            region: TourRegion::Main,
+            // Passive on purpose: the walk/move/zoom chords need a live
+            // multi-tile session with keyboard focus, which the demo
+            // runner cannot hand over mid-tour. Every demo step still
+            // drives a real chord; this one teaches the map.
+            shortcut: Some(Shortcut::ZoomPane),
+            demo: false,
+            screen: Some(TuiScreen::Terminal),
         },
         TourStep {
             title: "Sidebar collapse",
@@ -171,11 +213,39 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
             screen: Some(TuiScreen::Terminal),
         },
         TourStep {
+            title: "Chat lens and composer",
+            body: "On a chat-capable agent pane (jcode here), Ctrl+B L toggles the transcript lens: j/k scroll, G jumps to the tail, Esc closes. Ctrl+B Shift+C opens the composer prompt for the focused pane and Enter sends.",
+            region: TourRegion::Main,
+            // The lens is field state, so its demo renders below the
+            // card. The composer is taught by text only: its prompt is
+            // a key-owning modal, and a demo would cover the card that
+            // is explaining it.
+            shortcut: Some(Shortcut::Lens),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Session manager",
+            body: "Ctrl+B Shift+P lists every session: Enter switches (rebuilding the client on the target's sockets), l launches, x closes, c cleans up stale slots, n creates one, r reloads, Esc closes.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::SessionManager),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
             title: "Help overlay",
             body: "Ctrl+B ? opens the full shortcut reference with a type-to-filter box. This tour is replayable from there with the T key.",
             region: TourRegion::Main,
             shortcut: Some(Shortcut::Help),
             demo: false,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Settings overlay",
+            body: "Ctrl+B Shift+E opens settings: theme (t), terminal passthrough (p), and this tour's run state. T replays the tour right from this overlay; Esc closes.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::SettingsOverlay),
+            demo: true,
             screen: Some(TuiScreen::Terminal),
         },
         TourStep {
@@ -260,6 +330,7 @@ impl TuiApp {
             KeyCode::Char('j') | KeyCode::Right | KeyCode::Enter => {
                 if self.tour_index >= max {
                     self.tour_finished = true;
+                    self.record_tour_state("done");
                     self.close_tour();
                 } else {
                     self.tour_index += 1;
@@ -274,11 +345,30 @@ impl TuiApp {
             }
             // Esc/q/? close the tour without finishing; the app state
             // the demos touched (screen, selection, overlays opened by
-            // run_shortcut) stays as the user's starting point.
-            KeyCode::Esc | KeyCode::Char('?') => self.close_tour(),
-            KeyCode::Char('q') => self.close_tour(),
+            // run_shortcut) stays as the user's starting point. Both
+            // outcomes persist so the settings overlay can say whether
+            // the walkthrough ever ran (webui parity: done vs skipped).
+            KeyCode::Esc | KeyCode::Char('?') => {
+                self.record_tour_state("skipped");
+                self.close_tour();
+            }
+            KeyCode::Char('q') => {
+                self.record_tour_state("skipped");
+                self.close_tour();
+            }
             _ => {}
         }
+    }
+
+    /// Persist the tour outcome to the shared settings file. Best
+    /// effort: the settings overlay still shows "not run" when the
+    /// write fails, and the status line says why the record is missing.
+    fn record_tour_state(&mut self, state: &'static str) {
+        match crate::tui::tui_set_tour_state(state) {
+            Ok(()) => self.status = format!("tour {state}"),
+            Err(err) => self.status = format!("tour state not saved: {err}"),
+        }
+        self.mark_dirty();
     }
 
     pub(crate) fn tour_step(&self) -> Option<TourStep> {

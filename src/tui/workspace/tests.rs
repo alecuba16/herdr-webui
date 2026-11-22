@@ -1816,3 +1816,85 @@ fn typed_branch_survives_a_base_change_and_reentry() {
         "non-default base seeds the branch with its local name"
     );
 }
+
+#[test]
+fn panel_walk_parks_the_cursor_on_the_workspaces_first_agent() {
+    // The focused tile's pane has no agent row (a shell pane outside
+    // the agents list): the pre-walk sync parks the sidebar cursor on
+    // the target workspace's first agent instead of stranding it on
+    // the old workspace's rows.
+    let mut snapshot = workspace_snapshot();
+    // Drop every agents row for ws_2's pane_3: a pane the agents list
+    // never heard of (fresh shell).
+    snapshot["snapshot"]["agents"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|agent| agent["pane_id"].as_str() != Some("pane_3"));
+    let mut app = app_with_snapshot(snapshot);
+    // Two tiles: pane_3 (ws_2 shell) and pane_1 (ws_1, agent row 0).
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_3"),
+            crate::tui::split::SplitNode::leaf("pane_1"),
+        ],
+    );
+    app.split_focus = Some("pane_3".to_string());
+    app.selected_workspace = 1;
+    app.selected_agent = 1;
+
+    app.move_panel(1).unwrap();
+    // pane_3 has no agent row, so the cursor parks on ws_2's first
+    // agent. The fixture has none there either, so the unwrap_or(0)
+    // fallback fires and the walk continues on ws_2's single tab.
+    assert_eq!(app.selected_workspace, 1);
+    assert_eq!(app.selected_agent, 0);
+    // The walk keeps the focused tile: ws_2 has one tab (tab_3), the
+    // wrap-around lands back on pane_3.
+    assert_eq!(app.split_focus.as_deref(), Some("pane_3"));
+}
+
+#[test]
+fn rename_panel_refuses_a_stale_view_tab() {
+    // The view pane references a tab the workspace no longer lists
+    // (backend already dropped it): the rename must error plainly
+    // instead of submitting against a dead id.
+    let mut app = app_with_snapshot(workspace_snapshot());
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    // pane_1 points at tab_1; remove tab_1 from the workspace's list.
+    app.snapshot.tabs.retain(|tab| tab.id != "tab_1");
+
+    assert_eq!(
+        app.rename_panel("new name").unwrap_err(),
+        "panel in view is gone, reopen it first"
+    );
+}
+
+#[test]
+fn rename_panel_message_names_the_old_label_only_when_set() {
+    // The message names the old label when there was one and drops
+    // it when the tab was unnamed. The label is read from the local
+    // snapshot before the request, so the fake backend's refresh
+    // (which restores the fixture) does not disturb either arm.
+    let (mut app, _stop) = app_with_fake_backend();
+    // Route the view at pane_3 (ws_2, tab_3 "Notes"): a lone leaf is
+    // not split-active, so view_pane follows the agent cursor.
+    app.selected_workspace = 1;
+    app.selected_agent = 2;
+    assert_eq!(
+        app.rename_panel("Build").unwrap(),
+        "panel Notes renamed to Build"
+    );
+    // Empty the routed tab's label: the message drops the "old label"
+    // half because there is nothing meaningful to name.
+    if let Some(tab) = app.snapshot.tabs.iter_mut().find(|tab| tab.id == "tab_3") {
+        tab.label = String::new();
+    }
+    // The first rename's refresh restored the fixture and re-anchored
+    // the cursors on ws_1; point the view back at tab_3 before the
+    // second rename.
+    app.selected_workspace = 1;
+    app.selected_agent = 2;
+    assert_eq!(app.rename_panel("Docs").unwrap(), "panel renamed to Docs");
+}

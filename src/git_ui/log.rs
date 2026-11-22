@@ -925,6 +925,11 @@ pub(super) fn chunk_patch(body: &GitUiApplyPatchRequest) -> Result<Option<String
             _ => ' ',
         };
         lines.push(format!("{prefix}{}", line.content));
+        // The marker must ride along or git treats the hunk as
+        // newline-terminated and the apply fails on no-EOL files.
+        if line.no_newline {
+            lines.push("\\ No newline at end of file".to_string());
+        }
     }
     Ok(Some(lines.join("\n") + "\n"))
 }
@@ -1014,6 +1019,68 @@ mod tests {
             ..body
         };
         assert!(chunk_patch(&body).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn chunk_patch_preserves_the_no_newline_marker() {
+        // A no-EOL file's diff ends with `\ No newline at end of file`.
+        // The rebuilt chunk patch must carry the marker too, or git
+        // rejects the apply (patch does not match the no-EOL file).
+        let repo = temp_repo("herdr-chunk-no-newline");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("file.txt"), "one\ntwo\nthree").unwrap();
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        // Edit the no-EOL tail: both the removed and added lines lack
+        // the trailing newline, so git emits the marker after each.
+        std::fs::write(repo.join("file.txt"), "one\ntwo\nTHREE").unwrap();
+        let cwd = repo.to_string_lossy().to_string();
+
+        let body = GitUiApplyPatchRequest {
+            cwd: cwd.clone(),
+            patch: None,
+            reverse: None,
+            cached: None,
+            scope: Some("working".to_string()),
+            context: Some(0),
+            file: Some("file.txt".to_string()),
+            chunk_index: Some(0),
+            base: None,
+            target: None,
+            merge_base: None,
+        };
+        let patch = chunk_patch(&body)
+            .unwrap()
+            .expect("chunk selector should build a patch");
+        assert!(
+            patch.contains("-three\n\\ No newline at end of file"),
+            "marker must follow the removed line: {patch}"
+        );
+        assert!(
+            patch.contains("+THREE\n\\ No newline at end of file"),
+            "marker must follow the added line: {patch}"
+        );
+
+        // And the marked patch actually applies: staging the hunk must
+        // flip the file to staged in `git status --porcelain`.
+        let applied = git_ui_apply_patch_blocking(
+            cwd, patch, false, // reverse
+            true,  // cached
+        );
+        assert!(
+            applied.is_ok(),
+            "git must accept the marked patch: {applied:?}"
+        );
+        let status = git_text(&repo, &["status", "--porcelain"]);
+        assert!(
+            status.contains("M  file.txt"),
+            "staged hunk must show as staged: {status}"
+        );
 
         let _ = std::fs::remove_dir_all(repo);
     }

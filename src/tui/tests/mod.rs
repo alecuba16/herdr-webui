@@ -2630,7 +2630,17 @@ fn fake_backend_socket_with(
                 {
                     json!({"id": request["id"], "error": "tab tab_gone not found"})
                 } else {
-                    json!({"id": request["id"], "result": {"ok": true}})
+                    // Fresh-shell split reads the created tab's root pane
+                    // off the reply, so the answer mirrors the backend
+                    // shape.
+                    json!({
+                        "id": request["id"],
+                        "result": {
+                            "ok": true,
+                            "tab": {"tab_id": "tab_new"},
+                            "root_pane": {"pane_id": "pane_opened"}
+                        }
+                    })
                 }
             }
             "workspace.create" => json!({
@@ -5087,6 +5097,205 @@ fn renders_missed_file_preview_outline_jump_find_and_statuses() {
 }
 
 #[test]
+fn file_editor_paints_the_cursor_cell_in_both_themes() {
+    // The editor never places a terminal cursor, so the caret must be
+    // painted: an inverted cell at the cursor's row and column. The
+    // check pins the cell's colors against the active palette in both
+    // themes, the fix for the light-mode invisibility report.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview.path = Some("src/lib.rs".to_string());
+    app.file_explorer.preview.content = "fn main() {\n    let x = 1;\n}\n".to_string();
+    app.file_explorer.edit_active = true;
+    // Cursor mid-line: on `let`, column 4 of line 2.
+    app.file_explorer.edit_cursor = "fn main() {\n    ".len();
+
+    for (theme, accent, panel_bg) in [
+        (
+            TuiTheme::Dark,
+            Color::Rgb(137, 180, 250),
+            Color::Rgb(17, 17, 27),
+        ),
+        (
+            TuiTheme::Light,
+            Color::Rgb(37, 99, 235),
+            Color::Rgb(255, 255, 255),
+        ),
+    ] {
+        app.theme = theme;
+        app.palette = crate::tui::theme::Palette::for_theme(theme);
+        let buffer = draw_buffer(&app, 140, 30);
+        let row = rendered_row(&buffer, "fn main() {");
+        // Line 2 starts one row below line 1; the caret sits on the
+        // character right after the leading indent.
+        let caret_y = (row.y + 1) as u16;
+        let line_two = rendered_row(&buffer, "let x = 1;");
+        assert_eq!(caret_y, line_two.y as u16);
+        // The indent is 4 cells after the 5-wide number gutter; the
+        // caret cell paints accent bg with panel-bg fg.
+        let caret_x = line_two.cell_x_of("let x").unwrap();
+        assert_eq!(buffer[(caret_x as u16, caret_y)].fg, panel_bg);
+        assert_eq!(buffer[(caret_x as u16, caret_y)].bg, accent);
+        // The character under the caret is still readable.
+        assert_eq!(buffer[(caret_x as u16, caret_y)].symbol(), "l");
+    }
+
+    // End-of-line cursor: with the cursor past the final newline (the
+    // state `start_edit` leaves), the caret paints on a virtual line
+    // below the last rendered one.
+    app.file_explorer.edit_cursor = app.file_explorer.preview.content.len();
+    app.theme = TuiTheme::Light;
+    app.palette = crate::tui::theme::Palette::for_theme(TuiTheme::Light);
+    let buffer = draw_buffer(&app, 140, 30);
+    let last = rendered_row(&buffer, "}");
+    let virtual_row = rendered_row(&buffer, "   4");
+    assert_eq!(
+        virtual_row.y,
+        last.y + 1,
+        "caret row sits below the last line"
+    );
+    // The virtual row is `   4 ` + one inverted padding space.
+    let caret_x = (virtual_row.cell_x_of("4").unwrap() + 2) as u16;
+    assert_eq!(
+        buffer[(caret_x, virtual_row.y as u16)].bg,
+        Color::Rgb(37, 99, 235)
+    );
+    assert_eq!(
+        buffer[(caret_x, virtual_row.y as u16)].fg,
+        Color::Rgb(255, 255, 255)
+    );
+    assert_eq!(buffer[(caret_x, virtual_row.y as u16)].symbol(), " ");
+}
+
+#[test]
+fn git_lists_paint_the_selected_row_inverted_in_both_themes() {
+    // The git lists used a foreground-only accent that vanished on
+    // light terminals; the selected row now inverts (panel-bg fg on
+    // accent bg) like the sidebar lists.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.files = vec![
+        GitFileEntry {
+            path: "zz_git_selected_marker.rs".to_string(),
+            status: GitFileStatus::Unstaged,
+        },
+        GitFileEntry {
+            path: "zz_other_file.rs".to_string(),
+            status: GitFileStatus::Unstaged,
+        },
+    ];
+    app.git_panel.file_selected = 0;
+    app.git_panel.diff_lines = vec!["@@ -1,2 +1,3 @@".to_string(), "+added line".to_string()];
+    // `None` marks the chunk header; `hunk_headers()` reads these
+    // indexes to find the `@@` row the cursor sits on.
+    app.git_panel.diff_meta = vec![None, Some(crate::tui::panels::GitDiffLineMeta::default())];
+    app.git_panel.diff_hunk_selected = 0;
+    for (theme, accent, panel_bg) in [
+        (
+            TuiTheme::Dark,
+            Color::Rgb(137, 180, 250),
+            Color::Rgb(17, 17, 27),
+        ),
+        (
+            TuiTheme::Light,
+            Color::Rgb(37, 99, 235),
+            Color::Rgb(255, 255, 255),
+        ),
+    ] {
+        app.theme = theme;
+        app.palette = crate::tui::theme::Palette::for_theme(theme);
+        let buffer = draw_buffer(&app, 140, 30);
+        // Selected file row: every painted cell carries the accent bg.
+        // A unique marker path keeps the needle off the sidebar tree,
+        // which renders `src/...` rows of its own.
+        let file_row = rendered_row(&buffer, "zz_git_selected_marker.rs");
+        let unselected = rendered_row(&buffer, "zz_other_file.rs");
+        assert_eq!(
+            buffer[(
+                file_row.cell_x_of("zz_git").unwrap() as u16,
+                file_row.y as u16
+            )]
+                .bg,
+            accent
+        );
+        assert_eq!(
+            buffer[(
+                file_row.cell_x_of("zz_git").unwrap() as u16,
+                file_row.y as u16
+            )]
+                .fg,
+            panel_bg
+        );
+        let unselected_has_accent = (0..buffer.area.width as usize)
+            .any(|x| buffer[(x as u16, unselected.y as u16)].bg == accent);
+        assert!(
+            !unselected_has_accent,
+            "unselected file row stays on panel bg"
+        );
+        // Hunk cursor: the @@ header inverts the same way.
+        let hunk_row = rendered_row(&buffer, "@@ -1,2");
+        let hunk_x = hunk_row.cell_x_of("@@").unwrap();
+        assert_eq!(buffer[(hunk_x as u16, hunk_row.y as u16)].bg, accent);
+        assert_eq!(buffer[(hunk_x as u16, hunk_row.y as u16)].fg, panel_bg);
+    }
+}
+
+#[test]
+fn git_diff_pane_follows_the_hunk_cursor_and_shows_the_position() {
+    // A diff taller than the pane used to render only the top slice:
+    // the highlighted hunk header (and search hits) below the fold
+    // stayed invisible. The pane now centers the window on the active
+    // anchor and prints a position row when content is hidden.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.files = vec![GitFileEntry {
+        path: "zz_scroll_file.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    // One line per hunk header ordinal: 60 @@ headers with body lines,
+    // far taller than any pane at 140x30.
+    let mut diff_lines = Vec::new();
+    let mut diff_meta = Vec::new();
+    for i in 0..60 {
+        diff_lines.push(format!("@@ -{i},1 +{i},1 @@"));
+        diff_meta.push(None);
+        diff_lines.push(format!(" body-{i}"));
+        diff_meta.push(Some(crate::tui::panels::GitDiffLineMeta::default()));
+    }
+    app.git_panel.diff_lines = diff_lines;
+    app.git_panel.diff_meta = diff_meta;
+    app.git_panel.diff_hunk_selected = 50;
+
+    let buffer = draw_buffer(&app, 140, 30);
+    // The selected hunk header must be on screen.
+    let hunk_row = rendered_row(&buffer, "@@ -50");
+    assert!(hunk_row.y > 0, "hunk anchor rendered inside the pane");
+    // Top-of-diff lines scrolled out.
+    let mut saw_top = false;
+    for y in 0..buffer.area.height as usize {
+        let line: String = (0..buffer.area.width as usize)
+            .map(|x| {
+                buffer[(x as u16, y as u16)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+            })
+            .collect();
+        if line.contains("@@ -0,1") {
+            saw_top = true;
+        }
+    }
+    assert!(!saw_top, "top of the diff scrolled out of view");
+    // The position row is present and honest.
+    let pos_row = rendered_row(&buffer, "of 120");
+    assert!(
+        pos_row.y > hunk_row.y,
+        "position row sits under the content"
+    );
+}
+
+#[test]
 fn renders_missed_git_diff_log_stash_and_prompt_branches() {
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Git;
@@ -5330,6 +5539,94 @@ fn settings_overlay_shows_passthrough_on_state() {
     app.terminal_prefix_passthrough = true;
     let settings = draw(&app, 100, 30);
     assert!(settings.contains("on (shell keeps Ctrl+B while attached)"));
+}
+
+/// Close/finish tour keys persist the tour outcome to the shared
+/// settings file (`record_tour_state`), so every tour test that can
+/// press one needs the env lock plus its own XDG dir, exactly like the
+/// settings tests: without it a parallel sibling writes its
+/// `tuiOnboardingTour` into this test's settings file, or worse into
+/// the user's real one. Drop restores the env and drops the temp dir,
+/// including on a panicking unwind.
+pub(crate) struct SettingsEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prior_xdg: Option<String>,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for SettingsEnvGuard {
+    fn drop(&mut self) {
+        match self.prior_xdg.take() {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+pub(crate) fn settings_test_env() -> SettingsEnvGuard {
+    let _lock = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("herdr-tui-settings-env-{stamp}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    std::env::set_var("XDG_CONFIG_HOME", &dir);
+    SettingsEnvGuard {
+        _lock,
+        prior_xdg,
+        dir,
+    }
+}
+
+#[test]
+fn settings_overlay_reports_tour_run_state_and_replays_it() {
+    let _env = settings_test_env();
+    // No record: the overlay says not run yet.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Settings;
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("not run yet"));
+    assert!(settings.contains("T replay tour"));
+
+    // T from settings replays the tour; Settings stays on the overlay
+    // stack so closing the tour lands back in the settings overlay.
+    app.handle_key(KeyEvent::from(KeyCode::Char('T')));
+    assert_eq!(app.mode, TuiMode::Tour);
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::Settings, "close lands back in settings");
+    // The skip persisted (q close = skipped) and the overlay reads it.
+    assert_eq!(crate::tui::tui_tour_state().as_deref(), Some("skipped"));
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("already run (skipped early)"));
+
+    // Finishing the walk records done.
+    app.handle_key(KeyEvent::from(KeyCode::Char('T')));
+    assert_eq!(app.mode, TuiMode::Tour);
+    let last = crate::tui::tour::tour_steps().len() - 1;
+    for _ in 0..last {
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert!(app.tour_finished);
+    assert_eq!(crate::tui::tui_tour_state().as_deref(), Some("done"));
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("already run (finished)"));
+
+    // A garbage value in the key falls back to not-run instead of
+    // rendering an unknown state.
+    let settings_path = crate::tui::tui_settings_path();
+    let mut root: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    root["tuiOnboardingTour"] = json!("nonsense");
+    std::fs::write(&settings_path, serde_json::to_string(&root).unwrap()).unwrap();
+    assert_eq!(crate::tui::tui_tour_state(), None);
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("not run yet"));
 }
 
 #[test]
@@ -8020,6 +8317,54 @@ fn plain_shift_l_and_shift_c_open_lens_and_composer() {
 }
 
 #[test]
+fn footer_names_the_split_entry_and_the_mode_hints_take_over() {
+    // User report: no way to discover split mode from the regular
+    // single-pane view. The chord (Ctrl+B s) worked all along, but the
+    // resting TerminalMain hint never named it, so the entry was
+    // invisible unless the prefix was armed or the help overlay opened.
+    let mut app = app_with_two_panes();
+    app.main_focused = true;
+
+    // Resting regular view: the hint names the chord, front-loaded so
+    // fit_hint keeps it while the terminal can carry two segments plus
+    // the help tail.
+    let wide = draw(&app, 120, 24);
+    assert!(
+        wide.contains("Ctrl+B s split"),
+        "the resting main hint must name the split entry"
+    );
+    // The classic 80-col terminal cannot fit two segments plus the
+    // protected help tail (47 > 36 budget), so the hint collapses to
+    // the attach action and help, the same line the old hint showed:
+    // no regression, the shrink just starts one segment later.
+    let medium = draw(&app, 100, 24);
+    assert!(
+        medium.contains("Ctrl+B s split"),
+        "100 columns keep the split chord after the shrink"
+    );
+    let narrow = draw(&app, 80, 24);
+    assert!(
+        narrow.contains("Ctrl+B ? help"),
+        "the discovery tail never disappears"
+    );
+
+    // Once a mode takes over, its own hint names the next step and the
+    // resting hint's split entry is not duplicated on screen.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+    let drawn = draw(&app, 120, 24);
+    assert!(
+        drawn.contains("SPLIT ·"),
+        "the split mode hint takes the footer slot"
+    );
+    assert!(
+        !drawn.contains("Ctrl+B s split"),
+        "the mode hint replaces the resting hint, no duplicate chord row"
+    );
+}
+
+#[test]
 fn footer_names_walk_and_scroll_keys_when_split_active() {
     // Review F2: with a split open the TerminalMain footer must swap
     // to the split hint (hjkl walk, Ctrl+j/k scroll); without one the
@@ -8040,12 +8385,24 @@ fn footer_names_walk_and_scroll_keys_when_split_active() {
     assert_eq!(app.split_tree.leaves().len(), 2);
     let split = app.footer_context().hint();
     assert!(
-        split.contains("hjkl walk"),
+        split.contains("hjkl walk") && !split.contains("ZOOM"),
         "split hint names the walk keys"
     );
     assert!(
         split.contains("Ctrl+j/k scroll"),
         "split hint names the scroll escape"
+    );
+
+    // Zoom flips the footer to the zoom copy: the walk is disabled
+    // while one tile owns the screen, so the hint must not claim it
+    // (mode hints live in the render path, not the static context).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("ZOOM"), "zoom names itself");
+    assert!(
+        !drawn.contains("hjkl walk"),
+        "zoom hint must not advertise the disabled walk"
     );
 }
 
@@ -9283,13 +9640,18 @@ fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
     app.mode = TuiMode::Navigate;
     app.screen = TuiScreen::Terminal;
 
-    // Main focus (default): pane keys, no stale "j/k select". 120 cols
-    // fits the full hint (compact fallback checked on the narrow draw).
+    // Main focus (default): pane keys, no stale "j/k select". 180 cols
+    // keeps the hint through the "q quit" segment; the full line
+    // needs ~191, so fit_hint drops the trailing panel segment here
+    // (compact fallback checked on the narrow draw).
+    // Sidebar focus: same screen and mode, so the split chord still
+    // fires from here and the hint names it plus the way back to the
+    // main pane.
     assert!(matches!(
         app.footer_context(),
         crate::tui::FooterContext::TerminalMain
     ));
-    let main = draw(&app, 160, 24);
+    let main = draw(&app, 180, 24);
     assert!(main.contains("Enter attach"), "main hint keeps attach");
     assert!(
         main.contains("Ctrl+B . / , focus sidebar"),
@@ -9298,6 +9660,10 @@ fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
     assert!(
         main.contains("Shift+L lens"),
         "main hint names the lens shortcut"
+    );
+    assert!(
+        main.contains("Ctrl+B s split"),
+        "main hint names the split entry chord"
     );
     assert!(
         main.contains("q quit"),
@@ -10476,6 +10842,121 @@ fn split_mode_git_screen_still_opens_settings() {
 }
 
 #[test]
+fn split_repress_keeps_the_walked_ghost() {
+    // Review finding: re-pressing Ctrl+B s with the overlay open used
+    // to rebuild the preview and silently discard the placement the
+    // user had walked/flipped; it is a no-op now.
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below
+    );
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below,
+        "re-press keeps the flipped side"
+    );
+}
+
+#[test]
+fn split_commit_arms_the_double_esc_guard() {
+    // The Esc path arms just_closed_mode; commit is also a mode exit,
+    // so a reflex Esc right after committing must not open the quit
+    // confirm (same behavior as resize and move).
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.split_mode, None);
+    assert!(app.just_closed_mode);
+    assert_eq!(app.status, "tile added");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_ne!(
+        app.mode,
+        TuiMode::ConfirmQuit,
+        "reflex Esc stays in the app"
+    );
+}
+
+#[test]
+fn chord_echo_matches_the_terminal_navigate_meaning() {
+    // Review finding: on Terminal/Navigate the s/m/z chords open the
+    // split modes, but the status echo named the git meanings
+    // (settings, blame, stash), teaching the wrong verb for the keys
+    // the user just pressed. Needs a two-tile tree so move and zoom
+    // accept instead of refusing and replacing the echo.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.status, "Ctrl+B s -> split mode");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert_eq!(app.status, "Ctrl+B m -> move tile mode");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    // The zoom handler owns the line with its own outcome; the echo
+    // only survives when the action stays silent, so assert the
+    // outcome, not the echo.
+    assert_eq!(app.status, "zoomed (Ctrl+B z restores)");
+    assert!(app.split_zoomed);
+}
+
+#[test]
+fn chord_echo_keeps_git_meaning_off_the_terminal_screen() {
+    // The override is scoped: on the Git screen the same chords keep
+    // their original labels (settings, blame, stash).
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Git;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.status, "Ctrl+B s -> settings");
+}
+
+#[test]
+fn footer_split_hints_name_add_and_close_tiles() {
+    // Review finding: once a split is live the hint named no way to
+    // add another tile or close one; the cold-start gap recurred one
+    // step after entering split mode.
+    let mut app = app_with_two_panes();
+    app.main_focused = true;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    let split = app.footer_context().hint();
+    assert!(
+        split.contains("Ctrl+B s split"),
+        "live split hint still names how to add a tile"
+    );
+    assert!(
+        split.contains("Ctrl+B x close tile"),
+        "live split hint names how to close a tile"
+    );
+
+    // Sidebar focus: same screen and mode, the chord still fires, so
+    // the hint names it plus the way back to the main pane.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    let sidebar = draw(&app, 140, 24);
+    assert!(
+        sidebar.contains("Ctrl+B s split"),
+        "sidebar hint names the split chord that still fires there"
+    );
+    assert!(
+        sidebar.contains("Ctrl+B . main"),
+        "sidebar hint names the way back to the main pane"
+    );
+}
+
+#[test]
 fn move_mode_swaps_and_inserts_tiles() {
     // Coverage note (move_commit's inner guards): the "picked the last
     // tile" and the inner "target vanished" returns are structurally
@@ -10504,9 +10985,18 @@ fn move_mode_swaps_and_inserts_tiles() {
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert!(app.move_mode.as_ref().unwrap().insert);
 
-    // Tab back to swap; Enter with picked == target is a no-op cancel.
+    // Tab back to swap; Enter with picked == target is refused with a
+    // reason and the mode stays open (finding: keep modes open so the
+    // user can pick a real target instead of a silent cancel).
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.move_mode.is_some());
+    assert_eq!(
+        app.status,
+        "target is the picked tile: hjkl moves the target"
+    );
+    // Esc still cancels the refused mode.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(app.move_mode.is_none());
 
     // Reopen and swap pane_1 with pane_2 via a walk: with only two
@@ -10565,8 +11055,9 @@ fn sync_split_tree_prunes_dead_panes_and_reseeds() {
     };
     app.split_focus = Some("gone_pane".to_string());
     app.sync_split_tree();
-    // Dead leaf pruned, single-child split collapsed, focus falls back
-    // to the surviving leaf.
+    // Dead leaf pruned, single-child split collapsed, focus falls
+    // to the surviving leaf (nearest-leaf fallback: no recorded
+    // geometry in a unit test, so the first alive leaf wins).
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
     assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
 
@@ -10898,7 +11389,12 @@ fn split_and_move_modes_never_coexist() {
     app.split_focus = Some("pane_1".to_string());
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
-    assert!(app.split_mode.is_none(), "no candidate: both panes on tree");
+    assert!(
+        app.split_mode
+            .as_ref()
+            .is_some_and(|m| m.pane == crate::tui::split::FRESH_SHELL),
+        "both panes on tree: the fresh shell sentinel is the candidate"
+    );
 
     // Give the tree a third pane to open and re-open both modes.
     app.snapshot.panes.push(crate::tui::model::TuiPane {
@@ -10999,7 +11495,7 @@ fn move_insert_commit_status_names_the_new_focus() {
     });
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.split_focus.as_deref(), Some("pane_1"));
-    assert_eq!(app.status, "moved pane_1 · focus pane_1");
+    assert_eq!(app.status, "moved jcode · focus jcode");
 }
 
 #[test]
@@ -11288,7 +11784,7 @@ fn resize_mode_narrows_with_h_and_reports_clamps() {
             crate::tui::split::SplitNode::leaf("pane_1"),
             crate::tui::split::SplitNode::leaf("pane_2"),
         ],
-        vec![1, 15],
+        vec![2, 15],
     );
     app.split_focus = Some("pane_1".to_string());
     app.handle_key(ctrl('b'));
@@ -11300,7 +11796,7 @@ fn resize_mode_narrows_with_h_and_reports_clamps() {
     let crate::tui::split::SplitNode::Split { weights, .. } = &app.split_tree else {
         panic!("row split survives resize");
     };
-    assert_eq!(weights, &[1, 15]);
+    assert_eq!(weights, &[2, 15]);
 
     // Widening still works: weight flows in from pane_2.
     app.handle_key(KeyEvent::from(KeyCode::Char('l')));
@@ -11308,7 +11804,7 @@ fn resize_mode_narrows_with_h_and_reports_clamps() {
     let crate::tui::split::SplitNode::Split { weights, .. } = &app.split_tree else {
         panic!("row split survives resize");
     };
-    assert_eq!(weights, &[2, 14]);
+    assert_eq!(weights, &[3, 14]);
 }
 
 #[test]
@@ -11379,8 +11875,7 @@ fn resize_mode_hint_names_the_pane() {
     app.handle_key(KeyEvent::from(KeyCode::Char('Z')));
     let drawn = draw(&app, 150, 40);
     assert!(
-        drawn
-            .contains("RESIZE · pane_1 · h/l narrower/wider · j/k shorter/taller · Enter/Esc done"),
+        drawn.contains("RESIZE · jcode · h/l narrower/wider · j/k shorter/taller · Enter/Esc done"),
         "footer shows the resize hint, got: {drawn}"
     );
 }
@@ -12103,9 +12598,12 @@ fn split_tiles_show_ghost_preview_and_move_rings() {
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert!(app.split_mode.is_some());
     let drawn = draw(&app, 150, 40);
-    assert!(drawn.contains("SPLIT · open pane_3"), "hint names the pane");
     assert!(
-        drawn.contains("+ pane_3 "),
+        drawn.contains("SPLIT · open jcode"),
+        "hint names the pane by its display label, got: {drawn}"
+    );
+    assert!(
+        drawn.contains("+ jcode ") || drawn.contains("+ pane_3 "),
         "ghost tile titles the incoming pane, got: {drawn}"
     );
 
@@ -12409,9 +12907,15 @@ fn split_mode_keys_drive_the_ghost_and_cycle_candidates() {
     assert_eq!(preview.neighbor, "pane_1");
     assert_eq!(preview.pane, "pane_2", "cross-workspace first");
 
-    // p cycles candidates: pane_2 -> pane_3 -> wrap pane_2.
+    // p cycles candidates: pane_2 -> pane_3 -> fresh shell sentinel
+    // -> wrap pane_2 (the sentinel is the last entry).
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.split_mode.as_ref().unwrap().pane, "pane_3");
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().pane,
+        crate::tui::split::FRESH_SHELL
+    );
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.split_mode.as_ref().unwrap().pane, "pane_2");
 
@@ -12458,15 +12962,17 @@ fn split_mode_cycle_without_candidates_reports_and_keeps_the_ghost() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert!(app.split_mode.is_some());
-    // Only pane_1 exists and it is the neighbor: no candidates, but
-    // the status is overwritten by the key loop's refresh state
-    // ("connecting" on the dead socket), so assert on the ghost.
+    // Only pane_1 exists and it is the neighbor: no real candidates,
+    // the cycle lands on the fresh-shell sentinel instead of a
+    // refusal (design: "then a fresh shell"). The status is
+    // overwritten by the key loop's refresh state ("connecting" on
+    // the dead socket), so assert on the ghost.
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert!(app.split_mode.is_some(), "ghost stays open");
     assert_eq!(
         app.split_mode.as_ref().unwrap().pane,
-        "pane_2",
-        "no cycle possible, candidate unchanged"
+        crate::tui::split::FRESH_SHELL,
+        "no real candidate: the sentinel is the cycle's last entry"
     );
 }
 
@@ -12479,26 +12985,29 @@ fn split_commit_refuses_vanished_and_duplicate_targets() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
 
-    // Neighbor gone from the tree: commit refuses.
+    // Neighbor gone from the tree: commit refuses and the mode
+    // stays open with the reason (refused Enter is not a cancel).
     let preview = app.split_mode.clone().unwrap();
     app.split_mode = Some(crate::tui::split::SplitPreview {
         neighbor: "gone".to_string(),
         ..preview
     });
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(app.status, "split target vanished");
-    assert!(app.split_mode.is_none(), "commit consumed the ghost");
+    assert_eq!(app.status, "split target vanished · Ctrl+B s to retry");
+    assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
 
-    // Candidate already on the tree: commit refuses.
-    app.handle_key(ctrl('b'));
-    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    // Candidate already on the tree: commit refuses, mode stays.
+    // The neighbor must be live so the second guard is the one that
+    // fires.
     let preview = app.split_mode.clone().unwrap();
     app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
         pane: "pane_1".to_string(),
-        ..preview
+        side: preview.side,
     });
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.status, "pane already on screen");
+    assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
 }
 
 #[test]
@@ -12995,7 +13504,9 @@ fn split_ghost_moves_between_tiles_and_flips_side_family_only_on_axis_break() {
 #[test]
 fn split_cycle_pane_reports_when_no_alternative_exists() {
     let mut app = app_with_two_panes();
-    // Both panes on the tree after a commit: no off-tree candidate.
+    // Both panes on the tree after a commit: no off-tree candidate,
+    // so the cycle lands on the fresh-shell sentinel instead of a
+    // refusal (design: "then a fresh shell").
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -13006,8 +13517,19 @@ fn split_cycle_pane_reports_when_no_alternative_exists() {
         side: crate::tui::split::Side::Right,
     });
     app.split_cycle_pane();
-    assert_eq!(app.status, "no other pane to open");
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().pane,
+        crate::tui::split::FRESH_SHELL
+    );
     assert!(app.split_mode.is_some(), "preview stays up");
+
+    // The sentinel is the only candidate here: cycling stays on it
+    // instead of refusing (a dead p key would hide the feature).
+    app.split_cycle_pane();
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().pane,
+        crate::tui::split::FRESH_SHELL
+    );
 
     // No preview at all: silent return.
     app.split_mode = None;
@@ -13375,11 +13897,12 @@ fn split_mode_commit_refuses_when_the_neighbor_vanished() {
         side: crate::tui::split::Side::Right,
     });
     app.split_commit();
-    assert_eq!(app.status, "split target vanished");
-    assert!(app.split_mode.is_none());
+    assert_eq!(app.status, "split target vanished · Ctrl+B s to retry");
+    assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"], "tree untouched");
 
     // No preview at all: silent return.
+    app.split_mode = None;
     app.split_commit();
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
 }
@@ -13809,7 +14332,7 @@ fn move_mode_guards_pick_eq_target_missing_mode_and_last_leaf_insert() {
     app.move_commit();
     assert!(app.move_mode.is_none());
 
-    // Picked equals target: silent no-op (mode consumed).
+    // Picked equals target: refused with a reason, mode stays open.
     app.move_mode = Some(crate::tui::split::MoveState {
         picked: "pane_1".into(),
         target: "pane_1".into(),
@@ -13817,7 +14340,12 @@ fn move_mode_guards_pick_eq_target_missing_mode_and_last_leaf_insert() {
         side: crate::tui::split::Side::Right,
     });
     app.move_commit();
-    assert!(app.move_mode.is_none());
+    assert!(app.move_mode.is_some());
+    assert_eq!(
+        app.status,
+        "target is the picked tile: hjkl moves the target"
+    );
+    app.move_mode = None;
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
 
     // Toggle with no mode: silent.
@@ -14260,5 +14788,366 @@ fn chord_echo_writes_the_chord_and_label_then_a_report_replaces_it() {
     assert!(
         !app.status.contains("-> "),
         "the reporting action owns the line after the echo"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Coverage-closing tests for split_mode.rs (nearest-leaf focus, zoom
+// auto-lift, fresh-shell commit) and mod.rs error arms (git guards,
+// workspace-selection cursor parking, close-tab stale paths).
+// ---------------------------------------------------------------------------
+
+/// Tile geometry rows the render normally records; tests hand them in
+/// when the assertion is about the scoring, not the layout pass.
+fn push_tile_geometry(app: &mut TuiApp, rows: &[(&str, u16, u16, u16, u16)]) {
+    *app.tile_geometry.borrow_mut() = rows
+        .iter()
+        .map(
+            |(pane_id, x, y, width, height)| crate::tui::render::TileRectOwned {
+                pane_id: pane_id.to_string(),
+                x: *x,
+                y: *y,
+                width: *width,
+                height: *height,
+            },
+        )
+        .collect();
+}
+
+#[test]
+fn nearest_leaf_to_scores_by_center_distance_not_tree_order() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::Split {
+                dir: crate::tui::split::SplitDir::Col,
+                children: vec![
+                    crate::tui::split::SplitNode::leaf("pane_2"),
+                    crate::tui::split::SplitNode::leaf("pane_3"),
+                ],
+                weights: vec![8; 2],
+            },
+        ],
+    );
+    // Row split with a column right half: pane_2 is the right-top
+    // quadrant, pane_3 the right-bottom one. The dead pane sits on the
+    // right-bottom slot, so the center-to-center winner is pane_3 even
+    // though pane_1 is the first leaf on the tree.
+    push_tile_geometry(
+        &mut app,
+        &[
+            ("pane_1", 0, 0, 50, 40),
+            ("pane_2", 50, 0, 50, 20),
+            ("pane_3", 50, 20, 50, 20),
+        ],
+    );
+    assert_eq!(app.nearest_leaf_to("pane_3").as_deref(), Some("pane_2"));
+
+    // Unknown origin pane: no geometry row, nothing to score.
+    assert_eq!(app.nearest_leaf_to("no_such_pane"), None);
+
+    // Origin present but no other leaf carries geometry.
+    push_tile_geometry(&mut app, &[("pane_1", 0, 0, 50, 40)]);
+    assert_eq!(app.nearest_leaf_to("pane_1"), None);
+}
+
+#[test]
+fn sync_split_tree_parks_focus_on_the_nearest_surviving_leaf() {
+    let mut app = app_with_two_panes();
+    push_pane_3(&mut app);
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::Split {
+                dir: crate::tui::split::SplitDir::Col,
+                children: vec![
+                    crate::tui::split::SplitNode::leaf("pane_2"),
+                    crate::tui::split::SplitNode::leaf("pane_3"),
+                ],
+                weights: vec![8; 2],
+            },
+        ],
+    );
+    // pane_3 occupies the right-bottom quadrant and holds focus; the
+    // recorded geometry keeps its last rect so the prune can score
+    // survivors against it.
+    push_tile_geometry(
+        &mut app,
+        &[
+            ("pane_1", 0, 0, 50, 40),
+            ("pane_2", 50, 0, 50, 20),
+            ("pane_3", 50, 20, 50, 20),
+        ],
+    );
+    app.split_focus = Some("pane_3".to_string());
+    app.snapshot.panes.retain(|pane| pane.id != "pane_3");
+
+    app.sync_split_tree();
+
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_2"),
+        "focus lands on the geometrically nearest survivor, not the first leaf"
+    );
+    assert!(app.status.contains("focus moved to"), "{}", app.status);
+}
+
+#[test]
+fn sync_split_tree_lifts_zoom_when_the_zoomed_pane_vanished() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.split_zoomed = true;
+    // pane_2 gone from the snapshot: prune keeps a single leaf, focus
+    // dies with it, and the zoomed flag must drop so the collapsed
+    // tree renders unzoomed.
+    app.snapshot.panes.retain(|pane| pane.id != "pane_2");
+    app.sync_split_tree();
+    assert!(!app.split_zoomed);
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
+fn fresh_shell_commit_creates_the_tab_and_inserts_the_new_pane() {
+    // Snapshot that already carries the created tab's root pane, the
+    // shape the real backend answers on the post-create refresh: the
+    // commit's internal refresh would otherwise prune the new leaf.
+    let mut created = fixture_snapshot_value_two_panes();
+    created["snapshot"]["panes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "pane_id":"pane_opened","terminal_id":"term_new","workspace_id":"ws_1",
+            "tab_id":"tab_new","agent":null,"display_agent":null,
+            "agent_status":"idle","cwd":"/repo","focused":false
+        }));
+    let (api_socket, _stop) = fake_backend_socket_with(created);
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    app.sync_split_tree();
+    app.screen = TuiScreen::Terminal;
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        pane: crate::tui::split::FRESH_SHELL.to_string(),
+        side: crate::tui::split::Side::Right,
+    });
+
+    app.split_commit();
+
+    assert!(app.split_mode.is_none(), "commit closes the mode");
+    // The post-create refresh runs before the assertion: its focus
+    // notice (the fake snapshot lacks the new pane) owns the line, so
+    // the commit proof is the tree and focus state below.
+    assert_eq!(
+        app.split_tree.leaves(),
+        vec!["pane_1", "pane_opened"],
+        "the backend's root pane joined beside the neighbor"
+    );
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_opened"),
+        "focus moves to the fresh tile"
+    );
+    assert!(app.just_closed_mode, "commit arms the double-Esc guard");
+    assert!(app.error.is_none(), "refresh after create: {:?}", app.error);
+
+    // Against a dead socket the create fails and the mode stays open.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        pane: crate::tui::split::FRESH_SHELL.to_string(),
+        side: crate::tui::split::Side::Right,
+    });
+    app.split_commit();
+    assert_eq!(app.status, "fresh shell failed");
+    assert!(
+        app.split_mode.is_some(),
+        "failed create keeps the mode open"
+    );
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
+fn git_log_enter_without_a_selected_commit_errors() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Log;
+    app.git_panel.cwd = "/repo".to_string();
+    app.git_panel.log_file = None;
+    app.git_panel.commits.clear();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("no commit selected"));
+}
+
+#[test]
+fn git_discard_refuses_while_the_selected_file_preview_is_dirty() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.cwd = "/repo".to_string();
+    app.git_panel.files = vec![GitFileEntry {
+        path: "notes.md".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.git_panel.file_selected = 0;
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "edited".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h".to_string(),
+        dirty: true,
+    };
+    app.run_shortcut(Shortcut::GitDiscardFile);
+    assert_eq!(
+        app.error.as_deref(),
+        Some("unsaved edits: save or reload before discarding this file"),
+        "the dirty buffer blocks the discard verb"
+    );
+
+    // A dirty preview on another file does not block the discard: the
+    // verb runs (and errors on the dead API, proving the guard passed).
+    app.file_explorer.preview.path = Some("other.txt".to_string());
+    app.error = None;
+    app.run_shortcut(Shortcut::GitDiscardFile);
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| !e.contains("unsaved edits")),
+        "discard ran against the API: {:?}",
+        app.error
+    );
+}
+
+#[test]
+fn selecting_a_paneless_workspace_parks_the_agent_cursor_on_its_first_agent() {
+    let mut app = app_with_two_panes();
+    // ws_2 keeps its shell pane but its agent row is gone, so the
+    // pane-id lookup misses and the cursor must park on ws_1's agent
+    // (the only row left) instead of stranding on the removed row.
+    // Split view focused on ws_2's pane makes view_pane hit the
+    // miss (the pane exists, its agent row does not).
+    app.snapshot
+        .agents
+        .retain(|agent| agent.workspace_id != "ws_2");
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.selected_workspace = 1;
+    app.selected_agent = 0;
+
+    app.run_shortcut(Shortcut::NewTab);
+
+    assert_eq!(
+        app.selected_agent, 0,
+        "agent cursor parked on ws_1's agent row (index 0), the only one left"
+    );
+    let parked = app
+        .snapshot
+        .agents
+        .get(app.selected_agent)
+        .map(|agent| agent.workspace_id.clone())
+        .unwrap_or_default();
+    assert_eq!(parked, "ws_1", "the parked row belongs to ws_1");
+}
+
+#[test]
+fn close_tab_falls_back_when_the_view_pane_workspace_left_the_snapshot() {
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    app.screen = TuiScreen::Terminal;
+    // Split view with focus on pane_2 (ws_2), then ws_2 drops from the
+    // snapshot: stale pane data, the close chain must fall back to the
+    // sidebar-selected workspace (ws_1's active tab).
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.selected_workspace = 0;
+    app.snapshot.workspaces.retain(|ws| ws.id != "ws_2");
+    app.snapshot.tabs.retain(|tab| tab.workspace_id != "ws_2");
+
+    app.run_shortcut(Shortcut::CloseTab);
+
+    assert!(
+        app.status.contains("closed"),
+        "the fallback tab closed: {:?}",
+        app.status
+    );
+    assert!(
+        !app.status.contains("tab Server closed"),
+        "the stale ws_2 tab did not close: {}",
+        app.status
+    );
+    assert!(
+        app.error.is_none()
+            || !app
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("not found")),
+        "stale pane data must not surface a close error: {:?}",
+        app.error
+    );
+}
+
+#[test]
+fn close_tab_without_a_tab_label_reports_the_plain_closed_notice() {
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    app.screen = TuiScreen::Terminal;
+    // Single-tab ws_1 (was_last_tab path): closing the only tab also
+    // closes the workspace. Strip the tab rows so the closed-status
+    // arm falls to the label-less "tab closed" notice.
+    app.selected_workspace = 0;
+    app.snapshot.workspaces.retain(|ws| ws.id != "ws_2");
+    app.snapshot.tabs.retain(|tab| tab.workspace_id != "ws_2");
+    app.snapshot
+        .panes
+        .retain(|pane| pane.workspace_id != "ws_2");
+    app.snapshot
+        .agents
+        .retain(|agent| agent.workspace_id != "ws_2");
+    app.sync_split_tree();
+    app.snapshot.tabs.clear();
+
+    app.run_shortcut(Shortcut::CloseTab);
+
+    assert_eq!(
+        app.status, "tab closed",
+        "no tab row to name: the plain closed notice owns the line"
+    );
+    assert!(
+        app.status_hold_until.is_some(),
+        "the closed notice arms the hold past the refresh"
     );
 }

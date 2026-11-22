@@ -2149,6 +2149,83 @@ mod external_probe_tests {
     }
 
     #[test]
+    fn endpoint_hello_json_parses_with_handshake_fields() {
+        let hello: serde_json::Value = serde_json::from_str(&endpoint_hello_json()).unwrap();
+        assert_eq!(hello["generation"], 1);
+        assert_eq!(hello["cell_width_px"], 10);
+        assert_eq!(hello["cell_height_px"], 20);
+        assert_eq!(hello["surface_size"]["cols"], 80);
+        assert_eq!(hello["surface_size"]["rows"], 24);
+        assert_eq!(hello["pixel_mouse"], false);
+        assert_eq!(hello["direct_graphics"], false);
+        assert_eq!(
+            hello["snapshot_codecs"],
+            serde_json::json!(["shell.snapshot.v1"])
+        );
+        assert_eq!(
+            hello["surface_codecs"],
+            serde_json::json!(["shell.surface.v1"])
+        );
+        assert_eq!(
+            hello["input_codecs"],
+            serde_json::json!(["shell.input.semantic.v1"])
+        );
+        assert_eq!(hello["blob_codecs"], serde_json::json!(["shell.blob.v1"]));
+    }
+
+    #[test]
+    fn kitty_rgb_emit_bytes_form_transmit_then_placement() {
+        let bytes = kitty_rgb_emit_bytes();
+        let transmit = b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\";
+        let placement = b"\x1b_Ga=p,U=1,i=7,c=1,r=1,q=2\x1b\\";
+        assert!(bytes.starts_with(transmit));
+        assert!(bytes.ends_with(placement));
+        assert_eq!(bytes.len(), transmit.len() + placement.len());
+    }
+
+    #[test]
+    fn printf_command_shell_escapes_kitty_bytes() {
+        let bytes = kitty_rgb_emit_bytes();
+        let command = printf_command(&bytes);
+        assert!(command.starts_with("printf '"));
+        assert!(command.ends_with("'\n"));
+        // Raw ESC never survives into the command line: printf's FORMAT
+        // interprets the octal escape instead.
+        assert!(!command.contains('\u{1b}'));
+        assert!(command.contains("\\033_Ga=T"));
+        assert!(command.contains("\\033\\\\"));
+    }
+
+    #[test]
+    fn printf_command_escapes_quote_and_backslash_and_high_bytes() {
+        // A quote closes the single-quoted shell word, escapes itself,
+        // and reopens the word; a backslash doubles (printf FORMAT
+        // consumes one level).
+        assert_eq!(printf_command(b"'\\"), "printf ''\\''\\\\'\n");
+        // Bytes outside printable ASCII become 3-digit octal escapes.
+        assert!(printf_command(&[0xff]).contains("\\377"));
+    }
+
+    #[test]
+    fn empty_frame_and_panic_marker_shapes() {
+        let frame = empty_frame();
+        assert!(frame.cells.is_empty());
+        assert_eq!(frame.width, 0);
+        assert_eq!(frame.height, 0);
+        assert!(frame.cursor.is_none());
+        assert!(frame.hyperlinks.is_empty());
+        assert!(frame.graphics.is_empty());
+
+        let marker = panic_marker("client socket read failed".to_string());
+        match marker {
+            ServerMessage::ClientShellError { message } => {
+                assert_eq!(message, "client socket read failed")
+            }
+            other => panic!("expected ClientShellError, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn external_endpoint_graphics_probe() {
         if probe_session_dir().is_none() {
             return;

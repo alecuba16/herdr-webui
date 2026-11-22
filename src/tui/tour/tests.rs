@@ -8,11 +8,22 @@ use ratatui::Terminal;
 use serde_json::json;
 
 use crate::tui::render::render;
-use crate::tui::tests::app_with_snapshot;
+use crate::tui::tests::{app_with_snapshot, settings_test_env};
 use crate::tui::{tour, TuiApp, TuiMode, TuiScreen, TuiSnapshot};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// Env-mutation wrapper over the crate-wide lock (test_env_guard R1:
+/// the name must be one of LOCK_NAMES for the guard to see it, hence
+/// plain env_lock). The write-failure test holds it across its whole
+/// env window; no other tour test mutates env, the shared
+/// settings_test_env helper takes this same lock internally.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// The shared fixture has one workspace and one agent; the tour demos
@@ -74,6 +85,85 @@ fn tour_opens_on_first_step_and_runs_the_search_demo() {
     assert!(screen.contains("Tour 1 /"));
 }
 
+/// The full-coverage steps each demo a real surface: files/git switch
+/// the screen, the lens opens as field state, the session manager and
+/// settings overlays render below the card, and the settings step
+/// does not strand the overlay stack.
+#[test]
+fn full_coverage_steps_demo_their_surfaces() {
+    let _env = settings_test_env();
+    let mut app = open_tour_app();
+
+    // Files screen: the demo opened the real screen.
+    let files = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Files screen")
+        .unwrap();
+    app.tour_index = files;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.screen, TuiScreen::Files);
+    assert_eq!(app.mode, TuiMode::Tour);
+
+    // Git screen: the demo opened the git surface. The refresh on the
+    // nonexistent test port fails into the error slot; the screen is
+    // still the real git view.
+    let git = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Git screen")
+        .unwrap();
+    app.tour_index = git;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.screen, TuiScreen::Git);
+
+    // Chat lens: field state, not a TuiMode. The fixture pane is a
+    // jcode session (chat-supported), so the lens opens and renders
+    // below the card through the shared active-lens arm.
+    let lens = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Chat lens and composer")
+        .unwrap();
+    app.tour_index = lens;
+    app.run_tour_demo_for_test();
+    assert!(app.lens.active);
+    assert_eq!(app.mode, TuiMode::Tour);
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Ctrl+B L"), "lens chord shown");
+    // The next step's demo resets the screen to Terminal and the
+    // runner cleared the overlay record, but the lens stays open as
+    // the user's surface until they close it; the tour keeps the keys
+    // (tour handler runs before the lens handler).
+    let sessions = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Session manager")
+        .unwrap();
+    app.tour_index = sessions;
+    app.run_tour_demo_for_test();
+    assert_eq!(
+        app.tour_demo_overlay,
+        Some(TuiMode::SessionManager),
+        "session manager demo recorded its overlay"
+    );
+    assert_eq!(app.mode, TuiMode::Tour);
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Enter switch"), "session rows rendered");
+
+    // Settings overlay: the demo opens the overlay below the card and
+    // the stack is truncated so closing the tour does not strand it.
+    let settings = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Settings overlay")
+        .unwrap();
+    app.tour_index = settings;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.tour_demo_overlay, Some(TuiMode::Settings));
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("replay tour"), "settings overlay rendered");
+
+    // Closing from the last step still lands on the pre-tour mode.
+    app.handle_key(key(KeyCode::Char('q')));
+    assert_ne!(app.mode, TuiMode::Tour);
+}
+
 #[test]
 fn tour_walks_forward_and_back_with_the_demo_side_effects() {
     let mut app = open_tour_app();
@@ -96,6 +186,7 @@ fn tour_walks_forward_and_back_with_the_demo_side_effects() {
 
 #[test]
 fn tour_last_step_finishes_and_closes_the_overlay() {
+    let _env = settings_test_env();
     let mut app = open_tour_app();
     let last = tour::tour_steps().len() - 1;
     for _ in 0..last {
@@ -111,6 +202,7 @@ fn tour_last_step_finishes_and_closes_the_overlay() {
 
 #[test]
 fn tour_keys_never_leak_into_the_app_underneath() {
+    let _env = settings_test_env();
     let mut app = open_tour_app();
     // Tab would normally toggle the sidebar focus; inside the tour it
     // must do nothing at all.
@@ -127,6 +219,7 @@ fn tour_keys_never_leak_into_the_app_underneath() {
 
 #[test]
 fn tour_closes_with_esc_and_help_replays_it_with_shift_t() {
+    let _env = settings_test_env();
     let mut app = tour_fixture_app();
     app.open_help_overlay();
     assert_eq!(app.mode, TuiMode::Help);
@@ -153,9 +246,16 @@ fn tour_steps_cover_the_main_areas_in_the_webui_order() {
             "Workspaces",
             "Agents",
             "Main screen",
+            "Files screen",
+            "Git screen",
             "Terminal screen",
+            "Split tiles",
+            "The tile language",
             "Sidebar collapse",
+            "Chat lens and composer",
+            "Session manager",
             "Help overlay",
+            "Settings overlay",
             "The prefix language",
         ]
     );
@@ -169,6 +269,7 @@ fn tour_steps_cover_the_main_areas_in_the_webui_order() {
 
 #[test]
 fn tour_swallows_the_prefix_and_lens_keys() {
+    let _env = settings_test_env();
     let mut app = open_tour_app();
     let before_index = app.tour_index;
     let before_workspace = app.selected_workspace;
@@ -203,7 +304,7 @@ fn tour_renders_on_a_tiny_terminal_without_panicking() {
     let screen = draw(&app, 10, 8);
     assert!(screen.contains("Tour"));
     // A wide terminal still renders the full card.
-    assert!(draw(&app, 100, 30).contains("Tour 1 / 8"));
+    assert!(draw(&app, 100, 30).contains("Tour 1 / 15"));
 }
 
 #[test]
@@ -327,4 +428,103 @@ fn tour_render_covers_every_region_and_the_chordless_footer() {
     app.tour_index = tour::tour_steps().len() + 5;
     let guard = draw(&app, 80, 24);
     assert!(!guard.contains("Tour"), "no step: no card drawn");
+}
+
+#[test]
+fn split_steps_demo_the_real_split_mode_and_teach_the_tile_language() {
+    // The "Split tiles" step runs open_split_mode through the real
+    // dispatch: with the fixture's two workspaces the ghost proposes
+    // pane_2 (the other workspace's pane) beside the focused tile,
+    // and the split mode renders below the tour card.
+    let mut app = open_tour_app();
+    app.tour_index = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Split tiles")
+        .unwrap();
+    app.run_tour_demo_for_test();
+    let preview = app
+        .split_mode
+        .clone()
+        .expect("split step opened the real split mode");
+    assert_eq!(preview.pane, "pane_2");
+    assert_eq!(preview.neighbor, "pane_1");
+    // Split mode is field state, not a TuiMode overlay: the tour keeps
+    // the mode and no demo overlay gets recorded.
+    assert_eq!(app.mode, TuiMode::Tour);
+    assert_eq!(app.tour_demo_overlay, None);
+    // The card renders with the split chord and the ghost on screen.
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Ctrl+B s"), "split chord shown");
+
+    // "The tile language" step is passive: no demo side effects, the
+    // zoom chord it names renders on the card.
+    let mut app = open_tour_app();
+    app.tour_index = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "The tile language")
+        .unwrap();
+    app.run_tour_demo_for_test();
+    assert!(app.split_mode.is_none(), "passive step opens nothing");
+    assert!(!app.split_zoomed, "passive step zooms nothing");
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Ctrl+B z"), "zoom chord shown");
+    assert!(screen.contains("Ctrl+B m"), "move chord shown");
+    assert!(screen.contains("Ctrl+B Shift+Z"), "resize chord shown");
+}
+
+#[test]
+fn shortcut_key_hint_names_the_split_tile_chords() {
+    // MovePane and ResizePane lost their tour steps in the step-table
+    // trim, so the hint table's arms never run through the walk tests.
+    use crate::tui::keys::Shortcut;
+    assert_eq!(tour::shortcut_key_hint(Shortcut::MovePane), "m");
+    assert_eq!(tour::shortcut_key_hint(Shortcut::ResizePane), "Shift+Z");
+}
+
+#[test]
+fn tour_state_write_failure_lands_on_the_status_line() {
+    // record_tour_state is best effort: an unwritable settings path
+    // must surface as a status line, not skip the close.
+    use std::os::unix::fs::PermissionsExt;
+
+    // This test owns its whole env window through the visible lock
+    // (settings_test_env's guard Drop deletes its temp root, which
+    // would delete the read-only fixture dir before the redirect
+    // can point into it).
+    let _lock = env_lock();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let config_root = std::env::temp_dir().join(format!("herdr-tour-state-fail-{stamp}") + "/ro");
+    // XDG points at a nonexistent path under the read-only root, so
+    // tui_set_tour_state's create_dir_all(<xdg>/herdr-webui) fails
+    // before the file write.
+    let fixture_xdg = config_root.join("xdg");
+    std::fs::create_dir_all(&config_root).unwrap();
+    let mut perms = std::fs::metadata(&config_root).unwrap().permissions();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(&config_root, perms).unwrap();
+    let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    std::env::set_var("XDG_CONFIG_HOME", &fixture_xdg);
+
+    let mut app = open_tour_app();
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.mode != TuiMode::Tour, "the tour still closes");
+    assert!(
+        app.status.starts_with("tour state not saved:"),
+        "status explains the missing record: {}",
+        app.status
+    );
+
+    // The mode change also drives a read-only cleanup: restore perms
+    // first so the temp root removal does not fail on the fixture.
+    let mut perms = std::fs::metadata(&config_root).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&config_root, perms).unwrap();
+    match prior_xdg {
+        Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(config_root.parent().unwrap());
 }

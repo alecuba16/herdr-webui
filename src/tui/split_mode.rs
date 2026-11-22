@@ -39,6 +39,37 @@ impl TuiApp {
         self.selected_pane().map(|pane| pane.id.clone())
     }
 
+    /// Geometrically nearest surviving leaf to `pane_id`, scored on
+    /// the tile geometry the last render recorded (center-to-center
+    /// distance, dead pane's last rect). Focus that survives a pane
+    /// death lands next to where the user was, not top-left.
+    pub(crate) fn nearest_leaf_to(&self, pane_id: &str) -> Option<String> {
+        let geometry = self.tile_geometry.borrow();
+        let origin = geometry.iter().find(|tile| tile.pane_id == pane_id)?;
+        let (ox, oy) = (
+            origin.x as i32 + origin.width as i32 / 2,
+            origin.y as i32 + origin.height as i32 / 2,
+        );
+        let mut best: Option<(i32, String)> = None;
+        for leaf in self.split_tree.leaves() {
+            if leaf == pane_id {
+                continue;
+            }
+            let Some(tile) = geometry.iter().find(|tile| tile.pane_id == leaf) else {
+                continue;
+            };
+            let (cx, cy) = (
+                tile.x as i32 + tile.width as i32 / 2,
+                tile.y as i32 + tile.height as i32 / 2,
+            );
+            let dist = (cx - ox) * (cx - ox) + (cy - oy) * (cy - oy);
+            if best.as_ref().is_none_or(|(b, _)| dist < *b) {
+                best = Some((dist, leaf.to_string()));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
     /// Reconcile the tree with the snapshot: panes that vanished get
     /// pruned (leaf removal collapses single-child splits), and a tree
     /// with no pane left resets to a leaf of the current focus so the
@@ -55,10 +86,11 @@ impl TuiApp {
             .map(|pane| pane.id.as_str())
             .collect();
         // Prune every dead leaf; one pass per dead pane (trees stay
-        // small, the loop is cheap and keeps the model pure).
-        // remove_leaf returns None when the tree holds one leaf total,
-        // so a lone dead pane survives here and the reseed below
-        // replaces it.
+        // small, the loop is cheap and keeps the model pure). The
+        // focused tile dying records a notice naming the closest
+        // survivor focus lands on (ux review finding: silent top-left
+        // re-root read as focus loss).
+        let mut focus_notice: Option<String> = None;
         loop {
             let dead = self
                 .split_tree
@@ -67,9 +99,27 @@ impl TuiApp {
                 .find(|id| !alive.contains(id))
                 .map(|id| id.to_string());
             let Some(dead) = dead else { break };
+            let focus_died = self.split_focus.as_deref() == Some(dead.as_str());
             match split::remove_leaf(&self.split_tree, &dead) {
                 Some(next) => self.split_tree = next,
                 None => break,
+            }
+            if focus_died {
+                // Nearest survivor by last-render geometry; without
+                // geometry (headless first frame) the first alive
+                // leaf on the pruned tree takes over.
+                let nearest = self.nearest_leaf_to(&dead).or_else(|| {
+                    self.split_tree
+                        .leaves()
+                        .into_iter()
+                        .find(|id| *id != dead.as_str() && alive.contains(id))
+                        .map(|id| id.to_string())
+                });
+                self.split_focus = nearest.clone();
+                focus_notice = Some(crate::tui::render::pane_display_name(
+                    self,
+                    nearest.as_deref().unwrap_or_default(),
+                ));
             }
         }
         // Reseed when no alive leaf is left (fresh session, or the
@@ -96,11 +146,19 @@ impl TuiApp {
             self.split_focus = seed;
         }
         // Focus must sit on the tree: dead focus falls back to the
-        // first leaf so walks always have an origin.
+        // geometrically nearest leaf (ux review finding: top-left
+        // re-root is a focus jump in a big grid), first leaf when no
+        // geometry is recorded yet. The prune loop above already
+        // rerouted focus when the focused tile died; this guard
+        // covers a focus that died without a prune (snapshot races).
         let leaves = self.split_tree.leaves();
         if let Some(focus) = self.split_focus.as_deref() {
             if !leaves.contains(&focus) {
-                self.split_focus = leaves.first().map(|id| id.to_string());
+                let fallback = self.nearest_leaf_to(focus);
+                self.split_focus = match fallback {
+                    Some(id) => Some(id),
+                    None => leaves.first().map(|id| id.to_string()),
+                };
             }
         }
         // The tree collapsed to a single leaf (close pruned the
@@ -137,6 +195,11 @@ impl TuiApp {
             }
         }
         self.drain_auto_split_queue();
+        // Queued while `alive` still held its borrow: the focused
+        // tile's close notice, held so the refresh cannot wipe it.
+        if let Some(label) = focus_notice {
+            self.set_status_notice(format!("tile {label} closed · focus moved to {label}"));
+        }
     }
 
     /// Auto-split on open: insert every queued workspace's first pane
@@ -248,6 +311,13 @@ impl TuiApp {
             self.split_zoomed = false;
             self.status = "zoom off".to_string();
         }
+        // Re-pressing the entry chord while the overlay is open keeps
+        // the ghost placement the user already walked/flipped; a
+        // fresh preview would silently discard it. The unzoom above
+        // still runs so the grid shows the ghost.
+        if self.split_mode.is_some() {
+            return;
+        }
         // Only one overlay at a time (footer hint already is).
         self.move_mode = None;
         let Some(focus) = self.focused_pane_id() else {
@@ -256,7 +326,9 @@ impl TuiApp {
         };
         // First candidate: a pane from another workspace that is not
         // already on the tree (the cross-workspace point of the
-        // feature); fall back to the focused pane's own workspace.
+        // feature); fall back to the focused pane's own workspace;
+        // with every pane displayed the fresh-shell sentinel keeps
+        // the mode open (design doc: "then a fresh shell").
         let on_tree: Vec<&str> = self.split_tree.leaves();
         let candidate = self
             .snapshot
@@ -277,10 +349,7 @@ impl TuiApp {
                     .find(|pane| !on_tree.contains(&pane.id.as_str()))
                     .map(|pane| pane.id.clone())
             });
-        let Some(candidate) = candidate else {
-            self.status = "no other pane available".to_string();
-            return;
-        };
+        let candidate = candidate.unwrap_or_else(|| split::FRESH_SHELL.to_string());
         self.split_mode = Some(split::SplitPreview {
             neighbor: focus,
             side: Side::Right,
@@ -290,25 +359,23 @@ impl TuiApp {
     }
 
     /// Cycle the ghost's candidate pane (p in split mode): panes not
-    /// on the tree first (other workspaces ahead), then back to the
-    /// first. Skips the neighbor itself; a ghost never proposes
-    /// duplicating the pane it overlays.
+    /// on the tree first (other workspaces ahead), then the fresh
+    /// shell sentinel, then back to the first. Skips the neighbor
+    /// itself; a ghost never proposes duplicating the pane it
+    /// overlays.
     pub(crate) fn split_cycle_pane(&mut self) {
         let Some(preview) = self.split_mode.clone() else {
             return;
         };
         let on_tree: Vec<&str> = self.split_tree.leaves();
-        let candidates: Vec<String> = self
+        let mut candidates: Vec<String> = self
             .snapshot
             .panes
             .iter()
             .filter(|pane| !on_tree.contains(&pane.id.as_str()) && pane.id != preview.neighbor)
             .map(|pane| pane.id.clone())
             .collect();
-        if candidates.is_empty() {
-            self.status = "no other pane to open".to_string();
-            return;
-        }
+        candidates.push(split::FRESH_SHELL.to_string());
         let index = candidates
             .iter()
             .position(|id| *id == preview.pane)
@@ -380,19 +447,63 @@ impl TuiApp {
     }
 
     /// Commit the split (Enter): the candidate pane joins the tree
-    /// beside the ghost's neighbor, focus moves to the new tile.
+    /// beside the ghost's neighbor, focus moves to the new tile. A
+    /// refused commit keeps the mode open with the reason in the
+    /// status: Enter is the commit verb, a refusal is not a cancel,
+    /// and ejecting the user from the mode hid the cause (ux review
+    /// finding). Esc stays the only exit.
     pub(crate) fn split_commit(&mut self) {
-        let Some(preview) = self.split_mode.take() else {
+        let Some(preview) = self.split_mode.clone() else {
             return;
         };
         if !self.split_tree.contains_pane(&preview.neighbor) {
-            self.status = "split target vanished".to_string();
+            // Say the way back in: the mode just closed on the user
+            // and the reason alone reads like a dead end.
+            self.status = "split target vanished · Ctrl+B s to retry".to_string();
             return;
         }
         if self.split_tree.contains_pane(&preview.pane) {
             self.status = "pane already on screen".to_string();
             return;
         }
+        // Fresh-shell sentinel (design: "then a fresh shell"): create
+        // a tab in the focused tile's workspace and split its root
+        // pane. The backend answer carries the pane id, so the tree
+        // insert uses the real pane; a failure keeps the mode open
+        // with the reason.
+        if preview.pane == split::FRESH_SHELL {
+            let Some(pane) = self
+                .view_pane()
+                .map(|pane| pane.workspace_id.clone())
+                .or_else(|| self.snapshot.workspaces.first().map(|ws| ws.id.clone()))
+                .and_then(|workspace| {
+                    self.client
+                        .create_tab(Some(&workspace), None)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .pointer("/root_pane/pane_id")
+                                .and_then(|id| id.as_str())
+                                .map(str::to_string)
+                        })
+                })
+            else {
+                self.status = "fresh shell failed".to_string();
+                return;
+            };
+            self.split_mode = None;
+            self.split_tree =
+                split::insert_beside(&self.split_tree, &preview.neighbor, &pane, preview.side);
+            self.split_focus = Some(pane);
+            self.just_closed_mode = true;
+            self.status = "fresh shell split".to_string();
+            if let Err(err) = self.refresh() {
+                self.error = Some(err.to_string());
+            }
+            self.mark_dirty();
+            return;
+        }
+        self.split_mode = None;
         self.split_tree = split::insert_beside(
             &self.split_tree,
             &preview.neighbor,
@@ -400,6 +511,10 @@ impl TuiApp {
             preview.side,
         );
         self.split_focus = Some(preview.pane);
+        // Commit also exits the mode, so it arms the double-Esc guard
+        // like the Esc path does; a reflex Esc after committing must
+        // not open the quit confirm.
+        self.just_closed_mode = true;
         self.status = "tile added".to_string();
         self.mark_dirty();
     }
@@ -486,11 +601,15 @@ impl TuiApp {
 
     /// Commit the move (Enter): swap keeps the tree shape, insert
     /// pulls the picked pane then re-inserts it beside the target.
+    /// Refused commits keep the mode open with the reason in the
+    /// status (Enter is the commit verb, not a cancel; a silent
+    /// `picked == target` return made Enter look dead).
     pub(crate) fn move_commit(&mut self) {
-        let Some(state) = self.move_mode.take() else {
+        let Some(state) = self.move_mode.clone() else {
             return;
         };
         if state.picked == state.target {
+            self.status = "target is the picked tile: hjkl moves the target".to_string();
             return;
         }
         if !self.split_tree.contains_pane(&state.picked)
@@ -514,14 +633,19 @@ impl TuiApp {
         } else {
             self.split_tree = split::swap_leaves(&self.split_tree, &state.picked, &state.target);
         }
+        self.move_mode = None;
         let picked = state.picked.clone();
+        // Commit exits the mode: arm the double-Esc guard like every
+        // other mode-exit path.
+        self.just_closed_mode = true;
         self.split_focus = Some(state.picked);
+        let picked_label = crate::tui::render::pane_display_name(self, &picked);
         self.status = if state.insert {
-            // Say where focus landed: insert commits land on the picked
-            // pane, and the user needs to know that.
-            format!("moved {picked} · focus {picked}")
+            // Say where focus landed with the label the tiles show,
+            // not the raw pane id (ux review finding).
+            format!("moved {picked_label} · focus {picked_label}")
         } else {
-            "tiles swapped".to_string()
+            format!("swapped {picked_label} into place")
         };
         self.mark_dirty();
     }

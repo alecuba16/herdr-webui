@@ -31,9 +31,19 @@ pub enum SplitNode {
 /// equals Ratio(1, 2), and later steps converge proportionally.
 pub const SPLIT_WEIGHT_SEED: u32 = 8;
 
-/// Smallest weight a resize may leave on a side: the layout floor
-/// below which a tile would be all border.
-pub const SPLIT_WEIGHT_MIN: u32 = 1;
+/// Sentinel pane id for split mode's fresh-shell candidate: commit
+/// turns it into a new backend tab and splits the tab's root pane
+/// (design doc: "candidates are panes from other workspaces ..., then
+/// a fresh shell"). Never a real pane id: backends mint ids with a
+/// prefix + counter shape.
+pub const FRESH_SHELL: &str = "__fresh_shell__";
+
+/// Smallest weight a resize may leave on a side. One weight unit of
+/// the 8-seed scale let a tile shrink to ~1/9 of its axis, unreadable
+/// sliver territory; the floor keeps the shrunk side near a quarter
+/// share (2 of 8), the point where tail lines still truncate
+/// readably (ux review finding).
+pub const SPLIT_WEIGHT_MIN: u32 = 2;
 
 impl SplitNode {
     /// Single-leaf tree for a pane: the additive default; a session
@@ -365,6 +375,18 @@ impl<'a> TileRect<'a> {
     }
 }
 
+/// Walk score, tmux pane_score shape. Ordering: candidate class
+/// first (0: strictly ahead, 1: overlap and center-ahead), overlap
+/// flag (0: shares perpendicular extent), then axis gap, then
+/// perpendicular center offset.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct WalkScore {
+    class: i32,
+    non_overlap: i32,
+    axis_distance: i32,
+    perp_offset: i32,
+}
+
 /// Directional walk used by focus movement, ghost placement, and move
 /// target selection: from `from`, the winner is the tile whose center
 /// lies furthest in the (dx, dy) direction among candidates that share
@@ -378,6 +400,118 @@ pub fn walk_next<'a>(
     skip: Option<&str>,
 ) -> Option<&'a str> {
     let origin = tiles.iter().find(|t| t.pane_id == from)?;
+    if dx != 0 && dy != 0 {
+        return walk_next_diagonal(tiles, origin, dx, dy, skip);
+    }
+    let horizontal = dx != 0;
+    let dir = if horizontal { dx } else { dy };
+    // Origin spans: the walk axis (near edge plus full extent, for
+    // the overlap class) and the perpendicular axis (center plus
+    // extent, for the overlap preference).
+    let (axis_edge, axis_center) = if horizontal {
+        (
+            origin.x as i32 + if dir > 0 { origin.width as i32 } else { 0 },
+            origin.x as i32 + origin.width as i32 / 2,
+        )
+    } else {
+        (
+            origin.y as i32 + if dir > 0 { origin.height as i32 } else { 0 },
+            origin.y as i32 + origin.height as i32 / 2,
+        )
+    };
+    let (axis_span, perp_center, perp_span) = if horizontal {
+        (
+            (origin.x as i32, origin.x as i32 + origin.width as i32),
+            origin.y as i32 + origin.height as i32 / 2,
+            (origin.y as i32, origin.y as i32 + origin.height as i32),
+        )
+    } else {
+        (
+            (origin.y as i32, origin.y as i32 + origin.height as i32),
+            origin.x as i32 + origin.width as i32 / 2,
+            (origin.x as i32, origin.x as i32 + origin.width as i32),
+        )
+    };
+    let mut best: Option<(WalkScore, &str)> = None;
+    for tile in tiles {
+        let id = tile.pane_id;
+        if id == origin.pane_id || Some(id) == skip {
+            continue;
+        }
+        let (
+            (c_axis_lo, c_axis_hi),
+            (c_span_lo, c_span_hi),
+            (near_edge, tile_axis_center),
+            tile_perp_center,
+        ) = if horizontal {
+            (
+                (tile.x as i32, tile.x as i32 + tile.width as i32),
+                (tile.y as i32, tile.y as i32 + tile.height as i32),
+                (
+                    tile.x as i32 + if dir > 0 { 0 } else { tile.width as i32 },
+                    tile.x as i32 + tile.width as i32 / 2,
+                ),
+                tile.y as i32 + tile.height as i32 / 2,
+            )
+        } else {
+            (
+                (tile.y as i32, tile.y as i32 + tile.height as i32),
+                (tile.x as i32, tile.x as i32 + tile.width as i32),
+                (
+                    tile.y as i32 + if dir > 0 { 0 } else { tile.height as i32 },
+                    tile.y as i32 + tile.height as i32 / 2,
+                ),
+                tile.x as i32 + tile.width as i32 / 2,
+            )
+        };
+        // Gap along the walk axis, sign-normalized so forward is
+        // positive; touching edges (divider neighbors) count as 0.
+        let gap = (near_edge - axis_edge) * dir;
+        // Two candidate classes (tmux pane_score shape): tiles that
+        // start at or beyond the origin edge, then tiles that overlap
+        // the origin's axis extent but sit center-ahead. The overlap
+        // class is what lets focus leave a full-height tile downward
+        // onto a stacked column beside it.
+        let (class, axis_distance) = if gap >= 0 {
+            (0, gap)
+        } else if c_axis_hi > axis_span.0
+            && c_axis_lo < axis_span.1
+            && (tile_axis_center - axis_center) * dir > 0
+        {
+            (1, (tile_axis_center - axis_center) * dir)
+        } else {
+            continue;
+        };
+        // Perpendicular overlap: the shared extent when the spans
+        // intersect, else 0. Overlapping candidates outrank the rest.
+        let overlap = if c_span_hi > perp_span.0 && c_span_lo < perp_span.1 {
+            (c_span_hi.min(perp_span.1) - c_span_lo.max(perp_span.0)).max(0)
+        } else {
+            0
+        };
+        let perp_offset = (tile_perp_center - perp_center).abs();
+        let score = WalkScore {
+            class,
+            non_overlap: if overlap > 0 { 0 } else { 1 },
+            axis_distance,
+            perp_offset,
+        };
+        if best.as_ref().is_none_or(|(b, _)| score < *b) {
+            best = Some((score, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Diagonal walk: both components must agree on direction, nearest
+/// center wins. Only the both-axis ghost walks land here.
+fn walk_next_diagonal<'a>(
+    tiles: &'a [TileRect<'_>],
+    origin: &TileRect<'_>,
+    dx: i32,
+    dy: i32,
+    skip: Option<&str>,
+) -> Option<&'a str> {
     let (ox, oy) = (
         origin.x as i32 + origin.width as i32 / 2,
         origin.y as i32 + origin.height as i32 / 2,
@@ -385,7 +519,7 @@ pub fn walk_next<'a>(
     let mut best: Option<(f32, &str)> = None;
     for tile in tiles {
         let id = tile.pane_id;
-        if id == from || Some(id) == skip {
+        if id == origin.pane_id || Some(id) == skip {
             continue;
         }
         let cx = tile.x as i32 + tile.width as i32 / 2;
@@ -395,12 +529,6 @@ pub fn walk_next<'a>(
             continue;
         }
         if dy != 0 && cdy * dy <= 0 {
-            continue;
-        }
-        if dx == 0 && cdx != 0 {
-            continue;
-        }
-        if dy == 0 && cdy != 0 {
             continue;
         }
         let dist = (cdx * cdx + cdy * cdy) as f32;
@@ -809,14 +937,70 @@ mod tests {
             TileRect::new("c", 0, 10, 20, 10),
         ];
         assert_eq!(walk_next(&tiles, "a", 1, 0, None), Some("b"));
-        // Down from a: c's center x is 10, a's is 5; the pure-vertical
-        // walk requires zero horizontal offset, so a to c needs the
-        // both-axis rule. Only the strict axis-aligned cases are
-        // guaranteed by walk_next; diagonal moves filter everything
-        // out in this synthetic grid.
-        assert_eq!(walk_next(&tiles, "a", 0, 1, None), None);
-        assert_eq!(walk_next(&tiles, "b", 0, 1, None), None);
+        // Down from a: c's center x is 10, a's is 5. Edge scoring
+        // ranks c by its near edge and perpendicular overlap, so the
+        // walk no longer dead-ends on asymmetric layouts.
+        assert_eq!(walk_next(&tiles, "a", 0, 1, None), Some("c"));
+        // Down from b: c is on the correct side, no overlap needed.
+        assert_eq!(walk_next(&tiles, "b", 0, 1, None), Some("c"));
         // Nothing left of a.
+        assert_eq!(walk_next(&tiles, "a", -1, 0, None), None);
+    }
+
+    #[test]
+    fn walk_next_diagonal_walks_both_axes_and_skips() {
+        // Diagonal walks only fire when both components agree on the
+        // direction: the ghost crosses a corner, nearest center wins.
+        let tiles = [
+            TileRect::new("a", 0, 0, 10, 10),
+            TileRect::new("b", 10, 0, 10, 10),
+            TileRect::new("c", 0, 10, 10, 10),
+            TileRect::new("d", 10, 10, 10, 10),
+            TileRect::new("far", 30, 30, 10, 10),
+        ];
+        assert_eq!(walk_next(&tiles, "a", 1, 1, None), Some("d"));
+        assert_eq!(walk_next(&tiles, "b", -1, 1, None), Some("c"));
+        // Skip turns d's corner ghost onto the far tile.
+        assert_eq!(walk_next(&tiles, "a", 1, 1, Some("d")), Some("far"));
+        // A single-axis component fails the agreement: no walk.
+        assert_eq!(walk_next(&tiles, "a", 1, 0, None), Some("b"));
+        // Wrong-sign neighbor on one axis never matches.
+        assert_eq!(walk_next(&tiles, "a", -1, -1, None), None);
+    }
+
+    #[test]
+    fn walk_next_escapes_asymmetric_three_tile_grid() {
+        // row[p1, col[p2, p3]] laid out on 20 cols: p1 full-height on
+        // the left, p2 and p3 stacked on the right. The strict
+        // center-alignment walk dead-ended here; edge scoring must
+        // walk p1 in every direction.
+        let tiles = [
+            TileRect::new("p1", 0, 0, 10, 20),
+            TileRect::new("p2", 10, 0, 10, 10),
+            TileRect::new("p3", 10, 10, 10, 10),
+        ];
+        assert_eq!(walk_next(&tiles, "p1", 1, 0, None), Some("p2"));
+        assert_eq!(walk_next(&tiles, "p1", 0, 1, None), Some("p3"));
+        assert_eq!(walk_next(&tiles, "p1", 0, -1, None), Some("p2"));
+        // Right-side walk back to the left column.
+        assert_eq!(walk_next(&tiles, "p2", -1, 0, None), Some("p1"));
+        assert_eq!(walk_next(&tiles, "p3", -1, 0, None), Some("p1"));
+        // Stack walk between p2 and p3.
+        assert_eq!(walk_next(&tiles, "p2", 0, 1, None), Some("p3"));
+        assert_eq!(walk_next(&tiles, "p3", 0, -1, None), Some("p2"));
+    }
+
+    #[test]
+    fn walk_next_prefers_overlapping_over_far_aligned_neighbor() {
+        // Two candidates to the right: d overlaps a's rows, e sits
+        // aligned by center but far away. Overlap outranks distance
+        // along the axis.
+        let tiles = [
+            TileRect::new("a", 0, 0, 10, 10),
+            TileRect::new("d", 12, 2, 10, 10),
+            TileRect::new("e", 40, 0, 10, 10),
+        ];
+        assert_eq!(walk_next(&tiles, "a", 1, 0, None), Some("d"));
         assert_eq!(walk_next(&tiles, "a", -1, 0, None), None);
     }
 

@@ -16,7 +16,9 @@ works on every screen, including while attached.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | move the workspace/agent selection (split active: walk tile focus; `Ctrl+hjkl` scrolls the focused pane) |
+| `j` / `k`, arrows | move the workspace/agent selection (split active, main region focused: walk tile focus; `Ctrl+j/k` scrolls the focused pane) |
+| `PgUp` / `PgDn` | scroll the pane 10 lines up/down (works with either region focused) |
+| `G` / `End`, `g` / `Home` | jump to the pane tail / top (main region focused, split active) |
 | `Tab` / `BackTab` | switch workspace/agent list focus |
 | `w` | focus workspaces |
 | `a` | focus agents |
@@ -104,7 +106,7 @@ answered from the webui's chat lens card. The server-side parser
 | `j` / `k` | next / previous workspace |
 | `a` / `A` | next / previous agent |
 | `]` / `[` | next / previous panel in the workspace (wraps) |
-| `p` / `x` | new / close tab (last tab closes its workspace) |
+| `p` / `x` | new / close tab (last tab closes its workspace; closing the view pane's tab closes that split tile) |
 | `n`, `N` | new workspace (folder browser, Enter picks, second prompt names it; the new workspace opens as a split tile) |
 | `Shift+S` | rename workspace |
 | `Shift+R` | rename panel (webui `renamePanel`) |
@@ -119,11 +121,11 @@ answered from the webui's chat lens card. The server-side parser
 | `Shift+C` | chat composer |
 | `e` | edit the current file (Files preview or Git Changes selection) |
 | `E` (Shift+E) | settings overlay from any screen (Terminal keeps `Ctrl+B s` for split mode) |
-| `s` | settings overlay (t cycles the theme) · terminal: split tile mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm) |
-| `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
+| `s` | settings overlay (t cycles the theme, p toggles the Ctrl+B terminal-prefix passthrough and persists it, T replays the onboarding tour) · terminal (navigate): split mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm, `Esc` cancel) |
+| `m` | git: toggle blame in the diff · terminal (navigate): move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm, `Esc` cancel) |
 | `Shift+Z` | terminal: resize mode (`h`/`l` narrow/widen, `j`/`k` shorten/lengthen, `Enter`/`Esc` close) |
-| `z` | git: stash the selected file · terminal: zoom the focused tile (resize mode closes it first) |
-| `hjkl` / arrows | terminal (split active): walk tile focus, single tile keeps pane scroll · `Ctrl+hjkl` scrolls the focused pane |
+| `z` | git: stash the selected file · terminal: zoom the focused tile (split/move/resize modes lift zoom first) |
+| `hjkl` / arrows | terminal (split active, main region focused): walk tile focus, single tile keeps pane scroll · `Ctrl+j/k` scrolls the focused pane up/down |
 | `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |
 | `I` | git cwd: type a repo path |
@@ -153,22 +155,32 @@ Changes view (webui `KeyG` parity), `Space` marks commits and
 `Enter` compares the two marked ones, `J`/`K`/`H` hunk cursor and apply, `c`
 opens the commit modal in every git view, `B` creates a branch in the
 Branches view, `D` delete branch or drop
-stash, `t`/`R`/`b` tag/reset/rebase.
+stash, `t`/`R`/`b` tag/reset/rebase, `P` pushes.
 
 ## Help overlay
 
 `Ctrl+B ?` opens the help overlay. Typing filters the shortcut list
 against key and description; `Ctrl+U` clears the query, `j`/`k` and
 arrows scroll the list while no filter is active, `Esc` closes.
-The overlay is opaque (the screen behind never bleeds through) and
-its bottom border carries the release version, right-aligned
-`v<version>`, the same stamp `herdr-webui --version` prints.
+`T` replays the onboarding tour from the overlay (the stack keeps
+Help below, so closing the tour lands back here; the same `T`
+replay lives in the settings overlay). While the tour card is open
+`j`/Right/Enter step forward, `k`/Left step back, and `Esc`/`q`/`?`
+close it; the steps and demo actions are listed in
+[onboarding tour](onboarding-tour.md). The overlay is opaque (the
+screen behind never bleeds through) and its bottom border carries
+the release version, right-aligned `v<version>`, the same stamp
+`herdr-webui --version` prints.
 
 ## Overlay key rules (shared)
 
 - `Esc` closes overlays: lens, help, settings, worktree browser, search
   palette, prompts. In filters it clears the query first, closes on the
   second press.
+- Double-`Esc` reflex: right after a split/move/resize overlay closes,
+  the immediate next `Esc` is swallowed instead of opening the quit
+  confirmation (the reflex Esc meant the overlay, not the app); any other
+  key re-arms the normal Esc behavior, and `q` still quits.
 - Overlays dim the backdrop (webui `.modal-backdrop` parity) and keep
   their own footer hint line; every hint ends with the `Ctrl+B ?`
   discovery tail.

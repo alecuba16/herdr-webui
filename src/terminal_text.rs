@@ -532,3 +532,51 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::*;
+
+    #[test]
+    fn strip_ansi_skips_dcs_pm_apc_payloads() {
+        // ESC P (DCS/Sixel), ESC ^ (PM), ESC _ (APC/Kitty graphics):
+        // payloads must vanish until ST, including a BEL byte inside
+        // a quoted Sixel string (only ST terminates).
+        assert_eq!(
+            strip_ansi_lossy("\u{1b}Pq\"a\u{7}b\u{1b}\\x", StripCarriageReturn::Drop),
+            "x"
+        );
+        assert_eq!(
+            strip_ansi_lossy("\u{1b}^pm\u{1b}\\y", StripCarriageReturn::Drop),
+            "y"
+        );
+        assert_eq!(
+            strip_ansi_lossy("\u{1b}_apc\u{1b}\\z", StripCarriageReturn::Drop),
+            "z"
+        );
+        // SOS uses the same skip.
+        assert_eq!(
+            strip_ansi_lossy("\u{1b}Xsos\u{1b}\\w", StripCarriageReturn::Drop),
+            "w"
+        );
+    }
+
+    #[test]
+    fn terminal_text_erases_the_display_and_moves_the_cursor() {
+        // CSI ops through VtCore: erase line, erase display, and the
+        // A/B/C/D/G/H movement arms render onto the text screen.
+        // Cursor-relative erases: EL0 at the end of "abc" leaves it,
+        // then ED0 clears from the cursor down (row truncated), leaving
+        // the text above intact.
+        let out = terminal_text_lossy("abc\u{1b}[K", TerminalTextOptions::tui_tail());
+        assert_eq!(out, "abc");
+        let out = terminal_text_lossy("ab\u{1b}[CX", TerminalTextOptions::tui_tail());
+        assert_eq!(out, "ab X".trim_end());
+        // ED2 wipes the whole display and resets the cursor.
+        let out = terminal_text_lossy("keep\u{1b}[2Jdrop", TerminalTextOptions::tui_tail());
+        assert_eq!(out, "drop");
+        // ED1 wipes from the top through the cursor row.
+        let out = terminal_text_lossy("a\nb\r\u{1b}[1Jc", TerminalTextOptions::tui_tail());
+        assert_eq!(out, "c");
+    }
+}

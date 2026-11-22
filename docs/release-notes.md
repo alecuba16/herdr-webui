@@ -1,6 +1,33 @@
 # Release notes
 
 ## 0.7.56 Release Notes
+- Split attach fixed: ensure_live_terminal and the resize path now bind
+  the focused tile's terminal (view_terminal_id) at the tile's own
+  geometry (attach_viewport) instead of the sidebar cursor's pane at
+  full-window size. Attach after a split previously sent typed input to
+  the pane the sidebar happened to sit on and resized the PTY to the
+  whole window, so the preview and the live pane disagreed after
+  attach+detach. A lib regression test pins the sidebar-on-one-pane,
+  tile-focus-on-another case.
+- With a split live the footer hint names how to add another tile
+  (Ctrl+B s) and close one (Ctrl+B x); the sidebar-focused hint names
+  the split chord that still fires there plus Ctrl+B . back to the
+  main pane. On Terminal/Navigate the s/m/z chord echo now tells the
+  truth (split mode, move tile, zoom tile) instead of echoing the git
+  screen labels (settings, blame, stash).
+- TUI shortcut docs completed: pane scroll keys (PgUp/PgDn, G/g with
+  Home/End), the in-screen git P push, the settings overlay p
+  passthrough toggle and T tour replay, the help overlay T tour
+  replay with its in-tour keys, and the double-Esc reflex after a
+  split/move/resize overlay closes all have rows in docs/tui-shortcuts
+  and the in-app help overlay.
+- Test coverage round: the lib suite closes the big llvm-cov gaps
+  (diagonal tile walks, nearest-survivor focus on pane death, zoom
+  lift on zoomed-pane death, fresh-shell split commit, git error
+  arms, close-tab fallbacks, the external-probe module's pure helpers)
+  landing above 98% line coverage; the live-daemon socket harness and
+  the attach EPIPE race stay uncovered by design (documented in the
+  code next to the arms).
 - Reload rehydrate waits for the workspaces snapshot instead of
   burning its one-shot on a workspace-less attempt. The boot renders
   panes before the workspaces row lands, so the 0.7.55 rehydrate

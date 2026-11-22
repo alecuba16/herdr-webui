@@ -16,6 +16,7 @@ __pycache__/
 zigbin/
 .e2e-*.log
 target-llvm
+target-cov
 .e2e-chrome-profile
 default_*.profraw
 lcov.info

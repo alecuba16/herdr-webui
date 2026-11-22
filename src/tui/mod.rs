@@ -128,6 +128,40 @@ pub(crate) fn tui_terminal_prefix_passthrough() -> bool {
         .unwrap_or(false)
 }
 
+/// Onboarding-tour run state, persisted in the shared settings file the
+/// same way the passthrough flag is (webui/mobile keep theirs in
+/// localStorage; a terminal process has none, so the shared file is the
+/// TUI's store). "done" = reached the last step, "skipped" = closed
+/// early; both suppress nothing in the TUI (there is no auto-start),
+/// they only report in the settings overlay.
+pub(crate) fn tui_tour_state() -> Option<String> {
+    let raw = std::fs::read_to_string(tui_settings_path()).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    value
+        .get("tuiOnboardingTour")
+        .and_then(|state| state.as_str())
+        .map(str::to_string)
+        .filter(|state| state == "done" || state == "skipped")
+}
+
+/// Write side: record the TUI onboarding tour outcome. Unknown keys
+/// survive (same patch-in-place discipline as the passthrough writer).
+pub(crate) fn tui_set_tour_state(state: &str) -> Result<(), String> {
+    let path = tui_settings_path();
+    let mut root: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    if !root.is_object() {
+        root = serde_json::Value::default();
+    }
+    root["tuiOnboardingTour"] = serde_json::Value::String(state.to_string());
+    let parent = path.parent().unwrap_or(std::path::Path::new(""));
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let raw = serde_json::to_string_pretty(&root).map_err(|err| err.to_string())?;
+    std::fs::write(&path, raw).map_err(|err| err.to_string())
+}
+
 /// Write side: flip `terminalPrefixPassthrough` in the shared file.
 /// Unknown keys survive (the whole object is parsed, patched, written
 /// back); a missing file starts a fresh object. IO failures surface as
@@ -273,16 +307,28 @@ impl FooterContext {
                 " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
             }
             Self::TerminalMain => {
-                " Enter attach · Ctrl+B . / , focus sidebar · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
+                // The split entry is invisible otherwise: the chord lives
+                // behind the prefix and the resting hint named no way in.
+                // It rides the front segments so fit_hint keeps it until
+                // the terminal gets genuinely narrow.
+                " Enter attach · Ctrl+B s split · Ctrl+B . / , focus sidebar · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
             Self::TerminalMainSplit => {
-                " hjkl walk tiles · Ctrl+j/k scroll · Enter attach · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ? help "
+                // Split is live, so name the loop: how to add another
+                // tile and how to close one. Both ride the front so
+                // fit_hint keeps them when the line collapses.
+                " hjkl walk tiles · Ctrl+j/k scroll · Ctrl+B s split · Ctrl+B x close tile · Enter attach · Shift+L lens · q quit · Ctrl+B ? help "
             }
             Self::Terminal(TuiMode::Attach) => {
                 " Ctrl-G detach · type sends input · Ctrl+B ? help "
             }
             Self::Terminal(_) => {
-                " ↑/↓ j/k select · Enter attach · Tab lists · q quit · Ctrl+B ? help "
+                // Sidebar owns focus here but the split chord still
+                // fires from Terminal/Navigate (the dispatch gates on
+                // screen+mode, not region), so name it or the resting
+                // hint goes silent on split exactly when the sidebar
+                // has focus. Ctrl+B . returns focus to the main pane.
+                " ↑/↓ j/k select · Enter attach · Tab lists · Ctrl+B s split · Ctrl+B . main · q quit · Ctrl+B ? help "
             }
             Self::Files(_) => {
                 " j/k move · Enter open · e edit · / search · L file log · a/A new file/dir · R rename · x delete · Tab previews · M outline · w reveal · Ctrl+B ? help "
@@ -1284,6 +1330,20 @@ impl TuiApp {
                     crate::tui::keys::chord_label(shortcut),
                     shortcut.label()
                 );
+                // On Terminal/Navigate the s/m/z chords open the split
+                // modes instead of their git meanings, so the echo
+                // must match what actually fired or the status line
+                // teaches the wrong verb.
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    match shortcut {
+                        Shortcut::Settings => self.status = "Ctrl+B s -> split mode".to_string(),
+                        Shortcut::GitBlame => {
+                            self.status = "Ctrl+B m -> move tile mode".to_string()
+                        }
+                        Shortcut::GitStashFile => self.status = "Ctrl+B z -> zoom tile".to_string(),
+                        _ => {}
+                    }
+                }
                 self.run_shortcut(shortcut);
                 self.hold_status_if_changed(&before);
                 self.mark_dirty();
@@ -1402,6 +1462,14 @@ impl TuiApp {
             TuiMode::Settings => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
                     self.close_overlay();
+                }
+                // Tour replay from the settings overlay (same entry as
+                // Help's T key): the overlay stack keeps Settings below,
+                // so closing the tour lands back here. The trigger is
+                // how a user who already ran the onboarding finds it
+                // again, with the run state visible one row above.
+                KeyCode::Char('T') => {
+                    self.open_tour();
                 }
                 // Theme cycle (webui settings theme select).
                 KeyCode::Char('t') | KeyCode::Tab => {
@@ -1750,16 +1818,19 @@ impl TuiApp {
                     Some(head) => (head.to_string(), true),
                     None => (text.to_string(), false),
                 };
-                let count = self.file_explorer.editor_find.ranges.len();
                 match self.file_explorer.editor_replace(&replacement, all) {
-                    Ok(()) => {
+                    Ok((replaced, total)) => {
                         self.status = if all {
-                            format!("replaced {count} matches")
+                            format!("replaced {replaced} matches")
                         } else {
-                            format!("replaced 1 of {count} matches")
+                            format!("replaced 1 of {total} matches")
                         };
-                        // Stay in edit mode with the find bar alive so
-                        // Ctrl+S persists and Enter keeps cycling.
+                        // Reopen the find bar so the replace→cycle loop
+                        // the webui has actually exists: Enter cycles the
+                        // remaining matches, Esc returns to plain editing.
+                        // Without this the bar stays closed and Enter hit
+                        // edit_key, inserting a stray newline instead.
+                        self.file_explorer.editor_find_open();
                         self.file_explorer.edit_active = true;
                     }
                     Err(err) => self.error = Some(err.to_string()),
@@ -2249,6 +2320,9 @@ impl TuiApp {
         let shift = key
             .modifiers
             .contains(crossterm::event::KeyModifiers::SHIFT);
+        let ctrl = key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
                 self.file_explorer.editor_find_close();
@@ -2268,6 +2342,15 @@ impl TuiApp {
                 };
             }
             KeyCode::Backspace => self.file_explorer.pop_find_char(),
+            // Replace stays reachable while the find bar is open (the
+            // webui find bar carries the replace input inline), so the
+            // replace→cycle loop never dead-ends with the bar closed.
+            KeyCode::Char('h') if ctrl => {
+                self.prompt_input = Some(PromptInput {
+                    kind: PromptKind::ReplaceInFile,
+                    text: String::new(),
+                });
+            }
             // Match-case / regex toggles (webui toolbar checkboxes).
             KeyCode::Char('A') => {
                 self.file_explorer.editor_find.match_case =
@@ -5317,23 +5400,42 @@ pub(crate) mod prompt_action_tests {
         assert!(app.error.is_some());
 
         // One match: replace-one reports 1 of 1. The replace writes
-        // through the server, so the preview needs real content.
+        // through the server, so the preview needs real content, and
+        // the query must be set like Ctrl+F leaves it (the replace
+        // recomputes ranges from the query, never trusting stored ones).
         let (api, _stop) = fake_api_server(&[]);
         let mut app = app_with_api(api);
         app.file_explorer = explorer_with_selection();
         app.file_explorer.preview.content = "old line".to_string();
-        app.file_explorer.editor_find.ranges = vec![(0, 3)];
+        app.file_explorer.editor_find.query = "old".to_string();
         app.run_prompt_action(PromptKind::ReplaceInFile, "new");
         assert_eq!(app.status, "replaced 1 of 1 matches");
+        // The find bar reopens (webui replace bar stays up): Enter
+        // cycles the remaining matches instead of typing a newline.
+        assert!(app.file_explorer.editor_find.active);
+        assert_eq!(app.file_explorer.editor_find.ranges, Vec::new());
 
         // `!` suffix replaces all.
         let (api, _stop) = fake_api_server(&[]);
         let mut app = app_with_api(api);
         app.file_explorer = explorer_with_selection();
         app.file_explorer.preview.content = "old old".to_string();
-        app.file_explorer.editor_find.ranges = vec![(0, 3), (4, 7)];
+        app.file_explorer.editor_find.query = "old".to_string();
         app.run_prompt_action(PromptKind::ReplaceInFile, "new!");
         assert_eq!(app.status, "replaced 2 matches");
+        assert!(app.file_explorer.editor_find.active);
+
+        // Stale ranges from a shrunk buffer no longer panic: the replace
+        // recomputes from the query and reports what it actually saw.
+        let (api, _stop) = fake_api_server(&[]);
+        let mut app = app_with_api(api);
+        app.file_explorer = explorer_with_selection();
+        app.file_explorer.preview.content = "ol".to_string();
+        app.file_explorer.editor_find.query = "old".to_string();
+        // Offsets past the end of the shrunk buffer (the pre-fix panic).
+        app.file_explorer.editor_find.ranges = vec![(0, 3)];
+        app.run_prompt_action(PromptKind::ReplaceInFile, "new");
+        assert!(app.error.is_some(), "no live match in the shrunk buffer");
     }
 
     #[test]
@@ -7916,6 +8018,55 @@ mod batch12_coverage_tests {
         // Poll: the dead /armed worker from the channel drops.
         app.poll_stamp_fetches();
         assert!(app.stamp_inflight.is_empty(), "dead worker drains");
+    }
+
+    #[test]
+    fn view_terminal_id_follows_tile_focus_not_the_sidebar_cursor() {
+        // Regression (command ran in "the same view" despite the split):
+        // the binary's live attach binds view_terminal_id, and that must
+        // follow the focused tile, never the sidebar cursor. The old bin
+        // path bound selected_terminal_id: with the sidebar on pane_1
+        // and tile focus on pane_2, typed input ran in pane_1 while its
+        // echo painted the focused tile, so every command looked like
+        // it ran in "the same view".
+        let mut app = two_pane_split_app();
+        // Give pane_2 a real pane row so the split focus resolves.
+        app.snapshot.panes.push(crate::tui::model::TuiPane {
+            id: "pane_2".to_string(),
+            terminal_id: "term_2".to_string(),
+            workspace_id: "ws_1".to_string(),
+            tab_id: "tab_2".to_string(),
+            agent: Some("claude".to_string()),
+            display_agent: Some("claude".to_string()),
+            agent_status: "idle".to_string(),
+            cwd: "/repo".to_string(),
+            label: None,
+            terminal_title: None,
+            focused: false,
+            agent_session: None,
+        });
+        // Sidebar cursor on pane_1's agent row, tile focus on pane_2.
+        app.selected_agent = 0;
+        app.split_focus = Some("pane_2".to_string());
+        assert_eq!(app.view_terminal_id(), Some("term_2"));
+        assert_eq!(
+            app.selected_terminal_id(),
+            Some("term_1"),
+            "the sidebar cursor keeps its own pane"
+        );
+        // Attach geometry follows the same focus: the focused tile's
+        // rect, here recorded narrower than the window.
+        app.set_terminal_size(100, 30);
+        app.tile_geometry
+            .borrow_mut()
+            .push(crate::tui::render::TileRectOwned {
+                pane_id: "pane_2".to_string(),
+                x: 50,
+                y: 0,
+                width: 50,
+                height: 30,
+            });
+        assert_eq!(app.attach_viewport(), (48, 25));
     }
 
     #[test]

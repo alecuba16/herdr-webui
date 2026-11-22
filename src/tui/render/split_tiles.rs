@@ -521,30 +521,53 @@ pub(crate) fn split_active(app: &TuiApp) -> bool {
     app.split_tree.leaves().len() > 1 || app.split_zoomed
 }
 
+/// Human label for a pane id as hints and statuses show it: the
+/// same resolution order as the tile title (provisioned label,
+/// display agent, agent, terminal title, shell) so footer text maps
+/// to the on-screen tile. The fresh-shell sentinel names itself.
+pub(crate) fn pane_display_name(app: &TuiApp, pane_id: &str) -> String {
+    if pane_id == crate::tui::split::FRESH_SHELL {
+        return "fresh shell".to_string();
+    }
+    let Some(pane) = app.snapshot.panes.iter().find(|pane| pane.id == pane_id) else {
+        return pane_id.to_string();
+    };
+    pane.label
+        .as_deref()
+        .filter(|label| !label.is_empty())
+        .or(pane.display_agent.as_deref())
+        .or(pane.agent.as_deref())
+        .unwrap_or("shell")
+        .to_string()
+}
+
 /// Mode-hint text for the footer when split/move/resize mode is open.
 pub(crate) fn mode_hint(app: &TuiApp) -> Option<String> {
     if let Some(preview) = &app.split_mode {
         return Some(format!(
             "SPLIT · open {} · hjkl move · Tab flip · p pane · Enter confirm · Esc cancel",
-            truncate(&preview.pane, 24),
+            truncate(&pane_display_name(app, &preview.pane), 24),
         ));
     }
     if let Some(state) = &app.move_mode {
         let verb = if state.insert { "insert" } else { "swap" };
         return Some(format!(
             "MOVE · {} · hjkl target · Tab verb (now {}) · Enter confirm · Esc cancel",
-            truncate(&state.picked, 24),
+            truncate(&pane_display_name(app, &state.picked), 24),
             verb,
         ));
     }
     if let Some(state) = &app.resize_mode {
         return Some(format!(
             "RESIZE · {} · h/l narrower/wider · j/k shorter/taller · Enter/Esc done",
-            truncate(&state.pane, 24),
+            truncate(&pane_display_name(app, &state.pane), 24),
         ));
     }
     if app.split_zoomed {
-        return Some("ZOOM · Ctrl+B z off · hjkl walk".to_string());
+        // Zoom pins the focus (walks are refused while one tile owns
+        // the screen), so the hint teaches the exit, not a walk the
+        // state disables.
+        return Some("ZOOM · Ctrl+B z off · focused tile fullscreen".to_string());
     }
     None
 }
@@ -656,5 +679,67 @@ mod coverage_tests {
             .unwrap();
         let after = format!("{:?}", terminal.backend().buffer());
         assert_eq!(before, after, "empty pane area draws nothing");
+    }
+
+    #[test]
+    fn pane_display_name_labels_the_fresh_shell_pane() {
+        let client =
+            crate::backend_client::BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let app = TuiApp::new(client, std::time::Duration::from_secs(1));
+        // The fresh-shell sentinel renders as a readable name, not an id.
+        assert_eq!(
+            pane_display_name(&app, crate::tui::split::FRESH_SHELL),
+            "fresh shell"
+        );
+        // Unknown pane ids pass through unchanged.
+        assert_eq!(pane_display_name(&app, "pane_nope"), "pane_nope");
+        // A pane present in the snapshot uses its label.
+        let mut app = app;
+        app.snapshot.panes = vec![crate::tui::model::TuiPane {
+            id: "pane_1".into(),
+            terminal_id: "t1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            label: Some("build".into()),
+            agent: None,
+            display_agent: None,
+            agent_status: "idle".into(),
+            cwd: "/repo".into(),
+            focused: false,
+            agent_session: None,
+            terminal_title: None,
+        }];
+        assert_eq!(pane_display_name(&app, "pane_1"), "build");
+    }
+
+    #[test]
+    fn render_double_border_draws_the_ring_on_a_real_rect() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let client =
+            crate::backend_client::BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let _app = TuiApp::new(client, std::time::Duration::from_secs(1));
+        let p = Palette::default();
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let before = format!("{:?}", terminal.backend().buffer());
+        terminal
+            .draw(|frame| render_double_border(frame, rect(0, 0, 20, 6), "target", &p))
+            .unwrap();
+        let after = format!("{:?}", terminal.backend().buffer());
+        assert_ne!(before, after, "double border paints the rect");
+        // Double border corners must land in the buffer.
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf.cell((0, 0)).unwrap().symbol(),
+            "\u{2554}",
+            "top-left double corner"
+        );
+        assert_eq!(
+            buf.cell((19, 0)).unwrap().symbol(),
+            "\u{2557}",
+            "top-right double corner"
+        );
     }
 }

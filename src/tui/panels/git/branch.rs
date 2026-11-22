@@ -67,3 +67,44 @@ mod coverage_tests {
         assert!(panel.delete_branch(&api, "feature", true).is_err());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+
+    #[test]
+    fn refresh_branches_falls_back_to_the_local_key() {
+        // Some server builds name the list "local" instead of
+        // "branches": the fallback arm must still populate the panel.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                let _ = reader.read_line(&mut request);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = r#"{"local": ["main", "feature/x"]}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.flush();
+            }
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        panel.branch_selected = 5;
+        panel.refresh_branches(&api).unwrap();
+        assert_eq!(panel.branches.len(), 2);
+        // Out-of-range selection clamps back onto the list.
+        assert_eq!(panel.branch_selected, 1);
+    }
+}

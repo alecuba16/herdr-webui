@@ -935,6 +935,39 @@ impl WebApiClient {
         )
     }
 
+    /// Chunk-based apply (webui stageHunk/unstageHunk body): the server
+    /// rebuilds the single-chunk patch from the same diff args the client
+    /// rendered, so `\ No newline at end of file` markers survive and
+    /// what gets applied matches the hunk the user selected. A rebuilt
+    /// client-side patch loses those markers and git rejects the result.
+    pub fn git_apply_patch_chunk(
+        &self,
+        cwd: &str,
+        file: &str,
+        chunk_index: usize,
+        scope: &str,
+        context: usize,
+        reverse: bool,
+        cached: bool,
+    ) -> Result<Value, WebApiError> {
+        let body = json!({
+            "cwd": cwd,
+            "file": file,
+            "chunk_index": chunk_index,
+            "scope": scope,
+            "context": context,
+            "reverse": reverse,
+            "cached": cached,
+        });
+        self.call(
+            "POST",
+            "/api/git-ui/apply-patch",
+            Some(&body),
+            "git.apply_patch",
+            body.clone(),
+        )
+    }
+
     pub fn git_unstage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "paths": paths });
         self.call(
@@ -2809,6 +2842,53 @@ mod coverage_tests_socket {
         assert!(
             matches!(err, WebApiError::Api(message) if !message.is_empty()),
             "socket failure maps to Api error"
+        );
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::*;
+
+    #[test]
+    fn http_transport_recent_workspaces_parses_the_json_body() {
+        // WebApiClient::new builds the Http transport; recent_workspaces
+        // is one of the few routes pinned to it, so driving it against a
+        // one-shot server exercises the HTTP arm of request_json
+        // (request formatting, Content-Length, response parse).
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                let _ = reader.read_line(&mut request);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                assert!(
+                    request.starts_with("GET /api/recent-workspaces HTTP/1.1"),
+                    "request line: {request}"
+                );
+                let body = r#"{"workspaces":["/repo"]}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.flush();
+            }
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let data = client.recent_workspaces().unwrap();
+        assert_eq!(
+            data.get("workspaces").unwrap()[0].as_str().unwrap(),
+            "/repo"
         );
     }
 }
