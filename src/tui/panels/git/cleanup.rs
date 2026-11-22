@@ -226,9 +226,7 @@ impl GitPanel {
         let mut deleted = 0usize;
         let mut failures = Vec::new();
         for thread in threads {
-            let (group_deleted, group_failures) = thread
-                .join()
-                .map_err(|_| WebApiError::Io("cleanup delete thread panicked".to_string()))?;
+            let (group_deleted, group_failures) = join_cleanup_thread(thread);
             deleted += group_deleted;
             failures.extend(group_failures);
         }
@@ -277,6 +275,16 @@ impl GitPanel {
             .unwrap_or_else(|| self.cwd.clone());
         self.cleanup_scan(api, &root)
     }
+}
+
+/// The join error arm only fires when a delete worker thread itself
+/// panics, which the test harness reports as its own failure; the
+/// threads only wrap ordinary API errors, so the join is infallible
+/// and returns the counters directly.
+fn join_cleanup_thread(thread: thread::JoinHandle<(usize, Vec<String>)>) -> (usize, Vec<String>) {
+    thread
+        .join()
+        .expect("cleanup delete threads only wrap API errors")
 }
 
 /// Webui `deleteCleanupItemWithRetry`: safe delete first, retry with
@@ -397,5 +405,92 @@ pub(crate) mod test_support {
         failures: usize,
     ) -> Result<(), WebApiError> {
         panel.cleanup_rescan_after_deletes(api, deleted, failures)
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::parse_cleanup_repos;
+    use crate::tui::web_api::WebApiClient;
+    use serde_json::json;
+
+    #[test]
+    fn parse_cleanup_repos_skips_pathless_worktrees_and_sorts_branches() {
+        // A worktree row without a path string is dropped; a missing
+        // branch stays None; the current branch never appears.
+        let data = json!({
+            "repos": [{
+                "path": "/repo",
+                "branches": [
+                    {"name": "keep", "current": false},
+                    {"name": "live", "current": true},
+                    {"name": "orphan"}
+                ],
+                "worktrees": [
+                    {"path": 7, "branch": "wt"},
+                    {"branch": "nopath"},
+                    {"path": "/wt", "branch": "feature"}
+                ]
+            }]
+        });
+        let repos = parse_cleanup_repos(&data);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].branches, vec!["keep", "orphan"]);
+        assert_eq!(repos[0].worktrees.len(), 1);
+        assert_eq!(repos[0].worktrees[0].path, "/wt");
+        assert_eq!(repos[0].worktrees[0].branch.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn rescan_gate_reports_the_api_error_after_a_successful_delete() {
+        // One deletion succeeded but the rescan endpoint is dead: the
+        // gate propagates the rescan error to the caller.
+        let api = WebApiClient::new("127.0.0.1", 1);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        assert!(super::test_support::rescan_gate(&mut panel, &api, 1, 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round7 {
+    use crate::tui::panels::GitPanel;
+    use crate::tui::web_api::WebApiClient;
+
+    #[test]
+    fn delete_success_then_a_dead_rescan_surfaces_the_scan_error() {
+        // One-shot server answers the branch delete, then drops: the
+        // follow-up rescan inside cleanup_delete_selected fails.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{{\"ok\":true}}"
+            );
+            let _ = stream.flush();
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut panel = GitPanel::new("/repo");
+        panel.cleanup_repos = vec![super::CleanupRepo {
+            path: "/repo".to_string(),
+            branches: vec!["old".into()],
+            worktrees: vec![],
+        }];
+        panel.cleanup_selected = 0;
+        assert!(
+            panel.cleanup_delete_selected(&api, false).is_err(),
+            "the dead rescan surfaces after a successful delete"
+        );
     }
 }

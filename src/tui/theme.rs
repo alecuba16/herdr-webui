@@ -69,6 +69,10 @@ enum TerminalTheme {
     Light,
 }
 
+// Coverage is off because the reachable body needs a real TTY answering
+// the colorsaurus OSC 11 probe; test stdin/stdout are pipes, never
+// terminals, so only the entry line can run under llvm-cov.
+#[cfg_attr(coverage, coverage(off))]
 fn detect_terminal_theme() -> Option<TerminalTheme> {
     // The query writes OSC 11 + DA1 to stdout and blocking-reads stdin,
     // so it must run at most once per process: a second run (for example
@@ -302,9 +306,10 @@ mod tests {
     /// other module's env-mutating window (workspace, web_api) in the same
     /// test binary.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_env_lock()
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        // Coverage is off because the poison arm only runs after a
+        // panic inside another env-mutating test, which the test
+        // harness reports as its own failure long before this matters.
+        crate::lock_or_poisoned(crate::test_env_lock())
     }
 
     fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {

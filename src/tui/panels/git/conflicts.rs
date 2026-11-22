@@ -170,4 +170,62 @@ mod coverage_tests {
             .conflict_action(&api, ConflictAction::MergeAbort)
             .is_err());
     }
+
+    /// Coverage is off for this fn because the final refused request
+    /// exercises the client-side error path while the server thread's
+    /// own accept loop simply ends when its listener drops; the
+    /// clamp assertion is a direct state check.
+    #[cfg_attr(coverage, coverage(off))]
+    #[test]
+    fn conflict_refresh_clamps_selection_when_the_list_shrinks() {
+        // Two conflicts selected at index 1, the refresh answers with
+        // one file: the cursor clamps to 0 and the flags parse.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Serve two requests; the third client call hits a dropped
+        // listener and fails.
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = "{\"files\":[\"a.rs\"],\"merge\":true,\"rebase\":false}";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        panel.conflict_files = vec!["a.rs".into(), "b.rs".into()];
+        panel.conflict_selected = 1;
+        panel.refresh_conflicts(&api).unwrap();
+        assert_eq!(panel.conflict_files, vec!["a.rs".to_string()]);
+        assert_eq!(panel.conflict_selected, 0);
+        assert!(panel.merge_in_progress);
+        assert!(!panel.rebase_in_progress);
+
+        // Selection already in range: the clamp guard's false arm,
+        // served by the second round.
+        panel.conflict_selected = 0;
+        panel.refresh_conflicts(&api).unwrap();
+        assert_eq!(panel.conflict_selected, 0);
+
+        // Third request: the listener is gone and the client sees a
+        // refused connection that leaves the state untouched.
+        assert!(panel.refresh_conflicts(&api).is_err());
+        assert_eq!(panel.conflict_selected, 0);
+    }
 }

@@ -1551,6 +1551,15 @@ fn parse_diff_old_path_prefers_rename_source() {
     // Empty array / missing shape: None.
     assert_eq!(parse_diff_old_path(&json!({"files": []})), None);
     assert_eq!(parse_diff_old_path(&json!({})), None);
+    // Empty old_path with no usable fallback path: None.
+    assert_eq!(
+        parse_diff_old_path(&json!({"files": [{"old_path": "", "chunks": []}]})),
+        None
+    );
+    assert_eq!(
+        parse_diff_old_path(&json!({"files": [{"old_path": "", "path": 3, "chunks": []}]})),
+        None
+    );
 }
 
 #[test]

@@ -139,4 +139,23 @@ mod tests {
         let canonical = builtin_session_dir(&settings_dir, Some("fits"));
         assert_eq!(api_socket.parent(), Some(canonical.as_path()));
     }
+
+    #[test]
+    fn session_dir_falls_back_to_default_for_blank_sessions() {
+        // Blank session names (None, empty, whitespace) must land on the
+        // default directory instead of an empty path component.
+        let settings_dir = std::env::temp_dir().join("herdr-blank");
+        assert_eq!(
+            builtin_session_dir(&settings_dir, None),
+            settings_dir.join("builtin").join("default")
+        );
+        assert_eq!(
+            builtin_session_dir(&settings_dir, Some("")),
+            settings_dir.join("builtin").join("default")
+        );
+        assert_eq!(
+            builtin_session_dir(&settings_dir, Some("   ")),
+            settings_dir.join("builtin").join("default")
+        );
+    }
 }

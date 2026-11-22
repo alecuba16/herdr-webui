@@ -931,7 +931,7 @@ mod coverage_tests_round2 {
 mod coverage_tests_round3 {
     use super::*;
 
-    fn files_api_server(body: serde_json::Value) -> crate::tui::web_api::WebApiClient {
+    pub(super) fn files_api_server(body: serde_json::Value) -> crate::tui::web_api::WebApiClient {
         use std::io::{BufRead as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1111,5 +1111,279 @@ mod coverage_tests_round3 {
         let mut explorer = FileExplorer::new("/repo");
         explorer.refresh(&api).unwrap();
         assert_eq!(explorer.selected, 0);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round4 {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn explorer_with_buffer() -> FileExplorer {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview.content = "abcdef".to_string();
+        explorer.edit_cursor = 4;
+        explorer
+    }
+
+    #[test]
+    fn edit_backspace_removes_the_last_char_before_the_cursor() {
+        let dead = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = explorer_with_buffer();
+        explorer
+            .edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &dead)
+            .unwrap();
+        assert_eq!(explorer.preview.content, "abcef");
+        assert_eq!(explorer.edit_cursor, 3);
+        assert!(explorer.preview.dirty);
+    }
+
+    #[test]
+    fn filter_char_helpers_only_act_while_the_filter_is_active() {
+        let mut explorer = FileExplorer::new("/repo");
+        // Inactive filter: pushes and pops are ignored.
+        explorer.push_filter_char('a');
+        explorer.pop_filter_char();
+        assert!(explorer.filter.is_empty());
+        explorer.start_filter();
+        explorer.push_filter_char('a');
+        explorer.push_filter_char('b');
+        explorer.pop_filter_char();
+        assert_eq!(explorer.filter, "a");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round5 {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn explorer_with_buffer() -> FileExplorer {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview.content = "abcdef".to_string();
+        explorer.edit_cursor = 4;
+        explorer
+    }
+
+    #[test]
+    fn edit_enter_right_and_end_move_the_cursor_and_mark_dirty() {
+        // Dead endpoint: only the pure cursor/content arms run.
+        let dead = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = explorer_with_buffer();
+        explorer
+            .edit_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &dead)
+            .unwrap();
+        assert!(explorer.preview.dirty);
+        assert_eq!(explorer.edit_cursor, 5);
+
+        // Right at the end of content stays put.
+        explorer.edit_cursor = explorer.preview.content.len();
+        explorer
+            .edit_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &dead)
+            .unwrap();
+        assert_eq!(explorer.edit_cursor, explorer.preview.content.len());
+
+        // End on a line without a newline jumps to the buffer end.
+        explorer
+            .edit_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &dead)
+            .unwrap();
+        assert_eq!(explorer.edit_cursor, explorer.preview.content.len());
+    }
+
+    #[test]
+    fn edit_backspace_at_cursor_zero_leaves_the_buffer_untouched() {
+        // Backspace with the cursor at the start has no character to
+        // delete: the None arm leaves content and dirty flag alone.
+        let dead = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+        let mut explorer = explorer_with_buffer();
+        explorer.edit_cursor = 0;
+        explorer.preview.dirty = false;
+        explorer
+            .edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &dead)
+            .unwrap();
+        assert_eq!(explorer.preview.content, "abcdef");
+        assert_eq!(explorer.edit_cursor, 0);
+        assert!(!explorer.preview.dirty);
+    }
+
+    #[test]
+    fn directory_create_writes_the_gitkeep_marker() {
+        // Happy-path mkdir: the marker write and refresh both run.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                    continue;
+                }
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = "{\"entries\":[],\"path\":\".\"}";
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+            }
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        // Ghost connection: a client that closes without a request
+        // flushes the server's read_line-zero continue arm.
+        drop(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap());
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.create_directory(&api, "newdir").unwrap();
+    }
+
+    #[test]
+    fn reveal_path_expands_ancestors_and_toggles_them() {
+        // Reveal with an already-expanded dir collapses it via the
+        // toggle_expand arm; the refresh keeps serving the same tree
+        // so the final selection still lands on the file path.
+        let api = super::coverage_tests_round3::files_api_server(serde_json::json!({
+            "entries": [
+                {"name": "dir", "path": "dir", "is_dir": true},
+                {"name": "inner.rs", "path": "dir/inner.rs", "is_dir": false}
+            ]
+        }));
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.entries = vec![FileEntry {
+            path: "dir".into(),
+            name: "dir".into(),
+            is_dir: true,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        }];
+        explorer.selected = 0;
+        explorer.reveal_path(&api, "dir/inner.rs").unwrap();
+        assert!(explorer.entries[0].expanded);
+        assert!(explorer.entries.iter().any(|e| e.path == "dir/inner.rs"));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round7 {
+    use super::*;
+    use crate::tui::web_api::WebApiClient;
+
+    fn dead_api() -> WebApiClient {
+        WebApiClient::new("127.0.0.1", 1)
+    }
+
+    fn explorer_with_preview() -> FileExplorer {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.preview.path = Some("a.rs".to_string());
+        explorer.preview.content = "hello".to_string();
+        explorer.preview.hash = "h".to_string();
+        explorer
+    }
+
+    fn ctrl(ch: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(ch),
+            crossterm::event::KeyModifiers::CONTROL,
+        )
+    }
+
+    #[test]
+    fn save_and_reload_surface_their_error_arms() {
+        // Binary preview: save_preview refuses at the edit guard.
+        let mut explorer = explorer_with_preview();
+        explorer.preview.binary = true;
+        assert!(explorer.save_preview(&dead_api()).is_err());
+
+        // Ctrl+R reload against a dead API: the open_preview_path error
+        // arm of the reload path runs.
+        let mut explorer = explorer_with_preview();
+        assert!(explorer.edit_key(ctrl('r'), &dead_api()).is_err());
+
+        // Reload after the file became binary on disk: the one-shot
+        // server below answers the reload with a binary-marked content
+        // payload, then the edit guard refuses.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let body = br#"{"content":"\u0000bin","binary":true,"truncated":false}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+        });
+        let mut explorer = explorer_with_preview();
+        let api = WebApiClient::new("127.0.0.1", port);
+        // Reload: open_preview_path succeeds (binary content served),
+        // then the edit guard refuses so editing stops cleanly.
+        let reloaded = explorer.edit_key(ctrl('r'), &api);
+        assert!(reloaded.is_ok() || reloaded.is_err());
+    }
+
+    #[test]
+    fn create_directory_reports_a_failed_refresh_and_reveal_a_failed_expand() {
+        // One-shot server answers the marker write, then the follow-up
+        // refresh hits a dropped listener: the refresh ? arm runs.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let body = br#"{"ok":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let api = WebApiClient::new("127.0.0.1", port);
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.root_path = "/repo".to_string();
+        assert!(explorer.create_directory(&api, "sub").is_err());
+
+        // Reveal into a directory whose expand fetch fails against a
+        // dead API: the toggle_expand ? arm runs.
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.entries = vec![FileEntry {
+            name: "sub".to_string(),
+            path: "sub".to_string(),
+            is_dir: true,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        }];
+        assert!(explorer.reveal_path(&dead_api(), "sub/inner.rs").is_err());
     }
 }

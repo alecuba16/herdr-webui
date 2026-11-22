@@ -551,7 +551,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn snapshot() -> TuiSnapshot {
+    pub(crate) fn snapshot() -> TuiSnapshot {
         TuiSnapshot::from_backend_response(&json!({
             "snapshot": {
                 "workspaces": [
@@ -1090,5 +1090,93 @@ mod coverage_tests_round2 {
             &palette.results[0],
             SearchCandidate::Content { line, .. } if *line == 7
         ));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::tests::snapshot;
+    use super::*;
+    use crate::tui::model::TuiAgent;
+
+    #[test]
+    fn agent_candidates_fall_back_through_display_and_raw_names() {
+        // An agent row with only the raw name (display_agent missing)
+        // must still match on the raw agent, and one with neither
+        // falls back to the literal "agent" token.
+        let mut snap = snapshot();
+        snap.agents = vec![
+            TuiAgent {
+                pane_id: "pane_1".into(),
+                workspace_id: "ws_1".into(),
+                tab_id: "tab_1".into(),
+                terminal_id: "term_1".into(),
+                agent: Some("codex".into()),
+                display_agent: None,
+                status: "idle".into(),
+                title: None,
+                cwd: "/repo".into(),
+                focused: true,
+            },
+            TuiAgent {
+                pane_id: "pane_2".into(),
+                workspace_id: "ws_1".into(),
+                tab_id: "tab_1".into(),
+                terminal_id: "term_2".into(),
+                agent: None,
+                display_agent: None,
+                status: "idle".into(),
+                title: None,
+                cwd: "/repo".into(),
+                focused: false,
+            },
+        ];
+        let results = local_candidates(&snap, "codex");
+        assert!(results
+            .iter()
+            .any(|candidate| candidate.title().to_lowercase().contains("codex")));
+        let results = local_candidates(&snap, "agent");
+        assert!(!results.is_empty(), "the fallback token still matches");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round4 {
+    use super::{parse_content_hits, parse_file_hits, RecentWorkspace};
+    use serde_json::json;
+
+    #[test]
+    fn recent_workspace_rows_without_a_path_are_dropped() {
+        // A recents row missing path or with a blank path yields None.
+        assert!(RecentWorkspace::from_json(&json!({"label": "l"})).is_none());
+        assert!(RecentWorkspace::from_json(&json!({"path": 3})).is_none());
+        assert!(RecentWorkspace::from_json(&json!({"path": "   "})).is_none());
+        let row = RecentWorkspace::from_json(&json!({"path": "/repo", "label": "Repo"})).unwrap();
+        assert_eq!(row.path, "/repo");
+        assert_eq!(row.label.as_deref(), Some("Repo"));
+    }
+
+    #[test]
+    fn file_and_content_hits_skip_rows_missing_the_required_fields() {
+        // Entries without name or path are dropped; kind decides is_dir.
+        let hits = parse_file_hits(&json!({
+            "entries": [
+                {"name": "a.rs", "path": "/repo/a.rs", "kind": "file"},
+                {"name": "src", "path": "/repo/src", "kind": "dir"},
+                {"name": "no-path"},
+                {"path": "/repo/no-name.rs"}
+            ]
+        }));
+        assert_eq!(hits.len(), 2);
+
+        // Content files without a path are dropped; the first match
+        // line survives when only "line" is present.
+        let hits = parse_content_hits(&json!({
+            "files": [
+                {"path": "/repo/a.rs", "name": "a.rs", "matches": [{"line": 4}]},
+                {"name": "b.rs", "matches": [{"line": 2}]}
+            ]
+        }));
+        assert_eq!(hits.len(), 1);
     }
 }

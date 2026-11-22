@@ -172,3 +172,23 @@ pub(crate) fn parse_stash(value: &Value) -> GitStashEntry {
             .to_string(),
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn parse_git_files_skips_non_string_entries() {
+        // Numbers and objects inside a status list must be dropped, the
+        // string entries kept, so a malformed server reply cannot grow
+        // garbage rows.
+        let data = serde_json::json!({
+            "conflicted": ["a.rs", 42, {"path": "b.rs"}],
+            "staged": ["c.rs"]
+        });
+        let files = parse_git_files(&data);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "a.rs");
+        assert_eq!(files[1].path, "c.rs");
+    }
+}

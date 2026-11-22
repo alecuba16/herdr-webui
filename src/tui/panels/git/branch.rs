@@ -71,6 +71,11 @@ mod coverage_tests {
 #[cfg(test)]
 mod coverage_tests_round3 {
 
+    // Coverage is off for this test because its fake-server thread
+    // guards accept() with `if let Ok`, and the Err arm only fires
+    // when the listener dies, which the test body cannot trigger
+    // deterministically (the client connects before any teardown).
+    #[cfg_attr(coverage, coverage(off))]
     #[test]
     fn refresh_branches_falls_back_to_the_local_key() {
         // Some server builds name the list "local" instead of

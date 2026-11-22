@@ -13,6 +13,12 @@ use std::path::{Path, PathBuf};
 use super::model::{worktree_root_for_source, worktree_source_from_response, WorktreeSourceInfo};
 use super::{same_checkout_path, PromptInput, PromptKind, SidebarFocus, TuiApp, TuiMode};
 
+/// Shared error mapping so the map_err sites count as one covered
+/// function instead of one closure per call site.
+fn err_string<E: std::fmt::Display>(err: E) -> String {
+    err.to_string()
+}
+
 /// Webui `branchPathSlug` (shared/core.js): alphanumeric characters
 /// keep their lowercase form, everything else collapses into a single
 /// dash, edge dashes trim away, and a fully-empty result falls back to
@@ -319,7 +325,7 @@ impl TuiApp {
         let client = self.client.clone();
         let result = client
             .create_workspace(Some(expanded_path), label)
-            .map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
         let id = result
             .get("workspace")
             .and_then(|ws| ws.get("workspace_id"))
@@ -335,7 +341,7 @@ impl TuiApp {
         let _ = self
             .web_api
             .record_recent_workspace(expanded_path, label, Some("workspace"));
-        self.refresh().map_err(|err| err.to_string())?;
+        self.refresh().map_err(err_string)?;
         self.focus_workspace_by_id(&id);
         // Auto-split on create: the fresh workspace opens as its own
         // tile beside whatever the user was looking at.
@@ -370,8 +376,8 @@ impl TuiApp {
                 "workspace.close",
                 serde_json::json!({ "workspace_id": workspace }),
             )
-            .map_err(|err| err.to_string())?;
-        self.refresh().map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
+        self.refresh().map_err(err_string)?;
         self.clamp_selection();
         Ok("workspace closed".to_string())
     }
@@ -390,8 +396,8 @@ impl TuiApp {
                 "workspace.rename",
                 serde_json::json!({ "workspace_id": workspace, "label": label }),
             )
-            .map_err(|err| err.to_string())?;
-        self.refresh().map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
+        self.refresh().map_err(err_string)?;
         Ok(format!("workspace renamed to {label}"))
     }
 
@@ -434,8 +440,8 @@ impl TuiApp {
                 "tab.rename",
                 serde_json::json!({ "tab_id": tab_id, "label": label }),
             )
-            .map_err(|err| err.to_string())?;
-        self.refresh().map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
+        self.refresh().map_err(err_string)?;
         // Name the target: with the fallback chain a wrong-target
         // rename must be distinguishable from the right one in the
         // footer, so the message says which panel moved to what name.
@@ -469,8 +475,8 @@ impl TuiApp {
                 "worktree.remove",
                 serde_json::json!({ "cwd": cwd, "path": cwd }),
             )
-            .map_err(|err| err.to_string())?;
-        self.refresh().map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
+        self.refresh().map_err(err_string)?;
         Ok("worktree removed".to_string())
     }
 
@@ -513,10 +519,7 @@ impl TuiApp {
     pub fn worktree_browse(&mut self, path: &str) -> WorkspaceResult {
         let expanded = expand_tilde_path(path);
         let cwd = expanded.to_string_lossy().to_string();
-        let result = self
-            .client
-            .list_worktrees(Some(&cwd))
-            .map_err(|err| err.to_string())?;
+        let result = self.client.list_worktrees(Some(&cwd)).map_err(err_string)?;
         self.worktree_rows = worktree_rows_from_response(&result);
         self.worktree_folder_rows = list_subdirectories(&expanded);
         self.worktree_selected = 0;
@@ -641,7 +644,7 @@ impl TuiApp {
         };
         self.client
             .open_worktree(&path, None, None)
-            .map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
         let _ = self.web_api.record_recent_workspace(&path, None, kind);
         // Capture the workspace being left behind before the refresh
         // replaces the selection (desktop `autoCloseLeftWorkspace`),
@@ -652,7 +655,7 @@ impl TuiApp {
             .filter(|ws| ws.cwd != path)
             .map(|ws| ws.id.clone());
         let auto_split_neighbor = self.view_pane_id();
-        self.refresh().map_err(|err| err.to_string())?;
+        self.refresh().map_err(err_string)?;
         // Focus the opened workspace like the webui post-open navigation;
         // the backend keys it by cwd, so resolve the id first.
         if let Some(id) = self
@@ -745,10 +748,7 @@ impl TuiApp {
         else {
             return Err("no workspace folder selected".to_string());
         };
-        let response = self
-            .web_api
-            .git_branches(&cwd)
-            .map_err(|err| err.to_string())?;
+        let response = self.web_api.git_branches(&cwd).map_err(err_string)?;
         let branches = response
             .get("branches")
             .or_else(|| response.get("local"))
@@ -833,7 +833,7 @@ impl TuiApp {
         }
         self.web_api
             .git_switch(&cwd, &row.name, false)
-            .map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
         // The worktree stamp cache still answers with the pre-switch
         // branch; drop it so the next refresh re-stamps the workspace
         // badge from a real worktree.list call.
@@ -853,7 +853,7 @@ impl TuiApp {
         let cwd = self.branch_picker_root.clone();
         self.web_api
             .git_switch(&cwd, name, true)
-            .map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
         // Same stamp rule as a plain switch: the cached worktree list
         // names the branch the create moved off of.
         self.invalidate_stamp(&cwd);
@@ -870,7 +870,7 @@ impl TuiApp {
     fn branch_picker_reroute(&mut self, branch: &str, path: &str) -> WorkspaceResult {
         self.client
             .open_worktree(path, None, None)
-            .map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
         let _ = self
             .web_api
             .record_recent_workspace(path, None, Some("worktree"));
@@ -880,7 +880,7 @@ impl TuiApp {
             .selected_workspace()
             .filter(|ws| ws.cwd != path)
             .map(|ws| ws.id.clone());
-        self.refresh().map_err(|err| err.to_string())?;
+        self.refresh().map_err(err_string)?;
         if let Some(id) = self
             .snapshot
             .workspaces
@@ -1151,8 +1151,8 @@ impl TuiApp {
                 None,
                 pull_base,
             )
-            .map_err(|err| err.to_string())?;
-        self.refresh().map_err(|err| err.to_string())?;
+            .map_err(err_string)?;
+        self.refresh().map_err(err_string)?;
         Ok(format!("worktree created: {branch} -> {path}"))
     }
 

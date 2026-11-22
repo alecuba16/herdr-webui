@@ -672,3 +672,104 @@ mod coverage_tests {
         assert_eq!(worktree_root_for_source(&dotted_root), "/a/b/d");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::parse_worktree_list_response;
+    use serde_json::json;
+
+    #[test]
+    fn missing_repo_root_falls_back_to_the_checkout_basename() {
+        // A row without source.repo_root uses the checkout path as the
+        // root, so the repo name is the final path segment; a trailing
+        // slash or a bare name still yields a usable segment.
+        let response = json!({
+            "worktrees": [
+                {"path": "/repos/herdr-webui", "branch": "main"}
+            ]
+        });
+        let stamp = parse_worktree_list_response(&response, "/repos/herdr-webui").unwrap();
+        assert_eq!(stamp.repo_root, "/repos/herdr-webui");
+        assert_eq!(stamp.repo_name, "herdr-webui");
+        assert!(!stamp.is_linked);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::parse_worktree_list_response;
+    use serde_json::json;
+
+    #[test]
+    fn basename_fallback_handles_trailing_slashes_and_root_paths() {
+        // A trailing slash strips to the last segment; a bare root
+        // ("/") keeps the whole path as the name (the unwrap_or_else
+        // arm of path_basename).
+        let response = json!({
+            "worktrees": [
+                {"path": "/repos/herdr-webui/", "branch": "main"}
+            ]
+        });
+        let stamp = parse_worktree_list_response(&response, "/repos/herdr-webui/").unwrap();
+        assert_eq!(stamp.repo_name, "herdr-webui");
+
+        let response = json!({
+            "worktrees": [
+                {"path": "/", "branch": "main"}
+            ]
+        });
+        let stamp = parse_worktree_list_response(&response, "/").unwrap();
+        assert_eq!(stamp.repo_name, "/");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round6 {
+    use super::*;
+
+    #[test]
+    fn session_rows_and_worktree_stamps_fall_through_on_missing_fields() {
+        // Missing name and missing backend each break the row parse.
+        assert!(TuiSessionRow::from_session_value(&serde_json::json!({
+            "backend": "b"
+        }))
+        .is_none());
+        assert!(TuiSessionRow::from_session_value(&serde_json::json!({
+            "name": "n"
+        }))
+        .is_none());
+
+        // Non-string name and non-string backend each break the row
+        // parse (a number in the JSON slot, not a missing key).
+        assert!(TuiSessionRow::from_session_value(&serde_json::json!({
+            "name": 3, "backend": "b"
+        }))
+        .is_none());
+        assert!(TuiSessionRow::from_session_value(&serde_json::json!({
+            "name": "n", "backend": 7
+        }))
+        .is_none());
+
+        // Stamp missing the repo root or both checkout spellings stays
+        // unparsed.
+        let snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "workspaces": [ { "workspace_id": "w" } ]
+        }));
+        assert!(snapshot.workspaces[0].worktree.is_none());
+        let snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "workspaces": [ {
+                "workspace_id": "w",
+                "worktree": { "repo_root": "/repo" }
+            } ]
+        }));
+        assert!(snapshot.workspaces[0].worktree.is_none());
+        // checkout_path present but repo_root missing: still unparsed.
+        let snapshot = TuiSnapshot::from_backend_response(&serde_json::json!({
+            "workspaces": [ {
+                "workspace_id": "w",
+                "worktree": { "checkout_path": "/wt", "repo_root": "" }
+            } ]
+        }));
+        assert!(snapshot.workspaces[0].worktree.is_none());
+    }
+}

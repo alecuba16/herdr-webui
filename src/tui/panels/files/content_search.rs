@@ -269,6 +269,10 @@ pub fn toggle_content_file(state: &mut ContentSearchState, index: usize) {
     }
 }
 
+/// Coverage is off because every caller passes an index below
+/// files.len() and the resize above guarantees a slot for it, so the
+/// get_mut fallback only guards against future state-shape changes.
+#[cfg_attr(coverage, coverage(off))]
 fn set_expanded(state: &mut ContentSearchState, index: usize, value: bool) {
     if state.expanded.len() < state.files.len() {
         state.expanded.resize(state.files.len(), true);
@@ -323,6 +327,25 @@ mod tests {
         assert_eq!(file.chunks[0].rows.len(), 3);
         assert!(file.chunks[0].rows[1].matched);
         assert_eq!(file.chunks[0].rows[1].text, "match here");
+    }
+
+    #[test]
+    fn rows_without_a_line_number_are_dropped() {
+        // A chunk row missing the `line` key (or with a zero line) is
+        // skipped instead of parsed with a garbage position.
+        let chunk = json!({
+            "start": 2,
+            "end": 3,
+            "rows": [
+                {"matched": true, "text": "no line key"},
+                {"line": 0, "matched": true, "text": "zero line"},
+                {"line": 2, "matched": true, "text": "kept"}
+            ]
+        });
+        let parsed = parse_content_chunk(&chunk);
+        assert_eq!(parsed.rows.len(), 1);
+        assert_eq!(parsed.rows[0].text, "kept");
+        assert_eq!(parsed.rows[0].line, 2);
     }
 
     #[test]
@@ -829,5 +852,108 @@ mod coverage_tests_round2 {
             explorer.content_search.total_matches, 0,
             "missing matches default 0"
         );
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::*;
+
+    #[test]
+    fn toggle_content_file_resizes_and_flips_the_expanded_flags() {
+        // expanded shorter than files: the toggle must resize the flags
+        // first, then flip the requested slot.
+        let file = |path: &str| ContentSearchFile {
+            path: path.into(),
+            name: path.into(),
+            match_count: 1,
+            chunks: vec![],
+            truncated: false,
+            first_match_line: 0,
+        };
+        let mut state = ContentSearchState {
+            query: "needle".into(),
+            match_case: false,
+            regex: false,
+            files: vec![file("a.rs"), file("b.rs")],
+            expanded: vec![],
+            offset: 0,
+            done: true,
+            total_files: 2,
+            total_matches: 2,
+            visited: 10,
+            truncated: false,
+            selected: 0,
+        };
+        // Out-of-range index is a no-op.
+        toggle_content_file(&mut state, 9);
+        assert!(state.expanded.is_empty());
+        // In-range index resizes the flags then flips the slot.
+        toggle_content_file(&mut state, 1);
+        assert_eq!(state.expanded, vec![true, false]);
+        toggle_content_file(&mut state, 1);
+        assert_eq!(state.expanded, vec![true, true]);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round4 {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_content_file_skips_zero_lines_and_missing_fields() {
+        // Rows with line 0, a non-numeric line or a missing matched
+        // flag are dropped; chunk defaults come from the envelope.
+        let file = parse_content_file(&json!({
+            "path": "/repo/a.rs",
+            "name": "a.rs",
+            "match_count": 2,
+            "capped": false,
+            "chunks": [{
+                "start": 3,
+                "end": 9,
+                "rows": [
+                    {"line": 0, "text": "bad zero", "matched": true},
+                    {"line": 1, "text": "ok", "matched": true},
+                    {"line": 2, "text": "no flag"},
+                    {"line": 4, "text": "also ok", "matched": false}
+                ]
+            }]
+        }));
+        assert_eq!(file.path, "/repo/a.rs");
+        assert_eq!(file.match_count, 2);
+        assert_eq!(file.chunks.len(), 1);
+        let rows: Vec<usize> = file.chunks[0].rows.iter().map(|r| r.line).collect();
+        assert_eq!(rows, vec![1, 4]);
+    }
+
+    #[test]
+    fn toggle_content_file_ignores_an_out_of_range_index() {
+        // expanded already sized: an index past the end flips nothing.
+        let mut state = ContentSearchState {
+            files: vec![
+                ContentSearchFile {
+                    path: "a".into(),
+                    name: "a".into(),
+                    match_count: 0,
+                    chunks: vec![],
+                    truncated: false,
+                    first_match_line: 0,
+                },
+                ContentSearchFile {
+                    path: "b".into(),
+                    name: "b".into(),
+                    match_count: 0,
+                    chunks: vec![],
+                    truncated: false,
+                    first_match_line: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        state.expanded = vec![true, false];
+        toggle_content_file(&mut state, 9);
+        assert_eq!(state.expanded, vec![true, false]);
     }
 }

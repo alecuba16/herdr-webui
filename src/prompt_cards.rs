@@ -164,11 +164,20 @@ pub fn parse_prompt(lines: &[String]) -> Option<PromptCard> {
     let mut current: Vec<PromptOption> = Vec::new();
     for line in lines {
         if let Some(captures) = OPTION_LINE.captures(line) {
-            let key = captures.get(1).map(|m| m.as_str().to_string());
-            let label = captures.get(2).map(|m| m.as_str().trim().to_string());
-            if let (Some(key), Some(label)) = (key, label) {
-                current.push(PromptOption { key, label });
-            }
+            // Both groups are non-optional in OPTION_LINE, so a match
+            // always carries the key and the label.
+            let key = captures
+                .get(1)
+                .expect("OPTION_LINE always captures the key")
+                .as_str()
+                .to_string();
+            let label = captures
+                .get(2)
+                .expect("OPTION_LINE always captures the label")
+                .as_str()
+                .trim()
+                .to_string();
+            current.push(PromptOption { key, label });
         } else if !current.is_empty() {
             blocks.push(std::mem::take(&mut current));
         }
@@ -310,6 +319,19 @@ mod tests {
     }
 
     #[test]
+    fn tail_check_rejects_empty_options_and_missing_last_option_line() {
+        // Empty options and a block whose last option key never appears
+        // in the lines are both stale or malformed, so no card tail.
+        let dialog = lines(&["1. Yes", "2. No"]);
+        assert!(!options_at_tail_or_confirmed(&dialog, &[]));
+        let option = PromptOption {
+            key: "9".to_string(),
+            label: "missing".to_string(),
+        };
+        assert!(!options_at_tail_or_confirmed(&dialog, &[option]));
+    }
+
+    #[test]
     fn parse_numbered_options_with_nav_hint() {
         let tail = lines(&[
             "❯ Run this command?",
@@ -333,7 +355,7 @@ mod tests {
         let card = parse_prompt(&tail).expect("permission dialog parses");
         assert_eq!(card.kind, PromptCardKind::Options);
         assert_eq!(card.options.len(), 2);
-        assert!(card.title.contains("approval") || !card.title.is_empty());
+        assert_eq!(card.title, "Bash command approval");
     }
 
     #[test]
@@ -637,5 +659,23 @@ mod tests {
             card.title, "Select an option",
             "an empty capture never becomes the title; the default applies"
         );
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests_round2 {
+    use super::parse_prompt;
+
+    #[test]
+    fn jcode_viewer_without_a_pending_count_titles_with_a_question_mark() {
+        // HELP and WAITING match but the title line carries no
+        // "(N pending)" count: the fallback title must use "?".
+        let lines: Vec<String> = vec![
+            "a approve  d deny  A approve all  D deny all".into(),
+            "The agent is waiting for this decision".into(),
+            "jcode permissions (review needed)".into(),
+        ];
+        let card = parse_prompt(&lines).unwrap();
+        assert_eq!(card.title, "jcode permissions (? pending)");
     }
 }

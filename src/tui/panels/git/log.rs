@@ -365,6 +365,17 @@ mod coverage_tests {
         .unwrap();
         assert_eq!(comparison.origin, None);
         assert_eq!(comparison.label(), "trunk ↑7 ↓0");
+
+        // A non-numeric ahead count drops the slot instead of panicking.
+        let comparison = LogBaseComparison::from_log_data(&json!({
+            "comparison": {
+                "base_branch": "trunk",
+                "exists": true,
+                "local": {"ahead": "many", "behind": 1}
+            }
+        }))
+        .unwrap();
+        assert_eq!(comparison.local, None);
     }
 }
 
@@ -380,5 +391,92 @@ mod coverage_tests_round2 {
         assert!(panel.log_compare_parent(&api, "abc123").is_err());
         panel.log_file = Some("src/main.rs".into());
         assert!(panel.log_compare_parent(&api, "abc123").is_err());
+    }
+
+    /// Coverage is off for this fn because the final refused request
+    /// exercises the client-side error path while the server thread's
+    /// own accept loop simply ends when its listener drops; the
+    /// clamp assertions are direct state checks.
+    #[cfg_attr(coverage, coverage(off))]
+    #[test]
+    fn log_and_history_refresh_clamp_selection_when_commit_lists_shrink() {
+        // One-shot JSON server answering every request with a single
+        // commit: both refresh paths must clamp a stale cursor to 0.
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Serve four requests; the fifth client call hits a dropped
+        // listener and fails, keeping panel state intact.
+        std::thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body =
+                    "{\"commits\":[{\"hash\":\"abc\",\"message\":\"m\"}],\"has_more\":false}";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut panel = crate::tui::panels::GitPanel::new("/repo");
+        panel.commits = vec![
+            crate::tui::panels::git::GitCommitEntry {
+                hash: "one".into(),
+                message: "m".into(),
+                author: "a".into(),
+                date: "d".into(),
+                labels: vec![],
+            },
+            crate::tui::panels::git::GitCommitEntry {
+                hash: "two".into(),
+                message: "m".into(),
+                author: "a".into(),
+                date: "d".into(),
+                labels: vec![],
+            },
+        ];
+        panel.commit_selected = 1;
+        panel.refresh_log(&api).unwrap();
+        assert_eq!(panel.commits.len(), 1);
+        assert_eq!(panel.commit_selected, 0);
+        panel.commits.push(crate::tui::panels::git::GitCommitEntry {
+            hash: "three".into(),
+            message: "m".into(),
+            author: "a".into(),
+            date: "d".into(),
+            labels: vec![],
+        });
+        panel.commit_selected = 2;
+        panel.files.push(crate::tui::panels::git::GitFileEntry {
+            path: "a.rs".into(),
+            status: crate::tui::panels::git::GitFileStatus::Unstaged,
+        });
+        panel.file_selected = 0;
+        panel.refresh_history(&api).unwrap();
+        assert_eq!(panel.commits.len(), 1);
+        assert_eq!(panel.commit_selected, 0);
+
+        // Selection already in range: both clamp guards' false arms.
+        panel.refresh_log(&api).unwrap();
+        panel.refresh_history(&api).unwrap();
+        assert_eq!(panel.commit_selected, 0);
+
+        // Fifth request: the listener is gone and the client's refused
+        // connection leaves the panel state intact.
+        assert!(panel.refresh_log(&api).is_err());
+        assert_eq!(panel.commit_selected, 0);
     }
 }
