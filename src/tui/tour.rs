@@ -194,7 +194,7 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
         },
         TourStep {
             title: "The tile language",
-            body: "With a split active and the main region focused, j/k walk tile to tile and Ctrl+j/k scroll the focused pane. Ctrl+B m moves a tile, Ctrl+B z zooms it fullscreen, Ctrl+B Shift+Z resizes it, and closing a pane hands focus to the nearest surviving tile.",
+            body: "With a split active and the main region focused, j/k walk tile to tile and Ctrl+j/k scroll the focused pane. Ctrl+B m moves a tile, Ctrl+B z zooms it fullscreen, Ctrl+B Shift+Z resizes it, Ctrl+B x closes the focused tile, and closing a pane hands focus to the nearest surviving tile.",
             region: TourRegion::Main,
             // Passive on purpose: the walk/move/zoom chords need a live
             // multi-tile session with keyboard focus, which the demo

@@ -580,18 +580,24 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "Ctrl+B s",
-            "settings overlay (t cycles) · terminal: split tile mode",
+            "settings overlay (t cycles) · terminal (navigate): split mode",
         ),
         (
             "Ctrl+B Shift+E",
-            "settings overlay from any screen (works where Ctrl+B s splits)",
+            "settings overlay from any screen (works where Ctrl+B s opens split mode)",
         ),
         (
             "open/create workspace",
             "the new workspace appears as a split tile beside the focus",
         ),
-        ("Ctrl+B m", "git blame toggle · terminal: move tile mode"),
-        ("Ctrl+B z", "git stash changes · terminal: zoom tile"),
+        (
+            "Ctrl+B m",
+            "git blame toggle · terminal (navigate): move tile mode",
+        ),
+        (
+            "Ctrl+B z",
+            "git stash changes · terminal (navigate): zoom tile",
+        ),
         (
             "Ctrl+B Shift+Z",
             "resize mode: h/l narrower/wider, j/k shorter/taller, Enter/Esc done",

@@ -314,13 +314,21 @@ impl FooterContext {
                 " Enter attach · Ctrl+B s split · Ctrl+B . / , focus sidebar · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
             Self::TerminalMainSplit => {
-                " hjkl walk tiles · Ctrl+j/k scroll · Enter attach · Shift+L lens · Shift+C compose · r refresh · q quit · Ctrl+B ? help "
+                // Split is live, so name the loop: how to add another
+                // tile and how to close one. Both ride the front so
+                // fit_hint keeps them when the line collapses.
+                " hjkl walk tiles · Ctrl+j/k scroll · Ctrl+B s split · Ctrl+B x close tile · Enter attach · Shift+L lens · q quit · Ctrl+B ? help "
             }
             Self::Terminal(TuiMode::Attach) => {
                 " Ctrl-G detach · type sends input · Ctrl+B ? help "
             }
             Self::Terminal(_) => {
-                " ↑/↓ j/k select · Enter attach · Tab lists · q quit · Ctrl+B ? help "
+                // Sidebar owns focus here but the split chord still
+                // fires from Terminal/Navigate (the dispatch gates on
+                // screen+mode, not region), so name it or the resting
+                // hint goes silent on split exactly when the sidebar
+                // has focus. Ctrl+B . returns focus to the main pane.
+                " ↑/↓ j/k select · Enter attach · Tab lists · Ctrl+B s split · Ctrl+B . main · q quit · Ctrl+B ? help "
             }
             Self::Files(_) => {
                 " j/k move · Enter open · e edit · / search · L file log · a/A new file/dir · R rename · x delete · Tab previews · M outline · w reveal · Ctrl+B ? help "
@@ -1322,6 +1330,20 @@ impl TuiApp {
                     crate::tui::keys::chord_label(shortcut),
                     shortcut.label()
                 );
+                // On Terminal/Navigate the s/m/z chords open the split
+                // modes instead of their git meanings, so the echo
+                // must match what actually fired or the status line
+                // teaches the wrong verb.
+                if self.screen == TuiScreen::Terminal && self.mode == TuiMode::Navigate {
+                    match shortcut {
+                        Shortcut::Settings => self.status = "Ctrl+B s -> split mode".to_string(),
+                        Shortcut::GitBlame => {
+                            self.status = "Ctrl+B m -> move tile mode".to_string()
+                        }
+                        Shortcut::GitStashFile => self.status = "Ctrl+B z -> zoom tile".to_string(),
+                        _ => {}
+                    }
+                }
                 self.run_shortcut(shortcut);
                 self.hold_status_if_changed(&before);
                 self.mark_dirty();

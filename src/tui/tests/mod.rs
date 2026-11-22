@@ -9631,7 +9631,12 @@ fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
     app.screen = TuiScreen::Terminal;
 
     // Main focus (default): pane keys, no stale "j/k select". 180 cols
-    // fits the full hint (compact fallback checked on the narrow draw).
+    // keeps the hint through the "q quit" segment; the full line
+    // needs ~191, so fit_hint drops the trailing panel segment here
+    // (compact fallback checked on the narrow draw).
+    // Sidebar focus: same screen and mode, so the split chord still
+    // fires from here and the hint names it plus the way back to the
+    // main pane.
     assert!(matches!(
         app.footer_context(),
         crate::tui::FooterContext::TerminalMain
@@ -10824,6 +10829,121 @@ fn split_mode_git_screen_still_opens_settings() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert_eq!(app.mode, TuiMode::Settings);
+}
+
+#[test]
+fn split_repress_keeps_the_walked_ghost() {
+    // Review finding: re-pressing Ctrl+B s with the overlay open used
+    // to rebuild the preview and silently discard the placement the
+    // user had walked/flipped; it is a no-op now.
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below
+    );
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(
+        app.split_mode.as_ref().unwrap().side,
+        crate::tui::split::Side::Below,
+        "re-press keeps the flipped side"
+    );
+}
+
+#[test]
+fn split_commit_arms_the_double_esc_guard() {
+    // The Esc path arms just_closed_mode; commit is also a mode exit,
+    // so a reflex Esc right after committing must not open the quit
+    // confirm (same behavior as resize and move).
+    let mut app = app_with_two_panes();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.split_mode, None);
+    assert!(app.just_closed_mode);
+    assert_eq!(app.status, "tile added");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_ne!(
+        app.mode,
+        TuiMode::ConfirmQuit,
+        "reflex Esc stays in the app"
+    );
+}
+
+#[test]
+fn chord_echo_matches_the_terminal_navigate_meaning() {
+    // Review finding: on Terminal/Navigate the s/m/z chords open the
+    // split modes, but the status echo named the git meanings
+    // (settings, blame, stash), teaching the wrong verb for the keys
+    // the user just pressed. Needs a two-tile tree so move and zoom
+    // accept instead of refusing and replacing the echo.
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.status, "Ctrl+B s -> split mode");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert_eq!(app.status, "Ctrl+B m -> move tile mode");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    // The zoom handler owns the line with its own outcome; the echo
+    // only survives when the action stays silent, so assert the
+    // outcome, not the echo.
+    assert_eq!(app.status, "zoomed (Ctrl+B z restores)");
+    assert!(app.split_zoomed);
+}
+
+#[test]
+fn chord_echo_keeps_git_meaning_off_the_terminal_screen() {
+    // The override is scoped: on the Git screen the same chords keep
+    // their original labels (settings, blame, stash).
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Git;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.status, "Ctrl+B s -> settings");
+}
+
+#[test]
+fn footer_split_hints_name_add_and_close_tiles() {
+    // Review finding: once a split is live the hint named no way to
+    // add another tile or close one; the cold-start gap recurred one
+    // step after entering split mode.
+    let mut app = app_with_two_panes();
+    app.main_focused = true;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    let split = app.footer_context().hint();
+    assert!(
+        split.contains("Ctrl+B s split"),
+        "live split hint still names how to add a tile"
+    );
+    assert!(
+        split.contains("Ctrl+B x close tile"),
+        "live split hint names how to close a tile"
+    );
+
+    // Sidebar focus: same screen and mode, the chord still fires, so
+    // the hint names it plus the way back to the main pane.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    let sidebar = draw(&app, 140, 24);
+    assert!(
+        sidebar.contains("Ctrl+B s split"),
+        "sidebar hint names the split chord that still fires there"
+    );
+    assert!(
+        sidebar.contains("Ctrl+B . main"),
+        "sidebar hint names the way back to the main pane"
+    );
 }
 
 #[test]
@@ -12863,7 +12983,7 @@ fn split_commit_refuses_vanished_and_duplicate_targets() {
         ..preview
     });
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(app.status, "split target vanished");
+    assert_eq!(app.status, "split target vanished · Ctrl+B s to retry");
     assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
 
     // Candidate already on the tree: commit refuses, mode stays.
@@ -13767,7 +13887,7 @@ fn split_mode_commit_refuses_when_the_neighbor_vanished() {
         side: crate::tui::split::Side::Right,
     });
     app.split_commit();
-    assert_eq!(app.status, "split target vanished");
+    assert_eq!(app.status, "split target vanished · Ctrl+B s to retry");
     assert!(app.split_mode.is_some(), "refused commit keeps the ghost");
     assert_eq!(app.split_tree.leaves(), vec!["pane_1"], "tree untouched");
 

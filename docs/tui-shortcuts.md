@@ -104,7 +104,7 @@ answered from the webui's chat lens card. The server-side parser
 | `j` / `k` | next / previous workspace |
 | `a` / `A` | next / previous agent |
 | `]` / `[` | next / previous panel in the workspace (wraps) |
-| `p` / `x` | new / close tab (last tab closes its workspace) |
+| `p` / `x` | new / close tab (last tab closes its workspace; closing the view pane's tab closes that split tile) |
 | `n`, `N` | new workspace (folder browser, Enter picks, second prompt names it; the new workspace opens as a split tile) |
 | `Shift+S` | rename workspace |
 | `Shift+R` | rename panel (webui `renamePanel`) |
@@ -119,10 +119,10 @@ answered from the webui's chat lens card. The server-side parser
 | `Shift+C` | chat composer |
 | `e` | edit the current file (Files preview or Git Changes selection) |
 | `E` (Shift+E) | settings overlay from any screen (Terminal keeps `Ctrl+B s` for split mode) |
-| `s` | settings overlay (t cycles the theme) · terminal: split tile mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm) |
-| `m` | git: toggle blame in the diff · terminal: move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm) |
+| `s` | settings overlay (t cycles the theme) · terminal (navigate): split mode (`hjkl` move, `Tab` flip, `p` pane, `Enter` confirm, `Esc` cancel) |
+| `m` | git: toggle blame in the diff · terminal (navigate): move tile mode (`hjkl` target, `Tab` swap/insert, `Enter` confirm, `Esc` cancel) |
 | `Shift+Z` | terminal: resize mode (`h`/`l` narrow/widen, `j`/`k` shorten/lengthen, `Enter`/`Esc` close) |
-| `z` | git: stash the selected file · terminal: zoom the focused tile (resize mode closes it first) |
+| `z` | git: stash the selected file · terminal: zoom the focused tile (split/move/resize modes lift zoom first) |
 | `hjkl` / arrows | terminal (split active, main region focused): walk tile focus, single tile keeps pane scroll · `Ctrl+j/k` scrolls the focused pane up/down |
 | `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new, r reload) |
 | `G` | git: toggle stage all (webui `KeyG` parity) |

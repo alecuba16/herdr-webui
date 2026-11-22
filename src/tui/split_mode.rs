@@ -311,6 +311,13 @@ impl TuiApp {
             self.split_zoomed = false;
             self.status = "zoom off".to_string();
         }
+        // Re-pressing the entry chord while the overlay is open keeps
+        // the ghost placement the user already walked/flipped; a
+        // fresh preview would silently discard it. The unzoom above
+        // still runs so the grid shows the ghost.
+        if self.split_mode.is_some() {
+            return;
+        }
         // Only one overlay at a time (footer hint already is).
         self.move_mode = None;
         let Some(focus) = self.focused_pane_id() else {
@@ -450,7 +457,9 @@ impl TuiApp {
             return;
         };
         if !self.split_tree.contains_pane(&preview.neighbor) {
-            self.status = "split target vanished".to_string();
+            // Say the way back in: the mode just closed on the user
+            // and the reason alone reads like a dead end.
+            self.status = "split target vanished · Ctrl+B s to retry".to_string();
             return;
         }
         if self.split_tree.contains_pane(&preview.pane) {
@@ -486,6 +495,7 @@ impl TuiApp {
             self.split_tree =
                 split::insert_beside(&self.split_tree, &preview.neighbor, &pane, preview.side);
             self.split_focus = Some(pane);
+            self.just_closed_mode = true;
             self.status = "fresh shell split".to_string();
             if let Err(err) = self.refresh() {
                 self.error = Some(err.to_string());
@@ -501,6 +511,10 @@ impl TuiApp {
             preview.side,
         );
         self.split_focus = Some(preview.pane);
+        // Commit also exits the mode, so it arms the double-Esc guard
+        // like the Esc path does; a reflex Esc after committing must
+        // not open the quit confirm.
+        self.just_closed_mode = true;
         self.status = "tile added".to_string();
         self.mark_dirty();
     }
@@ -621,6 +635,9 @@ impl TuiApp {
         }
         self.move_mode = None;
         let picked = state.picked.clone();
+        // Commit exits the mode: arm the double-Esc guard like every
+        // other mode-exit path.
+        self.just_closed_mode = true;
         self.split_focus = Some(state.picked);
         let picked_label = crate::tui::render::pane_display_name(self, &picked);
         self.status = if state.insert {
