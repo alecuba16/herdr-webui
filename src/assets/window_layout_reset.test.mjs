@@ -201,6 +201,7 @@ const LAYOUT_FILES = [
   "./shared/core.js",
   "./shared/actions.js",
   "./shared/backend_state.js",
+  "./shared/prompt_cards.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",

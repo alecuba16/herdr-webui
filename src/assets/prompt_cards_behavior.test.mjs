@@ -18,6 +18,12 @@ const PROMPT_CARDS_PATH = fileURLToPath(new URL("./desktop/app_js/prompt_cards.j
 const promptCardsScript = new vm.Script(readFileSync(PROMPT_CARDS_PATH, "utf8"), {
   filename: PROMPT_CARDS_PATH,
 });
+// The shared parser this module delegates to (HerdrPromptParser), loaded
+// in sandbox scope exactly like app_boot.js loads it before prompt_cards.
+const SHARED_PROMPT_CARDS_PATH = fileURLToPath(new URL("./shared/prompt_cards.js", import.meta.url));
+const sharedPromptCardsScript = new vm.Script(readFileSync(SHARED_PROMPT_CARDS_PATH, "utf8"), {
+  filename: SHARED_PROMPT_CARDS_PATH,
+});
 
 // The real inputAttrs guard helper from shared/core.js (module.exports),
 // injected into the vm sandbox exactly like DESKTOP_JS scope provides it.
@@ -182,6 +188,7 @@ function loadModule(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const contextObject = vm.createContext(ctx);
+  sharedPromptCardsScript.runInContext(contextObject);
   promptCardsScript.runInContext(contextObject);
   return { ctx, card, shell, sent };
 }

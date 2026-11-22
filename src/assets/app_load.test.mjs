@@ -17,6 +17,7 @@ const APP_BUNDLE_FILES = [
   "./shared/core.js",
   "./shared/actions.js",
   "./shared/backend_state.js",
+  "./shared/prompt_cards.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",
@@ -269,6 +270,8 @@ describe("app bundle load", () => {
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -9474,6 +9477,8 @@ describe("workspace sidebar order", () => {
     "\n" +
     readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
@@ -9784,6 +9789,8 @@ describe("terminal loading and failed states", () => {
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -10450,6 +10457,8 @@ describe("shortcut hint toast", () => {
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +

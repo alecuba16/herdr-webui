@@ -57,130 +57,14 @@
       }
     }
 
-    // ---- Prompt parsing (ported from desktop prompt_cards.js) ----
-
-    const OPTION_LINE = /^[>\s]*([0-9]+)[.)]\s+(.+)$/;
-    const NAV_HINT = /↑↓\s*select|↑\/↓/;
-    const FREE_TEXT = /enter your response|type your answer|enter send/i;
-    const QUESTION_LINE = /^\s*(?:❯|›|➜|\$)\s*(.+?)(?:\?+)?\s*$|^\s*\?+\s*(.+)$/;
-    // jcode ask_user chooser (ui_inline.rs), same guard as desktop
-    // prompt_cards.js: its hint lines carry "Enter sends ..." which
-    // matches FREE_TEXT, so the chooser tail would otherwise parse as
-    // a free-text card with a scraped shell-prompt title. The chooser
-    // is its own answer surface, never a prompt card.
-    const JCODE_CHOOSER = /1-9 or ↑↓ \+ Enter to choose|type on Your answer|\. Your answer/i;
-    // jcode Permissions viewer markers, same as desktop prompt_cards.js.
-    // Help row AND waiting line must both be present.
-    const JCODE_VIEWER_HELP = /a approve.*d deny.*A approve all.*D deny all/i;
-    const JCODE_VIEWER_WAITING = /agent is waiting for this decision/i;
-    const JCODE_VIEWER_TITLE = /permissions?\s*\((\d+)\s*pending\)/i;
-    const CONFIRM_HINT = /enter (?:to )?(?:confirm|select|choose|submit)|press enter|return to (?:confirm|select)/i;
-
-    function questionTitle(lines) {
-      const clean = (s) => s.replace(/^[❯›➜$?]+\s*/, "").replace(/[?]+$/, "").trim();
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const t = lines[i].trim();
-        if (!t || OPTION_LINE.test(t) || NAV_HINT.test(t) || FREE_TEXT.test(t) || /^esc /i.test(t)) continue;
-        if (/[?]$/.test(t) || /^\?\s/.test(t)) return clean(t);
-      }
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const m = lines[i].match(QUESTION_LINE);
-        if (m && (m[1] || m[2])) return clean(m[1] || m[2]);
-      }
-      for (const line of lines) {
-        const t = line.trim();
-        if (t && !NAV_HINT.test(t) && !FREE_TEXT.test(t) && !OPTION_LINE.test(t) && !/^esc /i.test(t)) {
-          if (t.length > 3) return clean(t);
-        }
-      }
-      return "";
-    }
-
-    function parsePrompt(lines) {
-      if (!lines.length) return null;
-      // Unicode whitespace parity with the Rust parser: JS `\s` and Rust
-      // regex `\s` disagree on BOM and NEL. Normalize the exotic spaces
-      // to plain space so both parser copies match identically on
-      // terminals that emit NBSP/NEL/U+3000/BOM/LS/PS.
-      lines = lines.map((line) =>
-        line.replace(/[\u00a0\u0085\u3000\ufeff\u2028\u2029]/g, " "),
-      );
-      const joined = lines.join("\n");
-      // jcode ask_user chooser: not a prompt card (its own answer
-      // surface exists), so bail before any branch can scrape a
-      // title from its hint lines.
-      if (JCODE_CHOOSER.test(joined)) return null;
-      const blocks = [];
-      let current = [];
-      for (const line of lines) {
-        const m = line.match(OPTION_LINE);
-        if (m) current.push({ key: m[1], label: m[2].trim() });
-        else if (current.length) {
-          blocks.push(current);
-          current = [];
-        }
-      }
-      if (current.length) blocks.push(current);
-      const options = blocks.length ? blocks[blocks.length - 1] : [];
-      let title = "";
-      // jcode Permissions viewer: letter options go straight to the
-      // viewer (a approve, d deny, A/D bulk). Checked first: its tail
-      // also contains "approve"/"deny" words that would otherwise fall
-      // through to the weaker numbered branch.
-      if (JCODE_VIEWER_HELP.test(joined) && JCODE_VIEWER_WAITING.test(joined)) {
-        const pending = (joined.match(JCODE_VIEWER_TITLE) || [])[1] || "?";
-        return {
-          kind: "options",
-          title: `jcode permissions (${pending} pending)`,
-          options: [
-            { key: "a", label: "Approve" },
-            { key: "d", label: "Deny" },
-            { key: "A", label: "Approve all" },
-            { key: "D", label: "Deny all" },
-          ],
-        };
-      }
-      if (FREE_TEXT.test(joined)) {
-        title = questionTitle(lines);
-        if (title) return { kind: "text", title };
-        return null;
-      }
-      if (NAV_HINT.test(joined) || /esc cancel|esc dismiss/i.test(joined)) {
-        if (options.length >= 2) {
-          title = questionTitle(lines) || "Select an option";
-          return { kind: "options", title, options };
-        }
-        return null;
-      }
-      if (options.length >= 2) {
-        const lower = joined.toLowerCase();
-        if (/(allow|approve|yes|proceed|deny|reject|no|cancel)/.test(lower) && optionsAtTailOrConfirmed(lines, options)) {
-          title = questionTitle(lines) || "Confirm action";
-          return { kind: "options", title, options };
-        }
-      }
-      return null;
-    }
-
-    // Tightening helper: the block must sit at the tail end or carry a
-    // confirm hint below (same rule as desktop prompt_cards.js).
-    function optionsAtTailOrConfirmed(lines, options) {
-      const lastKey = String(options[options.length - 1].key);
-      let lastOptionIdx = -1;
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const m = lines[i].match(OPTION_LINE);
-        if (m && m[1] === lastKey) { lastOptionIdx = i; break; }
-      }
-      if (lastOptionIdx < 0) return false;
-      for (let i = lastOptionIdx + 1; i < lines.length; i++) {
-        if (CONFIRM_HINT.test(lines[i])) return true;
-      }
-      for (let i = lastOptionIdx + 1; i < lines.length; i++) {
-        if (lines[i].trim()) return false;
-      }
-      return true;
-    }
-
+    // Prompt parsing lives in shared/prompt_cards.js (HerdrPromptParser).
+    // If the shared module is missing (never in production: app_boot.js
+    // loads it first) parsing degrades to a no-op rather than guessing:
+    // no card is better than a wrong card.
+    const sharedPromptParser = globalThis.HerdrPromptParser;
+    const parsePrompt = sharedPromptParser
+      ? sharedPromptParser.parsePrompt
+      : () => null;
     // ---- Blocked detection ----
 
     function currentAgentStatus() {
@@ -262,14 +146,19 @@
 
     // ---- Server prompt payload (desktop fetchServerPrompt parity) ----
 
+    const SERVER_PROMPT_FRESH_MS = 15000;
+    const SERVER_PROMPT_FETCH_MS = 750;
+
+    // The fetch/freshness bookkeeping lives in shared/prompt_cards.js
+    // (HerdrPromptParser.createServerPromptStore); the private copies
+    // below are boot-order insurance for harnesses that load composer.js
+    // alone.
     let promptApiUsable = true;
     let serverPrompt = null; // { at, payload } from the last endpoint hit
     let promptFetchInFlight = false;
     let promptFetchAt = 0;
-    const SERVER_PROMPT_FRESH_MS = 15000;
-    const SERVER_PROMPT_FETCH_MS = 750;
 
-    function fetchServerPrompt() {
+    function localFetchServerPrompt() {
       if (!promptApiUsable || promptFetchInFlight) return;
       if (Date.now() - promptFetchAt < SERVER_PROMPT_FETCH_MS) return;
       const paneId = state && state.pane;
@@ -298,19 +187,41 @@
       });
     }
 
-    function serverPromptFresh() {
+    function localServerPromptFresh() {
       if (!promptApiUsable || !serverPrompt) return null;
       if (Date.now() - serverPrompt.at > SERVER_PROMPT_FRESH_MS) return null;
       return serverPrompt.payload;
     }
 
-    function promptFromServer(server) {
+    function localPromptFromServer(server) {
       if (!server || !server.blocked || !server.kind) return null;
       return {
         kind: server.kind,
         title: server.title || "",
         options: Array.isArray(server.options) ? server.options : [],
       };
+    }
+
+    const sharedServerStore = sharedPromptParser
+      ? sharedPromptParser.createServerPromptStore({
+          resolveApi: () => {
+            if (typeof api === "function") return api;
+            return globalThis.HerdrMobileApi || null;
+          },
+          getPaneId: () => (state && state.pane) || null,
+        })
+      : null;
+    function fetchServerPrompt() {
+      if (sharedServerStore) return sharedServerStore.fetchServerPrompt();
+      return localFetchServerPrompt();
+    }
+    function serverPromptFresh() {
+      if (sharedServerStore) return sharedServerStore.serverPromptFresh();
+      return localServerPromptFresh();
+    }
+    function promptFromServer(server) {
+      if (sharedPromptParser) return sharedPromptParser.promptFromServer(server);
+      return localPromptFromServer(server);
     }
 
     function answerPrompt(prompt, value) {
@@ -607,8 +518,12 @@
       tailLines,
       currentAgentStatus,
       fetchServerPrompt,
-      _serverUsable: () => promptApiUsable,
+      _serverUsable: () =>
+        sharedServerStore
+          ? sharedServerStore.serverUsable()
+          : promptApiUsable,
       _resetServer: () => {
+        if (sharedServerStore) return sharedServerStore.resetServer();
         promptApiUsable = true;
         serverPrompt = null;
         promptFetchInFlight = false;

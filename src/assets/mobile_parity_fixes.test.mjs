@@ -23,6 +23,7 @@ const readScript = (path) => {
   return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
 };
 const composerScript = readScript("./mobile/composer.js");
+const sharedPromptCardsScript = readScript("./shared/prompt_cards.js");
 const layoutSettingsScript = readScript("./desktop/layout_settings.js");
 
 function mobileComposerDom({ documentKeyDown = null } = {}) {
@@ -130,6 +131,7 @@ function composerContext({ status = "blocked", term = null, options = null, apiR
   if (extraGlobal) Object.assign(sandbox, extraGlobal);
   sandbox.globalThis = sandbox;
   const ctx = vm.createContext(sandbox);
+  sharedPromptCardsScript.runInContext(ctx);
   composerScript.runInContext(ctx);
   const state = {
     screen: "terminal",

@@ -26,6 +26,11 @@ const COMPOSER_PATH = fileURLToPath(new URL("./desktop/app_js/composer.js", impo
 const composerScript = new vm.Script(readFileSync(COMPOSER_PATH, "utf8"), {
   filename: COMPOSER_PATH,
 });
+// The shared prompt parser composer.js delegates to (HerdrPromptParser).
+const SHARED_PROMPT_CARDS_PATH = fileURLToPath(new URL("./shared/prompt_cards.js", import.meta.url));
+const sharedPromptCardsScript = new vm.Script(readFileSync(SHARED_PROMPT_CARDS_PATH, "utf8"), {
+  filename: SHARED_PROMPT_CARDS_PATH,
+});
 
 // The real inputAttrs guard helper from shared/core.js (module.exports),
 // injected into the vm sandbox exactly like DESKTOP_JS scope provides it.
@@ -149,6 +154,7 @@ function loadComposer(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const contextObject = vm.createContext(ctx);
+  sharedPromptCardsScript.runInContext(contextObject);
   composerScript.runInContext(contextObject);
   return { ctx, shell, created, apiCalls };
 }
