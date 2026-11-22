@@ -53,6 +53,7 @@ mod lsp;
 mod notes;
 mod password_hashing;
 mod protocol;
+mod route_helpers;
 mod server_settings;
 mod service;
 mod terminal_hub;
