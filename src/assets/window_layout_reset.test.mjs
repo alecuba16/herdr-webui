@@ -203,6 +203,7 @@ const LAYOUT_FILES = [
   "./shared/backend_state.js",
   "./shared/prompt_cards.js",
   "./shared/tour_driver.js",
+  "./shared/terminal_input.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",

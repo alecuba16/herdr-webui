@@ -7,8 +7,6 @@
       connectedTerminalSize = "",
       terminalFollowPaused = false,
       terminalScrollBound = false,
-      inputFlushTimer = null,
-      inputQueue = [],
       writeQueue = [],
       writeFlushPending = false,
       inputEncoder = new TextEncoder(),
@@ -470,14 +468,11 @@
       connectedTerminalSize = "";
       pendingTerminalResize = null;
       setConnectionState(false);
-      inputQueue = [];
+      // The shared input store owns the queue and flush timer.
+      if (terminalInput) terminalInput.reset();
       writeQueue = [];
       writeFlushPending = false;
       terminalAttachPending = false;
-      if (inputFlushTimer) {
-        clearTimeout(inputFlushTimer);
-        inputFlushTimer = null;
-      }
       if (clear && term) term.clear();
     }
 
@@ -565,29 +560,18 @@
     }
 
     function sendInputData(data, inputOptions = {}) {
+      if (terminalInput) return terminalInput.sendInputData(data, inputOptions);
       if (!termWs || termWs.readyState !== 1 || !data) return;
-      if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
-        data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, terminalMouseReportingEnabled());
-      if (!data) return;
       const bytes = inputEncoder.encode(data);
-      const chunkSize = inputOptions.chunkSize || 16 * 1024;
-      if (bytes.length <= chunkSize && inputQueue.length === 0 && termWs.bufferedAmount < 65536) {
-        termWs.send(bytes);
-        return;
-      }
-      for (let i = 0; i < bytes.length; i += chunkSize) inputQueue.push(bytes.slice(i, i + chunkSize));
-      flushInputQueue();
+      if (bytes.length) termWs.send(bytes);
     }
 
+    // Chunked input queue lives in shared/terminal_input.js
+    // (HerdrTerminalInput). Mobile has no paste progress UI: pastes ride
+    // the same chunk queue in one normalized shot.
     function sendPasteToTerminal(text) {
       const normalized = String(text || "").replace(/\r\n|\r/g, "\n");
       sendInputData(normalized, { chunkSize: 16 * 1024, maxBufferedAmount: 64 * 1024 });
-    }
-
-    function flushInputQueue() {
-      if (!termWs || termWs.readyState !== 1) { inputQueue = []; return; }
-      while (inputQueue.length && termWs.bufferedAmount < 65536) termWs.send(inputQueue.shift());
-      if (inputQueue.length && !inputFlushTimer) inputFlushTimer = setTimeout(() => { inputFlushTimer = null; flushInputQueue(); }, 4);
     }
 
     function sendControlKey(data) {
@@ -596,6 +580,23 @@
       // bytes and arrow escapes untouched).
       sendInputData(String(data || ""));
     }
+
+    // Shared chunked input store (shared/terminal_input.js). Null keeps
+    // harnesses that load mobile/terminal.js alone on the direct-send
+    // fallbacks above.
+    const terminalInput = globalThis.HerdrTerminalInput
+      ? globalThis.HerdrTerminalInput.createTerminalInput({
+          ws: () => termWs,
+          encode: (s) => inputEncoder.encode(s),
+          stripMouseReports: (data) =>
+            globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports
+              ? globalThis.HerdrAppHelpers.stripTerminalMouseReports(
+                  data,
+                  terminalMouseReportingEnabled(),
+                )
+              : data,
+        })
+      : null;
 
     return {
       connect,

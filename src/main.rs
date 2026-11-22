@@ -147,16 +147,17 @@ use assets::{
     mobile_search_js, mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
     mobile_tour_css, mobile_tour_js, mobile_tour_steps_js, mobile_workmeta_js, mobile_worktrees_js,
     shared_actions_js, shared_alert_card_css, shared_alert_card_js, shared_attention_js,
-    shared_backend_state_js, shared_prompt_cards_js, shared_tour_driver_js,
-    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
-    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
+    shared_backend_state_js, shared_colors_css, shared_content_search_css, shared_core_js,
+    shared_editor_js, shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
     shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js, shared_http_js,
     shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
-    shared_options_js, shared_palette_css, shared_primitives_css, shared_settings_confirm_js,
-    shared_settings_feedback_js, shared_skeleton_css, shared_skeleton_js,
-    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js,
-    vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    shared_options_js, shared_palette_css, shared_primitives_css, shared_prompt_cards_js,
+    shared_settings_confirm_js, shared_settings_feedback_js, shared_skeleton_css,
+    shared_skeleton_js, shared_terminal_adapter_js, shared_terminal_fit_js,
+    shared_terminal_input_js, shared_terminal_scroll_js, shared_tokens_css,
+    shared_tour_driver_js,
+    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
+    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::BackendCompatibility;
 #[cfg(test)]
@@ -1419,9 +1420,16 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/alert-card.css", get(shared_alert_card_css))
         .route("/assets/shared/options.js", get(shared_options_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))
-        .route("/assets/shared/backend-state.js", get(shared_backend_state_js))
-        .route("/assets/shared/prompt-cards.js", get(shared_prompt_cards_js))
+        .route(
+            "/assets/shared/backend-state.js",
+            get(shared_backend_state_js),
+        )
+        .route(
+            "/assets/shared/prompt-cards.js",
+            get(shared_prompt_cards_js),
+        )
         .route("/assets/shared/tour-driver.js", get(shared_tour_driver_js))
+        .route("/assets/shared/terminal-input.js", get(shared_terminal_input_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
         .route("/assets/shared/file-tree.css", get(shared_file_tree_css))

@@ -19,6 +19,7 @@ const APP_BUNDLE_FILES = [
   "./shared/backend_state.js",
   "./shared/prompt_cards.js",
   "./shared/tour_driver.js",
+  "./shared/terminal_input.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",
@@ -275,6 +276,8 @@ describe("app bundle load", () => {
       readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -4948,8 +4951,9 @@ describe("app bundle load", () => {
     match(source, /terminalMouseReporting: false/);
     match(source, /next\.terminalMouseReporting = next\.terminalMouseReporting === true/);
     match(source, /function sendInputData\(data, inputOptions = \{\}\)/);
-    match(source, /allowMouseReports && globalThis\.HerdrAppHelpers && globalThis\.HerdrAppHelpers\.stripTerminalMouseReports/);
-    match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
+    match(source, /terminalInput\.sendInputData\(data, inputOptions\)/);
+    match(source, /stripMouseReports: \(data\) =>[\s\S]*?HerdrAppHelpers\.stripTerminalMouseReports/);
+    match(source, /stripTerminalMouseReports\(\n?\s*data,\n?\s*options\.terminalMouseReporting === true/);
     match(source, /onWheelMouseReport: \(report\) => sendInputData\(report, \{ allowMouseReports: true \}\)/);
     doesNotMatch(source, /stripTerminalQueryReplies/);
     doesNotMatch(source, /allowTerminalReplies/);
@@ -8208,15 +8212,18 @@ describe("app bundle load", () => {
   });
 
   it("captures terminal paste before native terminal paste", () => {
+    const inputSource = readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8");
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
-    match(source, /schedulePasteChunkFlush\(0\)/);
-    match(source, /function flushPasteChunks\(\)/);
-    match(source, /PASTE_TEXT_CHUNK_SIZE = 4096/);
-    match(source, /termWs\.bufferedAmount < PASTE_BUFFER_LIMIT/);
-    match(source, /normalizeTerminalPasteChunk\(pasteJob, rawChunk/);
-    match(source, /showTerminalPasteProgress\(pasteJob\.total\)/);
+    // Paste chunking lives in the shared input store; terminal.js wires
+    // the paste event to it and owns the progress DOM.
+    match(source, /terminalInput\.sendPaste\(text\)/);
+    match(source, /showTerminalPasteProgress|updateTerminalPasteProgress/);
+    match(inputSource, /function sendPaste\(text, opts/);
+    match(inputSource, /PASTE_TEXT_CHUNK_SIZE = 4096/);
+    match(inputSource, /bufferedAmount < PASTE_BUFFER_LIMIT/);
+    match(inputSource, /normalizePasteChunk\(job, chunk, isFinal\)/);
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
   });
@@ -9484,6 +9491,8 @@ describe("workspace sidebar order", () => {
     "\n" +
     readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
@@ -9798,6 +9807,8 @@ describe("terminal loading and failed states", () => {
       readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -10468,6 +10479,8 @@ describe("shortcut hint toast", () => {
       readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +

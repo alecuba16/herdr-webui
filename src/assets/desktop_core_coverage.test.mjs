@@ -15,6 +15,7 @@ const APP_BUNDLE_FILES = [
   "./shared/core.js",
   "./shared/actions.js",
   "./shared/backend_state.js",
+  "./shared/terminal_input.js",
   "./shared/workspace_search.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",

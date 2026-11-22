@@ -644,6 +644,7 @@ const MOBILE_BUNDLE_FILES = [
   "./shared/backend_state.js",
   "./shared/prompt_cards.js",
   "./shared/tour_driver.js",
+  "./shared/terminal_input.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
   "./shared/line_context.js",
@@ -795,6 +796,8 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8") +
     "\n" +

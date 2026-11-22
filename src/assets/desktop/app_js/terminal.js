@@ -552,17 +552,39 @@ function applyTerminalLinks() {
 // RAF delay adds ~16ms of latency for no benefit. Above the threshold we
 // coalesce bursts to avoid overwhelming the renderer.
 const IMMEDIATE_WRITE_THRESHOLD = 8192;
-const PASTE_TEXT_CHUNK_SIZE = 4096;
-const PASTE_BYTE_CHUNK_SIZE = 16 * 1024;
-const PASTE_BUFFER_LIMIT = 64 * 1024;
-const PASTE_FLUSH_BUDGET_MS = 8;
-const PASTE_FLUSH_DELAY_MS = 4;
 // Frames above this size are likely full-screen repaints from the backend
 // (the initial attach frame). wterm renders these in 12ms time-slices with
 // setTimeout(0) between slices, and each slice triggers a browser paint of
 // the partially-parsed screen. We keep the loading overlay visible until
 // the write callback fires so the user sees a single clean reveal.
 const LARGE_FRAME_THRESHOLD = 32768;
+
+// Shared chunked input/paste store (shared/terminal_input.js): owns the
+// byte queue, buffered-amount backpressure, and the paste frame. This
+// bundle wires it to the live socket, the mouse-report stripper, and the
+// paste progress DOM. The null check keeps harnesses that load
+// terminal.js alone on the simple direct-send fallback above.
+const terminalInput = globalThis.HerdrTerminalInput
+  ? globalThis.HerdrTerminalInput.createTerminalInput({
+      ws: () => termWs,
+      encode: (s) => inputEncoder.encode(s),
+      stripMouseReports: (data) =>
+        globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports
+          ? globalThis.HerdrAppHelpers.stripTerminalMouseReports(
+              data,
+              options.terminalMouseReporting === true,
+            )
+          : data,
+      progress: {
+        show: showTerminalPasteProgress,
+        update: updateTerminalPasteProgress,
+        hide: () => {
+          hideTerminalPasteProgress();
+          scheduleTerminalLayoutFit();
+        },
+      },
+    })
+  : null;
 // Set true on WS open, cleared after the first large frame is fully written.
 let terminalAttachPending = false;
 // Overlay hooks (lens/prompt cards) RAF-coalesce through this flag: one
@@ -1094,116 +1116,20 @@ async function pasteClipboard() {
   if (text) sendPasteToTerminal(text);
 }
 function sendInputData(data, inputOptions = {}) {
+  if (terminalInput) return terminalInput.sendInputData(data, inputOptions);
   if (!termWs || termWs.readyState !== 1 || !data) return;
-  if (!inputOptions.allowMouseReports && globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.stripTerminalMouseReports)
-    data = globalThis.HerdrAppHelpers.stripTerminalMouseReports(data, options.terminalMouseReporting === true);
-  if (!data) return;
   const bytes = inputEncoder.encode(data);
-  const chunkSize = inputOptions.chunkSize || 16 * 1024;
-  const maxBufferedAmount = inputOptions.maxBufferedAmount || 65536;
-  if (
-    bytes.length <= chunkSize &&
-    inputQueue.length === 0 &&
-    termWs.bufferedAmount < maxBufferedAmount
-  ) {
-    termWs.send(bytes);
-    return;
-  }
-  for (let i = 0; i < bytes.length; i += chunkSize)
-    inputQueue.push(bytes.slice(i, i + chunkSize));
-  inputQueueMaxBufferedAmount = Math.max(inputQueueMaxBufferedAmount, maxBufferedAmount);
-  flushInputQueue();
+  if (bytes.length) termWs.send(bytes);
 }
 
+// Chunked input queue + paste frame live in shared/terminal_input.js
+// (HerdrTerminalInput). The paste progress UI stays here: it owns the
+// shell's DOM nodes and the post-paste layout fit.
 function sendPasteToTerminal(text) {
+  if (terminalInput) return terminalInput.sendPaste(text);
   if (!termWs || termWs.readyState !== 1 || !text) return;
-  const value = String(text || "");
-  if (!value) return;
-  if (pasteJob) {
-    pasteJob.text += value;
-    pasteJob.total = pasteJob.text.length;
-  } else {
-    pasteJob = { text: value, offset: 0, total: value.length, pendingCR: false };
-  }
-  pasteFrameUntil = Date.now() + Math.max(400, Math.min(8000, Math.ceil(pasteJob.total / 128)));
-  showTerminalPasteProgress(pasteJob.total);
-  schedulePasteChunkFlush(0);
-}
-function schedulePasteChunkFlush(delay = PASTE_FLUSH_DELAY_MS) {
-  if (pasteChunkTimer) return;
-  pasteChunkTimer = setTimeout(flushPasteChunks, delay);
-}
-function flushPasteChunks() {
-  pasteChunkTimer = null;
-  if (!pasteJob) return;
-  if (!termWs || termWs.readyState !== 1) {
-    pasteJob = null;
-    pasteFrameUntil = 0;
-    hideTerminalPasteProgress();
-    return;
-  }
-  const start = Date.now();
-  while (
-    pasteJob &&
-    pasteJob.offset < pasteJob.total &&
-    termWs.bufferedAmount < PASTE_BUFFER_LIMIT
-  ) {
-    const end = Math.min(pasteJob.total, pasteJob.offset + PASTE_TEXT_CHUNK_SIZE);
-    const rawChunk = pasteJob.text.slice(pasteJob.offset, end);
-    pasteJob.offset = end;
-    const chunk = normalizeTerminalPasteChunk(pasteJob, rawChunk, pasteJob.offset >= pasteJob.total);
-    if (chunk) sendPasteChunkToTerminal(chunk);
-    updateTerminalPasteProgress(pasteJob.offset, pasteJob.total);
-    if (Date.now() - start >= PASTE_FLUSH_BUDGET_MS) break;
-  }
-  if (!pasteJob) return;
-  if (pasteJob.offset >= pasteJob.total) {
-    finishPasteFrameSoon();
-    return;
-  }
-  schedulePasteChunkFlush(termWs.bufferedAmount >= PASTE_BUFFER_LIMIT ? PASTE_FLUSH_DELAY_MS : 0);
-}
-function normalizeTerminalPasteChunk(job, chunk, isFinal) {
-  if (job.pendingCR) {
-    chunk = "\r" + chunk;
-    job.pendingCR = false;
-  }
-  if (!isFinal && chunk.endsWith("\r")) {
-    chunk = chunk.slice(0, -1);
-    job.pendingCR = true;
-  }
-  return chunk.replace(/\r\n|\r/g, "\n");
-}
-function sendPasteChunkToTerminal(chunk) {
-  const bytes = inputEncoder.encode(chunk);
-  for (let i = 0; i < bytes.length; i += PASTE_BYTE_CHUNK_SIZE)
-    termWs.send(bytes.slice(i, i + PASTE_BYTE_CHUNK_SIZE));
-}
-function scheduleInputFlush() {
-  if (inputFlushTimer) return;
-  inputFlushTimer = setTimeout(flushInputQueue, 4);
-}
-function flushInputQueue() {
-  inputFlushTimer = null;
-  if (!termWs || termWs.readyState !== 1) {
-    inputQueue = [];
-    inputQueueMaxBufferedAmount = 65536;
-    return;
-  }
-  while (inputQueue.length && termWs.bufferedAmount < inputQueueMaxBufferedAmount)
-    termWs.send(inputQueue.shift());
-  if (inputQueue.length) scheduleInputFlush();
-  else inputQueueMaxBufferedAmount = 65536;
-}
-function finishPasteFrameSoon() {
-  pasteJob = null;
-  updateTerminalPasteProgress(1, 1);
-  pasteProgressHideTimer = setTimeout(() => {
-    pasteProgressHideTimer = null;
-    pasteFrameUntil = 0;
-    hideTerminalPasteProgress();
-    scheduleTerminalLayoutFit();
-  }, 250);
+  const bytes = inputEncoder.encode(String(text || "").replace(/\r\n|\r/g, "\n"));
+  if (bytes.length) termWs.send(bytes);
 }
 function showTerminalPasteProgress(total) {
   if (pasteProgressHideTimer) {

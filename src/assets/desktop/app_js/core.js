@@ -140,15 +140,9 @@ let term,
   lastAgentsHtml = "",
   lastTabsHtml = "",
   closeChordUntil = 0,
-  inputQueue = [],
-  inputQueueMaxBufferedAmount = 65536,
-  inputFlushTimer = null,
-  pasteJob = null,
-  pasteChunkTimer = null,
   pasteProgressHideTimer = null,
   terminalWriteQueue = [],
   terminalWriteFlushPending = false,
-  pasteFrameUntil = 0,
   shortcutPrefixUntil = 0,
   shortcutPrefixTimer = null,
   searchFramePending = false,
@@ -4131,22 +4125,14 @@ function setTerminalLoading(show, status) {
 }
 function resetTerminalConnection(clear = false, destroy = false) {
   if (typeof cancelTerminalAttachWatchdog === "function") cancelTerminalAttachWatchdog();
-  if (inputFlushTimer) {
-    clearTimeout(inputFlushTimer);
-    inputFlushTimer = null;
-  }
   if (window.HerdrGraphicsBridge) window.HerdrGraphicsBridge.disconnect();
-  inputQueue = [];
-  inputQueueMaxBufferedAmount = 65536;
-  if (pasteChunkTimer) {
-    clearTimeout(pasteChunkTimer);
-    pasteChunkTimer = null;
-  }
+  // The shared input store owns the queue and paste frame; reset drops
+  // both so the next attach starts clean.
+  if (typeof terminalInput !== "undefined" && terminalInput) terminalInput.reset();
   if (pasteProgressHideTimer) {
     clearTimeout(pasteProgressHideTimer);
     pasteProgressHideTimer = null;
   }
-  pasteJob = null;
   if (typeof hideTerminalPasteProgress === "function") hideTerminalPasteProgress();
   if (terminalWriteQueue.length && typeof flushTerminalFrames === "function") flushTerminalFrames();
   terminalWriteQueue = [];

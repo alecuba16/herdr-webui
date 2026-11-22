@@ -25,6 +25,17 @@ function getHttpScript() {
   return httpScript;
 }
 
+// terminal.js wires its input/paste path through the shared input store
+// (shared/terminal_input.js, loaded before the bundle in production).
+let terminalInputScript = null;
+function getTerminalInputScript() {
+  if (!terminalInputScript) {
+    const inputPath = fileURLToPath(new URL("./shared/terminal_input.js", import.meta.url));
+    terminalInputScript = new vm.Script(readFileSync(inputPath, "utf8"), { filename: inputPath });
+  }
+  return terminalInputScript;
+}
+
 // Behavioral test for the terminal reconnect backoff (resize-storm fix).
 // Loads desktop/app_js/terminal.js in a sandbox with stubbed DOM/WS/state
 // and drives connectTerminal through: healthy attach -> backend death ->
@@ -180,6 +191,7 @@ function loadTerminalModule() {
   // sandbox so terminal.js's assignments and reads resolve.
   vm.createContext(sandbox);
   getHttpScript().runInContext(sandbox);
+  getTerminalInputScript().runInContext(sandbox);
   vm.runInContext(
     `
     let term = null;

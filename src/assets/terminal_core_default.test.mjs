@@ -71,6 +71,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
       "./shared/core.js",
       "./shared/actions.js",
       "./shared/backend_state.js",
+      "./shared/terminal_input.js",
       "./shared/terminal_fit.js",
       "./desktop/search.js",
       ...desktopAppFiles,

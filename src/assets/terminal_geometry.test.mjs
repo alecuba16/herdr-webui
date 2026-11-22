@@ -25,6 +25,17 @@ function getHttpScript() {
   return httpScript;
 }
 
+// terminal.js wires its input/paste path through the shared input store
+// (shared/terminal_input.js, loaded before the bundle in production).
+let terminalInputScript = null;
+function getTerminalInputScript() {
+  if (!terminalInputScript) {
+    const inputPath = fileURLToPath(new URL("./shared/terminal_input.js", import.meta.url));
+    terminalInputScript = new vm.Script(readFileSync(inputPath, "utf8"), { filename: inputPath });
+  }
+  return terminalInputScript;
+}
+
 // Regression test for the cross-display terminal geometry bug: moving a
 // browser window with an active terminal between monitors (UWQHD@1x ->
 // MacBook@2x) left one rendered line overlapping another with follow-scroll
@@ -231,6 +242,7 @@ function loadTerminalModule() {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   getHttpScript().runInContext(sandbox);
+  getTerminalInputScript().runInContext(sandbox);
   // core.js fragment: declare the bundle-globals terminal.js assigns/reads.
   // terminal.js is a fragment of the concatenated desktop bundle; these
   // declarations normally live in core.js.
