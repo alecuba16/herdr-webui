@@ -15,6 +15,17 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+/// Env-mutation wrapper over the crate-wide lock (test_env_guard R1:
+/// the name must be one of LOCK_NAMES for the guard to see it, hence
+/// plain env_lock). The write-failure test holds it across its whole
+/// env window; no other tour test mutates env, the shared
+/// settings_test_env helper takes this same lock internally.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
 /// The shared fixture has one workspace and one agent; the tour demos
 /// move the workspace and agent selection, so these tests need a
 /// snapshot where that movement is observable.
@@ -459,4 +470,61 @@ fn split_steps_demo_the_real_split_mode_and_teach_the_tile_language() {
     assert!(screen.contains("Ctrl+B z"), "zoom chord shown");
     assert!(screen.contains("Ctrl+B m"), "move chord shown");
     assert!(screen.contains("Ctrl+B Shift+Z"), "resize chord shown");
+}
+
+#[test]
+fn shortcut_key_hint_names_the_split_tile_chords() {
+    // MovePane and ResizePane lost their tour steps in the step-table
+    // trim, so the hint table's arms never run through the walk tests.
+    use crate::tui::keys::Shortcut;
+    assert_eq!(tour::shortcut_key_hint(Shortcut::MovePane), "m");
+    assert_eq!(tour::shortcut_key_hint(Shortcut::ResizePane), "Shift+Z");
+}
+
+#[test]
+fn tour_state_write_failure_lands_on_the_status_line() {
+    // record_tour_state is best effort: an unwritable settings path
+    // must surface as a status line, not skip the close.
+    use std::os::unix::fs::PermissionsExt;
+
+    // This test owns its whole env window through the visible lock
+    // (settings_test_env's guard Drop deletes its temp root, which
+    // would delete the read-only fixture dir before the redirect
+    // can point into it).
+    let _lock = env_lock();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let config_root = std::env::temp_dir().join(format!("herdr-tour-state-fail-{stamp}") + "/ro");
+    // XDG points at a nonexistent path under the read-only root, so
+    // tui_set_tour_state's create_dir_all(<xdg>/herdr-webui) fails
+    // before the file write.
+    let fixture_xdg = config_root.join("xdg");
+    std::fs::create_dir_all(&config_root).unwrap();
+    let mut perms = std::fs::metadata(&config_root).unwrap().permissions();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(&config_root, perms).unwrap();
+    let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    std::env::set_var("XDG_CONFIG_HOME", &fixture_xdg);
+
+    let mut app = open_tour_app();
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.mode != TuiMode::Tour, "the tour still closes");
+    assert!(
+        app.status.starts_with("tour state not saved:"),
+        "status explains the missing record: {}",
+        app.status
+    );
+
+    // The mode change also drives a read-only cleanup: restore perms
+    // first so the temp root removal does not fail on the fixture.
+    let mut perms = std::fs::metadata(&config_root).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&config_root, perms).unwrap();
+    match prior_xdg {
+        Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(config_root.parent().unwrap());
 }

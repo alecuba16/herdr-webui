@@ -367,4 +367,18 @@ mod coverage_tests_round2 {
         assert_eq!(system.panel_bg, dark.panel_bg);
         assert_eq!(system.border, dark.border);
     }
+
+    #[test]
+    fn classify_background_splits_light_from_dark() {
+        // Pure white and pure black pin the two arms of the
+        // lightness threshold.
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0xffff, 0xffff, 0xffff)),
+            TerminalTheme::Light
+        );
+        assert_eq!(
+            classify_background(terminal_colorsaurus::Color::rgb(0x0000, 0x0000, 0x0000)),
+            TerminalTheme::Dark
+        );
+    }
 }

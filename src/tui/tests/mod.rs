@@ -2630,7 +2630,17 @@ fn fake_backend_socket_with(
                 {
                     json!({"id": request["id"], "error": "tab tab_gone not found"})
                 } else {
-                    json!({"id": request["id"], "result": {"ok": true}})
+                    // Fresh-shell split reads the created tab's root pane
+                    // off the reply, so the answer mirrors the backend
+                    // shape.
+                    json!({
+                        "id": request["id"],
+                        "result": {
+                            "ok": true,
+                            "tab": {"tab_id": "tab_new"},
+                            "root_pane": {"pane_id": "pane_opened"}
+                        }
+                    })
                 }
             }
             "workspace.create" => json!({
@@ -14778,5 +14788,366 @@ fn chord_echo_writes_the_chord_and_label_then_a_report_replaces_it() {
     assert!(
         !app.status.contains("-> "),
         "the reporting action owns the line after the echo"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Coverage-closing tests for split_mode.rs (nearest-leaf focus, zoom
+// auto-lift, fresh-shell commit) and mod.rs error arms (git guards,
+// workspace-selection cursor parking, close-tab stale paths).
+// ---------------------------------------------------------------------------
+
+/// Tile geometry rows the render normally records; tests hand them in
+/// when the assertion is about the scoring, not the layout pass.
+fn push_tile_geometry(app: &mut TuiApp, rows: &[(&str, u16, u16, u16, u16)]) {
+    *app.tile_geometry.borrow_mut() = rows
+        .iter()
+        .map(
+            |(pane_id, x, y, width, height)| crate::tui::render::TileRectOwned {
+                pane_id: pane_id.to_string(),
+                x: *x,
+                y: *y,
+                width: *width,
+                height: *height,
+            },
+        )
+        .collect();
+}
+
+#[test]
+fn nearest_leaf_to_scores_by_center_distance_not_tree_order() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::Split {
+                dir: crate::tui::split::SplitDir::Col,
+                children: vec![
+                    crate::tui::split::SplitNode::leaf("pane_2"),
+                    crate::tui::split::SplitNode::leaf("pane_3"),
+                ],
+                weights: vec![8; 2],
+            },
+        ],
+    );
+    // Row split with a column right half: pane_2 is the right-top
+    // quadrant, pane_3 the right-bottom one. The dead pane sits on the
+    // right-bottom slot, so the center-to-center winner is pane_3 even
+    // though pane_1 is the first leaf on the tree.
+    push_tile_geometry(
+        &mut app,
+        &[
+            ("pane_1", 0, 0, 50, 40),
+            ("pane_2", 50, 0, 50, 20),
+            ("pane_3", 50, 20, 50, 20),
+        ],
+    );
+    assert_eq!(app.nearest_leaf_to("pane_3").as_deref(), Some("pane_2"));
+
+    // Unknown origin pane: no geometry row, nothing to score.
+    assert_eq!(app.nearest_leaf_to("no_such_pane"), None);
+
+    // Origin present but no other leaf carries geometry.
+    push_tile_geometry(&mut app, &[("pane_1", 0, 0, 50, 40)]);
+    assert_eq!(app.nearest_leaf_to("pane_1"), None);
+}
+
+#[test]
+fn sync_split_tree_parks_focus_on_the_nearest_surviving_leaf() {
+    let mut app = app_with_two_panes();
+    push_pane_3(&mut app);
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::Split {
+                dir: crate::tui::split::SplitDir::Col,
+                children: vec![
+                    crate::tui::split::SplitNode::leaf("pane_2"),
+                    crate::tui::split::SplitNode::leaf("pane_3"),
+                ],
+                weights: vec![8; 2],
+            },
+        ],
+    );
+    // pane_3 occupies the right-bottom quadrant and holds focus; the
+    // recorded geometry keeps its last rect so the prune can score
+    // survivors against it.
+    push_tile_geometry(
+        &mut app,
+        &[
+            ("pane_1", 0, 0, 50, 40),
+            ("pane_2", 50, 0, 50, 20),
+            ("pane_3", 50, 20, 50, 20),
+        ],
+    );
+    app.split_focus = Some("pane_3".to_string());
+    app.snapshot.panes.retain(|pane| pane.id != "pane_3");
+
+    app.sync_split_tree();
+
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_2"),
+        "focus lands on the geometrically nearest survivor, not the first leaf"
+    );
+    assert!(app.status.contains("focus moved to"), "{}", app.status);
+}
+
+#[test]
+fn sync_split_tree_lifts_zoom_when_the_zoomed_pane_vanished() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.split_zoomed = true;
+    // pane_2 gone from the snapshot: prune keeps a single leaf, focus
+    // dies with it, and the zoomed flag must drop so the collapsed
+    // tree renders unzoomed.
+    app.snapshot.panes.retain(|pane| pane.id != "pane_2");
+    app.sync_split_tree();
+    assert!(!app.split_zoomed);
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
+fn fresh_shell_commit_creates_the_tab_and_inserts_the_new_pane() {
+    // Snapshot that already carries the created tab's root pane, the
+    // shape the real backend answers on the post-create refresh: the
+    // commit's internal refresh would otherwise prune the new leaf.
+    let mut created = fixture_snapshot_value_two_panes();
+    created["snapshot"]["panes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "pane_id":"pane_opened","terminal_id":"term_new","workspace_id":"ws_1",
+            "tab_id":"tab_new","agent":null,"display_agent":null,
+            "agent_status":"idle","cwd":"/repo","focused":false
+        }));
+    let (api_socket, _stop) = fake_backend_socket_with(created);
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    app.sync_split_tree();
+    app.screen = TuiScreen::Terminal;
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        pane: crate::tui::split::FRESH_SHELL.to_string(),
+        side: crate::tui::split::Side::Right,
+    });
+
+    app.split_commit();
+
+    assert!(app.split_mode.is_none(), "commit closes the mode");
+    // The post-create refresh runs before the assertion: its focus
+    // notice (the fake snapshot lacks the new pane) owns the line, so
+    // the commit proof is the tree and focus state below.
+    assert_eq!(
+        app.split_tree.leaves(),
+        vec!["pane_1", "pane_opened"],
+        "the backend's root pane joined beside the neighbor"
+    );
+    assert_eq!(
+        app.split_focus.as_deref(),
+        Some("pane_opened"),
+        "focus moves to the fresh tile"
+    );
+    assert!(app.just_closed_mode, "commit arms the double-Esc guard");
+    assert!(app.error.is_none(), "refresh after create: {:?}", app.error);
+
+    // Against a dead socket the create fails and the mode stays open.
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::leaf("pane_1");
+    app.split_focus = Some("pane_1".to_string());
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_1".to_string(),
+        pane: crate::tui::split::FRESH_SHELL.to_string(),
+        side: crate::tui::split::Side::Right,
+    });
+    app.split_commit();
+    assert_eq!(app.status, "fresh shell failed");
+    assert!(
+        app.split_mode.is_some(),
+        "failed create keeps the mode open"
+    );
+    assert_eq!(app.split_tree.leaves(), vec!["pane_1"]);
+}
+
+#[test]
+fn git_log_enter_without_a_selected_commit_errors() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Log;
+    app.git_panel.cwd = "/repo".to_string();
+    app.git_panel.log_file = None;
+    app.git_panel.commits.clear();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("no commit selected"));
+}
+
+#[test]
+fn git_discard_refuses_while_the_selected_file_preview_is_dirty() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.cwd = "/repo".to_string();
+    app.git_panel.files = vec![GitFileEntry {
+        path: "notes.md".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.git_panel.file_selected = 0;
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "edited".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h".to_string(),
+        dirty: true,
+    };
+    app.run_shortcut(Shortcut::GitDiscardFile);
+    assert_eq!(
+        app.error.as_deref(),
+        Some("unsaved edits: save or reload before discarding this file"),
+        "the dirty buffer blocks the discard verb"
+    );
+
+    // A dirty preview on another file does not block the discard: the
+    // verb runs (and errors on the dead API, proving the guard passed).
+    app.file_explorer.preview.path = Some("other.txt".to_string());
+    app.error = None;
+    app.run_shortcut(Shortcut::GitDiscardFile);
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| !e.contains("unsaved edits")),
+        "discard ran against the API: {:?}",
+        app.error
+    );
+}
+
+#[test]
+fn selecting_a_paneless_workspace_parks_the_agent_cursor_on_its_first_agent() {
+    let mut app = app_with_two_panes();
+    // ws_2 keeps its shell pane but its agent row is gone, so the
+    // pane-id lookup misses and the cursor must park on ws_1's agent
+    // (the only row left) instead of stranding on the removed row.
+    // Split view focused on ws_2's pane makes view_pane hit the
+    // miss (the pane exists, its agent row does not).
+    app.snapshot
+        .agents
+        .retain(|agent| agent.workspace_id != "ws_2");
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.selected_workspace = 1;
+    app.selected_agent = 0;
+
+    app.run_shortcut(Shortcut::NewTab);
+
+    assert_eq!(
+        app.selected_agent, 0,
+        "agent cursor parked on ws_1's agent row (index 0), the only one left"
+    );
+    let parked = app
+        .snapshot
+        .agents
+        .get(app.selected_agent)
+        .map(|agent| agent.workspace_id.clone())
+        .unwrap_or_default();
+    assert_eq!(parked, "ws_1", "the parked row belongs to ws_1");
+}
+
+#[test]
+fn close_tab_falls_back_when_the_view_pane_workspace_left_the_snapshot() {
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    app.screen = TuiScreen::Terminal;
+    // Split view with focus on pane_2 (ws_2), then ws_2 drops from the
+    // snapshot: stale pane data, the close chain must fall back to the
+    // sidebar-selected workspace (ws_1's active tab).
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_2".to_string());
+    app.selected_workspace = 0;
+    app.snapshot.workspaces.retain(|ws| ws.id != "ws_2");
+    app.snapshot.tabs.retain(|tab| tab.workspace_id != "ws_2");
+
+    app.run_shortcut(Shortcut::CloseTab);
+
+    assert!(
+        app.status.contains("closed"),
+        "the fallback tab closed: {:?}",
+        app.status
+    );
+    assert!(
+        !app.status.contains("tab Server closed"),
+        "the stale ws_2 tab did not close: {}",
+        app.status
+    );
+    assert!(
+        app.error.is_none()
+            || !app
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("not found")),
+        "stale pane data must not surface a close error: {:?}",
+        app.error
+    );
+}
+
+#[test]
+fn close_tab_without_a_tab_label_reports_the_plain_closed_notice() {
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_two_panes());
+    app.screen = TuiScreen::Terminal;
+    // Single-tab ws_1 (was_last_tab path): closing the only tab also
+    // closes the workspace. Strip the tab rows so the closed-status
+    // arm falls to the label-less "tab closed" notice.
+    app.selected_workspace = 0;
+    app.snapshot.workspaces.retain(|ws| ws.id != "ws_2");
+    app.snapshot.tabs.retain(|tab| tab.workspace_id != "ws_2");
+    app.snapshot
+        .panes
+        .retain(|pane| pane.workspace_id != "ws_2");
+    app.snapshot
+        .agents
+        .retain(|agent| agent.workspace_id != "ws_2");
+    app.sync_split_tree();
+    app.snapshot.tabs.clear();
+
+    app.run_shortcut(Shortcut::CloseTab);
+
+    assert_eq!(
+        app.status, "tab closed",
+        "no tab row to name: the plain closed notice owns the line"
+    );
+    assert!(
+        app.status_hold_until.is_some(),
+        "the closed notice arms the hold past the refresh"
     );
 }

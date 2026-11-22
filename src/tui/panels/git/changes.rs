@@ -741,3 +741,89 @@ mod coverage_tests_round2 {
         assert!(!p.show_blame, "failed blame load resets the flag");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests_round3 {
+    use super::super::GitFileEntry;
+    use super::*;
+
+    fn panel_with_hunks() -> GitPanel {
+        use crate::tui::panels::git::parse_diff_lines_with_meta;
+        let mut p = GitPanel::new("/repo");
+        p.files = vec![GitFileEntry {
+            path: "a.rs".into(),
+            status: GitFileStatus::Staged,
+        }];
+        p.file_selected = 0;
+        p.diff_title = "a.rs".to_string();
+        let diff = serde_json::json!({
+            "files": [{
+                "path": "a.rs",
+                "chunks": [{
+                    "header": "@@ -1,2 +1,3 @@",
+                    "lines": [
+                        {"line_type": "normal", "content": " context", "new_line_number": 1},
+                        {"line_type": "delete", "content": "-old", "old_line_number": 2},
+                        {"line_type": "add", "content": "+new", "new_line_number": 2}
+                    ]
+                }]
+            }]
+        });
+        let (lines, meta) = parse_diff_lines_with_meta(&diff);
+        p.diff_lines = lines;
+        p.diff_meta = meta;
+        assert!(p.hunk_count() >= 1, "diff parses into at least one hunk");
+        p
+    }
+
+    #[test]
+    fn apply_hunk_action_refreshes_view_and_diff_after_the_apply() {
+        // A one-shot server that answers every request with an empty
+        // payload: the apply call, the refresh, and the diff reload
+        // all ride the same connection sequence (apply_hunk_action
+        // chains refresh_view + refresh_diff after a successful apply).
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header.trim().strip_prefix("Content-Length:") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 {
+                    let _ = reader.read_exact(&mut body);
+                }
+                let response = if request.contains("apply-patch") {
+                    "{}"
+                } else {
+                    r#"{"diff":[]}"#
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                let _ = stream.flush();
+            }
+        });
+        let api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        let mut p = panel_with_hunks();
+        p.apply_hunk_action(&api).unwrap();
+        assert_eq!(
+            p.diff_title, "working tree",
+            "diff reloaded after the apply"
+        );
+    }
+}

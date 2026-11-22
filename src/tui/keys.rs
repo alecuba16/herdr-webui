@@ -580,7 +580,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "Ctrl+B s",
-            "settings overlay (t cycles) · terminal (navigate): split mode",
+            "settings overlay (t theme, p passthrough toggle, T tour) · terminal (navigate): split mode",
         ),
         (
             "Ctrl+B Shift+E",

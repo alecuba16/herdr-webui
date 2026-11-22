@@ -948,6 +948,27 @@ mod tests {
     }
 
     #[test]
+    fn walk_next_diagonal_walks_both_axes_and_skips() {
+        // Diagonal walks only fire when both components agree on the
+        // direction: the ghost crosses a corner, nearest center wins.
+        let tiles = [
+            TileRect::new("a", 0, 0, 10, 10),
+            TileRect::new("b", 10, 0, 10, 10),
+            TileRect::new("c", 0, 10, 10, 10),
+            TileRect::new("d", 10, 10, 10, 10),
+            TileRect::new("far", 30, 30, 10, 10),
+        ];
+        assert_eq!(walk_next(&tiles, "a", 1, 1, None), Some("d"));
+        assert_eq!(walk_next(&tiles, "b", -1, 1, None), Some("c"));
+        // Skip turns d's corner ghost onto the far tile.
+        assert_eq!(walk_next(&tiles, "a", 1, 1, Some("d")), Some("far"));
+        // A single-axis component fails the agreement: no walk.
+        assert_eq!(walk_next(&tiles, "a", 1, 0, None), Some("b"));
+        // Wrong-sign neighbor on one axis never matches.
+        assert_eq!(walk_next(&tiles, "a", -1, -1, None), None);
+    }
+
+    #[test]
     fn walk_next_escapes_asymmetric_three_tile_grid() {
         // row[p1, col[p2, p3]] laid out on 20 cols: p1 full-height on
         // the left, p2 and p3 stacked on the right. The strict

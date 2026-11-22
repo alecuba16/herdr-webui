@@ -680,4 +680,66 @@ mod coverage_tests {
         let after = format!("{:?}", terminal.backend().buffer());
         assert_eq!(before, after, "empty pane area draws nothing");
     }
+
+    #[test]
+    fn pane_display_name_labels_the_fresh_shell_pane() {
+        let client =
+            crate::backend_client::BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let app = TuiApp::new(client, std::time::Duration::from_secs(1));
+        // The fresh-shell sentinel renders as a readable name, not an id.
+        assert_eq!(
+            pane_display_name(&app, crate::tui::split::FRESH_SHELL),
+            "fresh shell"
+        );
+        // Unknown pane ids pass through unchanged.
+        assert_eq!(pane_display_name(&app, "pane_nope"), "pane_nope");
+        // A pane present in the snapshot uses its label.
+        let mut app = app;
+        app.snapshot.panes = vec![crate::tui::model::TuiPane {
+            id: "pane_1".into(),
+            terminal_id: "t1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            label: Some("build".into()),
+            agent: None,
+            display_agent: None,
+            agent_status: "idle".into(),
+            cwd: "/repo".into(),
+            focused: false,
+            agent_session: None,
+            terminal_title: None,
+        }];
+        assert_eq!(pane_display_name(&app, "pane_1"), "build");
+    }
+
+    #[test]
+    fn render_double_border_draws_the_ring_on_a_real_rect() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let client =
+            crate::backend_client::BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+        let _app = TuiApp::new(client, std::time::Duration::from_secs(1));
+        let p = Palette::default();
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let before = format!("{:?}", terminal.backend().buffer());
+        terminal
+            .draw(|frame| render_double_border(frame, rect(0, 0, 20, 6), "target", &p))
+            .unwrap();
+        let after = format!("{:?}", terminal.backend().buffer());
+        assert_ne!(before, after, "double border paints the rect");
+        // Double border corners must land in the buffer.
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf.cell((0, 0)).unwrap().symbol(),
+            "\u{2554}",
+            "top-left double corner"
+        );
+        assert_eq!(
+            buf.cell((19, 0)).unwrap().symbol(),
+            "\u{2557}",
+            "top-right double corner"
+        );
+    }
 }

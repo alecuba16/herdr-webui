@@ -3303,8 +3303,125 @@ fn truncate(value: &str, max_width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_hint, wrap_plain};
+    use super::{
+        filter_name_spans, fit_hint, split_line_at_cursor, tail_visible, truncate, wrap_plain,
+    };
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn match_span_helpers_cover_windows_and_cursor_splits() {
+        // Long `before` window: keep only the tail that fits the budget.
+        assert_eq!(tail_visible("abcdefghij", 4), "ghij");
+        // Fits the budget: returned unchanged.
+        assert_eq!(tail_visible("ab", 10), "ab");
+        // Char-boundary safe: a 2-wide char never gets sliced mid-byte.
+        assert_eq!(tail_visible("a\u{4e2d}\u{4e2d}", 2), "\u{4e2d}");
+        // Budget 0 stops before consuming any column.
+        assert_eq!(tail_visible("ab", 0), "");
+
+        // Cursor at a char boundary splits (before, caret, after).
+        assert_eq!(
+            split_line_at_cursor("abcd", 2),
+            ("ab".to_string(), "c".to_string(), "d".to_string())
+        );
+        // Cursor past the line end rides a padding space.
+        assert_eq!(
+            split_line_at_cursor("ab", 9),
+            ("ab".to_string(), " ".to_string(), String::new())
+        );
+        assert_eq!(
+            split_line_at_cursor("", 0),
+            ("".to_string(), " ".to_string(), String::new())
+        );
+        // Byte offset inside a multibyte char snaps forward to the boundary.
+        assert_eq!(
+            split_line_at_cursor("a\u{4e2d}b", 2),
+            ("a\u{4e2d}".to_string(), "b".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn truncate_zero_budget_and_column_limits() {
+        // Zero budget returns empty instead of paying for the ellipsis.
+        assert_eq!(truncate("abc", 0), "");
+        // Fits: unchanged.
+        assert_eq!(truncate("abc", 5), "abc");
+        // Overflow clips by display columns and reserves one for the ellipsis.
+        assert_eq!(truncate("abcdef", 4), "abc\u{2026}");
+        // A 2-wide char pays 2 columns before the ellipsis fits.
+        assert_eq!(truncate("a\u{4e2d}bcd", 3), "a\u{2026}");
+    }
+
+    #[test]
+    fn filter_name_spans_plain_and_highlight_rows() {
+        // Filter off: one plain span.
+        assert_eq!(
+            filter_name_spans("main.rs", "main", false),
+            vec![("main.rs".to_string(), false)]
+        );
+        // Occurrence splits into before/matched/after, empty spans dropped.
+        assert_eq!(
+            filter_name_spans("main.rs", "MAIN", true),
+            vec![("main".to_string(), true), (".rs".to_string(), false)]
+        );
+        assert_eq!(
+            filter_name_spans("src/main.rs", "main", true),
+            vec![
+                ("src/".to_string(), false),
+                ("main".to_string(), true),
+                (".rs".to_string(), false)
+            ]
+        );
+        // No visible occurrence: one plain span.
+        assert_eq!(
+            filter_name_spans("main.rs", "zzz", true),
+            vec![("main.rs".to_string(), false)]
+        );
+        // Whitespace-only needle: treated as no filter.
+        assert_eq!(
+            filter_name_spans("main.rs", "  ", true),
+            vec![("main.rs".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn edit_cursor_render_keeps_short_before_and_truncates_long_lines() {
+        // Wide enough for the sidebar (34 cols) plus the 90-column
+        // tree/preview split inside the files screen.
+        let backend = TestBackend::new(130, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let client = crate::backend_client::BackendClient::builtin_session(None);
+        let mut app = crate::tui::TuiApp::new(client, std::time::Duration::from_secs(1));
+        app.screen = crate::tui::TuiScreen::Files;
+        app.file_explorer.preview = crate::tui::panels::FilePreview {
+            path: Some("notes.md".to_string()),
+            content: "line one\nline two".to_string(),
+            truncated: false,
+            binary: false,
+            hash: "h1".to_string(),
+            dirty: false,
+        };
+        app.file_explorer.edit_active = true;
+        // Cursor mid-line: `before` fits the budget, so the else branch
+        // clones it whole instead of scrolling a tail window.
+        app.file_explorer.edit_cursor = 5;
+
+        terminal.draw(|frame| super::render(frame, &app)).unwrap();
+        let rendered = format!("{:?}", terminal.backend().buffer());
+        assert!(rendered.contains("line "));
+        assert!(rendered.contains("one"));
+
+        // Cursor deep in a line wider than the pane: `before` overflows
+        // the budget, so tail_visible keeps only the tail of `before`.
+        let long_line = "aaaa bbbb cccc dddd ".repeat(6);
+        app.file_explorer.preview.content = long_line.clone();
+        app.file_explorer.edit_cursor = long_line.len() - 1;
+        terminal.draw(|frame| super::render(frame, &app)).unwrap();
+        let rendered = format!("{:?}", terminal.backend().buffer());
+        assert!(rendered.contains("dddd"));
+    }
 
     #[test]
     fn wrap_plain_zero_budget_word_wrap_and_no_blank_rows() {
