@@ -10,7 +10,7 @@ use serde_json::json;
 
 use super::check_auth;
 use super::git_spawn;
-use super::{git_json_error, git_ui_text, list_local_branches, safe_git_token, GitUiCwdQuery};
+use super::{git_json_error, git_ui_text, list_local_branches, required_cwd, safe_git_token, GitUiCwdQuery};
 use crate::{require_auth, WebState};
 
 #[derive(Deserialize)]
@@ -170,10 +170,10 @@ pub(super) async fn git_ui_branches(
     Query(query): Query<GitUiCwdQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let Some(cwd) = query.cwd.as_deref() else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
+    let cwd = match required_cwd(query.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
     };
-    let cwd = cwd.to_string();
     git_spawn(move || git_ui_branches_blocking(cwd)).await
 }
 
