@@ -1887,10 +1887,57 @@ fn client_socket_for_target_session(
     }
 }
 
+/// Resolved routing for one request: backend target plus session name.
+/// Shared core of the api_for_headers*/client_socket_for_* twins.
+struct SessionRoute {
+    backend: SessionBackendTarget,
+    session: Option<String>,
+}
+
+impl SessionRoute {
+    fn for_headers(state: &WebState, headers: &HeaderMap) -> Self {
+        Self {
+            backend: backend_target_for_headers(state, headers),
+            session: session_from_headers(state, headers),
+        }
+    }
+
+    fn for_query(
+        state: &WebState,
+        headers: &HeaderMap,
+        session: Option<&str>,
+        backend: Option<&str>,
+    ) -> Self {
+        Self {
+            backend: backend_target_for_query(state, headers, backend),
+            session: request_session_name(state, session),
+        }
+    }
+
+    fn api(&self, state: &WebState) -> ApiClient {
+        api_for_target_session(state, self.backend, self.session.as_deref())
+    }
+
+    fn client_socket(&self, state: &WebState) -> PathBuf {
+        client_socket_for_target_session(state, self.backend, self.session.as_deref())
+    }
+
+    async fn ensure(&self, state: &WebState) {
+        if self.backend != SessionBackendTarget::Builtin {
+            return;
+        }
+        let state_clone = state.clone();
+        let session_clone = self.session.clone();
+        let backend = self.backend;
+        let _ = tokio::task::spawn_blocking(move || {
+            ensure_backend_for_request(&state_clone, backend, session_clone.as_deref())
+        })
+        .await;
+    }
+}
+
 fn api_for_headers(state: &WebState, headers: &HeaderMap) -> ApiClient {
-    let backend = backend_target_for_headers(state, headers);
-    let session = session_from_headers(state, headers);
-    api_for_target_session(state, backend, session.as_deref())
+    SessionRoute::for_headers(state, headers).api(state)
 }
 
 /// Ensure the built-in session backend is running before proxying a request
@@ -1926,24 +1973,14 @@ fn ensure_backend_for_request(
 /// authenticated requests (session launch/close manage the built-in
 /// session lifecycle themselves and must not auto-start on close).
 async fn api_for_headers_ensured(state: &WebState, headers: &HeaderMap) -> ApiClient {
-    let backend = backend_target_for_headers(state, headers);
-    let session = session_from_headers(state, headers);
-    if backend == SessionBackendTarget::Builtin {
-        let state_clone = state.clone();
-        let session_clone = session.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            ensure_backend_for_request(&state_clone, backend, session_clone.as_deref())
-        })
-        .await;
-    }
-    api_for_target_session(state, backend, session.as_deref())
+    let route = SessionRoute::for_headers(state, headers);
+    route.ensure(state).await;
+    route.api(state)
 }
 
 #[cfg(test)]
 fn client_socket_for_headers(state: &WebState, headers: &HeaderMap) -> PathBuf {
-    let backend = backend_target_for_headers(state, headers);
-    let session = session_from_headers(state, headers);
-    client_socket_for_target_session(state, backend, session.as_deref())
+    SessionRoute::for_headers(state, headers).client_socket(state)
 }
 
 /// Resolve the API client for a query-string session/backend without
@@ -1956,9 +1993,7 @@ fn api_for_query_session_routed(
     session: Option<&str>,
     backend: Option<&str>,
 ) -> ApiClient {
-    let backend = backend_target_for_query(state, headers, backend);
-    let session = request_session_name(state, session);
-    api_for_target_session(state, backend, session.as_deref())
+    SessionRoute::for_query(state, headers, session, backend).api(state)
 }
 
 /// WebSocket twin of `api_for_headers_ensured`: resolve the API client for a
@@ -1971,17 +2006,9 @@ async fn api_for_query_session_ensured(
     session: Option<&str>,
     backend: Option<&str>,
 ) -> ApiClient {
-    let target = backend_target_for_query(state, headers, backend);
-    let session = request_session_name(state, session);
-    if target == SessionBackendTarget::Builtin {
-        let state_clone = state.clone();
-        let session_clone = session.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            ensure_backend_for_request(&state_clone, target, session_clone.as_deref())
-        })
-        .await;
-    }
-    api_for_target_session(state, target, session.as_deref())
+    let route = SessionRoute::for_query(state, headers, session, backend);
+    route.ensure(state).await;
+    route.api(state)
 }
 
 fn client_socket_for_query_session(
@@ -1990,9 +2017,7 @@ fn client_socket_for_query_session(
     session: Option<&str>,
     backend: Option<&str>,
 ) -> PathBuf {
-    let backend = backend_target_for_query(state, headers, backend);
-    let session = request_session_name(state, session);
-    client_socket_for_target_session(state, backend, session.as_deref())
+    SessionRoute::for_query(state, headers, session, backend).client_socket(state)
 }
 
 fn session_display_name(session: Option<&str>) -> &str {
