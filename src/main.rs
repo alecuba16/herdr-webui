@@ -154,7 +154,7 @@ use assets::{
     shared_options_js, shared_palette_css, shared_primitives_css, shared_prompt_cards_js,
     shared_settings_confirm_js, shared_settings_feedback_js, shared_skeleton_css,
     shared_skeleton_js, shared_terminal_adapter_js, shared_terminal_fit_js,
-    shared_terminal_input_js, shared_terminal_scroll_js, shared_tokens_css,
+    shared_lens_model_js, shared_terminal_input_js, shared_terminal_scroll_js, shared_tokens_css,
     shared_tour_driver_js,
     shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
     vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
@@ -1429,7 +1429,11 @@ fn app_router(state: WebState) -> Router {
             get(shared_prompt_cards_js),
         )
         .route("/assets/shared/tour-driver.js", get(shared_tour_driver_js))
-        .route("/assets/shared/terminal-input.js", get(shared_terminal_input_js))
+        .route(
+            "/assets/shared/terminal-input.js",
+            get(shared_terminal_input_js),
+        )
+        .route("/assets/shared/lens-model.js", get(shared_lens_model_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
         .route("/assets/shared/file-tree.css", get(shared_file_tree_css))

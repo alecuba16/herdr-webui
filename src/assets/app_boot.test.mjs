@@ -43,6 +43,7 @@ const SHARED_SCRIPTS = [
   "/assets/shared/prompt-cards.js",
   "/assets/shared/tour-driver.js",
   "/assets/shared/terminal-input.js",
+  "/assets/shared/lens-model.js",
   "/assets/shared/file-icons.js",
   "/assets/shared/file-tree.js",
   "/assets/shared/line-context.js",

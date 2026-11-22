@@ -366,6 +366,7 @@ const MOBILE_BUNDLE_FILES = [
   "./shared/prompt_cards.js",
   "./shared/tour_driver.js",
   "./shared/terminal_input.js",
+  "./shared/lens_model.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
   "./shared/line_context.js",

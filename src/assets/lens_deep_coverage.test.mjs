@@ -17,6 +17,8 @@ import vm from "node:vm";
 
 // Compiled once so coverage attributes mobile/lens.js lines to the real file.
 const MOBILE_LENS_PATH = fileURLToPath(new URL("./mobile/lens.js", import.meta.url));
+// The conversation-model helpers lens.js delegates to (HerdrLensModel).
+const LENS_MODEL_PATH = fileURLToPath(new URL("./shared/lens_model.js", import.meta.url));
 const mobileLensScript = new vm.Script(readFileSync(MOBILE_LENS_PATH, "utf8"), {
   filename: MOBILE_LENS_PATH,
 });
@@ -431,6 +433,7 @@ function makeHarness(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const vmCtx = vm.createContext(ctx);
+  new vm.Script(readFileSync(LENS_MODEL_PATH, "utf8"), { filename: LENS_MODEL_PATH }).runInContext(vmCtx);
   mobileLensScript.runInContext(vmCtx);
   const sendPaste =
     overrides.sendPaste ||

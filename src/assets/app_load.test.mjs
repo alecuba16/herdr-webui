@@ -20,6 +20,7 @@ const APP_BUNDLE_FILES = [
   "./shared/prompt_cards.js",
   "./shared/tour_driver.js",
   "./shared/terminal_input.js",
+  "./shared/lens_model.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",
@@ -278,6 +279,8 @@ describe("app bundle load", () => {
       readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -9493,6 +9496,8 @@ describe("workspace sidebar order", () => {
     "\n" +
     readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
@@ -9809,6 +9814,8 @@ describe("terminal loading and failed states", () => {
       readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -10481,6 +10488,8 @@ describe("shortcut hint toast", () => {
       readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +

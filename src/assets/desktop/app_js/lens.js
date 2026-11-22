@@ -21,6 +21,23 @@
 // Auto-follow: scrolled-to-bottom sticks to the tail; scrolling up stops
 // follow and shows a "New output" pill that resumes on click.
 (function () {
+  // Conversation-model helpers live in shared/lens_model.js
+  // (HerdrLensModel). The fallback keeps harnesses that load lens.js
+  // alone from crashing: the lens degrades to empty markup rather than
+  // throwing on every poll (app_boot.js always loads the shared module
+  // first in production).
+  const lensModel =
+    globalThis.HerdrLensModel ||
+    ({
+      toolRunInfo: () => null,
+      userTurnTexts: () => new Set(),
+      decisionPartFromDom: () => null,
+      refusalReasonCopy: () => "Conversation unavailable right now",
+      refusalHtml: (copy) => `<div class="lens-refusal">${copy}</div>`,
+      loadingHtml: () => '<div class="lens-loading">loading chat…</div>',
+      workingHeadHtml: () => "",
+      turnsBetween: async () => null,
+    });
   let lensActive = false;
   let follow = true;
   let unread = false;
@@ -138,18 +155,8 @@
   // refusal). Fall back to the agents row for the resolvable:false gate
   // path, then the generic line (design section 6 hint precedence).
   function refusalReasonCopy(errorCode) {
-    const a = activeAgentRow();
-    const reason = errorCode || (a && a.agent_session && a.agent_session.reason);
-    switch (reason) {
-      case "no_session_path":
-        return "No jcode conversation found for this panel yet";
-      case "ambiguous":
-        return "Multiple jcode conversations match this panel; open one in the terminal to disambiguate";
-      default:
-        return "Conversation unavailable right now";
-    }
+    return lensModel.refusalReasonCopy(activeAgentRow(), errorCode);
   }
-
   // ---- structured mode: poll loop ----
 
   // The composer must never keep a dead pane's model label. Every path
@@ -408,24 +415,8 @@
   // that treats both alike silently hides a real truncation, so the
   // bound gets its own answer.
   async function turnsBetween(paneId, held, start) {
-    const pages = [];
-    let before = start;
-    try {
-      for (let step = 0; step < 32 && before !== held; step++) {
-        const result = await fetchConversation(paneId, { before }, null);
-        if (result.notModified) return null;
-        const page = result.body;
-        if (typeof page.cursor !== "string") return null;
-        pages.unshift(page.turns || []);
-        before = page.cursor;
-      }
-    } catch (_) {
-      return null;
-    }
-    if (before === held) return pages.flat();
-    return "bounded";
+    return lensModel.turnsBetween(fetchConversation, paneId, held, start);
   }
-
   function metaFromConversation(response) {
     return {
       model: response && response.model ? String(response.model) : null,
@@ -452,16 +443,8 @@
   }
 
   function userTurnTexts(response) {
-    const texts = new Set();
-    for (const turn of (response && response.turns) || []) {
-      if (turn.role !== "user") continue;
-      for (const part of turn.parts || []) {
-        if (part.kind === "text" && part.text) texts.add(part.text);
-      }
-    }
-    return texts;
+    return lensModel.userTurnTexts(response);
   }
-
   function resetChatState(paneId) {
     chatPane = paneId;
     conversation = null;
@@ -602,36 +585,8 @@
   // can never live in mutable state. Any other part kind (text,
   // thinking, decision) or a different tool name breaks the run.
   function toolRunInfo(parts, partIndex) {
-    const list = parts || [];
-    const part = list[partIndex];
-    if (!part || (part.kind !== "tool" && part.kind !== "tool_pending"))
-      return null;
-    const name = part.name || "";
-    let start = partIndex;
-    while (start > 0) {
-      const prev = list[start - 1];
-      if (
-        !prev ||
-        (prev.kind !== "tool" && prev.kind !== "tool_pending") ||
-        (prev.name || "") !== name
-      )
-        break;
-      start--;
-    }
-    let end = partIndex;
-    while (end + 1 < list.length) {
-      const next = list[end + 1];
-      if (
-        !next ||
-        (next.kind !== "tool" && next.kind !== "tool_pending") ||
-        (next.name || "") !== name
-      )
-        break;
-      end++;
-    }
-    return { first: start === partIndex, size: end - start + 1 };
+    return lensModel.toolRunInfo(parts, partIndex);
   }
-
   // Duration label for one assistant turn: "Worked for 2m 36s" style,
   // rendered as a muted meta line ABOVE the turn body (reference puts it
   // on the folded work block; we have no work blocks yet, so the meta
@@ -831,9 +786,8 @@
   }
 
   function loadingHtml() {
-    return '<div class="lens-loading">loading chat…</div>';
+    return lensModel.loadingHtml();
   }
-
   // ---- structured mode: decision chooser (ask_user) ----
 
   // Identity of the decision the user answered/collapsed from the webui.
@@ -1016,14 +970,8 @@
   }
 
   function workingHeadHtml() {
-    return (
-      `<div class="lens-working-toggle" data-toggle-working="1" tabindex="0" role="button" aria-expanded="${workingExpanded}">` +
-      `<span class="lens-working-dots" aria-hidden="true"><i></i><i></i><i></i></span>` +
-      `<span class="lens-working-label">${escapeHtml(workingHeadLabel())}…</span>` +
-      `<span class="lens-working-caret">${workingExpanded ? "▾" : "▸"}</span></div>`
-    );
+    return lensModel.workingHeadHtml(workingExpanded, workingHeadLabel(), escapeHtml);
   }
-
   function workingBodyLines() {
     const startedAt = workingStartedAt();
     const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
@@ -1243,18 +1191,8 @@
   // question even after polls reshuffled rows. Decision parts carry no
   // name, so the key's name segment is always the empty string.
   function decisionPartFromDom(key) {
-    const turns = (conversation && conversation.turns) || [];
-    const parts = String(key).split(":");
-    const turnIndex = Number(parts[0]);
-    const partIndex = Number(parts[1]);
-    const name = parts.slice(2).join(":");
-    if (!Number.isInteger(turnIndex) || !Number.isInteger(partIndex)) return null;
-    const part = turns[turnIndex] && (turns[turnIndex].parts || [])[partIndex];
-    if (!part || part.kind !== "decision") return null;
-    if ((part.name || "") !== name) return null;
-    return part;
+    return lensModel.decisionPartFromDom(conversation, key);
   }
-
   // Answering synthesizes keystrokes through the same sendInputData
   // path prompt_cards uses: the TUI chooser owns the keyboard while
   // visible, so a digit (option pick) or typed text + Enter (free-form
@@ -1339,9 +1277,8 @@
   }
 
   function refusalHtml(errorCode) {
-    return `<div class="lens-refusal">${escapeHtml(refusalReasonCopy(errorCode))}</div>`;
+    return lensModel.refusalHtml(escapeHtml(refusalReasonCopy(errorCode)));
   }
-
   function errorHtml() {
     return `<div class="lens-refusal">Conversation unavailable right now</div>`;
   }

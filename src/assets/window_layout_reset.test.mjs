@@ -204,6 +204,7 @@ const LAYOUT_FILES = [
   "./shared/prompt_cards.js",
   "./shared/tour_driver.js",
   "./shared/terminal_input.js",
+  "./shared/lens_model.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",

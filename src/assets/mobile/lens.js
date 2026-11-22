@@ -16,6 +16,22 @@
 // agent works, decision chooser while the pane is blocked, load-older
 // pages with the cursor above the newest page.
 (function () {
+    // Conversation-model helpers live in shared/lens_model.js
+    // (HerdrLensModel); the no-op fallback keeps harnesses that load
+    // lens.js alone from crashing (app_boot.js loads the shared module
+    // first in production).
+    const lensModel =
+      globalThis.HerdrLensModel ||
+      ({
+        toolRunInfo: () => null,
+        userTurnTexts: () => new Set(),
+        decisionPartFromDom: () => null,
+        refusalReasonCopy: () => "Conversation unavailable right now",
+        refusalHtml: (copy) => `<div class="lens-refusal">${copy}</div>`,
+        loadingHtml: () => '<div class="lens-loading">loading chat…</div>',
+        workingHeadHtml: () => "",
+        turnsBetween: async () => null,
+      });
   const POLL_MS = 2000;
   const SUPPORTED_CHAT_AGENTS = new Set(["jcode"]);
   const STATUS_EVENT_TTL_MS = 8000;
@@ -101,16 +117,9 @@
       return !!(row && row.agent_session);
     }
 
-    function refusalReasonCopy(errorCode) {
-      const row = activeAgentRow();
-      const reason = errorCode || (row && row.agent_session && row.agent_session.reason);
-      if (reason === "no_session_path")
-        return "No jcode conversation found for this panel yet";
-      if (reason === "ambiguous")
-        return "Multiple jcode conversations match this panel; open one in the terminal to disambiguate";
-      return "Conversation unavailable right now";
+        function refusalReasonCopy(errorCode) {
+      return lensModel.refusalReasonCopy(activeAgentRow(), errorCode);
     }
-
     // ---- poll loop ----
 
     function conversationUrl(paneId, params) {
@@ -199,17 +208,9 @@
       }, delayMs);
     }
 
-    function userTurnTexts(response) {
-      const texts = new Set();
-      for (const turn of (response && response.turns) || []) {
-        if (turn.role !== "user") continue;
-        for (const part of turn.parts || []) {
-          if (part.kind === "text" && part.text) texts.add(part.text);
-        }
-      }
-      return texts;
+        function userTurnTexts(response) {
+      return lensModel.userTurnTexts(response);
     }
-
     async function pollConversation() {
       if (!lensActive || !chatSupported()) return stopPolling();
       const paneId = activePaneId();
@@ -306,25 +307,9 @@
       }
     }
 
-    async function turnsBetween(paneId, held, start) {
-      const pages = [];
-      let before = start;
-      try {
-        for (let step = 0; step < 32 && before !== held; step++) {
-          const result = await fetchConversation(paneId, { before }, null);
-          if (result.notModified) return null;
-          const page = result.body;
-          if (typeof page.cursor !== "string") return null;
-          pages.unshift(page.turns || []);
-          before = page.cursor;
-        }
-      } catch (_) {
-        return null;
-      }
-      if (before === held) return pages.flat();
-      return "bounded";
+        async function turnsBetween(paneId, held, start) {
+      return lensModel.turnsBetween(fetchConversation, paneId, held, start);
     }
-
     async function loadOlder() {
       const paneId = activePaneId();
       if (!paneId || paneId !== chatPane) return;
@@ -445,37 +430,9 @@
     // must reach the identical row form from parts alone, so run
     // membership can never live in mutable state. Any other part kind or
     // a different name breaks the run.
-    function toolRunInfo(parts, partIndex) {
-      const list = parts || [];
-      const part = list[partIndex];
-      if (!part || (part.kind !== "tool" && part.kind !== "tool_pending"))
-        return null;
-      const name = part.name || "";
-      let start = partIndex;
-      while (start > 0) {
-        const prev = list[start - 1];
-        if (
-          !prev ||
-          (prev.kind !== "tool" && prev.kind !== "tool_pending") ||
-          (prev.name || "") !== name
-        )
-          break;
-        start--;
-      }
-      let end = partIndex;
-      while (end + 1 < list.length) {
-        const next = list[end + 1];
-        if (
-          !next ||
-          (next.kind !== "tool" && next.kind !== "tool_pending") ||
-          (next.name || "") !== name
-        )
-          break;
-        end++;
-      }
-      return { first: start === partIndex, size: end - start + 1 };
+        function toolRunInfo(parts, partIndex) {
+      return lensModel.toolRunInfo(parts, partIndex);
     }
-
     function turnSpanSeconds(turn) {
       if (!turn || !turn.ts) return null;
       const start = Date.parse(String(turn.ts));
@@ -735,15 +692,9 @@
       return running.length ? String(running[0]) : "Thinking";
     }
 
-    function workingHeadHtml() {
-      return (
-        `<div class="lens-working-toggle" data-toggle-working="1" tabindex="0" role="button" aria-expanded="${workingExpanded}">` +
-        `<span class="lens-working-dots" aria-hidden="true"><i></i><i></i><i></i></span>` +
-        `<span class="lens-working-label">${escapeHtml(workingHeadLabel())}…</span>` +
-        `<span class="lens-working-caret">${workingExpanded ? "▾" : "▸"}</span></div>`
-      );
+        function workingHeadHtml() {
+      return lensModel.workingHeadHtml(workingExpanded, workingHeadLabel(), escapeHtml);
     }
-
     function workingBodyLines() {
       const startedAt = workingStartedAt();
       const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
@@ -952,14 +903,12 @@
       return `${truncatedNote}<button type="button" class="lens-older-load" data-load-older="1">Load earlier messages</button>`;
     }
 
-    function loadingHtml() {
-      return '<div class="lens-loading">loading chat…</div>';
+        function loadingHtml() {
+      return lensModel.loadingHtml();
     }
-
-    function refusalHtml(errorCode) {
-      return `<div class="lens-refusal">${escapeHtml(refusalReasonCopy(errorCode))}</div>`;
+        function refusalHtml(errorCode) {
+      return lensModel.refusalHtml(escapeHtml(refusalReasonCopy(errorCode)));
     }
-
     function render() {
       const node = overlay();
       if (!node || !lensActive) return;
@@ -1065,19 +1014,9 @@
 
     // ---- interactions ----
 
-    function decisionPartFromDom(key) {
-      const turns = (conversation && conversation.turns) || [];
-      const parts = String(key).split(":");
-      const turnIndex = Number(parts[0]);
-      const partIndex = Number(parts[1]);
-      const name = parts.slice(2).join(":");
-      if (!Number.isInteger(turnIndex) || !Number.isInteger(partIndex)) return null;
-      const part = turns[turnIndex] && (turns[turnIndex].parts || [])[partIndex];
-      if (!part || part.kind !== "decision") return null;
-      if ((part.name || "") !== name) return null;
-      return part;
+        function decisionPartFromDom(key) {
+      return lensModel.decisionPartFromDom(conversation, key);
     }
-
     function decisionAnswer(key, payload) {
       if (!paneBlockedNow()) return;
       const part = decisionPartFromDom(key);

@@ -27,6 +27,9 @@ const SHARED_CORE_SOURCE = readFileSync(
 // Compiled once per product file so coverage attributes to the real paths.
 const LENS_PATH = fileURLToPath(new URL("./desktop/app_js/lens.js", import.meta.url));
 const lensScript = new vm.Script(readFileSync(LENS_PATH, "utf8"), { filename: LENS_PATH });
+// The conversation-model helpers lens.js delegates to (HerdrLensModel).
+const LENS_MODEL_PATH = fileURLToPath(new URL("./shared/lens_model.js", import.meta.url));
+const lensModelScript = new vm.Script(readFileSync(LENS_MODEL_PATH, "utf8"), { filename: LENS_MODEL_PATH });
 const SHARED_CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
 const sharedCoreScript = new vm.Script(readFileSync(SHARED_CORE_PATH, "utf8"), {
   filename: SHARED_CORE_PATH,
@@ -437,6 +440,7 @@ function makeContext(overrides = {}) {
   const contextObject = vm.createContext(ctx);
   sharedCoreScript.runInContext(contextObject);
   vm.runInContext("var term = globalThis.__term;", contextObject);
+  lensModelScript.runInContext(contextObject);
   lensScript.runInContext(contextObject);
   return { ctx, registry, shell, vmCtx: contextObject, docListeners };
 }
