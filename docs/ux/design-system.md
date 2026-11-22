@@ -31,6 +31,9 @@ lives in the shared files.
 | `--status-blocked` | `#f38ba8` | `#a81c1c` | agent needs input |
 | `--status-done` | `#89b4fa` | `#2150ae` | turn finished |
 | `--status-unknown` | `var(--muted)` | same | unknown state, dashed edge |
+| `--status-added` | `#1db910` | same | git tree added/untracked badge |
+| `--status-deleted` | `#f38ba8` | same | git tree deleted badge |
+| `--status-conflict` | `#fab387` | same | git tree conflict badge |
 
 Each has a `-tint` variant (same hue, `color-mix` 86% transparent) for badge
 backgrounds.

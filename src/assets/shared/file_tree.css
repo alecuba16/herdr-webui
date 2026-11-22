@@ -96,9 +96,9 @@
   text-align: center;
 }
 .herdr-tree-status.added,
-.herdr-tree-status.untracked { color: #1db910; }
-.herdr-tree-status.deleted { color: #f38ba8; }
-.herdr-tree-status.conflict { color: #fab387; }
+.herdr-tree-status.untracked { color: var(--status-added); }
+.herdr-tree-status.deleted { color: var(--status-deleted); }
+.herdr-tree-status.conflict { color: var(--status-conflict); }
 .herdr-tree-row.git-modified { color: var(--git-modified-color); }
 .herdr-tree-row.git-added,
 .herdr-tree-row.git-untracked { color: var(--git-added-color); }

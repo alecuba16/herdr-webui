@@ -27,6 +27,11 @@
   --status-blocked: #f38ba8;
   --status-done: #89b4fa;
   --status-unknown: var(--muted, #a6adc8);
+  /* git tree badges: same value in both themes, previously raw hex in
+   * shared/file_tree.css; tokenized so component rules stop repeating them */
+  --status-added: #1db910;
+  --status-deleted: #f38ba8;
+  --status-conflict: #fab387;
 
   /* tinted surfaces for badges/chips: same hue, mostly transparent */
   --status-idle-tint: color-mix(in srgb, var(--status-idle), transparent 86%);
