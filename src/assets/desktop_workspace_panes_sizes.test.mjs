@@ -15,6 +15,10 @@ const RENDER_PATH = fileURLToPath(new URL("./desktop/app_js/render.js", import.m
 const workspacePanesScript = new vm.Script(readFileSync(WORKSPACE_PANES_PATH, "utf8"), {
   filename: WORKSPACE_PANES_PATH,
 });
+const PANE_DRAG_PATH = fileURLToPath(new URL("./desktop/app_js/pane_drag.js", import.meta.url));
+const paneDragScript = new vm.Script(readFileSync(PANE_DRAG_PATH, "utf8"), {
+  filename: PANE_DRAG_PATH,
+});
 const renderScript = new vm.Script(readFileSync(RENDER_PATH, "utf8"), { filename: RENDER_PATH });
 
 const PANES_STORAGE_KEY = "herdr-web-workspace-panes";
@@ -245,7 +249,9 @@ function loadPanesModuleWithStorage(document, stateWs, stored, saved) {
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  workspacePanesScript.runInContext(vm.createContext(ctx));
+  const panesVmCtx = vm.createContext(ctx);
+  paneDragScript.runInContext(panesVmCtx);
+  workspacePanesScript.runInContext(panesVmCtx);
   ctx.__storage = storage;
   if (stateWs) {
     const entry = ctx.HerdrWorkspacePanes.paneRoot();

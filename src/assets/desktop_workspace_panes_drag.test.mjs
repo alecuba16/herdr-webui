@@ -18,6 +18,10 @@ const WORKSPACE_PANES_PATH = fileURLToPath(new URL("./desktop/app_js/workspace_p
 const workspacePanesScript = new vm.Script(readFileSync(WORKSPACE_PANES_PATH, "utf8"), {
   filename: WORKSPACE_PANES_PATH,
 });
+const PANE_DRAG_PATH = fileURLToPath(new URL("./desktop/app_js/pane_drag.js", import.meta.url));
+const paneDragScript = new vm.Script(readFileSync(PANE_DRAG_PATH, "utf8"), {
+  filename: PANE_DRAG_PATH,
+});
 
 function makeNode(id, className) {
   const node = {
@@ -186,7 +190,9 @@ function loadPanes(document, stateWs, stored) {
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  workspacePanesScript.runInContext(vm.createContext(ctx));
+  const panesVmCtx = vm.createContext(ctx);
+  paneDragScript.runInContext(panesVmCtx);
+  workspacePanesScript.runInContext(panesVmCtx);
   ctx.__storage = storage;
   // Collector model: the boot seed panel starts unbound. Binding it to
   // the harness ws up front keeps the sync's focus-or-mint pass from
