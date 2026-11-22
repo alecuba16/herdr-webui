@@ -16222,7 +16222,9 @@ fn view_pane_finds_the_focused_pane_and_active_cwd_falls_back_to_the_agent() {
 #[test]
 fn tour_state_and_passthrough_writers_report_io_failures() {
     // Missing settings file: the read falls through to None.
-    let _guard = crate::lock_or_poisoned(crate::test_env_lock());
+    let _guard = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let xdg = std::env::temp_dir().join(format!("herdr-tui-io-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&xdg);
     std::fs::create_dir_all(&xdg).unwrap();

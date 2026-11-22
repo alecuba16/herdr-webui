@@ -6638,8 +6638,13 @@ mod tests {
         // for the first jcode status event (label + status from the real
         // screen scrape of real render output). A clean boot must never
         // report blocked or done: seeing either would mean a fabricated
-        // pattern fires against real output.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        // pattern fires against real output. The bound must cover a
+        // fresh debug server boot under load (observed 33s from spawn to
+        // first prompt on a busy machine: config parse, migrations, and
+        // context-limit caches all run before the TUI leaves the
+        // connecting screen), so 120s keeps the wait generous without
+        // hanging a genuinely broken boot.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
         let mut saw_jcode_event = false;
         let mut saw_idle = false;
         loop {

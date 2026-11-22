@@ -305,11 +305,14 @@ mod tests {
     /// mutex: a module-private lock lets a THEME env window here race any
     /// other module's env-mutating window (workspace, web_api) in the same
     /// test binary.
+    // Coverage is off because the poison arm only runs after a panic
+    // inside another env-mutating test, which the harness reports as
+    // its own failure long before the recovery matters.
+    #[cfg_attr(coverage, coverage(off))]
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        // Coverage is off because the poison arm only runs after a
-        // panic inside another env-mutating test, which the test
-        // harness reports as its own failure long before this matters.
-        crate::lock_or_poisoned(crate::test_env_lock())
+        crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {

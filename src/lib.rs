@@ -43,14 +43,3 @@ pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
-
-/// Coverage is off because the poison arm only runs after a panic
-/// inside another env-mutating test, which the harness reports as its
-/// own failure long before the recovery matters.
-#[cfg_attr(coverage, coverage(off))]
-#[cfg(test)]
-pub(crate) fn lock_or_poisoned(
-    lock: &'static std::sync::Mutex<()>,
-) -> std::sync::MutexGuard<'static, ()> {
-    lock.lock().unwrap_or_else(|poison| poison.into_inner())
-}

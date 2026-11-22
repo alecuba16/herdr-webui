@@ -1452,8 +1452,14 @@ mod tests {
     /// every test that reads or mutates `HERDR_WEBUI_TUI_API` or
     /// `XDG_CONFIG_HOME` must hold the shared lib-wide lock so discovery
     /// cannot race other modules' env-mutating tests either.
+    // Coverage is off because the poison arm only runs after a panic
+    // inside another env-mutating test, which the harness reports as
+    // its own failure long before the recovery matters.
+    #[cfg_attr(coverage, coverage(off))]
     pub(super) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        crate::lock_or_poisoned(crate::test_env_lock())
+        crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     /// Connect and hold briefly so the fixture accepts and parks in its
@@ -2967,9 +2973,22 @@ mod coverage_tests_round4 {
 
 #[cfg(test)]
 mod coverage_tests_round5 {
-    use super::tests::lock_env;
     use super::*;
     use std::time::Duration;
+
+    /// Take the shared env lock for the persisted-reader tests. A local
+    /// wrapper keeps the guard's lock-name resolution provable: an import
+    /// of a sibling module's lock fn (`use super::tests::lock_env`) is a
+    /// documented resolver blind spot, a same-module call is not.
+    // Coverage is off because the poison arm only runs after a panic
+    // inside another env-mutating test, which the harness reports as
+    // its own failure long before the recovery matters.
+    #[cfg_attr(coverage, coverage(off))]
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
 
     #[test]
     fn dead_endpoint_error_arms_report_io_errors_for_every_call_family() {
