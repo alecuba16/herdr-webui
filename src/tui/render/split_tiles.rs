@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::tui::split::{Side, SplitDir, SplitNode, TileRect};
+use crate::tui::split::{ResizeStep, Side, SplitDir, SplitNode, TileRect};
 use crate::tui::theme::Palette;
 use crate::tui::TuiApp;
 
@@ -155,6 +155,16 @@ pub(crate) fn render_split_view(frame: &mut Frame<'_>, pane_area: Rect, app: &Tu
     }
     if let Some(preview) = &app.split_mode {
         if let Some(neighbor) = tiles.iter().find(|t| t.pane_id == preview.neighbor) {
+            // Ring first: the ghost half covers the side the new pane
+            // takes, so the ring must survive under it (draw order
+            // decides which title wins where they overlap).
+            render_target_ring(
+                frame,
+                neighbor.rect,
+                " splits here ",
+                p,
+                ratatui::widgets::BorderType::Double,
+            );
             // Ghost covers the exact half of the neighbor the new
             // pane takes (insert_beside splits the neighbor 50/50).
             let ghost_rect = ghost_half_rect(neighbor.rect, preview.side);
@@ -170,7 +180,37 @@ pub(crate) fn render_split_view(frame: &mut Frame<'_>, pane_area: Rect, app: &Tu
                     let ghost_rect = ghost_half_rect(tile.rect, state.side);
                     render_ghost(frame, ghost_rect, &format!("{} lands", state.picked), p);
                 } else {
-                    render_double_border(frame, tile.rect, "⇄ target", p);
+                    // swap_leaves is a pure id swap with weights on
+                    // slots, so the target rect is exactly where the
+                    // picked pane lands (ux review: show the landing).
+                    let title = format!(
+                        "{} ⇄ {}",
+                        pane_display_name(app, &state.picked),
+                        pane_display_name(app, &tile.pane_id)
+                    );
+                    render_ghost(frame, tile.rect, &title, p);
+                }
+            }
+        }
+    }
+    if let Some(state) = &app.resize_mode {
+        if let Some(tile) = tiles.iter().find(|t| t.pane_id == state.pane) {
+            render_target_ring(
+                frame,
+                tile.rect,
+                " resize ",
+                p,
+                ratatui::widgets::BorderType::Double,
+            );
+            if let Some((axis, dir)) = app.last_resize_dir {
+                if let ResizeStep::Moved { tree, .. } =
+                    crate::tui::split::resize_step(&app.split_tree, &state.pane, axis, dir, 1)
+                {
+                    let next = layout_tiles(&tree, pane_area, Some(&state.pane));
+                    let from = tile.rect;
+                    if let Some(after) = next.iter().find(|t| t.pane_id == state.pane) {
+                        render_divider_preview(frame, pane_area, from, after.rect, p);
+                    }
                 }
             }
         }
@@ -212,18 +252,76 @@ fn render_ghost(frame: &mut Frame<'_>, rect: Rect, pane_title: &str, p: &Palette
     frame.render_widget(block, rect);
 }
 
-/// Double border ring for the picked/target tile in move mode.
+/// Double border ring for the picked tile in move mode. Only the
+/// border and title paint: the interior keeps the tile's own content
+/// (ux review: a bg fill hid the tail the user was acting on).
 fn render_double_border(frame: &mut Frame<'_>, rect: Rect, title: &str, p: &Palette) {
+    render_target_ring(frame, rect, title, p, ratatui::widgets::BorderType::Double);
+}
+
+/// Ring with a configurable border shape: Double for mode rings,
+/// Rounded for ghost-style overlays. Border and title only, no bg fill.
+fn render_target_ring(
+    frame: &mut Frame<'_>,
+    rect: Rect,
+    title: &str,
+    p: &Palette,
+    border_type: ratatui::widgets::BorderType,
+) {
     if rect.is_empty() {
         return;
     }
     let block = Block::default()
         .title(format!(" {} ", title))
         .borders(Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Double)
-        .border_style(Style::default().fg(p.accent))
-        .style(Style::default().bg(p.panel_bg));
+        .border_type(border_type)
+        .border_style(Style::default().fg(p.accent));
     frame.render_widget(block, rect);
+}
+
+/// One-cell divider preview line for resize mode: where the pane's
+/// edge would sit after the last pressed direction (accent_dim so it
+/// reads as a preview, not a real border).
+fn render_divider_preview(
+    frame: &mut Frame<'_>,
+    pane_area: Rect,
+    from: Rect,
+    to: Rect,
+    p: &Palette,
+) {
+    let style = Style::default().fg(p.accent).bg(p.accent_dim());
+    // The pane keeps its outer corner: a left-edge pane moves its
+    // right/bottom edge, so both edges decide the axis and the min
+    // side is where the divider traveled from.
+    let vertical = if to.x != from.x {
+        Some(to.x.min(from.x))
+    } else if to.right() != from.right() {
+        Some(to.right().min(from.right()))
+    } else {
+        None
+    };
+    if let Some(x) = vertical {
+        for y in to.y..to.bottom() {
+            if pane_area.contains((x, y).into()) {
+                frame.buffer_mut()[(x, y)].set_style(style);
+            }
+        }
+    } else {
+        let horizontal = if to.y != from.y {
+            Some(to.y.min(from.y))
+        } else if to.bottom() != from.bottom() {
+            Some(to.bottom().min(from.bottom()))
+        } else {
+            None
+        };
+        if let Some(y) = horizontal {
+            for x in to.x..to.right() {
+                if pane_area.contains((x, y).into()) {
+                    frame.buffer_mut()[(x, y)].set_style(style);
+                }
+            }
+        }
+    }
 }
 
 /// Render one tile: identity block + tail. Focused tiles keep the
@@ -291,12 +389,24 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
     let name_budget = (title_width / 2).max(18);
     let ws_budget = (title_width.saturating_sub(name_budget) / 3).max(12);
     let term_budget = (title_width.saturating_sub(name_budget) / 3).max(12);
-    let mut title = format!(
-        " {} {} · {} ",
-        dot,
-        truncate(name, name_budget),
-        truncate(&workspace_label, ws_budget),
-    );
+    let mut title = if tile.focused {
+        // Focused tiles carry the ▸ marker the tab bar and lists use,
+        // so the active panel is findable by glyph, not just border
+        // color (ux review: color alone was easy to miss).
+        format!(
+            " ▸ {} {} · {} ",
+            dot,
+            truncate(name, name_budget),
+            truncate(&workspace_label, ws_budget),
+        )
+    } else {
+        format!(
+            " {} {} · {} ",
+            dot,
+            truncate(name, name_budget),
+            truncate(&workspace_label, ws_budget),
+        )
+    };
     if let Some(terminal_title) = title_token {
         title.push_str(&format!("· {} ", truncate(terminal_title, term_budget)));
     } else {
@@ -327,7 +437,13 @@ fn render_tile(frame: &mut Frame<'_>, tile: &Tile, app: &TuiApp, p: &Palette) {
         } else {
             Style::default().fg(p.border)
         })
-        .style(Style::default().fg(p.text).bg(p.panel_bg));
+        // Focused tiles lift onto panel_alt so the active panel reads
+        // at a glance, mirroring the sidebar row-inversion fix.
+        .style(Style::default().fg(p.text).bg(if tile.focused {
+            p.panel_alt
+        } else {
+            p.panel_bg
+        }));
     let inner = block.inner(tile.rect);
     frame.render_widget(block, tile.rect);
 
@@ -467,9 +583,19 @@ pub(crate) fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp,
         } else {
             Style::default().fg(p.text)
         };
+        // The focused chip carries the same ▸ marker as the tab bar
+        // so the active pane is glyph-marked in both strips.
+        let marker = if Some(*pane_id) == focus.as_deref() {
+            "▸ "
+        } else {
+            ""
+        };
         spans.push(Span::styled(dot.to_string(), dot_style));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(truncate(label, label_budget), label_style));
+        spans.push(Span::styled(
+            format!("{marker}{}", truncate(label, label_budget)),
+            label_style,
+        ));
         let workspace = app
             .snapshot
             .workspaces
@@ -551,8 +677,22 @@ pub(crate) fn mode_hint(app: &TuiApp) -> Option<String> {
     }
     if let Some(state) = &app.move_mode {
         let verb = if state.insert { "insert" } else { "swap" };
+        let target = if state.target == state.picked {
+            String::new()
+        } else if state.insert {
+            format!(
+                " · target {} · lands {}",
+                truncate(&pane_display_name(app, &state.target), 16),
+                side_word(state.side)
+            )
+        } else {
+            format!(
+                " · target {}",
+                truncate(&pane_display_name(app, &state.target), 16)
+            )
+        };
         return Some(format!(
-            "MOVE · {} · hjkl target · Tab verb (now {}) · Enter confirm · Esc cancel",
+            "MOVE · {}{target} · hjkl target · Tab verb (now {}) · Enter confirm · Esc cancel",
             truncate(&pane_display_name(app, &state.picked), 24),
             verb,
         ));
@@ -570,6 +710,16 @@ pub(crate) fn mode_hint(app: &TuiApp) -> Option<String> {
         return Some("ZOOM · Ctrl+B z off · focused tile fullscreen".to_string());
     }
     None
+}
+
+/// Landing word for the insert verb, matching MoveState's side axis.
+fn side_word(side: Side) -> &'static str {
+    match side {
+        Side::Right => "right",
+        Side::Left => "left",
+        Side::Above => "above",
+        Side::Below => "below",
+    }
 }
 
 /// Entry point from render_main: tiles when split (or zoomed), else the

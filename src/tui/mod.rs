@@ -455,6 +455,11 @@ pub struct TuiApp {
     /// Resize mode state (Ctrl+B Shift+Z): the tile whose dividers the
     /// keys move.
     pub(crate) resize_mode: Option<split_mode::ResizeState>,
+    /// Last direction pressed inside resize mode, so the render pass
+    /// can preview that divider move even when the step clamped or
+    /// refused (the attempted direction is still what the user wants
+    /// to see).
+    pub(crate) last_resize_dir: Option<(split::SplitDir, split::ResizeDir)>,
     /// The previous keypress closed a split/move overlay: the immediate
     /// next Esc must not fall through to the quit confirm (double-Esc
     /// reflex). Any other key clears it.
@@ -874,6 +879,7 @@ impl TuiApp {
             split_mode: None,
             move_mode: None,
             resize_mode: None,
+            last_resize_dir: None,
             just_closed_mode: false,
             tile_tails: std::collections::HashMap::new(),
             tile_tail_rx: None,

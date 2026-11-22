@@ -192,6 +192,7 @@ impl TuiApp {
         if let Some(state) = self.resize_mode.clone() {
             if !self.split_tree.contains_pane(&state.pane) {
                 self.resize_mode = None;
+                self.last_resize_dir = None;
             }
         }
         self.drain_auto_split_queue();
@@ -661,6 +662,7 @@ impl TuiApp {
         }
         self.split_mode = None;
         self.move_mode = None;
+        self.last_resize_dir = None;
         let Some(focus) = self.focused_pane_id() else {
             self.status = "no pane to resize".to_string();
             return;
@@ -682,6 +684,9 @@ impl TuiApp {
         let Some(state) = self.resize_mode.clone() else {
             return;
         };
+        // Record before the step: Refused/Clamped attempts still
+        // preview the direction the user pressed.
+        self.last_resize_dir = Some((axis, dir));
         match split::resize_step(&self.split_tree, &state.pane, axis, dir, 1) {
             ResizeStep::Moved { tree, outer } => {
                 self.split_tree = tree;
@@ -797,11 +802,13 @@ impl TuiApp {
         match key.code {
             KeyCode::Esc => {
                 self.resize_mode = None;
+                self.last_resize_dir = None;
                 self.just_closed_mode = true;
                 self.status = "resize done".to_string();
             }
             KeyCode::Enter => {
                 self.resize_mode = None;
+                self.last_resize_dir = None;
                 self.just_closed_mode = true;
                 self.status = "resize done".to_string();
             }

@@ -350,22 +350,31 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
                 .flat_map(|tab| {
                     let backend_active =
                         workspace.active_tab_id.as_deref() == Some(tab.id.as_str()) || tab.focused;
-                    // "▸ label" marks the panel the TUI is viewing; the
-                    // backend-active tab keeps its inverted style so the
-                    // two states stay distinguishable (selected vs the
-                    // tab the backend/webui has focused).
                     let viewing = selected_tab_id.as_deref() == Some(tab.id.as_str());
-                    let style = if backend_active {
-                        Style::default()
-                            .fg(p.panel_bg)
-                            .bg(p.accent)
-                            .add_modifier(Modifier::BOLD)
+                    // The viewing tab inverts (it is the one keys act
+                    // on); the backend-active tab keeps a dot suffix so
+                    // the two states stay distinguishable when they
+                    // differ (ux review: the marker-only viewing tab
+                    // was the weaker signal).
+                    let (style, suffix) = if viewing {
+                        (
+                            Style::default()
+                                .fg(p.panel_bg)
+                                .bg(p.accent)
+                                .add_modifier(Modifier::BOLD),
+                            "",
+                        )
+                    } else if backend_active {
+                        (Style::default().fg(p.accent).bg(p.panel_alt), " ●")
                     } else {
-                        Style::default().fg(p.text).bg(p.panel_alt)
+                        (Style::default().fg(p.text).bg(p.panel_alt), "")
                     };
                     let marker = if viewing { "▸ " } else { "" };
                     vec![
-                        Span::styled(format!(" {marker}{} ", truncate(&tab.label, 16)), style),
+                        Span::styled(
+                            format!(" {marker}{}{suffix} ", truncate(&tab.label, 16)),
+                            style,
+                        ),
                         Span::raw(" "),
                     ]
                 })
@@ -525,7 +534,9 @@ fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         .unwrap_or_else(|| " Pane ".to_string());
     let block = panel(&title, p).border_style(match app.mode {
         TuiMode::Attach => Style::default().fg(p.teal),
-        _ => Style::default().fg(p.border),
+        // Accent ring parity with the focused split tile: the
+        // single-pane view names its target the same way (ux review).
+        _ => Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
     });
     let inner = block.inner(area);
     frame.render_widget(block, area);

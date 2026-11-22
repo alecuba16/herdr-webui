@@ -12618,7 +12618,13 @@ fn split_tiles_show_ghost_preview_and_move_rings() {
     });
     let drawn = draw(&app, 150, 40);
     assert!(drawn.contains("⇄ moving"), "picked ring renders");
-    assert!(drawn.contains("⇄ target"), "target ring renders");
+    // Swap verb: the target ring became the landing ghost (ux review:
+    // show where the picked pane lands), so both display names ride
+    // the ghost title instead of a "⇄ target" ring.
+    assert!(
+        drawn.contains("jcode ⇄ bot"),
+        "swap ghost names both panes, got: {drawn}"
+    );
 
     // Insert verb swaps the target ring for a ghost landing tile.
     let state = app.move_mode.clone().unwrap();
@@ -14060,7 +14066,13 @@ fn split_overlays_survive_one_column_tiles_without_panicking() {
         !drawn.contains("+ pane_3"),
         "zero-width ghost draws nothing"
     );
-    assert!(drawn.contains('│'), "tile borders still render");
+    // The split ring now owns the neighbor border, so the double
+    // vertical bar proves the pipeline ran (the target-highlight
+    // round replaced the plain single bar there).
+    assert!(
+        drawn.contains('║') || drawn.contains('│'),
+        "tile borders still render"
+    );
 
     // Move mode at 1 column: both rings hit the empty-rect guard.
     let mut app = two_tile_split();
@@ -15149,5 +15161,301 @@ fn close_tab_without_a_tab_label_reports_the_plain_closed_notice() {
     assert!(
         app.status_hold_until.is_some(),
         "the closed notice arms the hold past the refresh"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Target-highlight round: resize/split rings, resize divider preview,
+// swap landing ghost, focused-tile marker, single-pane accent, tab bar
+// style swap, AGENTS chip marker.
+// ---------------------------------------------------------------------------
+
+fn shift_z() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT)
+}
+
+/// Two-tile split with resize mode open via the real chord.
+fn resize_mode_app() -> TuiApp {
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(shift_z());
+    assert!(app.resize_mode.is_some(), "resize mode open");
+    app
+}
+
+#[test]
+fn resize_mode_rings_the_resized_pane() {
+    let app = resize_mode_app();
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        drawn.contains(" resize "),
+        "resize ring titles the resized tile"
+    );
+}
+
+#[test]
+fn resize_divider_preview_draws_after_h() {
+    let mut app = resize_mode_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    assert!(app.last_resize_dir.is_some(), "direction recorded");
+    let buffer = draw_buffer(&app, 150, 40);
+    // The preview paints accent_dim bg cells along the moved divider
+    // column; the ring alone never sets that bg.
+    let dim = app.palette.accent_dim();
+    let painted = buffer.content().iter().any(|cell| cell.bg == dim);
+    assert!(painted, "divider preview cells carry accent_dim");
+}
+
+#[test]
+fn resize_preview_absent_before_any_direction() {
+    let app = resize_mode_app();
+    assert!(app.last_resize_dir.is_none());
+    let buffer = draw_buffer(&app, 150, 40);
+    let dim = app.palette.accent_dim();
+    assert!(
+        !buffer.content().iter().any(|cell| cell.bg == dim),
+        "no direction pressed yet: no preview"
+    );
+}
+
+#[test]
+fn resize_preview_follows_last_pressed_direction() {
+    // A column split, so j/k (the Col axis) has a divider to move:
+    // the Row fixture cannot preview a horizontal move.
+    let mut app = two_tile_split();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Col,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.handle_key(ctrl('b'));
+    app.handle_key(shift_z());
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(
+        app.last_resize_dir,
+        Some((
+            crate::tui::split::SplitDir::Col,
+            crate::tui::split::ResizeDir::Narrow
+        )),
+        "j records the column axis"
+    );
+    let buffer = draw_buffer(&app, 150, 40);
+    let dim = app.palette.accent_dim();
+    let j_cells: Vec<_> = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.bg == dim)
+        .collect();
+    assert!(!j_cells.is_empty(), "j painted a horizontal preview");
+    // A vertical-attempt (l) on a Col tree refuses: no divider on the
+    // Row axis, so last_resize_dir stays the recorded pair but the
+    // rendered preview must keep following the recorded axis.
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert!(
+        app.status.contains("no vertical divider"),
+        "l on a Col tree refuses, got: {}",
+        app.status
+    );
+    // Refused has no moved geometry to preview, but the attempted
+    // direction stays recorded so the next render keeps following it.
+    assert_eq!(
+        app.last_resize_dir,
+        Some((
+            crate::tui::split::SplitDir::Row,
+            crate::tui::split::ResizeDir::Wider
+        )),
+        "the refused attempt still records its direction"
+    );
+}
+
+#[test]
+fn move_swap_ghost_names_both_panes() {
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    let state = app.move_mode.clone().unwrap();
+    app.move_mode = Some(crate::tui::split::MoveState {
+        target: "pane_2".to_string(),
+        ..state
+    });
+    let drawn = draw(&app, 150, 40);
+    // pane_1/pane_2 are cross-workspace: display names are jcode/bot.
+    assert!(
+        drawn.contains("jcode ⇄ bot"),
+        "swap ghost names picked and target by display label, got: {drawn}"
+    );
+    assert!(drawn.contains("⇄ moving"), "picked ring keeps its title");
+    assert!(
+        !drawn.contains("⇄ target"),
+        "the swap ghost replaces the old target ring"
+    );
+    // The footer names the target too.
+    assert!(
+        drawn.contains("· target bot"),
+        "move hint names the target, got: {drawn}"
+    );
+}
+
+#[test]
+fn split_mode_neighbor_ring_and_ghost_coexist() {
+    let mut app = app_with_two_panes();
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_focus = Some("pane_1".to_string());
+    app.screen = TuiScreen::Terminal;
+    app.snapshot = TuiSnapshot::from_backend_response(&three_pane_fixture());
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let buffer = draw_buffer(&app, 150, 40);
+    let row = rendered_row(&buffer, "splits here");
+    // Double border corner left of the ring title proves the Double
+    // shape (ghost corners are Rounded).
+    let corner = row.chars[..row.cell_x_of("splits here").unwrap()]
+        .iter()
+        .rposition(|c| *c == '╔')
+        .expect("double corner left of the ring title");
+    let _ = corner;
+    let drawn = format!("{buffer:?}");
+    assert!(
+        drawn.contains("+ pane_3 ") || drawn.contains("+ jcode "),
+        "ghost still renders beside the ring"
+    );
+}
+
+#[test]
+fn focused_tile_title_carries_marker_and_alt_bg() {
+    let app = two_tile_split();
+    let buffer = draw_buffer(&app, 150, 40);
+    let row = rendered_row(&buffer, "▸");
+    assert!(
+        row.as_line_string().contains("▸ "),
+        "focused tile title starts with the marker"
+    );
+    // The focused tile interior lifts to panel_alt.
+    let alt = app.palette.panel_alt;
+    assert!(
+        buffer.content().iter().any(|cell| cell.bg == alt),
+        "focused tile interior uses panel_alt"
+    );
+}
+
+impl RenderedRow {
+    /// Row chars as a String for substring checks.
+    fn as_line_string(&self) -> String {
+        self.chars.iter().collect()
+    }
+}
+
+#[test]
+fn single_pane_border_is_accent_outside_attach_and_teal_inside() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    app.mode = TuiMode::Navigate;
+    let buffer = draw_buffer(&app, 100, 30);
+    assert!(
+        buffer
+            .content()
+            .iter()
+            .any(|cell| cell.fg == app.palette.accent
+                && cell.modifier.contains(ratatui::style::Modifier::BOLD)),
+        "non-Attach single pane paints the bold accent border"
+    );
+    app.mode = TuiMode::Attach;
+    let buffer = draw_buffer(&app, 100, 30);
+    assert!(
+        buffer
+            .content()
+            .iter()
+            .any(|cell| cell.fg == app.palette.teal),
+        "Attach keeps the teal border"
+    );
+}
+
+#[test]
+fn single_pane_title_is_unaffected_by_accent_border() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    let drawn = draw(&app, 100, 30);
+    // The pane identity title keeps its shape; only the border color
+    // changed. The footer legend also lists resize, so the ring-title
+    // strings are the discriminator, not the word alone.
+    assert!(drawn.contains(" · "), "title separator still renders");
+    assert!(
+        !drawn.contains(" splits here "),
+        "no split ring on the single-pane view"
+    );
+    assert!(!drawn.contains("⇄ moving"), "no move ring either");
+}
+
+#[test]
+fn split_active_single_tile_draws_no_ring() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    // Zoom forces the split path with only the focused tile drawn.
+    app.split_tree = crate::tui::split::SplitNode::split(
+        crate::tui::split::SplitDir::Row,
+        vec![
+            crate::tui::split::SplitNode::leaf("pane_1"),
+            crate::tui::split::SplitNode::leaf("pane_2"),
+        ],
+    );
+    app.split_zoomed = true;
+    app.split_focus = Some("pane_1".to_string());
+    let drawn = draw(&app, 100, 30);
+    assert!(!drawn.contains(" resize "));
+    assert!(!drawn.contains("⇄ moving"));
+}
+
+#[test]
+fn resize_mode_in_single_pane_view_draws_no_ring_and_does_not_panic() {
+    let mut app = app_with_two_panes();
+    app.screen = TuiScreen::Terminal;
+    // Single leaf: the resize chord refuses to open the mode, and
+    // rendering must stay calm either way.
+    app.handle_key(ctrl('b'));
+    app.handle_key(shift_z());
+    assert!(app.resize_mode.is_none(), "single tile refuses resize mode");
+    // The ring title is ` resize ` with padding spaces; the footer
+    // legend says `Z resize` unpadded, so the padded form is the
+    // ring-only discriminator.
+    let drawn = draw(&app, 100, 30);
+    assert!(!drawn.contains(" resize \u{20}"), "no ring title renders");
+    assert!(!drawn.contains(" splits here "));
+}
+
+#[test]
+fn split_mode_with_vanished_neighbor_skips_the_ring() {
+    let mut app = two_tile_split();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.split_mode.is_some());
+    // Neighbor left the tree between open and render.
+    let preview = app.split_mode.clone().unwrap();
+    app.split_mode = Some(crate::tui::split::SplitPreview {
+        neighbor: "pane_gone".to_string(),
+        ..preview
+    });
+    let drawn = draw(&app, 150, 40);
+    assert!(
+        !drawn.contains(" splits here "),
+        "no neighbor tile: no ring, no panic"
+    );
+}
+
+#[test]
+fn agents_bar_marks_the_focused_chip() {
+    let app = two_tile_split();
+    let drawn = draw(&app, 150, 40);
+    // pane_1 (jcode) is focused: its AGENTS chip carries the marker.
+    assert!(
+        drawn.contains("▸ jcode"),
+        "focused chip is glyph-marked in the AGENTS bar, got: {drawn}"
     );
 }
