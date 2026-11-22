@@ -1061,22 +1061,27 @@ mod tests {
     fn shipped_bundles_define_font_and_text_tokens() {
         // The CSS custom-property guard in css_selector_coverage.test.mjs
         // fails on fallback-less var() references with no producer. This
-        // is the bundle-level backstop: base.css must stay first in the
-        // desktop concat and mobile app.css must keep its body block, so
-        // --font/--font-mono/--text/--text-dim keep resolving after any
-        // future bundle reshuffle.
+        // is the bundle-level backstop: the font producers live in
+        // shared/palette.css (loaded by app_boot.js before tokens.css on
+        // both layouts), base.css must keep --text/--text-dim, and every
+        // layout bundle must keep referencing var(--mono-font) so the
+        // tokens stay wired end to end after any future bundle reshuffle.
+        assert!(
+            SHARED_PALETTE_CSS.contains("--mono-font"),
+            "palette bundle lost --mono-font"
+        );
+        assert!(
+            SHARED_PALETTE_CSS.contains("--font: ui-sans-serif, system-ui;"),
+            "palette bundle lost the --font token"
+        );
+        assert!(
+            SHARED_PALETTE_CSS.contains("--font-mono: var(--mono-font);"),
+            "palette bundle lost the --font-mono token"
+        );
         for (bundle, name) in [(DESKTOP_CSS, "desktop"), (MOBILE_CSS, "mobile")] {
             assert!(
-                bundle.contains("--mono-font"),
-                "{name} bundle lost --mono-font"
-            );
-            assert!(
-                bundle.contains("--font: ui-sans-serif, system-ui;"),
-                "{name} bundle lost the --font token"
-            );
-            assert!(
-                bundle.contains("--font-mono: var(--mono-font);"),
-                "{name} bundle lost the --font-mono token"
+                bundle.contains("var(--mono-font)"),
+                "{name} bundle lost its --mono-font consumers"
             );
         }
         assert!(
