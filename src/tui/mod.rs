@@ -3,6 +3,7 @@ pub mod lens;
 pub mod model;
 pub mod panels;
 pub mod render;
+pub mod text;
 pub mod search;
 pub mod sessions;
 pub mod split;
