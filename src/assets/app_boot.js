@@ -83,6 +83,7 @@
       "/assets/shared/actions.js",
       "/assets/shared/backend-state.js",
       "/assets/shared/prompt-cards.js",
+      "/assets/shared/tour-driver.js",
       "/assets/shared/file-icons.js",
       "/assets/shared/file-tree.js",
       "/assets/shared/line-context.js",

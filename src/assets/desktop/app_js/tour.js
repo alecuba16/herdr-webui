@@ -1,6 +1,9 @@
 // Onboarding tour driver: spotlight cutout over the step target plus a
 // card with the step copy, progress, and keyboard navigation. The step
-// list lives in tour_steps.js; this module only renders and drives.
+// list lives in tour_steps.js; the driving machinery lives in
+// shared/tour_driver.js (HerdrTourDriver). This wrapper only supplies the
+// desktop layout: DOM markup, element ids, sidebar-toggle fallbacks,
+// card placement, chord rendering, and stop-time cleanup.
 //
 // Keyboard while the tour is active (captured before every other handler,
 // see the entry registration in bindings.js):
@@ -9,30 +12,23 @@
 //   Esc                      quit the tour
 // The tour never starts on its own; call window.HerdrOnboardingTour.start().
 (function () {
-  const STORAGE_KEY = "herdr-web-tour-done";
-  const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
-
-  let root = null;
-  let hole = null;
-  let card = null;
-  let active = false;
-  let stepIndex = 0;
-  let visibleSteps = [];
-  let boundKeys = false;
-  let boundResize = false;
-  let renderedOnce = false;
-
-  function reducedMotion() {
-    return !!(window.matchMedia && window.matchMedia(REDUCED_MOTION).matches);
+  function el(id) {
+    return document.getElementById(id);
   }
 
-  function ensureDom() {
-    if (root && root.isConnected) return;
-    root = document.createElement("div");
-    root.className = "tour-root";
-    // aria-hidden: the tour is a highlight layer; the card itself is the
-    // live content and carries its own dialog semantics.
-    root.innerHTML =
+  const ids = {
+    step: "tourStep",
+    skip: "tourSkip",
+    prev: "tourPrev",
+    next: "tourNext",
+    progress: "tourProgress",
+    title: "tourTitle",
+    card: ".tour-card",
+    spot: ".tour-spot",
+  };
+
+  function rootMarkup() {
+    return (
       '<div class="tour-spot" aria-hidden="true"></div>' +
       '<div class="tour-card" role="dialog" aria-modal="false" aria-labelledby="tourTitle">' +
       '<div class="tour-head"><span class="tour-step" id="tourStep"></span>' +
@@ -45,38 +41,21 @@
       '<button type="button" class="btn tour-next" id="tourNext">Next</button>' +
       "</div>" +
       '<progress class="tour-progress" id="tourProgress"></progress>' +
-      "</div>";
-    document.body.appendChild(root);
-    hole = root.querySelector(".tour-spot");
-    card = root.querySelector(".tour-card");
-    el("tourSkip").addEventListener("click", () => stop(false));
-    el("tourPrev").addEventListener("click", () => move(-1));
-    el("tourNext").addEventListener("click", () => move(1));
-    root.addEventListener("click", (e) => {
-      // Clicks on the dimmed backdrop quit, like Esc; clicks inside the
-      // card or the spotlight hole keep the tour running.
-      if (e.target === root) stop(false);
-    });
+      "</div>"
+    );
   }
 
-  function steps() {
-    return window.HerdrTourSteps ? window.HerdrTourSteps.steps() : [];
-  }
-
-  function stepAllowed(step) {
-    if (step.showWhen) {
-      try {
-        if (!step.showWhen()) return false;
-      } catch (_) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  function buildVisibleSteps() {
-    visibleSteps = steps().filter(stepAllowed);
-    if (!visibleSteps.length) visibleSteps = steps();
+  function chordMarkup(step) {
+    if (!step.chord) return "";
+    const label = window.HerdrTourSteps.chordLabel(step.chord[0], step.chord[1]);
+    if (!label) return "";
+    const [prefix, key] = label.split(" then ");
+    return (
+      '<span class="tour-chord-label">Shortcut</span>' +
+      '<kbd>' + escapeHtml(prefix) + "</kbd>" +
+      '<span class="tour-chord-arrow">then</span>' +
+      "<kbd>" + escapeHtml(key) + "</kbd>"
+    );
   }
 
   function targetRect(step) {
@@ -110,35 +89,7 @@
     return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
   }
 
-  const PAD = 6;
-
-  function paintSpot(rect, instant) {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    // Four dim bands around the cutout (top/right/bottom/left); the hole
-    // itself stays undimmed so the user can see and use the target.
-    const x = rect.x - PAD;
-    const y = rect.y - PAD;
-    const w = rect.w + PAD * 2;
-    const h = rect.h + PAD * 2;
-    const xl = ((x / vw) * 100).toFixed(4);
-    const xr = (((x + w) / vw) * 100).toFixed(4);
-    const yt = ((y / vh) * 100).toFixed(4);
-    const yb = (((y + h) / vh) * 100).toFixed(4);
-    hole.style.clipPath =
-      "polygon(" +
-      `0% 0%, 100% 0%, 100% ${yt}%, ${xr}% ${yt}%, ${xr}% ${yb}%, 100% ${yb}%, ` +
-      `100% 100%, 0% 100%, 0% ${yb}%, ${xl}% ${yb}%, ${xl}% ${yt}%, 0% ${yt}%` +
-      ")";
-    if (!instant && !reducedMotion()) {
-      hole.style.transition = "clip-path 180ms ease-out";
-    } else {
-      hole.style.transition = "none";
-    }
-    hole.dataset.rect = JSON.stringify({ x, y, w, h });
-  }
-
-  function placeCard(rect, step) {
+  function placeCard(step, card, rect) {
     const cardW = Math.max(180, Math.min(360, window.innerWidth - 24));
     card.style.maxWidth = `${cardW}px`;
     let x;
@@ -158,130 +109,7 @@
     card.style.top = `${Math.round(y)}px`;
   }
 
-  function chordMarkup(step) {
-    if (!step.chord) return "";
-    const label = window.HerdrTourSteps.chordLabel(step.chord[0], step.chord[1]);
-    if (!label) return "";
-    const [prefix, key] = label.split(" then ");
-    return (
-      '<span class="tour-chord-label">Shortcut</span>' +
-      '<kbd>' + escapeHtml(prefix) + "</kbd>" +
-      '<span class="tour-chord-arrow">then</span>' +
-      "<kbd>" + escapeHtml(key) + "</kbd>"
-    );
-  }
-
-  function runDemo(step) {
-    if (!step.demo) return;
-    try {
-      const ok = step.demo();
-      if (ok === false) return;
-      if (step.hideOnDemo) {
-        // The demo opened a modal/palette over the spotlight; repaint so
-        // the new surface is visible while the card keeps explaining.
-        setTimeout(() => renderCurrent(true), 0);
-      }
-    } catch (_) {}
-  }
-
-  function enterStep(instant) {
-    renderCurrent(instant);
-    // Demo runs exactly once per step entry; repaints (resize, hideOnDemo)
-    // go through renderCurrent and never re-run it.
-    const step = visibleSteps[stepIndex];
-    if (step) runDemo(step);
-  }
-
-  function renderCurrent(instant) {
-    const step = visibleSteps[stepIndex];
-    if (!step) {
-      stop(renderedOnce);
-      return;
-    }
-    const rect = targetRect(step);
-    if (!rect) {
-      move(1);
-      return;
-    }
-    renderedOnce = true;
-    el("tourTitle").textContent = step.title;
-    const bodyNode = card.querySelector(".tour-body");
-    if (bodyNode) bodyNode.textContent = typeof step.body === "function" ? step.body() : step.body;
-    const chordNode = card.querySelector(".tour-chord");
-    if (chordNode) chordNode.innerHTML = chordMarkup(step);
-    el("tourStep").textContent = `${stepIndex + 1} / ${visibleSteps.length}`;
-    el("tourPrev").disabled = stepIndex === 0;
-    el("tourNext").textContent = stepIndex === visibleSteps.length - 1 ? "Finish" : "Next";
-    el("tourProgress").max = visibleSteps.length;
-    el("tourProgress").value = stepIndex + 1;
-    paintSpot(rect, instant);
-    placeCard(rect, step);
-    card.setAttribute("aria-hidden", "false");
-    el("tourNext").focus({ preventScroll: true });
-  }
-
-  function move(delta) {
-    const next = stepIndex + delta;
-    if (next >= visibleSteps.length) {
-      stop(renderedOnce);
-      return;
-    }
-    if (next < 0) return;
-    stepIndex = next;
-    enterStep(false);
-  }
-
-  function onKey(e) {
-    if (!active) return;
-    if (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      e.stopPropagation();
-      move(1);
-    } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      e.stopPropagation();
-      move(-1);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      stop(false);
-    }
-  }
-
-  function onResize() {
-    if (active) renderCurrent(true);
-  }
-
-  function ensureBindings() {
-    if (!boundKeys) {
-      // Capture phase so tour keys never reach the terminal or the prefix
-      // system; handleGlobalShortcut also checks isActive() as backstop.
-      document.addEventListener("keydown", onKey, true);
-      boundKeys = true;
-    }
-    if (!boundResize) {
-      window.addEventListener("resize", onResize);
-      boundResize = true;
-    }
-  }
-
-  function start() {
-    if (active) return;
-    if (!window.HerdrTourSteps) return;
-    ensureDom();
-    ensureBindings();
-    active = true;
-    stepIndex = 0;
-    renderedOnce = false;
-    buildVisibleSteps();
-    root.hidden = false;
-    root.style.display = "block";
-    enterStep(true);
-  }
-
-  function stop(finished) {
-    if (!active) return;
-    active = false;
+  function onStop() {
     // Demos may have opened a modal or palette; closing them here keeps
     // the app in the pre-tour state.
     try {
@@ -297,44 +125,21 @@
         if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
       }
     } catch (_) {}
-    root.hidden = true;
-    root.style.display = "none";
-    if (boundResize) {
-      try {
-        window.removeEventListener("resize", onResize);
-        boundResize = false;
-      } catch (_) {}
-    }
-    markDone(finished);
-    const focusTarget = el("terminal") || document.body;
-    try {
-      focusTarget.focus && focusTarget.focus({ preventScroll: true });
-    } catch (_) {}
   }
 
-  function markDone(finished) {
-    try {
-      localStorage.setItem(STORAGE_KEY, finished ? "done" : "skipped");
-    } catch (_) {}
-  }
+  const tour = (globalThis.HerdrTourDriver || { createTour: null }).createTour({
+    storageKey: "herdr-web-tour-done",
+    ids,
+    rootMarkup,
+    steps: () => (window.HerdrTourSteps ? window.HerdrTourSteps.steps() : []),
+    targetRect,
+    nextKeys: (e) => e.key === "ArrowRight" || e.key === "Enter" || e.key === " ",
+    focusTarget: () => el("terminal") || document.body,
+    onStop,
+    chordMarkup,
+    afterRender: placeCard,
+    focusNextOnRender: true,
+  });
 
-  function isDone() {
-    try {
-      return !!localStorage.getItem(STORAGE_KEY);
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function reset() {
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch (_) {}
-  }
-
-  function isActive() {
-    return active;
-  }
-
-  window.HerdrOnboardingTour = { start, stop, isActive, isDone, reset };
+  if (tour) window.HerdrOnboardingTour = tour;
 })();

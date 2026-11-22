@@ -181,8 +181,10 @@ function makeHarness() {
     context[key] = ctx[key];
   }
   const stepsScript = new vm.Script(source("desktop/app_js/tour_steps.js"), { filename: "tour_steps.js" });
+  const driverSharedScript = new vm.Script(source("shared/tour_driver.js"), { filename: "tour_driver.js" });
   const driverScript = new vm.Script(source("desktop/app_js/tour.js"), { filename: "tour.js" });
   stepsScript.runInContext(context);
+  driverSharedScript.runInContext(context);
   driverScript.runInContext(context);
   return {
     context,

@@ -147,7 +147,7 @@ use assets::{
     mobile_search_js, mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
     mobile_tour_css, mobile_tour_js, mobile_tour_steps_js, mobile_workmeta_js, mobile_worktrees_js,
     shared_actions_js, shared_alert_card_css, shared_alert_card_js, shared_attention_js,
-    shared_backend_state_js, shared_prompt_cards_js,
+    shared_backend_state_js, shared_prompt_cards_js, shared_tour_driver_js,
     shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
     shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
     shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js, shared_http_js,
@@ -1421,6 +1421,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/backend-state.js", get(shared_backend_state_js))
         .route("/assets/shared/prompt-cards.js", get(shared_prompt_cards_js))
+        .route("/assets/shared/tour-driver.js", get(shared_tour_driver_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
         .route("/assets/shared/file-tree.css", get(shared_file_tree_css))
