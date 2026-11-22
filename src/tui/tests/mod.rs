@@ -5087,6 +5087,150 @@ fn renders_missed_file_preview_outline_jump_find_and_statuses() {
 }
 
 #[test]
+fn file_editor_paints_the_cursor_cell_in_both_themes() {
+    // The editor never places a terminal cursor, so the caret must be
+    // painted: an inverted cell at the cursor's row and column. The
+    // check pins the cell's colors against the active palette in both
+    // themes, the fix for the light-mode invisibility report.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview.path = Some("src/lib.rs".to_string());
+    app.file_explorer.preview.content = "fn main() {\n    let x = 1;\n}\n".to_string();
+    app.file_explorer.edit_active = true;
+    // Cursor mid-line: on `let`, column 4 of line 2.
+    app.file_explorer.edit_cursor = "fn main() {\n    ".len();
+
+    for (theme, accent, panel_bg) in [
+        (
+            TuiTheme::Dark,
+            Color::Rgb(137, 180, 250),
+            Color::Rgb(17, 17, 27),
+        ),
+        (
+            TuiTheme::Light,
+            Color::Rgb(37, 99, 235),
+            Color::Rgb(255, 255, 255),
+        ),
+    ] {
+        app.theme = theme;
+        app.palette = crate::tui::theme::Palette::for_theme(theme);
+        let buffer = draw_buffer(&app, 140, 30);
+        let row = rendered_row(&buffer, "fn main() {");
+        // Line 2 starts one row below line 1; the caret sits on the
+        // character right after the leading indent.
+        let caret_y = (row.y + 1) as u16;
+        let line_two = rendered_row(&buffer, "let x = 1;");
+        assert_eq!(caret_y, line_two.y as u16);
+        // The indent is 4 cells after the 5-wide number gutter; the
+        // caret cell paints accent bg with panel-bg fg.
+        let caret_x = line_two.cell_x_of("let x").unwrap();
+        assert_eq!(buffer[(caret_x as u16, caret_y)].fg, panel_bg);
+        assert_eq!(buffer[(caret_x as u16, caret_y)].bg, accent);
+        // The character under the caret is still readable.
+        assert_eq!(buffer[(caret_x as u16, caret_y)].symbol(), "l");
+    }
+
+    // End-of-line cursor: with the cursor past the final newline (the
+    // state `start_edit` leaves), the caret paints on a virtual line
+    // below the last rendered one.
+    app.file_explorer.edit_cursor = app.file_explorer.preview.content.len();
+    app.theme = TuiTheme::Light;
+    app.palette = crate::tui::theme::Palette::for_theme(TuiTheme::Light);
+    let buffer = draw_buffer(&app, 140, 30);
+    let last = rendered_row(&buffer, "}");
+    let virtual_row = rendered_row(&buffer, "   4");
+    assert_eq!(
+        virtual_row.y,
+        last.y + 1,
+        "caret row sits below the last line"
+    );
+    // The virtual row is `   4 ` + one inverted padding space.
+    let caret_x = (virtual_row.cell_x_of("4").unwrap() + 2) as u16;
+    assert_eq!(
+        buffer[(caret_x, virtual_row.y as u16)].bg,
+        Color::Rgb(37, 99, 235)
+    );
+    assert_eq!(
+        buffer[(caret_x, virtual_row.y as u16)].fg,
+        Color::Rgb(255, 255, 255)
+    );
+    assert_eq!(buffer[(caret_x, virtual_row.y as u16)].symbol(), " ");
+}
+
+#[test]
+fn git_lists_paint_the_selected_row_inverted_in_both_themes() {
+    // The git lists used a foreground-only accent that vanished on
+    // light terminals; the selected row now inverts (panel-bg fg on
+    // accent bg) like the sidebar lists.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.files = vec![
+        GitFileEntry {
+            path: "zz_git_selected_marker.rs".to_string(),
+            status: GitFileStatus::Unstaged,
+        },
+        GitFileEntry {
+            path: "zz_other_file.rs".to_string(),
+            status: GitFileStatus::Unstaged,
+        },
+    ];
+    app.git_panel.file_selected = 0;
+    app.git_panel.diff_lines = vec!["@@ -1,2 +1,3 @@".to_string(), "+added line".to_string()];
+    // `None` marks the chunk header; `hunk_headers()` reads these
+    // indexes to find the `@@` row the cursor sits on.
+    app.git_panel.diff_meta = vec![None, Some(crate::tui::panels::GitDiffLineMeta::default())];
+    app.git_panel.diff_hunk_selected = 0;
+    for (theme, accent, panel_bg) in [
+        (
+            TuiTheme::Dark,
+            Color::Rgb(137, 180, 250),
+            Color::Rgb(17, 17, 27),
+        ),
+        (
+            TuiTheme::Light,
+            Color::Rgb(37, 99, 235),
+            Color::Rgb(255, 255, 255),
+        ),
+    ] {
+        app.theme = theme;
+        app.palette = crate::tui::theme::Palette::for_theme(theme);
+        let buffer = draw_buffer(&app, 140, 30);
+        // Selected file row: every painted cell carries the accent bg.
+        // A unique marker path keeps the needle off the sidebar tree,
+        // which renders `src/...` rows of its own.
+        let file_row = rendered_row(&buffer, "zz_git_selected_marker.rs");
+        let unselected = rendered_row(&buffer, "zz_other_file.rs");
+        assert_eq!(
+            buffer[(
+                file_row.cell_x_of("zz_git").unwrap() as u16,
+                file_row.y as u16
+            )]
+                .bg,
+            accent
+        );
+        assert_eq!(
+            buffer[(
+                file_row.cell_x_of("zz_git").unwrap() as u16,
+                file_row.y as u16
+            )]
+                .fg,
+            panel_bg
+        );
+        let unselected_has_accent = (0..buffer.area.width as usize)
+            .any(|x| buffer[(x as u16, unselected.y as u16)].bg == accent);
+        assert!(
+            !unselected_has_accent,
+            "unselected file row stays on panel bg"
+        );
+        // Hunk cursor: the @@ header inverts the same way.
+        let hunk_row = rendered_row(&buffer, "@@ -1,2");
+        let hunk_x = hunk_row.cell_x_of("@@").unwrap();
+        assert_eq!(buffer[(hunk_x as u16, hunk_row.y as u16)].bg, accent);
+        assert_eq!(buffer[(hunk_x as u16, hunk_row.y as u16)].fg, panel_bg);
+    }
+}
+
+#[test]
 fn renders_missed_git_diff_log_stash_and_prompt_branches() {
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Git;
