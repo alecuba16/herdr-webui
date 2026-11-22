@@ -5332,6 +5332,94 @@ fn settings_overlay_shows_passthrough_on_state() {
     assert!(settings.contains("on (shell keeps Ctrl+B while attached)"));
 }
 
+/// Close/finish tour keys persist the tour outcome to the shared
+/// settings file (`record_tour_state`), so every tour test that can
+/// press one needs the env lock plus its own XDG dir, exactly like the
+/// settings tests: without it a parallel sibling writes its
+/// `tuiOnboardingTour` into this test's settings file, or worse into
+/// the user's real one. Drop restores the env and drops the temp dir,
+/// including on a panicking unwind.
+pub(crate) struct SettingsEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prior_xdg: Option<String>,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for SettingsEnvGuard {
+    fn drop(&mut self) {
+        match self.prior_xdg.take() {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+pub(crate) fn settings_test_env() -> SettingsEnvGuard {
+    let _lock = crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("herdr-tui-settings-env-{stamp}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    std::env::set_var("XDG_CONFIG_HOME", &dir);
+    SettingsEnvGuard {
+        _lock,
+        prior_xdg,
+        dir,
+    }
+}
+
+#[test]
+fn settings_overlay_reports_tour_run_state_and_replays_it() {
+    let _env = settings_test_env();
+    // No record: the overlay says not run yet.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Settings;
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("not run yet"));
+    assert!(settings.contains("T replay tour"));
+
+    // T from settings replays the tour; Settings stays on the overlay
+    // stack so closing the tour lands back in the settings overlay.
+    app.handle_key(KeyEvent::from(KeyCode::Char('T')));
+    assert_eq!(app.mode, TuiMode::Tour);
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::Settings, "close lands back in settings");
+    // The skip persisted (q close = skipped) and the overlay reads it.
+    assert_eq!(crate::tui::tui_tour_state().as_deref(), Some("skipped"));
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("already run (skipped early)"));
+
+    // Finishing the walk records done.
+    app.handle_key(KeyEvent::from(KeyCode::Char('T')));
+    assert_eq!(app.mode, TuiMode::Tour);
+    let last = crate::tui::tour::tour_steps().len() - 1;
+    for _ in 0..last {
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert!(app.tour_finished);
+    assert_eq!(crate::tui::tui_tour_state().as_deref(), Some("done"));
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("already run (finished)"));
+
+    // A garbage value in the key falls back to not-run instead of
+    // rendering an unknown state.
+    let settings_path = crate::tui::tui_settings_path();
+    let mut root: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    root["tuiOnboardingTour"] = json!("nonsense");
+    std::fs::write(&settings_path, serde_json::to_string(&root).unwrap()).unwrap();
+    assert_eq!(crate::tui::tui_tour_state(), None);
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("not run yet"));
+}
+
 #[test]
 fn settings_overlay_bottom_border_shows_version() {
     // The version rides the bottom border so it never competes with

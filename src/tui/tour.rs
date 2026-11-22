@@ -286,6 +286,7 @@ impl TuiApp {
             KeyCode::Char('j') | KeyCode::Right | KeyCode::Enter => {
                 if self.tour_index >= max {
                     self.tour_finished = true;
+                    self.record_tour_state("done");
                     self.close_tour();
                 } else {
                     self.tour_index += 1;
@@ -300,11 +301,30 @@ impl TuiApp {
             }
             // Esc/q/? close the tour without finishing; the app state
             // the demos touched (screen, selection, overlays opened by
-            // run_shortcut) stays as the user's starting point.
-            KeyCode::Esc | KeyCode::Char('?') => self.close_tour(),
-            KeyCode::Char('q') => self.close_tour(),
+            // run_shortcut) stays as the user's starting point. Both
+            // outcomes persist so the settings overlay can say whether
+            // the walkthrough ever ran (webui parity: done vs skipped).
+            KeyCode::Esc | KeyCode::Char('?') => {
+                self.record_tour_state("skipped");
+                self.close_tour();
+            }
+            KeyCode::Char('q') => {
+                self.record_tour_state("skipped");
+                self.close_tour();
+            }
             _ => {}
         }
+    }
+
+    /// Persist the tour outcome to the shared settings file. Best
+    /// effort: the settings overlay still shows "not run" when the
+    /// write fails, and the status line says why the record is missing.
+    fn record_tour_state(&mut self, state: &'static str) {
+        match crate::tui::tui_set_tour_state(state) {
+            Ok(()) => self.status = format!("tour {state}"),
+            Err(err) => self.status = format!("tour state not saved: {err}"),
+        }
+        self.mark_dirty();
     }
 
     pub(crate) fn tour_step(&self) -> Option<TourStep> {

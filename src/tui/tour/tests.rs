@@ -8,7 +8,7 @@ use ratatui::Terminal;
 use serde_json::json;
 
 use crate::tui::render::render;
-use crate::tui::tests::app_with_snapshot;
+use crate::tui::tests::{app_with_snapshot, settings_test_env};
 use crate::tui::{tour, TuiApp, TuiMode, TuiScreen, TuiSnapshot};
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -96,6 +96,7 @@ fn tour_walks_forward_and_back_with_the_demo_side_effects() {
 
 #[test]
 fn tour_last_step_finishes_and_closes_the_overlay() {
+    let _env = settings_test_env();
     let mut app = open_tour_app();
     let last = tour::tour_steps().len() - 1;
     for _ in 0..last {
@@ -111,6 +112,7 @@ fn tour_last_step_finishes_and_closes_the_overlay() {
 
 #[test]
 fn tour_keys_never_leak_into_the_app_underneath() {
+    let _env = settings_test_env();
     let mut app = open_tour_app();
     // Tab would normally toggle the sidebar focus; inside the tour it
     // must do nothing at all.
@@ -127,6 +129,7 @@ fn tour_keys_never_leak_into_the_app_underneath() {
 
 #[test]
 fn tour_closes_with_esc_and_help_replays_it_with_shift_t() {
+    let _env = settings_test_env();
     let mut app = tour_fixture_app();
     app.open_help_overlay();
     assert_eq!(app.mode, TuiMode::Help);
@@ -171,6 +174,7 @@ fn tour_steps_cover_the_main_areas_in_the_webui_order() {
 
 #[test]
 fn tour_swallows_the_prefix_and_lens_keys() {
+    let _env = settings_test_env();
     let mut app = open_tour_app();
     let before_index = app.tour_index;
     let before_workspace = app.selected_workspace;

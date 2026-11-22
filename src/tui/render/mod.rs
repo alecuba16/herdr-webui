@@ -2865,7 +2865,7 @@ fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &P
 /// informational (webui stores the rest in browser storage, which has
 /// no TUI equivalent yet).
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let rect = overlay_rect(area, area.width.min(64), 13);
+    let rect = overlay_rect(area, area.width.min(64), 14);
     render_shadow(frame, rect, p);
     let git_cwd = app.git_panel.cwd.clone();
     let files_cwd = app.file_explorer.cwd.clone();
@@ -2883,7 +2883,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
         .map(|value| wrap_plain(value, value_budget).len().saturating_sub(1))
         .sum::<usize>() as u16;
     let rect = {
-        let height = (13 + wrapped_extra).min(area.height);
+        let height = (14 + wrapped_extra).min(area.height);
         Rect::new(
             rect.x,
             rect.y + rect.height.saturating_sub(height) / 2,
@@ -2918,9 +2918,17 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
                 "off"
             },
         ),
+        row(
+            "onboarding tour",
+            match crate::tui::tui_tour_state().as_deref() {
+                Some("done") => "already run (finished)",
+                Some("skipped") => "already run (skipped early)",
+                _ => "not run yet",
+            },
+        ),
         Line::from(""),
         Line::from(Span::styled(
-            " t theme · p passthrough · Esc closes ",
+            " t theme · p passthrough · T replay tour · Esc closes ",
             Style::default().fg(p.accent),
         )),
         Line::from(Span::styled(

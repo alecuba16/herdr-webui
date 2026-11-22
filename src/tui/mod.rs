@@ -128,6 +128,40 @@ pub(crate) fn tui_terminal_prefix_passthrough() -> bool {
         .unwrap_or(false)
 }
 
+/// Onboarding-tour run state, persisted in the shared settings file the
+/// same way the passthrough flag is (webui/mobile keep theirs in
+/// localStorage; a terminal process has none, so the shared file is the
+/// TUI's store). "done" = reached the last step, "skipped" = closed
+/// early; both suppress nothing in the TUI (there is no auto-start),
+/// they only report in the settings overlay.
+pub(crate) fn tui_tour_state() -> Option<String> {
+    let raw = std::fs::read_to_string(tui_settings_path()).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    value
+        .get("tuiOnboardingTour")
+        .and_then(|state| state.as_str())
+        .map(str::to_string)
+        .filter(|state| state == "done" || state == "skipped")
+}
+
+/// Write side: record the TUI onboarding tour outcome. Unknown keys
+/// survive (same patch-in-place discipline as the passthrough writer).
+pub(crate) fn tui_set_tour_state(state: &str) -> Result<(), String> {
+    let path = tui_settings_path();
+    let mut root: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    if !root.is_object() {
+        root = serde_json::Value::default();
+    }
+    root["tuiOnboardingTour"] = serde_json::Value::String(state.to_string());
+    let parent = path.parent().unwrap_or(std::path::Path::new(""));
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let raw = serde_json::to_string_pretty(&root).map_err(|err| err.to_string())?;
+    std::fs::write(&path, raw).map_err(|err| err.to_string())
+}
+
 /// Write side: flip `terminalPrefixPassthrough` in the shared file.
 /// Unknown keys survive (the whole object is parsed, patched, written
 /// back); a missing file starts a fresh object. IO failures surface as
@@ -1402,6 +1436,14 @@ impl TuiApp {
             TuiMode::Settings => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
                     self.close_overlay();
+                }
+                // Tour replay from the settings overlay (same entry as
+                // Help's T key): the overlay stack keeps Settings below,
+                // so closing the tour lands back here. The trigger is
+                // how a user who already ran the onboarding finds it
+                // again, with the run state visible one row above.
+                KeyCode::Char('T') => {
+                    self.open_tour();
                 }
                 // Theme cycle (webui settings theme select).
                 KeyCode::Char('t') | KeyCode::Tab => {
