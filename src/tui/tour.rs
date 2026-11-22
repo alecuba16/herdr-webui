@@ -154,9 +154,25 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
         },
         TourStep {
             title: "Main screen",
-            body: "The main area renders the focused pane. The files explorer (Ctrl+B f) and the git panel (Ctrl+B g) live here as their own screens.",
+            body: "The main area renders the focused pane. The files explorer (Ctrl+B f) and the git panel (Ctrl+B g) live here as their own screens; the next two steps open each one.",
             region: TourRegion::Main,
             shortcut: Some(Shortcut::Files),
+            demo: false,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Files screen",
+            body: "Ctrl+B f opens the file tree of the focused workspace. j/k moves, l or Right enters a directory, h/u goes up, Enter previews (e edits, Ctrl+F finds, Ctrl+H replaces), L shows the file's git log.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::Files),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Git screen",
+            body: "Ctrl+B g opens the git surface: Tab cycles changes, log, branches, stash, history, conflicts, cleanup. j/k moves, J/K walk hunks, H stages or unstages a hunk, / searches the diff, c commits.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::Git),
             demo: true,
             screen: Some(TuiScreen::Terminal),
         },
@@ -166,7 +182,7 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
             region: TourRegion::Main,
             shortcut: Some(Shortcut::Terminal),
             demo: true,
-            screen: Some(TuiScreen::Files),
+            screen: Some(TuiScreen::Git),
         },
         TourStep {
             title: "Split tiles",
@@ -197,11 +213,39 @@ pub(crate) fn tour_steps() -> Vec<TourStep> {
             screen: Some(TuiScreen::Terminal),
         },
         TourStep {
+            title: "Chat lens and composer",
+            body: "On a chat-capable agent pane (jcode here), Ctrl+B L toggles the transcript lens: j/k scroll, G jumps to the tail, Esc closes. Ctrl+B Shift+C opens the composer prompt for the focused pane and Enter sends.",
+            region: TourRegion::Main,
+            // The lens is field state, so its demo renders below the
+            // card. The composer is taught by text only: its prompt is
+            // a key-owning modal, and a demo would cover the card that
+            // is explaining it.
+            shortcut: Some(Shortcut::Lens),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Session manager",
+            body: "Ctrl+B Shift+P lists every session: Enter switches (rebuilding the client on the target's sockets), l launches, x closes, c cleans up stale slots, n creates one, r reloads, Esc closes.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::SessionManager),
+            demo: true,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
             title: "Help overlay",
             body: "Ctrl+B ? opens the full shortcut reference with a type-to-filter box. This tour is replayable from there with the T key.",
             region: TourRegion::Main,
             shortcut: Some(Shortcut::Help),
             demo: false,
+            screen: Some(TuiScreen::Terminal),
+        },
+        TourStep {
+            title: "Settings overlay",
+            body: "Ctrl+B Shift+E opens settings: theme (t), terminal passthrough (p), and this tour's run state. T replays the tour right from this overlay; Esc closes.",
+            region: TourRegion::Main,
+            shortcut: Some(Shortcut::SettingsOverlay),
+            demo: true,
             screen: Some(TuiScreen::Terminal),
         },
         TourStep {

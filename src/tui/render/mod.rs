@@ -72,11 +72,19 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         render_help(frame, area, p, &app.help_filter, app.help_scroll);
     }
     if app.mode == TuiMode::Tour {
-        // The step's demo surface (search palette) renders below the
-        // tour card like the webui palette under the spotlight; the
-        // card keeps the keys and the explanation.
+        // The step's demo surface renders below the tour card like
+        // the webui palette under the spotlight: the card keeps the
+        // keys and the explanation. The lens demo is field state (no
+        // TuiMode), so it renders through the shared active-lens arm
+        // above instead of a tour_demo_overlay match.
         if app.tour_demo_overlay == Some(TuiMode::SearchPalette) {
             render_search_palette(frame, area, app, p);
+        }
+        if app.tour_demo_overlay == Some(TuiMode::Settings) {
+            render_settings(frame, area, app, p);
+        }
+        if app.tour_demo_overlay == Some(TuiMode::SessionManager) {
+            render_session_manager(frame, area, app, p);
         }
         crate::tui::tour::render_tour(frame, area, app, p);
     }

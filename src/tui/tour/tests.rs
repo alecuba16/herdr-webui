@@ -74,6 +74,85 @@ fn tour_opens_on_first_step_and_runs_the_search_demo() {
     assert!(screen.contains("Tour 1 /"));
 }
 
+/// The full-coverage steps each demo a real surface: files/git switch
+/// the screen, the lens opens as field state, the session manager and
+/// settings overlays render below the card, and the settings step
+/// does not strand the overlay stack.
+#[test]
+fn full_coverage_steps_demo_their_surfaces() {
+    let _env = settings_test_env();
+    let mut app = open_tour_app();
+
+    // Files screen: the demo opened the real screen.
+    let files = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Files screen")
+        .unwrap();
+    app.tour_index = files;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.screen, TuiScreen::Files);
+    assert_eq!(app.mode, TuiMode::Tour);
+
+    // Git screen: the demo opened the git surface. The refresh on the
+    // nonexistent test port fails into the error slot; the screen is
+    // still the real git view.
+    let git = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Git screen")
+        .unwrap();
+    app.tour_index = git;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.screen, TuiScreen::Git);
+
+    // Chat lens: field state, not a TuiMode. The fixture pane is a
+    // jcode session (chat-supported), so the lens opens and renders
+    // below the card through the shared active-lens arm.
+    let lens = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Chat lens and composer")
+        .unwrap();
+    app.tour_index = lens;
+    app.run_tour_demo_for_test();
+    assert!(app.lens.active);
+    assert_eq!(app.mode, TuiMode::Tour);
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Ctrl+B L"), "lens chord shown");
+    // The next step's demo resets the screen to Terminal and the
+    // runner cleared the overlay record, but the lens stays open as
+    // the user's surface until they close it; the tour keeps the keys
+    // (tour handler runs before the lens handler).
+    let sessions = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Session manager")
+        .unwrap();
+    app.tour_index = sessions;
+    app.run_tour_demo_for_test();
+    assert_eq!(
+        app.tour_demo_overlay,
+        Some(TuiMode::SessionManager),
+        "session manager demo recorded its overlay"
+    );
+    assert_eq!(app.mode, TuiMode::Tour);
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("Enter switch"), "session rows rendered");
+
+    // Settings overlay: the demo opens the overlay below the card and
+    // the stack is truncated so closing the tour does not strand it.
+    let settings = tour::tour_steps()
+        .iter()
+        .position(|s| s.title == "Settings overlay")
+        .unwrap();
+    app.tour_index = settings;
+    app.run_tour_demo_for_test();
+    assert_eq!(app.tour_demo_overlay, Some(TuiMode::Settings));
+    let screen = draw(&app, 120, 40);
+    assert!(screen.contains("replay tour"), "settings overlay rendered");
+
+    // Closing from the last step still lands on the pre-tour mode.
+    app.handle_key(key(KeyCode::Char('q')));
+    assert_ne!(app.mode, TuiMode::Tour);
+}
+
 #[test]
 fn tour_walks_forward_and_back_with_the_demo_side_effects() {
     let mut app = open_tour_app();
@@ -156,11 +235,16 @@ fn tour_steps_cover_the_main_areas_in_the_webui_order() {
             "Workspaces",
             "Agents",
             "Main screen",
+            "Files screen",
+            "Git screen",
             "Terminal screen",
             "Split tiles",
             "The tile language",
             "Sidebar collapse",
+            "Chat lens and composer",
+            "Session manager",
             "Help overlay",
+            "Settings overlay",
             "The prefix language",
         ]
     );
@@ -209,7 +293,7 @@ fn tour_renders_on_a_tiny_terminal_without_panicking() {
     let screen = draw(&app, 10, 8);
     assert!(screen.contains("Tour"));
     // A wide terminal still renders the full card.
-    assert!(draw(&app, 100, 30).contains("Tour 1 / 10"));
+    assert!(draw(&app, 100, 30).contains("Tour 1 / 15"));
 }
 
 #[test]
