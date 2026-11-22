@@ -983,10 +983,7 @@ async fn panes_get(
         .map(|entry| entry_public_json(&session, &entry));
     match snapshot {
         Ok(value) => Json(value).into_response(),
-        Err(_) => panes_json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "panes store unavailable",
-        ),
+        Err(_) => panes_json_error(StatusCode::SERVICE_UNAVAILABLE, "panes store unavailable"),
     }
 }
 
