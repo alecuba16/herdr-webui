@@ -27,6 +27,7 @@ const DESKTOP_STYLES = [
   ...SHARED_STYLES,
 ];
 const MOBILE_STYLES = [
+  "/assets/shared/file-tree.css",
   "/assets/mobile/app.css",
   "/assets/mobile/tour.css",
   ...SHARED_STYLES,

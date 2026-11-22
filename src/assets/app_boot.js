@@ -55,6 +55,7 @@
     const mobile = layout === "mobile";
     document.documentElement.dataset.herdrLayout = layout;
     if (mobile) {
+      loadCss("/assets/shared/file-tree.css");
       loadCss("/assets/mobile/app.css");
       loadCss("/assets/mobile/tour.css");
     } else {
