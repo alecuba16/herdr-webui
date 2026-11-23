@@ -93,9 +93,6 @@
 .file-browser-refresh:active {
   transform: rotate(180deg);
 }
-@keyframes file-browser-spin {
-  to { transform: rotate(360deg); }
-}
 .file-browser-refresh .herdr-tree-icon {
   height: 14px;
   width: 14px;
@@ -114,7 +111,7 @@
 .file-browser-search-icon.searching,
 .mobile-file-search-icon.searching,
 .git-ui-file-filter-icon.searching {
-  animation: file-browser-spin 900ms linear infinite;
+  animation: herdr-spin 900ms linear infinite;
 }
 .file-browser-searching,
 .file-browser-more {

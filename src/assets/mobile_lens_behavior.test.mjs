@@ -24,6 +24,9 @@ const MOBILE_LENS_PATH = fileURLToPath(new URL("./mobile/lens.js", import.meta.u
 const mobileLensScript = new vm.Script(readFileSync(MOBILE_LENS_PATH, "utf8"), {
   filename: MOBILE_LENS_PATH,
 });
+// The conversation-model helpers lens.js delegates to (HerdrLensModel).
+const LENS_MODEL_PATH = fileURLToPath(new URL("./shared/lens_model.js", import.meta.url));
+const lensModelScript = new vm.Script(readFileSync(LENS_MODEL_PATH, "utf8"), { filename: LENS_MODEL_PATH });
 
 // A minimal HTML tokenizer: builds stub children with correct nesting
 // via a tag stack. Only the lens's own markup shapes need to work.
@@ -436,6 +439,7 @@ function makeHarness(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const vmCtx = vm.createContext(ctx);
+  lensModelScript.runInContext(vmCtx);
   mobileLensScript.runInContext(vmCtx);
   // The mobile lens factory takes injected deps; the harness el() is the
   // app's getElementById shape.

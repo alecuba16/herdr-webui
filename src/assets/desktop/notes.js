@@ -121,13 +121,9 @@
     return (state.notes || []).find((note) => note && note.id === id) || null;
   }
 
-  function escapeHtml(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
+  // escapeHtml comes from the shared core (HerdrAppHelpers), which the
+  // desktop bundle loads before this lazily served module.
+  const escapeHtml = HerdrAppHelpers.escapeHtml;
 
   async function fetchNotes() {
     const state = ensureState();

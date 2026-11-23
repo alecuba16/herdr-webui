@@ -524,6 +524,12 @@ pub(super) fn git_json_error(status: StatusCode, error: impl Into<String>) -> Re
     (status, Json(json!({ "error": error.into() }))).into_response()
 }
 
+#[allow(clippy::result_large_err)]
+pub(super) fn required_cwd(cwd: Option<&str>) -> Result<String, Response> {
+    cwd.map(str::to_string)
+        .ok_or_else(|| git_json_error(StatusCode::BAD_REQUEST, "cwd is required"))
+}
+
 /// Validate + expand a cwd without spawning git. `git_ui_repo` adds a
 /// `git rev-parse --show-toplevel` round trip whose only consumer-facing
 /// effect here is the error message; the status call itself answers the
@@ -541,6 +547,8 @@ pub(super) fn git_ui_repo(cwd: &str) -> Result<String, String> {
 }
 
 /// Runs `git rev-parse --show-toplevel` in the expanded cwd, returning the root.
+/// Kept local (not git_bin::rev_parse_toplevel) because its git_failure
+/// stderr detail rides 400 responses; the shared helper only yields None.
 fn rev_parse_toplevel(expanded: &str) -> Result<String, String> {
     let output = crate::git_bin::command()
         .arg("-C")
@@ -1438,10 +1446,10 @@ async fn git_ui_status(
     Query(query): Query<GitUiCwdQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let Some(cwd) = query.cwd.as_deref() else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
+    let cwd = match required_cwd(query.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
     };
-    let cwd = cwd.to_string();
     git_spawn(move || git_status_blocking(cwd)).await
 }
 

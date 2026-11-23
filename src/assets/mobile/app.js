@@ -230,17 +230,13 @@
     return err.message || err.code || statusText;
   }
 
+  // Shared builder (HerdrHttp.wsUrl): same session/backend query-param
+  // contract the old local copy implemented, single-sourced in shared/http.js.
   function wsUrl(path) {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const params = [];
-    if (state.session && state.session !== "default")
-      params.push("session=" + encodeURIComponent(state.session));
-    if (currentSessionBackend())
-      params.push("backend=" + encodeURIComponent(currentSessionBackend()));
-    const suffix = params.length
-      ? (path.includes("?") ? "&" : "?") + params.join("&")
-      : "";
-    return `${proto}//${location.host}${path}${suffix}`;
+    return HerdrHttp.wsUrl(path, {
+      session: state.session,
+      backend: currentSessionBackend(),
+    });
   }
 
   // Graceful degradation: the external herdr backend could not be attached

@@ -1856,6 +1856,7 @@ describe("desktop file browser editor integration", () => {
     context.window.window = context.window;
     context.window.document = document;
     runSharedModule("./shared/file_tree.js", context);
+    productScript("./shared/http.js").runInNewContext(context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -1915,6 +1916,7 @@ describe("desktop file browser editor integration", () => {
     context.window.window = context.window;
     context.window.document = document;
     runSharedModule("./shared/file_tree.js", context);
+    productScript("./shared/http.js").runInNewContext(context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -1973,6 +1975,7 @@ describe("desktop file browser editor integration", () => {
     context.window.window = context.window;
     context.window.document = document;
     runSharedModule("./shared/file_tree.js", context);
+    productScript("./shared/http.js").runInNewContext(context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2074,6 +2077,7 @@ describe("desktop file browser editor integration", () => {
     context.window.window = context.window;
     context.window.document = document;
     runSharedModule("./shared/file_tree.js", context);
+    productScript("./shared/http.js").runInNewContext(context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2162,6 +2166,7 @@ describe("desktop file browser editor integration", () => {
     context.window.window = context.window;
     context.window.document = document;
     runSharedModule("./shared/file_tree.js", context);
+    productScript("./shared/http.js").runInNewContext(context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2256,6 +2261,7 @@ describe("desktop file browser editor integration", () => {
     context.window.window = context.window;
     context.window.document = document;
     runSharedModule("./shared/file_tree.js", context);
+    productScript("./shared/http.js").runInNewContext(context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2319,6 +2325,7 @@ describe("desktop file browser editor integration", () => {
     context.window.window = context.window;
     context.window.document = document;
     runSharedModule("./shared/file_tree.js", context);
+    productScript("./shared/http.js").runInNewContext(context);
     productScript("./desktop/file_browser.js").runInNewContext(context);
     productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
@@ -2487,8 +2494,11 @@ describe("desktop file browser editor integration", () => {
     workspacePanes.appendChild(terminalShell);
 
     productScript("./shared/core.js").runInNewContext(context.window);
+    productScript("./shared/http.js").runInNewContext(context.window);
     productScript("./shared/file_tree.js").runInNewContext(context.window);
-    productScript("./desktop/app_js/workspace_panes.js").runInNewContext(vm.createContext(context.window));
+    const appCoreVmCtx = vm.createContext(context.window);
+    productScript("./desktop/app_js/pane_drag.js").runInContext(appCoreVmCtx);
+    productScript("./desktop/app_js/workspace_panes.js").runInContext(appCoreVmCtx);
     productScript("./desktop/file_browser.js").runInNewContext(vm.createContext(context.window));
     harness.context = context;
     harness.FB = context.window.HerdrFileBrowser;

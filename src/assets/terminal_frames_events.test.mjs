@@ -2,7 +2,11 @@ import { describe, it } from "node:test";
 import { equal, ok, match } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import vm from "node:vm";
+
+const require = createRequire(import.meta.url);
+const HerdrTerminalInput = require("./shared/terminal_input.js");
 
 // Coverage batch for desktop/app_js/terminal.js regions the reconnect and
 // paste suites do not reach: the /ws/events message dispatch (settings
@@ -20,6 +24,28 @@ function getTerminalScript() {
     terminalScript = new vm.Script(readFileSync(terminalPath, "utf8"), { filename: terminalPath });
   }
   return terminalScript;
+}
+// terminal.js builds socket URLs through HerdrHttp.wsUrl (shared/http.js
+// loads before the desktop bundle in production); the harness loads the
+// real shared client so wsUrl() resolves the same URLs.
+let httpScript = null;
+function getHttpScript() {
+  if (!httpScript) {
+    const httpPath = fileURLToPath(new URL("./shared/http.js", import.meta.url));
+    httpScript = new vm.Script(readFileSync(httpPath, "utf8"), { filename: httpPath });
+  }
+  return httpScript;
+}
+
+// terminal.js wires its input/paste path through the shared input store
+// (shared/terminal_input.js, loaded before the bundle in production).
+let terminalInputScript = null;
+function getTerminalInputScript() {
+  if (!terminalInputScript) {
+    const inputPath = fileURLToPath(new URL("./shared/terminal_input.js", import.meta.url));
+    terminalInputScript = new vm.Script(readFileSync(inputPath, "utf8"), { filename: inputPath });
+  }
+  return terminalInputScript;
 }
 
 function stubElement(id = "") {
@@ -155,6 +181,8 @@ function loadTerminalModule() {
   });
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  getHttpScript().runInContext(sandbox);
+  getTerminalInputScript().runInContext(sandbox);
   // core.js owns these module-scoped bindings in the real bundle.
   vm.runInContext(
     `
@@ -521,7 +549,6 @@ describe("terminal input queue (terminal.js)", () => {
       sandbox,
     );
     const full = sandbox.sockets[sandbox.sockets.length - 1];
-    equal(run("inputQueue.length"), 3, "a full buffer parks the chunks in the queue");
     equal(full.sent.length, 0, "nothing moves while bufferedAmount is over the ceiling");
     full.bufferedAmount = 0;
     fireTimers();
@@ -543,14 +570,19 @@ describe("terminal input queue (terminal.js)", () => {
   it("a dead socket drops the queue wholesale", () => {
     const { sandbox, run, fireTimers } = loadTerminalModule();
     vm.runInContext(
-      `termWs = new WebSocket("ws://t"); termWs.readyState = 3;
-       inputQueue = [new Uint8Array(1), new Uint8Array(2)];
-       inputFlushTimer = setTimeout(flushInputQueue, 4);`,
+      `termWs = new WebSocket("ws://t"); termWs.readyState = 1; termWs.bufferedAmount = 70000;
+       sendInputData("y".repeat(40 * 1024), { chunkSize: 16 * 1024, maxBufferedAmount: 65536 });`,
       sandbox,
     );
+    const parked = sandbox.sockets[sandbox.sockets.length - 1];
+    equal(parked.sent.length, 0, "chunks park behind the full buffer");
+    // Socket dies before the flush timer fires: the queued chunks are
+    // dropped, not sent to a dead socket or re-queued forever.
+    vm.runInContext(`termWs.readyState = 3;`, sandbox);
     fireTimers();
-    equal(run("inputQueue.length"), 0, "closed socket empties the queue");
-    equal(run("inputQueueMaxBufferedAmount"), 65536, "buffer ceiling resets");
+    vm.runInContext(`termWs.readyState = 1; termWs.bufferedAmount = 0;`, sandbox);
+    fireTimers();
+    equal(parked.sent.length, 0, "dead-socket flush dropped the queue");
   });
 
   it("sendInputData strips mouse reports unless explicitly allowed", () => {
@@ -606,25 +638,25 @@ describe("paste progress surface (terminal.js)", () => {
     );
     run(`sendPasteToTerminal("${"a".repeat(100)}")`);
     run(`sendPasteToTerminal("${"b".repeat(50)}")`);
-    equal(run("pasteJob.total"), 150, "the second paste extends the same job");
     equal(getElement("terminalPasteProgress").hidden, false, "progress visible during the paste");
     fireTimers();
-    equal(run("pasteJob === null"), true, "the job finishes after the chunk flush");
     const ws = sandbox.sockets[sandbox.sockets.length - 1];
-    ok(ws.sent.length >= 1, "paste bytes reached the socket");
+    const text = ws.sent.map((c) => Buffer.from(c).toString("utf8")).join("");
+    equal(text, "a".repeat(100) + "b".repeat(50), "both pastes flush through one merged job");
   });
 
   it("paste chunks normalize CRLF and lone CR across chunk seams", () => {
-    const { sandbox, run } = loadTerminalModule();
-    const out = run(`JSON.stringify((() => {
-      const job = { pendingCR: false };
-      const first = normalizeTerminalPasteChunk(job, "a\\r", false);
-      const second = normalizeTerminalPasteChunk(job, "b\\n", true);
-      return { first, second, pending: job.pendingCR };
-    })())`);
-    equal(JSON.parse(out).first, "a", "the trailing CR is held back at the seam");
-    equal(JSON.parse(out).second, "\nb\n", "the held CR normalizes to a newline when it rejoins");
-    equal(JSON.parse(out).pending, false);
+    // The chunk-boundary CR/LF rule lives in the shared input store.
+    const store = HerdrTerminalInput.createTerminalInput({
+      ws: null,
+      encode: (s) => Buffer.from(s, "utf8"),
+    });
+    const job = { pendingCR: false };
+    const first = store.normalizePasteChunk(job, "a\r", false);
+    const second = store.normalizePasteChunk(job, "b\n", true);
+    equal(first, "a", "the trailing CR is held back at the seam");
+    equal(second, "\nb\n", "the held CR normalizes to a newline when it rejoins");
+    equal(job.pendingCR, false);
   });
 });
 

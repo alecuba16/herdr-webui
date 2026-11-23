@@ -7,6 +7,7 @@ import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
 const HerdrTerminalFit = require("./shared/terminal_fit.js");
+const HerdrTerminalInput = require("./shared/terminal_input.js");
 
 // Minimal mock for the desktop terminal frame pipeline. We only test the
 // enqueue / coalesce / flush logic, not the terminal renderer itself.
@@ -219,11 +220,16 @@ describe("desktop terminal paste streaming", () => {
   }
 
   it("normalizes CRLF across async paste chunk boundaries", () => {
-    const ctx = loadDesktopTerminalContext();
+    // The paste chunk normalizer lives in the shared input store
+    // (shared/terminal_input.js); drive it directly with a job object.
+    const store = HerdrTerminalInput.createTerminalInput({
+      ws: null,
+      encode: (s) => Buffer.from(s, "utf8"),
+    });
     const job = { pendingCR: false };
 
-    const first = ctx.normalizeTerminalPasteChunk(job, "hello\r", false);
-    const second = ctx.normalizeTerminalPasteChunk(job, "\nworld\rnext", true);
+    const first = store.normalizePasteChunk(job, "hello\r", false);
+    const second = store.normalizePasteChunk(job, "\nworld\rnext", true);
 
     assert.equal(first, "hello");
     assert.equal(second, "\nworld\nnext");

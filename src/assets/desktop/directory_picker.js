@@ -58,35 +58,19 @@
     document.head.appendChild(link);
   }
 
-  async function api(url) {
-    // Shared client keeps session/backend headers and 401 handling uniform.
-    if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url);
-    const res = await fetch(url, { credentials: "same-origin" });
-    const body = await res.json();
-    if (!res.ok || body.error) {
-      const error = Error(body.error || res.statusText);
-      error.details = body || {};
-      throw error;
-    }
-    return body;
+  // Shared client keeps session/backend headers and 401 handling uniform;
+  // app_boot.js loads shared/http.js before every lazy module.
+  function api(url) {
+    return globalThis.HerdrHttp.request(url);
   }
 
-  async function postJson(url, payload) {
+  function postJson(url, payload) {
     // Shared client keeps session/backend headers and 401 handling uniform.
-    if (globalThis.HerdrHttp)
-      return globalThis.HerdrHttp.request(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload || {}),
-      });
-    const res = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
-    const body = await res.json();
-    if (!res.ok || body.error) {
-      const error = Error(body.error || res.statusText);
-      error.details = body || {};
-      throw error;
-    }
-    return body;
+    return globalThis.HerdrHttp.request(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
   }
 
   function setError(error) {

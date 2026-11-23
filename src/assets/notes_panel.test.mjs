@@ -27,6 +27,13 @@ const DESKTOP_NOTES_PATH = fileURLToPath(new URL("./desktop/notes.js", import.me
 const desktopNotesScript = new vm.Script(readFileSync(DESKTOP_NOTES_PATH, "utf8"), {
   filename: DESKTOP_NOTES_PATH,
 });
+// notes.js binds escapeHtml from HerdrAppHelpers (shared/core.js loads
+// before the lazily served module in production); the harness loads the
+// real shared core so the binding matches production.
+const SHARED_CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const sharedCoreScript = new vm.Script(readFileSync(SHARED_CORE_PATH, "utf8"), {
+  filename: SHARED_CORE_PATH,
+});
 
 // Mirror of the server's language table (src/notes.rs NOTE_LANGUAGES):
 // value, label, editor extension. Tests exercise the client against the
@@ -285,7 +292,9 @@ function loadPanel(document, ctxOverrides = {}) {
   ctx.__calls = calls;
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  desktopNotesScript.runInContext(vm.createContext(ctx));
+  const vmContext = vm.createContext(ctx);
+  sharedCoreScript.runInContext(vmContext);
+  desktopNotesScript.runInContext(vmContext);
   return ctx;
 }
 

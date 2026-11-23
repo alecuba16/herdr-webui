@@ -379,7 +379,7 @@ impl BackendClient {
     }
 }
 
-pub const BUILTIN_TUI_PROTOCOL_VERSION: u32 = 22;
+pub(crate) use crate::protocol::PROTOCOL_VERSION as BUILTIN_TUI_PROTOCOL_VERSION;
 pub const MAX_TUI_TERMINAL_FRAME_SIZE: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,10 +590,7 @@ fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
 /// path-shape change.
 #[cfg_attr(coverage, coverage(off))]
 fn runtime_settings_parent() -> PathBuf {
-    runtime_settings_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui"))
+    crate::socket_paths::settings_dir_fallback(&runtime_settings_path())
 }
 
 fn runtime_settings_path() -> PathBuf {

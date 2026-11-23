@@ -13,6 +13,28 @@ function getTerminalScript() {
   }
   return terminalScript;
 }
+// terminal.js builds socket URLs through HerdrHttp.wsUrl (shared/http.js
+// loads before the desktop bundle in production); the harness loads the
+// real shared client so wsUrl() resolves the same URLs.
+let httpScript = null;
+function getHttpScript() {
+  if (!httpScript) {
+    const httpPath = fileURLToPath(new URL("./shared/http.js", import.meta.url));
+    httpScript = new vm.Script(readFileSync(httpPath, "utf8"), { filename: httpPath });
+  }
+  return httpScript;
+}
+
+// terminal.js wires its input/paste path through the shared input store
+// (shared/terminal_input.js, loaded before the bundle in production).
+let terminalInputScript = null;
+function getTerminalInputScript() {
+  if (!terminalInputScript) {
+    const inputPath = fileURLToPath(new URL("./shared/terminal_input.js", import.meta.url));
+    terminalInputScript = new vm.Script(readFileSync(inputPath, "utf8"), { filename: inputPath });
+  }
+  return terminalInputScript;
+}
 
 // Behavioral tests for the chat/terminal focus + paste routing fix.
 // Loads desktop/app_js/terminal.js in the same sandbox style as
@@ -260,6 +282,8 @@ async function loadTerminalModule() {
   sandbox.__termStub = termStub;
   sandbox.__pasteSent = [];
   vm.createContext(sandbox);
+  getHttpScript().runInContext(sandbox);
+  getTerminalInputScript().runInContext(sandbox);
   vm.runInContext(
     `
     let term = null;

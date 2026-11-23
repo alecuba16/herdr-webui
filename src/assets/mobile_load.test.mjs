@@ -637,9 +637,15 @@ function context(pathname = "/", options = {}) {
 const MOBILE_BUNDLE_FILES = [
   "./shared/options.js",
   "./shared/core.js",
+  "./shared/settings_feedback.js",
   "./shared/http.js",
   "./shared/attention.js",
   "./shared/actions.js",
+  "./shared/backend_state.js",
+  "./shared/prompt_cards.js",
+  "./shared/tour_driver.js",
+  "./shared/terminal_input.js",
+  "./shared/lens_model.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
   "./shared/line_context.js",
@@ -786,6 +792,16 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8") +
@@ -911,8 +927,8 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.cm-matchingBracket/);
     match(mobileCss, /\.cm-nonmatchingBracket/);
     match(mobileCss, /\.cm-editor \.cm-cursor,[\s\S]*?border-left: 2px solid var\(--editor-caret\)/);
-    match(mobileCss, /--editor-caret:/);
-    match(mobileCss, /--editor-caret-dim:/);
+    match(readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8"), /--editor-caret:/);
+    match(readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8"), /--editor-caret-dim:/);
     match(mobileCss, /\.cm-selectionBackground/);
     match(mobileCss, /--accent-1:/);
     match(mobileCss, /--accent-2:/);
@@ -1157,9 +1173,11 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.mobile-context \.mobile-backend-badge\.backend-builtin \{[\s\S]*?color: var\(--backend-builtin\)/);
     match(mobileCss, /\.mobile-context \.mobile-backend-badge\.backend-herdr \{[\s\S]*?color: var\(--backend-herdr\)/);
     // Herdr keeps a distinct mauve hue; built-in stays in the accent family.
-    match(mobileCss, /--backend-builtin: var\(--accent\)/);
-    match(mobileCss, /--backend-herdr: #cba6f7/);
-    match(mobileCss, /--backend-herdr: #8839ef/);
+    // The hue definitions live in shared/palette.css, loaded for both layouts.
+    const paletteCss = readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8");
+    match(paletteCss, /--backend-builtin: var\(--accent\)/);
+    match(paletteCss, /--backend-herdr: #cba6f7/);
+    match(paletteCss, /--backend-herdr: #8839ef/);
 
     // The badge switches label and class when the backend changes. The fallback
     // to built-in on refresh is covered elsewhere; here we exercise the badge
@@ -1749,8 +1767,9 @@ describe("mobile bundle load", () => {
     // provider so every request carries the selected backend/session.
     match(mobileSource, /HerdrHttp\.configure\(\(\) => \(\{[\s\S]*?backend: currentSessionBackend\(\)/);
     match(mobileSource, /if \(globalThis\.HerdrHttp\) return globalThis\.HerdrHttp\.request\(url, opt\)/);
-    match(mobileSource, /params\.push\("backend=" \+ encodeURIComponent\(currentSessionBackend\(\)\)\)/);
-    match(mobileSource, /params\.join\("&"\)/);
+    // The socket URL builder is shared too (HerdrHttp.wsUrl): mobile passes
+    // the live session/backend as the override so the pin rides the query.
+    match(mobileSource, /HerdrHttp\.wsUrl\(path, \{[\s\S]*?backend: currentSessionBackend\(\),/);
     match(backendSource, /state\.backendMode = settings\.backend_mode/);
   });
 

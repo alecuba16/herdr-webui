@@ -75,15 +75,12 @@ body.light .git-ui-panel-main {
   justify-content: center;
 }
 .git-ui-loading span {
-  animation: git-ui-spin 900ms linear infinite;
+  animation: herdr-spin 900ms linear infinite;
   border: 3px solid var(--border2);
   border-top-color: var(--accent);
   border-radius: 999px;
   height: 34px;
   width: 34px;
-}
-@keyframes git-ui-spin {
-  to { transform: rotate(360deg); }
 }
 .git-ui-cleanup {
   display: grid;

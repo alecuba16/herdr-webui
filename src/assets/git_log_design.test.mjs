@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 const rendererPath = fileURLToPath(new URL("./desktop/git_ui/log.js", import.meta.url));
 const rendererScript = new vm.Script(readFileSync(rendererPath, "utf8"), { filename: rendererPath });
 const styles = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
-const themeStyles = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
+const themeStyles = readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8") + readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
 const shellStyles = readFileSync(new URL("./desktop/git_ui/shell.css", import.meta.url), "utf8");
 const hash = "a".repeat(40);
 const otherHash = "b".repeat(40);
@@ -54,7 +54,7 @@ function contrastRatio(first, second) {
 for (const light of [false, true]) {
   test(`Git Log ${light ? "light" : "dark"} nonmatching text and graph lanes meet exact contrast thresholds`, (t) => {
     const tokens = {
-      ...colorTokens(cssRule(themeStyles, "body {")),
+      ...colorTokens(cssRule(themeStyles, ":root {")),
       ...colorTokens(cssRule(styles, ".git-ui-log-workbench {")),
       ...colorTokens(cssRule(shellStyles, ".git-ui-panel,")),
       ...(light ? {

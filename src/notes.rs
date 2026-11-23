@@ -69,14 +69,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/notes/clear", axum::routing::post(notes_clear))
 }
 
-#[allow(clippy::result_large_err)]
-fn notes_auth(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> Result<(), Response> {
-    crate::require_auth(state, headers, remote)
-}
-
-fn notes_json_error(status: StatusCode, message: String) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
-}
+use crate::route_helpers::{json_error as notes_json_error, route_auth as notes_auth};
 
 fn notes_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
@@ -263,7 +256,7 @@ async fn notes_list(
     let snapshot = state.notes.lock().map(|guard| guard.clone());
     match snapshot {
         Ok(snapshot) => Json(notes_public_json(&snapshot)).into_response(),
-        Err(_) => notes_json_error(StatusCode::SERVICE_UNAVAILABLE, "notes unavailable".into()),
+        Err(_) => notes_json_error(StatusCode::SERVICE_UNAVAILABLE, "notes unavailable"),
     }
 }
 

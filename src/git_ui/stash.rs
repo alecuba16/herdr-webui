@@ -10,7 +10,9 @@ use serde_json::json;
 use super::check_auth;
 use super::diff::parse_unified_diff;
 use super::git_spawn;
-use super::{git_json_error, git_ui_text, safe_git_token, safe_repo_path, GitUiCwdQuery};
+use super::{
+    git_json_error, git_ui_text, required_cwd, safe_git_token, safe_repo_path, GitUiCwdQuery,
+};
 use crate::{require_auth, WebState};
 
 #[derive(Deserialize)]
@@ -67,10 +69,10 @@ pub(super) async fn git_ui_stashes(
     Query(query): Query<GitUiCwdQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let Some(cwd) = query.cwd.as_deref() else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
+    let cwd = match required_cwd(query.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
     };
-    let cwd = cwd.to_string();
     git_spawn(move || git_ui_stashes_blocking(cwd)).await
 }
 
@@ -112,8 +114,9 @@ pub(super) async fn git_ui_stash_show(
     Query(query): Query<GitUiStashShowQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let Some(cwd) = query.cwd.as_deref() else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
+    let cwd = match required_cwd(query.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
     };
     let stash = match safe_git_token(query.stash.as_deref().unwrap_or("stash@{0}"), "stash") {
         Ok(v) => v.to_string(),
@@ -122,7 +125,6 @@ pub(super) async fn git_ui_stash_show(
     let context = query.context.unwrap_or(3);
     let layout = query.layout.clone();
     let q = query.q.clone();
-    let cwd = cwd.to_string();
     match tokio::task::spawn_blocking(move || {
         git_ui_stash_show_blocking(cwd, stash, context, layout, q)
     })

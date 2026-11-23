@@ -55,7 +55,8 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
       "./desktop/app_js/core.js",
       "./desktop/app_js/settings_sections.js",
       "./desktop/app_js/workspace_shell.js",
-      "./desktop/app_js/workspace_panes.js",
+      "./desktop/app_js/pane_drag.js",
+    "./desktop/app_js/workspace_panes.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
       "./desktop/app_js/worktrees.js",
@@ -67,8 +68,11 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
     // so coverage attributes each file's lines to its real disk path.
     const bundleFiles = [
       "./shared/options.js",
+      "./shared/http.js",
       "./shared/core.js",
       "./shared/actions.js",
+      "./shared/backend_state.js",
+      "./shared/terminal_input.js",
       "./shared/terminal_fit.js",
       "./desktop/search.js",
       ...desktopAppFiles,

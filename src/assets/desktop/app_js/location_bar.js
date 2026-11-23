@@ -471,18 +471,10 @@
     return { left, top: rect.bottom + 4, width: maxWidth };
   }
 
-  // Same HTTP contract as the shell modules: shared HerdrHttp when the
-  // shell provided it, else plain fetch. Harnesses provide only fetch.
-  async function api(url, opt) {
-    if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url, opt);
-    const res = await fetch(url, Object.assign({ credentials: "same-origin" }, opt || {}));
-    const body = await res.json();
-    if (!res.ok || body.error) {
-      const error = Error(body.error || res.statusText);
-      error.details = body || {};
-      throw error;
-    }
-    return body;
+  // Same HTTP contract as the shell modules: the shared HerdrHttp client
+  // (app_boot.js loads shared/http.js before this bundle module).
+  function api(url, opt) {
+    return globalThis.HerdrHttp.request(url, opt);
   }
 
   function currentCwd() {

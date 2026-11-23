@@ -47,19 +47,10 @@
     );
   }
 
-  // Same HTTP contract as core.js api() and file_browser.js api(): the
-  // shared HerdrHttp client when the shell provided it, else plain fetch.
-  // Harnesses that load this module standalone provide only fetch.
-  async function api(url, opt) {
-    if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url, opt);
-    const res = await fetch(url, Object.assign({ credentials: "same-origin" }, opt || {}));
-    const body = await res.json();
-    if (!res.ok || body.error) {
-      const error = Error(body.error || res.statusText);
-      error.details = body || {};
-      throw error;
-    }
-    return body;
+  // Same HTTP contract as core.js api(): the shared HerdrHttp client
+  // (app_boot.js loads shared/http.js before this bundle module).
+  function api(url, opt) {
+    return globalThis.HerdrHttp.request(url, opt);
   }
 
   async function postJson(url, body) {

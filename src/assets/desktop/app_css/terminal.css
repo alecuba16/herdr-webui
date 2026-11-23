@@ -279,12 +279,7 @@ input {
   border: 2px solid var(--border2);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: herdr-spin 0.8s linear infinite;
 }
 .blocked-text {
   color: #f38ba8;
@@ -515,11 +510,8 @@ input {
   border-radius: 50%;
   border: 2px solid var(--border);
   border-top-color: var(--accent, #89b4fa);
-  animation: lens-spin 0.9s linear infinite;
+  animation: herdr-spin 0.9s linear infinite;
   vertical-align: -0.05em;
-}
-@keyframes lens-spin {
-  to { transform: rotate(360deg); }
 }
 .lens-turn-pending > span {
   opacity: 0.6;
@@ -1050,7 +1042,7 @@ input {
   position: relative;
 }
 .terminal-composer-send.terminal-composer-send-holding::after {
-  animation: composer-hold-ring 600ms linear forwards;
+  animation: herdr-hold-ring 600ms linear forwards;
   border: 2px solid var(--accent, #89b4fa);
   border-radius: inherit;
   content: "";
@@ -1060,14 +1052,6 @@ input {
 }
 .terminal-composer-send.terminal-composer-send-queued {
   background: color-mix(in srgb, var(--accent, #89b4fa), transparent 80%);
-}
-@keyframes composer-hold-ring {
-  from {
-    clip-path: inset(0 100% 0 0);
-  }
-  to {
-    clip-path: inset(0 0 0 0);
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .terminal-composer-send.terminal-composer-send-holding::after {

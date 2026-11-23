@@ -410,9 +410,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/lsp/stop", post(lsp_stop))
 }
 
-fn lsp_error(status: StatusCode, error: impl Into<String>) -> Response {
-    (status, Json(json!({ "error": error.into() }))).into_response()
-}
+use crate::route_helpers::json_error as lsp_error;
 
 async fn lsp_config(
     State(state): State<WebState>,

@@ -17,6 +17,10 @@ const WORKSPACE_PANES_PATH = fileURLToPath(new URL("./desktop/app_js/workspace_p
 const workspacePanesScript = new vm.Script(readFileSync(WORKSPACE_PANES_PATH, "utf8"), {
   filename: WORKSPACE_PANES_PATH,
 });
+const PANE_DRAG_PATH = fileURLToPath(new URL("./desktop/app_js/pane_drag.js", import.meta.url));
+const paneDragScript = new vm.Script(readFileSync(PANE_DRAG_PATH, "utf8"), {
+  filename: PANE_DRAG_PATH,
+});
 const PANE_TERMINALS_PATH = fileURLToPath(new URL("./desktop/app_js/pane_terminals.js", import.meta.url));
 const paneTerminalsScript = new vm.Script(readFileSync(PANE_TERMINALS_PATH, "utf8"), {
   filename: PANE_TERMINALS_PATH,
@@ -339,7 +343,10 @@ function loadPanes(document, stateWs) {
     terminalTheme: () => ({}),
     terminalFontFamily: () => "monospace",
     currentSessionBackend: () => "",
-    wsUrl: null,
+    // terminal.js owns window.wsUrl in the real bundle (a delegation to the
+    // shared HerdrHttp builder); the harness pins the injected builder the
+    // tests were written against.
+    wsUrl: (path) => `ws://127.0.0.1:8787${path}`,
     location: { protocol: "http:", host: "localhost:8787" },
     // schedulePtyResize debounces on real timers; the vm realm has no
     // setTimeout unless provided. Tests assert before the timer fires
@@ -356,7 +363,9 @@ function loadPanes(document, stateWs) {
   ctx.window = ctx;
   ctx.globalThis = ctx;
   const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
-  workspacePanesScript.runInContext(vm.createContext(ctx));
+  const panesVmCtx = vm.createContext(ctx);
+  paneDragScript.runInContext(panesVmCtx);
+  workspacePanesScript.runInContext(panesVmCtx);
   const auxSource = readFileSync(new URL("./desktop/app_js/pane_terminals.js", import.meta.url), "utf8");
   paneTerminalsScript.runInContext(vm.createContext(ctx));
   return ctx;

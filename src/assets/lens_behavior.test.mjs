@@ -19,6 +19,10 @@ const SHARED_CORE_SOURCE = readFileSync(
 // Compiled once per product file so coverage attributes to the real paths.
 const LENS_PATH = fileURLToPath(new URL("./desktop/app_js/lens.js", import.meta.url));
 const lensScript = new vm.Script(readFileSync(LENS_PATH, "utf8"), { filename: LENS_PATH });
+// The conversation-model helpers lens.js delegates to (HerdrLensModel),
+// loaded before the lens exactly like app_boot.js orders it.
+const LENS_MODEL_PATH = fileURLToPath(new URL("./shared/lens_model.js", import.meta.url));
+const lensModelScript = new vm.Script(readFileSync(LENS_MODEL_PATH, "utf8"), { filename: LENS_MODEL_PATH });
 const SHARED_CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
 const sharedCoreScript = new vm.Script(readFileSync(SHARED_CORE_PATH, "utf8"), {
   filename: SHARED_CORE_PATH,
@@ -166,6 +170,7 @@ function context(overrides = {}) {
 function loadLens(ctx, bridge) {
   ctx.__term = bridge ? { wterm: { bridge } } : null;
   vm.runInContext("term = globalThis.__term;", ctx);
+  lensModelScript.runInContext(ctx);
   lensScript.runInContext(ctx);
 }
 
@@ -475,6 +480,7 @@ describe("chat lens module", () => {
     const { ctx, contextObject } = context();
     ctx.__term = { wterm: renderer };
     vm.runInContext("var term = globalThis.__term;", contextObject);
+    lensModelScript.runInContext(contextObject);
     lensScript.runInContext(contextObject);
     ctx.HerdrLens.setLens(true);
     equal(paused[paused.length - 1], true, "lens open pauses the covered renderer");

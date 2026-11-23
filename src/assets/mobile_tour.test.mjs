@@ -164,10 +164,14 @@ function makeHarness() {
   const stepsScript = new vm.Script(source("mobile/tour_steps.js"), {
     filename: fileURLToPath(new URL("mobile/tour_steps.js", import.meta.url)),
   });
+  const driverSharedScript = new vm.Script(source("shared/tour_driver.js"), {
+    filename: "tour_driver.js",
+  });
   const driverScript = new vm.Script(source("mobile/tour.js"), {
     filename: fileURLToPath(new URL("mobile/tour.js", import.meta.url)),
   });
   stepsScript.runInContext(context);
+  driverSharedScript.runInContext(context);
   driverScript.runInContext(context);
   return {
     context,

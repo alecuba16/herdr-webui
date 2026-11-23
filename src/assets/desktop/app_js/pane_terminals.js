@@ -55,22 +55,10 @@
     return `${tabId}`;
   }
 
+  // terminal.js owns window.wsUrl (a delegation to the shared HerdrHttp
+  // builder); the local copy of the URL assembly lived here before.
   function wsUrlFor(path) {
-    if (typeof wsUrl === "function") return wsUrl(path);
-    const params = [];
-    if (state.session && state.session !== "default")
-      params.push("session=" + encodeURIComponent(state.session));
-    if (typeof currentSessionBackend === "function" && currentSessionBackend())
-      params.push("backend=" + encodeURIComponent(currentSessionBackend()));
-    const suffix = params.length
-      ? (path.includes("?") ? "&" : "?") + params.join("&")
-      : "";
-    return (
-      (location.protocol === "https:" ? "wss://" : "ws://") +
-      location.host +
-      path +
-      suffix
-    );
+    return wsUrl(path);
   }
 
   function terminalIdForTab(tabId) {

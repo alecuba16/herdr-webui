@@ -1,0 +1,84 @@
+/*
+ * Shared layout palette: the base color variables both layouts define
+ * with identical values. Mobile app.css and desktop base.css kept two
+ * copies of these; the copies had already drifted once (--danger), so the
+ * single source lives here. Both layouts still own their layout-specific
+ * vars (mobile keeps --herdr-mobile-viewport-height and the accent
+ * aliases, desktop keeps --pane-group, --text, --text-dim); anything
+ * defined in both with the same value belongs in this file.
+ */
+
+:root {
+  --bg: #11111b;
+  --fg: #cdd6f4;
+  --fg-dim: #a6adc8;
+  --panel: #181825;
+  --panel2: #1e1e2e;
+  --editor-bg: #1e1e2e;
+  --border: #313244;
+  --border2: #45475a;
+  --muted: #a6adc8;
+  --accent: #89b4fa;
+  --backend-builtin: var(--accent);
+  --backend-herdr: #cba6f7;
+  --editor-caret: #f2f5ff;
+  --editor-caret-dim: #a6adc8;
+  --git-modified-color: #e9d07a;
+  --git-added-color: #a6e3a1;
+  --git-deleted-color: #f38ba8;
+  --git-changed-color: #89b4fa;
+  --git-conflict-color: #fab387;
+  --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font: ui-sans-serif, system-ui;
+  --font-mono: var(--mono-font);
+  --editor-syntax-keyword: #cba6f7;
+  --editor-syntax-constant: #f38ba8;
+  --editor-syntax-number: #fab387;
+  --editor-syntax-string: #a6e3a1;
+  --editor-syntax-regexp: #eba0ac;
+  --editor-syntax-comment: #bac2de;
+  --editor-syntax-variable: #cdd6f4;
+  --editor-syntax-function: #89b4fa;
+  --editor-syntax-type: #f9e2af;
+  --editor-syntax-property: #89dceb;
+  --editor-syntax-tag: #f5c2e7;
+  --editor-syntax-operator: #cdd6f4;
+  --editor-syntax-meta: #b4befe;
+  --editor-syntax-invalid: #f38ba8;
+}
+
+body.light {
+  --bg: #eff1f5;
+  --fg: #363a4f;
+  --fg-dim: #525769;
+  --panel: #e6e9ef;
+  --panel2: #ccd0da;
+  --editor-bg: #ccd0da;
+  --border: #bcc0cc;
+  --border2: #7a8296;
+  --muted: #525769;
+  --accent: #1957d2;
+  --backend-builtin: var(--accent);
+  --backend-herdr: #8839ef;
+  --editor-caret: #25253d;
+  --editor-caret-dim: #525769;
+  --git-modified-color: #7a4d00;
+  --git-added-color: #0f6210;
+  --git-deleted-color: #a61b1b;
+  --git-changed-color: #2150ae;
+  --git-conflict-color: #8a4708;
+  --editor-syntax-keyword: #6d28d9;
+  --editor-syntax-constant: #a51d3d;
+  --editor-syntax-number: #9a3412;
+  --editor-syntax-string: #116329;
+  --editor-syntax-regexp: #9f1239;
+  --editor-syntax-comment: #525769;
+  --editor-syntax-variable: #363a4f;
+  --editor-syntax-function: #1a49c4;
+  --editor-syntax-type: #7c4207;
+  --editor-syntax-property: #0a5a86;
+  --editor-syntax-tag: #86198f;
+  --editor-syntax-operator: #363a4f;
+  --editor-syntax-meta: #3730a3;
+  --editor-syntax-invalid: #a51d3d;
+}

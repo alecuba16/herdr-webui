@@ -324,7 +324,7 @@
   width: 15px;
 }
 .notes-panel-head .notes-sync.spinning span {
-  animation: notes-sync-spin 2s linear;
+  animation: herdr-spin-double 2s linear;
 }
 .notes-panel-head .notes-sync.failed {
   border-color: var(--danger, #f38ba8);
@@ -332,10 +332,6 @@
 }
 .notes-panel-head .notes-sync:disabled {
   opacity: 0.55;
-}
-@keyframes notes-sync-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(720deg); }
 }
 @media (prefers-reduced-motion: reduce) {
   .notes-panel-head .notes-sync.spinning span {

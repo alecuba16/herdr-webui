@@ -16,10 +16,16 @@ const SHARED_ALERT_CARD_JS: &str = include_str!("assets/shared/alert_card.js");
 const SHARED_ALERT_CARD_CSS: &str = include_str!("assets/shared/alert_card.css");
 const SHARED_OPTIONS_JS: &str = include_str!("assets/shared/options.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
+const SHARED_BACKEND_STATE_JS: &str = include_str!("assets/shared/backend_state.js");
+const SHARED_PROMPT_CARDS_JS: &str = include_str!("assets/shared/prompt_cards.js");
+const SHARED_TOUR_DRIVER_JS: &str = include_str!("assets/shared/tour_driver.js");
+const SHARED_TERMINAL_INPUT_JS: &str = include_str!("assets/shared/terminal_input.js");
+const SHARED_LENS_MODEL_JS: &str = include_str!("assets/shared/lens_model.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
 const SHARED_FILE_TREE_CSS: &str = include_str!("assets/shared/file_tree.css");
 const SHARED_COLORS_CSS: &str = include_str!("assets/shared/colors.css");
+const SHARED_PALETTE_CSS: &str = include_str!("assets/shared/palette.css");
 const SHARED_TOKENS_CSS: &str = include_str!("assets/shared/tokens.css");
 const SHARED_PRIMITIVES_CSS: &str = include_str!("assets/shared/primitives.css");
 const SHARED_CONTENT_SEARCH_CSS: &str = include_str!("assets/shared/content_search.css");
@@ -101,6 +107,7 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/workspace_shell.js"),
     include_str!("assets/desktop/app_js/right_sidebar.js"),
     include_str!("assets/desktop/app_js/search_panel.js"),
+    include_str!("assets/desktop/app_js/pane_drag.js"),
     include_str!("assets/desktop/app_js/workspace_panes.js"),
     include_str!("assets/desktop/app_js/pane_focus.js"),
     include_str!("assets/desktop/app_js/pane_workspace_picker.js"),
@@ -298,6 +305,46 @@ pub(crate) async fn shared_actions_js(headers: HeaderMap) -> Response {
     )
 }
 
+pub(crate) async fn shared_backend_state_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_BACKEND_STATE_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_prompt_cards_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_PROMPT_CARDS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_tour_driver_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_TOUR_DRIVER_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_terminal_input_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_TERMINAL_INPUT_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_lens_model_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_LENS_MODEL_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(crate) async fn shared_file_icons_js(headers: HeaderMap) -> Response {
     static_text(
         &headers,
@@ -316,6 +363,10 @@ pub(crate) async fn shared_file_tree_css(headers: HeaderMap) -> Response {
 
 pub(crate) async fn shared_colors_css(headers: HeaderMap) -> Response {
     static_text(&headers, SHARED_COLORS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn shared_palette_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_PALETTE_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn shared_tokens_css(headers: HeaderMap) -> Response {
@@ -1010,22 +1061,27 @@ mod tests {
     fn shipped_bundles_define_font_and_text_tokens() {
         // The CSS custom-property guard in css_selector_coverage.test.mjs
         // fails on fallback-less var() references with no producer. This
-        // is the bundle-level backstop: base.css must stay first in the
-        // desktop concat and mobile app.css must keep its body block, so
-        // --font/--font-mono/--text/--text-dim keep resolving after any
-        // future bundle reshuffle.
+        // is the bundle-level backstop: the font producers live in
+        // shared/palette.css (loaded by app_boot.js before tokens.css on
+        // both layouts), base.css must keep --text/--text-dim, and every
+        // layout bundle must keep referencing var(--mono-font) so the
+        // tokens stay wired end to end after any future bundle reshuffle.
+        assert!(
+            SHARED_PALETTE_CSS.contains("--mono-font"),
+            "palette bundle lost --mono-font"
+        );
+        assert!(
+            SHARED_PALETTE_CSS.contains("--font: ui-sans-serif, system-ui;"),
+            "palette bundle lost the --font token"
+        );
+        assert!(
+            SHARED_PALETTE_CSS.contains("--font-mono: var(--mono-font);"),
+            "palette bundle lost the --font-mono token"
+        );
         for (bundle, name) in [(DESKTOP_CSS, "desktop"), (MOBILE_CSS, "mobile")] {
             assert!(
-                bundle.contains("--mono-font"),
-                "{name} bundle lost --mono-font"
-            );
-            assert!(
-                bundle.contains("--font: ui-sans-serif, system-ui;"),
-                "{name} bundle lost the --font token"
-            );
-            assert!(
-                bundle.contains("--font-mono: var(--mono-font);"),
-                "{name} bundle lost the --font-mono token"
+                bundle.contains("var(--mono-font)"),
+                "{name} bundle lost its --mono-font consumers"
             );
         }
         assert!(

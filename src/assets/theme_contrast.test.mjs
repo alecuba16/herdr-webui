@@ -34,7 +34,8 @@ function parseThemeVars(css) {
 
 function parseBodyVars(css) {
   const vars = {};
-  const block = /^body \{([\s\S]*?)\n\}/m.exec(css);
+  // Palette files define the dark default on :root; layout shells on body.
+  const block = /^body \{([\s\S]*?)\n\}/m.exec(css) || /^:root \{([\s\S]*?)\n\}/m.exec(css);
   const source = block ? block[1] : css;
   for (const match of source.matchAll(/--([a-z0-9-]+): (#[0-9a-fA-F]{6});/g)) {
     vars[match[1]] = match[2].toLowerCase();
@@ -44,6 +45,12 @@ function parseBodyVars(css) {
 
 const desktopCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
 const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+// The shared layout palette (bg/fg/syntax/git colors) moved to
+// shared/palette.css; the layout files keep only their layout-specific
+// vars, so contrast checks resolve palette values from there.
+const paletteCss = readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8");
+const lightPalette = parseThemeVars(paletteCss);
+const darkPalette = parseBodyVars(paletteCss);
 // Status hues live in shared tokens.css since the badge/status token
 // migration: agent-status rules reference var(--status-*), so contrast
 // checks resolve the token values from there.
@@ -156,23 +163,23 @@ function loadProfiles() {
 
 describe("theme contrast", () => {
   it("keeps light syntax colors at WCAG AA (4.5:1) on the editor background", () => {
-    const light = parseThemeVars(desktopCss);
+    const light = { ...lightPalette, ...parseThemeVars(desktopCss) };
     surfaceContrast(light, syntaxKeys, ["editor-bg"], "light", 4.5);
   });
 
   it("keeps light git status colors at WCAG AA (4.5:1) on panel2 and bg", () => {
-    const light = parseThemeVars(desktopCss);
+    const light = { ...lightPalette, ...parseThemeVars(desktopCss) };
     surfaceContrast(light, gitKeys, ["panel2", "bg"], "light", 4.5);
   });
 
   it("keeps dark syntax and git colors at WCAG AA (4.5:1)", () => {
-    const dark = parseBodyVars(desktopCss);
+    const dark = { ...darkPalette, ...parseBodyVars(desktopCss) };
     surfaceContrast(dark, syntaxKeys, ["editor-bg"], "dark", 4.5);
     surfaceContrast(dark, gitKeys, ["panel2", "bg"], "dark", 4.5);
   });
 
   it("keeps body text, muted text, and accents at WCAG AA in both themes", () => {
-    for (const [label, vars] of [["dark", parseBodyVars(desktopCss)], ["light", parseThemeVars(desktopCss)]]) {
+    for (const [label, vars] of [["dark", { ...darkPalette, ...parseBodyVars(desktopCss) }], ["light", { ...lightPalette, ...parseThemeVars(desktopCss) }]]) {
       for (const surface of ["bg", "panel", "panel2"]) {
         const fgRatio = contrastRatio(vars.fg, vars[surface]);
         ok(fgRatio >= 4.5, `${label}: fg on ${surface} is ${fgRatio.toFixed(2)} < 4.5`);
@@ -191,12 +198,12 @@ describe("theme contrast", () => {
   });
 
   it("keeps light editor carets visible (3:1 non-text) focused and dim", () => {
-    const light = parseThemeVars(desktopCss);
+    const light = { ...lightPalette, ...parseThemeVars(desktopCss) };
     const focused = contrastRatio(light["editor-caret"], light["editor-bg"]);
     const dim = contrastRatio(light["editor-caret-dim"], light["editor-bg"]);
     ok(focused >= 3, `light focused caret contrast ${focused.toFixed(2)} < 3`);
     ok(dim >= 3, `light dim caret contrast ${dim.toFixed(2)} < 3`);
-    const dark = parseBodyVars(desktopCss);
+    const dark = { ...darkPalette, ...parseBodyVars(desktopCss) };
     const darkFocused = contrastRatio(dark["editor-caret"], dark["editor-bg"]);
     const darkDim = contrastRatio(dark["editor-caret-dim"], dark["editor-bg"]);
     ok(darkFocused >= 3, `dark focused caret contrast ${darkFocused.toFixed(2)} < 3`);
@@ -204,8 +211,11 @@ describe("theme contrast", () => {
   });
 
   it("keeps desktop and mobile light palettes in parity", () => {
-    const desktop = parseThemeVars(desktopCss);
-    const mobile = parseThemeVars(mobileCss);
+    // The shared palette now owns these values for both layouts, so
+    // parity is structural: mobile and desktop light blocks must not
+    // re-override any palette var with a different value.
+    const desktop = { ...lightPalette, ...parseThemeVars(desktopCss) };
+    const mobile = { ...lightPalette, ...parseThemeVars(mobileCss) };
     const keys = [...syntaxKeys, ...gitKeys, "fg", "bg", "panel", "panel2", "editor-bg", "muted", "border", "border2", "accent", "editor-caret", "editor-caret-dim"];
     for (const key of keys) {
       equal(mobile[key], desktop[key], `light --${key} differs between desktop and mobile`);
@@ -213,7 +223,7 @@ describe("theme contrast", () => {
   });
 
   it("keeps the light agent status colors readable on panel and panel2", () => {
-    const light = parseThemeVars(desktopCss);
+    const light = { ...lightPalette, ...parseThemeVars(desktopCss) };
     const statusColors = {
       idle: /body\.light \.agent-status\.idle \{\s*color: var\(--status-idle, (#[0-9a-fA-F]{6})\);/.exec(desktopCss),
       working: /body\.light \.agent-status\.working \{\s*color: var\(--status-working, (#[0-9a-fA-F]{6})\);/.exec(desktopCss),
@@ -246,11 +256,11 @@ describe("theme contrast", () => {
     // shared light token (#a61b1b) restores contrast on light sheets.
     const rule = /\.mobile-sheet-action\.danger \{\s*color: var\(--danger, (#[0-9a-fA-F]{6})\);\s*border-color: var\(--danger, #[0-9a-fA-F]{6}\);/.exec(mobileCss);
     ok(rule, "missing .mobile-sheet-action.danger rule using var(--danger)");
-    const lightBg = parseThemeVars(mobileCss).bg;
+    const lightBg = { ...lightPalette, ...parseThemeVars(mobileCss) }.bg;
     const lightRatio = contrastRatio(lightTokens.danger, lightBg);
     ok(lightRatio >= 4.5, `light sheet danger on bg is ${lightRatio.toFixed(2)} < 4.5`);
     // Dark default: the fallback hue on the dark bg.
-    const bodyVars = parseBodyVars(mobileCss);
+    const bodyVars = { ...darkPalette, ...parseBodyVars(mobileCss) };
     const darkRatio = contrastRatio(rule[1], bodyVars.bg);
     ok(darkRatio >= 4.5, `dark sheet danger on bg is ${darkRatio.toFixed(2)} < 4.5`);
   });

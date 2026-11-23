@@ -218,9 +218,5 @@ a.item {
   width: 15px;
 }
 .app-refresh-icon.spinning span {
-  animation: app-refresh-spin 2s linear;
-}
-@keyframes app-refresh-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(720deg); }
+  animation: herdr-spin-double 2s linear;
 }

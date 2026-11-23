@@ -15,9 +15,12 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 
 const PANES_PATH = fileURLToPath(new URL("./desktop/app_js/workspace_panes.js", import.meta.url));
+const PANE_DRAG_PATH = fileURLToPath(new URL("./desktop/app_js/pane_drag.js", import.meta.url));
 const FOCUS_PATH = fileURLToPath(new URL("./desktop/app_js/pane_focus.js", import.meta.url));
 const panesSource = readFileSync(PANES_PATH, "utf8");
+const paneDragSource = readFileSync(PANE_DRAG_PATH, "utf8");
 const focusSource = readFileSync(FOCUS_PATH, "utf8");
+const paneDragScript = new vm.Script(paneDragSource, { filename: PANE_DRAG_PATH });
 const panesScript = new vm.Script(panesSource, { filename: PANES_PATH });
 const focusScript = new vm.Script(focusSource, { filename: FOCUS_PATH });
 
@@ -158,8 +161,10 @@ function loadModules(document, stateWs) {
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  panesScript.runInContext(vm.createContext(ctx));
-  focusScript.runInContext(vm.createContext(ctx));
+  const paneFocusVmCtx = vm.createContext(ctx);
+  paneDragScript.runInContext(paneFocusVmCtx);
+  panesScript.runInContext(paneFocusVmCtx);
+  focusScript.runInContext(paneFocusVmCtx);
   return ctx;
 }
 

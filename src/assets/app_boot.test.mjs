@@ -9,6 +9,7 @@ let appBootScript = null;
 
 const SHARED_STYLES = [
   "/assets/shared/colors.css",
+  "/assets/shared/palette.css",
   "/assets/shared/tokens.css",
   "/assets/shared/skeleton.css",
   "/assets/shared/primitives.css",
@@ -26,6 +27,7 @@ const DESKTOP_STYLES = [
   ...SHARED_STYLES,
 ];
 const MOBILE_STYLES = [
+  "/assets/shared/file-tree.css",
   "/assets/mobile/app.css",
   "/assets/mobile/tour.css",
   ...SHARED_STYLES,
@@ -38,6 +40,11 @@ const SHARED_SCRIPTS = [
   "/assets/shared/alert-card.js",
   "/assets/shared/options.js",
   "/assets/shared/actions.js",
+  "/assets/shared/backend-state.js",
+  "/assets/shared/prompt-cards.js",
+  "/assets/shared/tour-driver.js",
+  "/assets/shared/terminal-input.js",
+  "/assets/shared/lens-model.js",
   "/assets/shared/file-icons.js",
   "/assets/shared/file-tree.js",
   "/assets/shared/line-context.js",

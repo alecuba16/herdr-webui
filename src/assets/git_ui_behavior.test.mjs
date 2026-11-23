@@ -176,6 +176,8 @@ assert.equal(
 const CORE_SOURCE = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
 const SHARED_SOURCE_FILES = [
   "./shared/actions.js",
+  "./shared/backend_state.js",
+  "./shared/http.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
   "./shared/line_context.js",
@@ -4636,7 +4638,8 @@ test("openGitOpModal loads branches and failure re-renders the error inline", as
   await ui.openGitOpModal("pull");
   await settle();
   let html = String(ctxHtml(booted));
-  assert.match(html, /git-ui-modal-backdrop" role="dialog" aria-modal="true" aria-label="Pull changes"/, "pull modal renders");
+  assert.match(html, /git-ui-modal-backdrop modal-backdrop" role="dialog" aria-modal="true" aria-label="Pull changes"/, "pull modal renders");
+  assert.match(html, /<div class="git-ui-modal modal">/, "git modal card reuses the shared modal class");
   assert.match(html, /<option value="main" /, "branch options render from the branches fetch");
   await ui.closeGitOpModal();
 

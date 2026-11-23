@@ -141,7 +141,76 @@
     };
   }
 
-  const api = { create: createSettingsFeedback, APPLIED_MS };
+  // Badge-state model for hosts that re-render their settings surface as
+  // markup (the mobile screen re-renders wholesale, so DOM badges would be
+  // wiped on every refresh; the host bakes this model's html() output into
+  // the rendered rows instead). Same classes, aria states, and APPLIED_MS
+  // window as the DOM flavor above.
+  function createSettingsFeedbackModel({ escapeHtml, setTimeout: armTimer, clearTimeout: cancelTimer }) {
+    const pendingApplied = new Map();
+    const pendingSaving = new Set();
+    const pendingError = new Map();
+    let clearTimer = null;
+    const esc = typeof escapeHtml === "function" ? escapeHtml : (v) => String(v == null ? "" : v);
+
+    function scheduleClear() {
+      if (cancelTimer && clearTimer) cancelTimer(clearTimer);
+      clearTimer = armTimer(() => {
+        clearTimer = null;
+        clearAll();
+      }, APPLIED_MS);
+    }
+
+    function clearAll() {
+      pendingApplied.clear();
+      pendingSaving.clear();
+      pendingError.clear();
+      clearTimer = null;
+    }
+
+    function queueApplied(id, label) {
+      if (!id) return;
+      pendingSaving.delete(String(id));
+      pendingError.delete(String(id));
+      pendingApplied.set(String(id), { label: label || "Applied" });
+      scheduleClear();
+    }
+
+    function queueSaving(id) {
+      if (!id) return;
+      pendingApplied.delete(String(id));
+      pendingSaving.add(String(id));
+    }
+
+    function queueError(id, message) {
+      if (!id) return;
+      pendingSaving.delete(String(id));
+      pendingError.set(String(id), String(message || "Save failed"));
+      scheduleClear();
+    }
+
+    function html(id) {
+      if (pendingSaving.has(String(id)))
+        return `<span class="${SAVING_CLASS}" aria-live="polite" data-state="settings-applied-saving">Saving...</span>`;
+      const error = pendingError.get(String(id));
+      if (error)
+        return `<span class="${ERROR_CLASS}" aria-live="polite" data-state="settings-applied-error">${esc(error)}</span>`;
+      const pending = pendingApplied.get(String(id));
+      if (!pending) return "";
+      return `<span class="${APPLIED_CLASS}" aria-live="polite" data-state="settings-applied-ok">\u2713 ${esc(pending.label)}</span>`;
+    }
+
+    return {
+      queueApplied,
+      queueSaving,
+      queueError,
+      html,
+      clear: clearAll,
+      hasAny: () => pendingApplied.size > 0 || pendingSaving.size > 0 || pendingError.size > 0,
+    };
+  }
+
+  const api = { create: createSettingsFeedback, createModel: createSettingsFeedbackModel, APPLIED_MS };
   root.HerdrSettingsFeedback = api;
   if (typeof module !== "undefined" && module.exports)
     module.exports = api;

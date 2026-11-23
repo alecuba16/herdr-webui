@@ -147,8 +147,11 @@ function loadSource() {
   // Match the actual DESKTOP_JS concat order from assets.rs,
   // plus search.js which is loaded as a separate file in the browser
   const files = [
+    "./shared/http.js",
     "./shared/core.js",
     "./shared/actions.js",
+    "./shared/backend_state.js",
+    "./shared/terminal_input.js",
     "./shared/terminal_fit.js",
     "./desktop/search.js",
     "./desktop/app_js/core.js",
@@ -156,6 +159,7 @@ function loadSource() {
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
     "./desktop/app_js/search_panel.js",
+    "./desktop/app_js/pane_drag.js",
     "./desktop/app_js/workspace_panes.js",
     "./desktop/app_js/render.js",
     "./desktop/app_js/terminal.js",
@@ -185,8 +189,10 @@ const HOIST_REWIRE = new vm.Script(
   { filename: "hoist-rewire.js" },
 );
 const RESTORE_FILES = [
+  "./shared/http.js",
   "./shared/core.js",
   "./shared/actions.js",
+  "./shared/backend_state.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",
@@ -194,7 +200,8 @@ const RESTORE_FILES = [
   "./desktop/app_js/workspace_shell.js",
   "./desktop/app_js/right_sidebar.js",
   "./desktop/app_js/search_panel.js",
-  "./desktop/app_js/workspace_panes.js",
+  "./desktop/app_js/pane_drag.js",
+    "./desktop/app_js/workspace_panes.js",
   "./desktop/app_js/render.js",
   "./desktop/app_js/terminal.js",
   "./desktop/app_js/worktrees.js",

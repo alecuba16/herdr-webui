@@ -19,7 +19,7 @@
 //! skipped, so a broken install falls through instead of poisoning
 //! resolution the way the bare shim does.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -31,6 +31,22 @@ const GIT_CANDIDATES: &[&str] = &[
 ];
 
 pub(crate) const GIT_BIN_ENV: &str = "HERDR_WEBUI_GIT_BIN";
+
+/// `git rev-parse --show-toplevel` in `cwd`; None on spawn failure or
+/// non-success exit. Shared by git_ui and file_browser, which keep their
+/// own error envelopes on top.
+pub(crate) fn rev_parse_toplevel(cwd: &Path) -> Option<String> {
+    let output = command()
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
 
 /// A `Command` preconfigured with the resolved git binary.
 pub(crate) fn command() -> Command {

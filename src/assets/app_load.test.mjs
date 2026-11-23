@@ -16,6 +16,11 @@ const APP_BUNDLE_FILES = [
   "./shared/options.js",
   "./shared/core.js",
   "./shared/actions.js",
+  "./shared/backend_state.js",
+  "./shared/prompt_cards.js",
+  "./shared/tour_driver.js",
+  "./shared/terminal_input.js",
+  "./shared/lens_model.js",
   "./shared/terminal_fit.js",
   "./desktop/search.js",
   "./desktop/app_js/core.js",
@@ -23,7 +28,8 @@ const APP_BUNDLE_FILES = [
   "./desktop/app_js/workspace_shell.js",
   "./desktop/app_js/right_sidebar.js",
   "./desktop/app_js/search_panel.js",
-  "./desktop/app_js/workspace_panes.js",
+  "./desktop/app_js/pane_drag.js",
+    "./desktop/app_js/workspace_panes.js",
   "./desktop/app_js/render.js",
   "./desktop/app_js/terminal.js",
   "./desktop/app_js/worktrees.js",
@@ -250,7 +256,8 @@ describe("app bundle load", () => {
       "./desktop/app_js/workspace_shell.js",
       "./desktop/app_js/right_sidebar.js",
       "./desktop/app_js/search_panel.js",
-      "./desktop/app_js/workspace_panes.js",
+      "./desktop/app_js/pane_drag.js",
+    "./desktop/app_js/workspace_panes.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
       "./desktop/app_js/worktrees.js",
@@ -266,6 +273,16 @@ describe("app bundle load", () => {
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -2796,8 +2813,8 @@ describe("app bundle load", () => {
     match(editorSource, /searchHighlightExtensions/);
     match(editorSource, /scrollToSearchHighlight/);
     ok(!editorSource.includes("defaultHighlightStyle"));
-    match(readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
-    match(readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
+    match(readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8"), /--editor-syntax-string: #a6e3a1/);
+    match(readFileSync(new URL("./app_boot.js", import.meta.url), "utf8"), /\/assets\/shared\/palette\.css/);
     match(source, /id="optFileBrowserLineNumbers"/);
     ok(!source.includes("optFileBrowserPathSearch"));
     match(source, /id="optFileBrowserSearchPageSize"/);
@@ -4826,9 +4843,7 @@ describe("app bundle load", () => {
     const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
     const workspacesCss = desktopWorkspacesCss;
     const terminalCss = readFileSync(new URL("./desktop/app_css/terminal.css", import.meta.url), "utf8");
-    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
-
-    // Herdr keeps a distinct mauve hue; built-in stays in the accent family.
+    const baseCss = readFileSync(new URL("./shared/palette.css", import.meta.url), "utf8");
     match(baseCss, /--backend-builtin: var\(--accent\)/);
     match(baseCss, /--backend-herdr: #cba6f7/);
     match(baseCss, /--backend-herdr: #8839ef/);
@@ -4941,8 +4956,9 @@ describe("app bundle load", () => {
     match(source, /terminalMouseReporting: false/);
     match(source, /next\.terminalMouseReporting = next\.terminalMouseReporting === true/);
     match(source, /function sendInputData\(data, inputOptions = \{\}\)/);
-    match(source, /allowMouseReports && globalThis\.HerdrAppHelpers && globalThis\.HerdrAppHelpers\.stripTerminalMouseReports/);
-    match(source, /stripTerminalMouseReports\(data, options\.terminalMouseReporting === true\)/);
+    match(source, /terminalInput\.sendInputData\(data, inputOptions\)/);
+    match(source, /stripMouseReports: \(data\) =>[\s\S]*?HerdrAppHelpers\.stripTerminalMouseReports/);
+    match(source, /stripTerminalMouseReports\(\n?\s*data,\n?\s*options\.terminalMouseReporting === true/);
     match(source, /onWheelMouseReport: \(report\) => sendInputData\(report, \{ allowMouseReports: true \}\)/);
     doesNotMatch(source, /stripTerminalQueryReplies/);
     doesNotMatch(source, /allowTerminalReplies/);
@@ -8201,15 +8217,18 @@ describe("app bundle load", () => {
   });
 
   it("captures terminal paste before native terminal paste", () => {
+    const inputSource = readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8");
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
     match(source, /sendPasteToTerminal\(text\)/);
-    match(source, /schedulePasteChunkFlush\(0\)/);
-    match(source, /function flushPasteChunks\(\)/);
-    match(source, /PASTE_TEXT_CHUNK_SIZE = 4096/);
-    match(source, /termWs\.bufferedAmount < PASTE_BUFFER_LIMIT/);
-    match(source, /normalizeTerminalPasteChunk\(pasteJob, rawChunk/);
-    match(source, /showTerminalPasteProgress\(pasteJob\.total\)/);
+    // Paste chunking lives in the shared input store; terminal.js wires
+    // the paste event to it and owns the progress DOM.
+    match(source, /terminalInput\.sendPaste\(text\)/);
+    match(source, /showTerminalPasteProgress|updateTerminalPasteProgress/);
+    match(inputSource, /function sendPaste\(text, opts/);
+    match(inputSource, /PASTE_TEXT_CHUNK_SIZE = 4096/);
+    match(inputSource, /bufferedAmount < PASTE_BUFFER_LIMIT/);
+    match(inputSource, /normalizePasteChunk\(job, chunk, isFinal\)/);
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
   });
@@ -9447,6 +9466,7 @@ describe("workspace sidebar order", () => {
     "./desktop/app_js/open_folder_flow.js",
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
+    "./desktop/app_js/pane_drag.js",
     "./desktop/app_js/workspace_panes.js",
     "./desktop/app_js/pane_focus.js",
     "./desktop/app_js/pane_workspace_picker.js",
@@ -9470,6 +9490,16 @@ describe("workspace sidebar order", () => {
     readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
     "\n" +
@@ -9780,6 +9810,16 @@ describe("terminal loading and failed states", () => {
       "\n" +
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
       "\n" +
+      readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
+      "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
@@ -9787,7 +9827,8 @@ describe("terminal loading and failed states", () => {
       [
         "./desktop/app_js/core.js",
         "./desktop/app_js/workspace_shell.js",
-        "./desktop/app_js/workspace_panes.js",
+        "./desktop/app_js/pane_drag.js",
+    "./desktop/app_js/workspace_panes.js",
         "./desktop/app_js/render.js",
         "./desktop/app_js/terminal.js",
         "./desktop/app_js/worktrees.js",
@@ -10427,7 +10468,8 @@ describe("shortcut hint toast", () => {
       "./desktop/app_js/workspace_shell.js",
       "./desktop/app_js/right_sidebar.js",
       "./desktop/app_js/search_panel.js",
-      "./desktop/app_js/workspace_panes.js",
+      "./desktop/app_js/pane_drag.js",
+    "./desktop/app_js/workspace_panes.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
       "./desktop/app_js/worktrees.js",
@@ -10443,6 +10485,16 @@ describe("shortcut hint toast", () => {
       readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/backend_state.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/prompt_cards.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/tour_driver.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_input.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/lens_model.js", import.meta.url), "utf8") +
       "\n" +
       readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
       "\n" +
@@ -10816,7 +10868,12 @@ describe("notes rail static pins", () => {
     match(assetsRs, /include_str!\("assets\/desktop\/notes\.js"\)/, "notes.js embedded");
     match(assetsRs, /include_str!\("assets\/desktop\/notes\.css"\)/, "notes.css embedded");
     const notesRs = read("../notes.rs");
-    ok(notesRs.includes("crate::require_auth"), "notes handlers sit behind require_auth");
+    // Auth guard: either the direct require_auth call or the extracted
+    // route_helpers guard (notes_auth alias, same check).
+    ok(
+      notesRs.includes("crate::require_auth") || notesRs.includes("route_auth as notes_auth"),
+      "notes handlers sit behind an auth guard",
+    );
     const guards = (notesRs.match(/notes_auth\(&state, &headers, remote\)/g) || []).length;
     ok(guards >= 5, "every notes route checks auth: " + guards);
   });

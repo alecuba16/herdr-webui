@@ -443,9 +443,7 @@ pub fn restart_service() -> io::Result<()> {
 }
 
 fn home_dir() -> io::Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is required"))
+    herdr_webui::socket_paths::home_dir()
 }
 
 fn local_bin_dir() -> io::Result<PathBuf> {
@@ -778,30 +776,29 @@ fn linux_service_unit(config: &WebConfig, install_bin: &Path) -> String {
     )
 }
 
+fn tls_args_enabled(config: &WebConfig) -> bool {
+    config.tls_mode_explicit || config.tls.cert_path.is_some() || config.tls.key_path.is_some()
+}
+
+/// (cli mode token, whether --tls-cert/--tls-key args follow). None = Off.
+fn tls_mode_spec(mode: TlsMode) -> Option<(&'static str, bool)> {
+    match mode {
+        TlsMode::Off => None,
+        TlsMode::Auto => Some(("auto", true)),
+        TlsMode::SelfSigned => Some(("self-signed", false)),
+        TlsMode::Files => Some(("files", true)),
+        TlsMode::Both => Some(("both", true)),
+    }
+}
+
 fn append_mac_tls_args(config: &WebConfig, args: &mut Vec<String>) {
-    if !config.tls_mode_explicit && config.tls.cert_path.is_none() && config.tls.key_path.is_none()
-    {
+    if !tls_args_enabled(config) {
         return;
     }
-    match config.tls.mode {
-        TlsMode::Off => {}
-        TlsMode::Auto => {
-            args.push("    <string>--https</string>".to_string());
-            args.push("    <string>auto</string>".to_string());
-            append_mac_tls_file_args(config, args);
-        }
-        TlsMode::SelfSigned => {
-            args.push("    <string>--https</string>".to_string());
-            args.push("    <string>self-signed</string>".to_string());
-        }
-        TlsMode::Files => {
-            args.push("    <string>--https</string>".to_string());
-            args.push("    <string>files</string>".to_string());
-            append_mac_tls_file_args(config, args);
-        }
-        TlsMode::Both => {
-            args.push("    <string>--https</string>".to_string());
-            args.push("    <string>both</string>".to_string());
+    if let Some((mode, with_files)) = tls_mode_spec(config.tls.mode) {
+        args.push("    <string>--https</string>".to_string());
+        args.push(format!("    <string>{}</string>", mode));
+        if with_files {
             append_mac_tls_file_args(config, args);
         }
     }
@@ -825,23 +822,13 @@ fn append_mac_tls_file_args(config: &WebConfig, args: &mut Vec<String>) {
 }
 
 fn append_systemd_tls_args(config: &WebConfig, exec: &mut String) {
-    if !config.tls_mode_explicit && config.tls.cert_path.is_none() && config.tls.key_path.is_none()
-    {
+    if !tls_args_enabled(config) {
         return;
     }
-    match config.tls.mode {
-        TlsMode::Off => {}
-        TlsMode::Auto => {
-            exec.push_str(" --https auto");
-            append_systemd_tls_file_args(config, exec);
-        }
-        TlsMode::SelfSigned => exec.push_str(" --https self-signed"),
-        TlsMode::Files => {
-            exec.push_str(" --https files");
-            append_systemd_tls_file_args(config, exec);
-        }
-        TlsMode::Both => {
-            exec.push_str(" --https both");
+    if let Some((mode, with_files)) = tls_mode_spec(config.tls.mode) {
+        exec.push_str(" --https ");
+        exec.push_str(mode);
+        if with_files {
             append_systemd_tls_file_args(config, exec);
         }
     }

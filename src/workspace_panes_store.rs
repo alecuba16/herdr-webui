@@ -951,14 +951,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/workspace-panes/op", post(panes_op))
 }
 
-#[allow(clippy::result_large_err)]
-fn panes_auth(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> Result<(), Response> {
-    crate::require_auth(state, headers, remote)
-}
-
-fn panes_json_error(status: StatusCode, message: String) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
-}
+use crate::route_helpers::{json_error as panes_json_error, route_auth as panes_auth};
 
 fn panes_session(headers: &HeaderMap) -> String {
     crate::canonical_session_name(
@@ -990,10 +983,7 @@ async fn panes_get(
         .map(|entry| entry_public_json(&session, &entry));
     match snapshot {
         Ok(value) => Json(value).into_response(),
-        Err(_) => panes_json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "panes store unavailable".into(),
-        ),
+        Err(_) => panes_json_error(StatusCode::SERVICE_UNAVAILABLE, "panes store unavailable"),
     }
 }
 

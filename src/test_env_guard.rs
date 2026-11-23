@@ -92,17 +92,17 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "helper restores under the caller's env_lock guard; std sync Mutex is not reentrant so locking here would deadlock",
     ),
     (
-        "src/builtin_backend.rs",
+        "src/builtin_backend/tests.rs",
         "builtin_pane_child_env_advertises_kitty_hint_and_scrubs_inherited_kitty_id",
         "pane spawn force-inserts TERM_PROGRAM=ghostty and scrubs KITTY_WINDOW_ID before the child env is built, so a leaked value cannot mislead anything (PR #240 worst-case export run: bin suite 602/0)",
     ),
     (
-        "src/builtin_backend.rs",
+        "src/builtin_backend/tests.rs",
         "builtin_panes_advertise_kitty_env_and_scrub_inherited_hints",
         "same spawn-site scrub covers the child PTY; validated with worst-case inherited values in the PR #240 audit",
     ),
     (
-        "src/builtin_backend.rs",
+        "src/builtin_backend/tests.rs",
         "drop",
         "RestoreEnvVar::drop restores JCODE_HOME/JCODE_NO_* while its creator (live_jcode_tui_detection_end_to_end) still holds crate::tests::lock_env(); the test drops the guards before releasing _guard, so the write is serialized under the shared lock",
     ),
@@ -132,7 +132,7 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "takes tests::lock_env (the file's wrapper over crate::test_env_lock) before the first set_var; the guard's resolver cannot prove a lock fn imported cross-module via `use super::tests::lock_env`, a resolver blind spot not a race",
     ),
     (
-        "src/tui/tests/mod.rs",
+        "src/tui/tests/common.rs",
         "drop",
         "SettingsEnvGuard::drop restores XDG_CONFIG_HOME while the guard still holds crate::test_env_lock() as its _lock field (fields drop after the Drop body), so the write stays serialized under the shared lock",
     ),
@@ -147,7 +147,7 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
 /// factories. Any other unit-mutex static is a private lock island (R3).
 const CANONICAL_LOCK_FNS: [(&str, &str); 2] = [
     ("src/lib.rs", "test_env_lock"),
-    ("src/tests.rs", "env_lock"),
+    ("src/tests/mod.rs", "env_lock"),
 ];
 
 /// In `tests/` each integration binary owns one lock convention of its own
@@ -1122,7 +1122,7 @@ fn canonical_module(caller_file: &str, qualifier: &str) -> Option<(String, Strin
         return None;
     }
     match module {
-        "tests" => Some(("src/tests.rs".to_string(), "tests".to_string())),
+        "tests" => Some(("src/tests/mod.rs".to_string(), "tests".to_string())),
         "tui" => Some(("src/tui.rs".to_string(), "tui".to_string())),
         other => Some((format!("src/{other}.rs"), other.to_string())),
     }

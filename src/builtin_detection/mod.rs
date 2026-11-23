@@ -45,6 +45,80 @@ pub mod scrape;
 
 use serde::{Deserialize, Serialize};
 
+/// (agent name, detector). `detect_agent_status` dispatches over this
+/// table; jcode routes through its variant selector instead.
+pub type AgentDetector = fn(&str) -> &'static str;
+pub static AGENT_DETECTORS: &[(&str, AgentDetector)] = &[
+    (
+        "opencode",
+        crate::builtin_detection::opencode::detect_opencode_status,
+    ),
+    ("kilo", crate::builtin_detection::kilo::detect_kilo_status),
+    ("amp", crate::builtin_detection::amp::detect_amp_status),
+    (
+        "agy",
+        crate::builtin_detection::antigravity::detect_antigravity_status,
+    ),
+    (
+        "claude",
+        crate::builtin_detection::claude::detect_claude_status,
+    ),
+    (
+        "cline",
+        crate::builtin_detection::cline::detect_cline_status,
+    ),
+    (
+        "codex",
+        crate::builtin_detection::codex::detect_codex_status,
+    ),
+    (
+        "cursor",
+        crate::builtin_detection::cursor::detect_cursor_status,
+    ),
+    (
+        "devin",
+        crate::builtin_detection::devin::detect_devin_status,
+    ),
+    (
+        "droid",
+        crate::builtin_detection::droid::detect_droid_status,
+    ),
+    (
+        "gemini",
+        crate::builtin_detection::gemini::detect_gemini_status,
+    ),
+    (
+        "copilot",
+        crate::builtin_detection::copilot::detect_copilot_status,
+    ),
+    ("grok", crate::builtin_detection::grok::detect_grok_status),
+    (
+        "hermes",
+        crate::builtin_detection::hermes::detect_hermes_status,
+    ),
+    ("kimi", crate::builtin_detection::kimi::detect_kimi_status),
+    ("kiro", crate::builtin_detection::kiro::detect_kiro_status),
+    ("maki", crate::builtin_detection::maki::detect_maki_status),
+    ("pi", crate::builtin_detection::pi::detect_pi_status),
+    (
+        "qodercli",
+        crate::builtin_detection::qodercli::detect_qodercli_status,
+    ),
+    (
+        "claurst",
+        crate::builtin_detection::claurst::detect_claurst_status,
+    ),
+    ("qwen", crate::builtin_detection::qwen::detect_qwen_status),
+];
+
+/// Table lookup for one agent. None = unknown agent.
+pub fn detect_agent_status(agent: &str, lower: &str) -> Option<&'static str> {
+    AGENT_DETECTORS
+        .iter()
+        .find(|(name, _)| *name == agent)
+        .map(|(_, detect)| detect(lower))
+}
+
 /// Selects which jcode screen-scrape pattern set the built-in backend uses.
 ///
 /// `Vanilla` matches the upstream jcode `master` output format: the numbered

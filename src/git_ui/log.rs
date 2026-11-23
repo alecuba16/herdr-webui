@@ -13,7 +13,7 @@ use super::diff::{git_ui_diff_args, GitUiDiffQuery};
 use super::log_graph::{parse_log_row_json, LOG_FORMAT};
 use super::{
     check_auth, git_json_error, git_spawn, git_ui_output, git_ui_repo, git_ui_text,
-    git_ui_text_strings, safe_git_token, safe_repo_path,
+    git_ui_text_strings, required_cwd, safe_git_token, safe_repo_path,
 };
 use crate::{git_failure, require_auth, WebState};
 
@@ -388,8 +388,9 @@ pub(super) async fn git_ui_log(
     Query(query): Query<GitUiLogQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    let Some(cwd) = query.cwd.as_deref() else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
+    let cwd = match required_cwd(query.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
     };
     let limit = query.max.unwrap_or(80).clamp(1, 2000);
     let all = query.all.unwrap_or(false);

@@ -18,6 +18,10 @@ const WORKSPACE_PANES_PATH = fileURLToPath(new URL("./desktop/app_js/workspace_p
 const workspacePanesScript = new vm.Script(readFileSync(WORKSPACE_PANES_PATH, "utf8"), {
   filename: WORKSPACE_PANES_PATH,
 });
+const PANE_DRAG_PATH = fileURLToPath(new URL("./desktop/app_js/pane_drag.js", import.meta.url));
+const paneDragScript = new vm.Script(readFileSync(PANE_DRAG_PATH, "utf8"), {
+  filename: PANE_DRAG_PATH,
+});
 
 function makeNode(id, className) {
   const node = {
@@ -249,7 +253,9 @@ function loadPanesModuleWithStorage(document, stateWs, stored, opts) {
   ctx.window = ctx;
   ctx.globalThis = ctx;
   const source = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
-  workspacePanesScript.runInContext(vm.createContext(ctx));
+  const panesVmCtx = vm.createContext(ctx);
+  paneDragScript.runInContext(panesVmCtx);
+  workspacePanesScript.runInContext(panesVmCtx);
   // Collector model: the boot seed leaf starts unbound. A harness ws
   // with no terminal rows yet would leave it unbound, and the sync's
   // focus-or-mint pass (state.ws set, no tab) would mint a SECOND
@@ -1622,11 +1628,12 @@ test("movePaneTabTo moves a non-route terminal without touching the route", () =
 
 test("dragged terminal and editor tabs carry draggable attributes in strip html", () => {
   const source = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
+  const dragSource = readFileSync(new URL("./desktop/app_js/pane_drag.js", import.meta.url), "utf8");
   assert.ok(source.includes('draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()"'), "all tab kinds are draggable");
   assert.ok(source.includes('data-tab-kind="terminal"'), "terminal tabs render (D7 drag)");
   assert.ok(/data-tab-kind="terminal"[^>]*draggable="true"/.test(source), "terminal tabs are draggable (D7)");
-  assert.ok(source.includes("function paneDropCaretAt"), "caret writer exists");
-  assert.ok(source.includes("function paneDropIndexAt"), "index calculator exists");
+  assert.ok(dragSource.includes("function paneDropCaretAt"), "caret writer exists");
+  assert.ok(dragSource.includes("function paneDropIndexAt"), "index calculator exists");
 });
 
 // ---- p6: per-strip controls (split/new/max/close) ------------------------

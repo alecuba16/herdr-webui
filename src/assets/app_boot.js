@@ -55,6 +55,7 @@
     const mobile = layout === "mobile";
     document.documentElement.dataset.herdrLayout = layout;
     if (mobile) {
+      loadCss("/assets/shared/file-tree.css");
       loadCss("/assets/mobile/app.css");
       loadCss("/assets/mobile/tour.css");
     } else {
@@ -65,6 +66,7 @@
       loadCss("/assets/shared/file-tree.css");
     }
     loadCss("/assets/shared/colors.css");
+    loadCss("/assets/shared/palette.css");
     loadCss("/assets/shared/tokens.css");
     loadCss("/assets/shared/skeleton.css");
     loadCss("/assets/shared/primitives.css");
@@ -80,6 +82,11 @@
       "/assets/shared/alert-card.js",
       "/assets/shared/options.js",
       "/assets/shared/actions.js",
+      "/assets/shared/backend-state.js",
+      "/assets/shared/prompt-cards.js",
+      "/assets/shared/tour-driver.js",
+      "/assets/shared/terminal-input.js",
+      "/assets/shared/lens-model.js",
       "/assets/shared/file-icons.js",
       "/assets/shared/file-tree.js",
       "/assets/shared/line-context.js",

@@ -9,8 +9,8 @@ use serde_json::json;
 
 use super::check_auth;
 use super::{
-    git_json_error, git_ui_output, git_ui_text_strings, is_not_git_repository, safe_git_token,
-    safe_repo_path,
+    git_json_error, git_ui_output, git_ui_text_strings, is_not_git_repository, required_cwd,
+    safe_git_token, safe_repo_path,
 };
 use crate::{require_auth, WebState};
 
@@ -434,8 +434,9 @@ fn root_parent_fallback(cwd: &str, commit: &str) -> Result<Option<String>, Strin
 }
 
 async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
-    let Some(cwd) = query.cwd.as_deref() else {
-        return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
+    let cwd = match required_cwd(query.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(response) => return response,
     };
     let args = match git_ui_diff_args(&query, compare) {
         Ok(args) => args,

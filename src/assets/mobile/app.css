@@ -24,52 +24,16 @@ html {
   overscroll-behavior: none;
 }
 body {
+  /* Shared palette vars (bg/fg/git/syntax/fonts) live in
+     shared/palette.css, loaded after this file. Only the mobile-specific
+     aliases and viewport var stay here. */
   --herdr-mobile-viewport-height: 100dvh;
-  --bg: #11111b;
-  --fg: #cdd6f4;
-  /* Same role as desktop base.css's --fg-dim: dimmed reading text
-     (expanded lens segments). Kept alongside --muted, which matches it
-     today, so the two can drift apart the way desktop's did. */
-  --fg-dim: #a6adc8;
-  --panel: #181825;
-  --panel2: #1e1e2e;
-  --editor-bg: #1e1e2e;
-  --border: #313244;
-  --border2: #45475a;
-  --muted: #a6adc8;
-  --accent: #89b4fa;
-  --editor-caret: #f2f5ff;
-  --editor-caret-dim: #a6adc8;
-  --git-modified-color: #e9d07a;
-  --git-added-color: #a6e3a1;
-  --git-deleted-color: #f38ba8;
-  --git-changed-color: #89b4fa;
-  --git-conflict-color: #fab387;
   --accent-fg: #11111b;
   --accent-1: var(--accent);
-  --backend-builtin: var(--accent);
-  --backend-herdr: #cba6f7;
   --accent-soft: color-mix(in srgb, var(--accent), transparent 84%);
   --accent-2: var(--accent-soft);
   --accent-border: color-mix(in srgb, var(--accent), transparent 45%);
   --accent-2-border: var(--accent-border);
-  --editor-syntax-keyword: #cba6f7;
-  --editor-syntax-constant: #f38ba8;
-  --editor-syntax-number: #fab387;
-  --editor-syntax-string: #a6e3a1;
-  --editor-syntax-regexp: #eba0ac;
-  --editor-syntax-comment: #bac2de;
-  --editor-syntax-variable: #cdd6f4;
-  --editor-syntax-function: #89b4fa;
-  --editor-syntax-type: #f9e2af;
-  --editor-syntax-property: #89dceb;
-  --editor-syntax-tag: #f5c2e7;
-  --editor-syntax-operator: #cdd6f4;
-  --editor-syntax-meta: #b4befe;
-  --editor-syntax-invalid: #f38ba8;
-  --mono-font: "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --font: ui-sans-serif, system-ui;
-  --font-mono: var(--mono-font);
   margin: 0;
   background: var(--bg);
   color: var(--fg);
@@ -79,46 +43,14 @@ body {
   overflow: hidden;
 }
 body.light {
-  --bg: #eff1f5;
-  --fg: #363a4f;
-  --fg-dim: #525769;
-  --panel: #e6e9ef;
-  --panel2: #ccd0da;
-  --editor-bg: #ccd0da;
-  --border: #bcc0cc;
-  --border2: #7a8296;
-  --muted: #525769;
-  --accent: #1957d2;
-  --danger: #a61b1b;
-  --editor-caret: #25253d;
-  --editor-caret-dim: #525769;
-  --git-modified-color: #7a4d00;
-  --git-added-color: #0f6210;
-  --git-deleted-color: #a61b1b;
-  --git-changed-color: #2150ae;
-  --git-conflict-color: #8a4708;
+  /* Light palette values come from shared/palette.css; only the mobile
+     accent aliases differ per theme here. */
   --accent-fg: #eff1f5;
   --accent-1: var(--accent);
-  --backend-builtin: var(--accent);
-  --backend-herdr: #8839ef;
   --accent-soft: color-mix(in srgb, var(--accent), transparent 84%);
   --accent-2: var(--accent-soft);
   --accent-border: color-mix(in srgb, var(--accent), transparent 45%);
   --accent-2-border: var(--accent-border);
-  --editor-syntax-keyword: #6d28d9;
-  --editor-syntax-constant: #a51d3d;
-  --editor-syntax-number: #9a3412;
-  --editor-syntax-string: #116329;
-  --editor-syntax-regexp: #9f1239;
-  --editor-syntax-comment: #525769;
-  --editor-syntax-variable: #363a4f;
-  --editor-syntax-function: #1a49c4;
-  --editor-syntax-type: #7c4207;
-  --editor-syntax-property: #0a5a86;
-  --editor-syntax-tag: #86198f;
-  --editor-syntax-operator: #363a4f;
-  --editor-syntax-meta: #3730a3;
-  --editor-syntax-invalid: #a51d3d;
 }
 #app {
   height: var(--herdr-mobile-viewport-height);
@@ -392,7 +324,7 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 }
 .mobile-connection-dot[data-state="connecting"] {
   background: var(--status-idle, #f9e2af);
-  animation: mobile-connection-pulse 1.4s ease-in-out infinite;
+  animation: herdr-pulse 1.4s ease-in-out infinite;
 }
 /* Offline banner: the connection dot's loud sibling. Sits between header
    and content as its own grid row; [hidden] collapses it (display: grid
@@ -509,11 +441,6 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 }
 .mobile-branch-create .mobile-btn {
   align-self: flex-end;
-}
-@keyframes mobile-connection-pulse {
-  50% {
-    opacity: 0.35;
-  }
 }
 .mobile-context .mobile-backend-badge {
   -webkit-appearance: none;
@@ -636,12 +563,6 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 
 .mobile-file-result-count {
   margin: 6px 2px 0;
-}
-.herdr-tree-hit {
-  background: var(--herdr-search-hit-bg);
-  border-radius: 3px;
-  color: var(--herdr-search-hit-fg);
-  padding: 0 2px;
 }
 .mobile-row {
   display: block;
@@ -903,7 +824,7 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
   position: relative;
 }
 .mobile-composer-send.mobile-composer-send-holding::after {
-  animation: composer-hold-ring 600ms linear forwards;
+  animation: herdr-hold-ring 600ms linear forwards;
   border: 2px solid var(--accent, #89b4fa);
   border-radius: 10px;
   content: "";
@@ -913,14 +834,6 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 }
 .mobile-composer-send.mobile-composer-send-queued {
   background: color-mix(in srgb, var(--accent, #89b4fa), transparent 80%);
-}
-@keyframes composer-hold-ring {
-  from {
-    clip-path: inset(0 100% 0 0);
-  }
-  to {
-    clip-path: inset(0 0 0 0);
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .mobile-composer-send.mobile-composer-send-holding::after {
@@ -1410,51 +1323,6 @@ body.mobile-keyboard-open .mobile-location-strip {
   font-size: 12px;
   padding: 4px 10px;
 }
-.herdr-tree-up-action:hover,
-.herdr-tree-up-action:focus {
-  border-color: var(--accent);
-  color: var(--accent);
-  outline: 0;
-}
-.herdr-tree-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.herdr-tree-crumb {
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  padding: 0;
-}
-.herdr-tree-crumb:hover {
-  color: var(--accent);
-  text-decoration: underline;
-}
-.herdr-tree-sep {
-  color: var(--muted);
-  padding: 0 2px;
-}
-.herdr-tree-meta,
-.herdr-tree-status {
-  color: var(--muted);
-  font-size: 11px;
-}
-.herdr-tree-status {
-  border: 1px solid var(--border2);
-  border-radius: 999px;
-  min-width: 20px;
-  padding: 1px 5px;
-  text-align: center;
-}
-.herdr-tree-row.git-modified { color: var(--git-modified-color); }
-.herdr-tree-row.git-added,
-.herdr-tree-row.git-untracked { color: var(--git-added-color); }
-.herdr-tree-row.git-deleted { color: var(--git-deleted-color); }
-.herdr-tree-row.git-changed { color: var(--git-changed-color); }
-.herdr-tree-row.git-conflict { color: var(--git-conflict-color); }
 .herdr-tree-icon {
   background: currentColor;
   display: inline-block;
@@ -1464,11 +1332,6 @@ body.mobile-keyboard-open .mobile-location-strip {
   mask-size: contain;
   width: 15px;
 }
-.herdr-tree-icon-chevron-right { mask-image: url("/assets/icons/chevron-right.svg"); }
-.herdr-tree-icon-chevron-down { mask-image: url("/assets/icons/chevron-down.svg"); }
-.herdr-tree-icon-folder { mask-image: url("/assets/icons/folder.svg"); }
-.herdr-tree-icon-folder-up { mask-image: url("/assets/icons/folder-up.svg"); }
-.herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
 .herdr-editor {
   border: 1px solid var(--border);
   border-radius: 12px;

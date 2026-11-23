@@ -362,17 +362,18 @@ describe("css selector coverage", () => {
     assert.ok(refsChecked > 50, `expected a meaningful var() corpus, got ${refsChecked} refs`);
   });
 
-  it("both shells define the shared font tokens next to --mono-font", () => {
+  it("the shared palette defines the font tokens both shells load", () => {
     // --font and --font-mono are referenced by editor find inputs, the git
     // log workbench, and lens tool output; before 0.7.50 no rule defined
     // them, so font: 12px var(--font) was an invalid shorthand the browser
-    // dropped. Both bodies must keep the tokens defined.
-    for (const sheet of ["desktop/app_css/base.css", "mobile/app.css"]) {
-      const css = readFileSync(join(ASSETS, sheet), "utf8");
-      assert.match(css, /--mono-font:/);
-      assert.match(css, /--font: ui-sans-serif, system-ui;/);
-      assert.match(css, /--font-mono: var\(--mono-font\);/);
-    }
+    // dropped. app_boot.js loads shared/palette.css for both layouts, so
+    // the tokens live there once instead of in each shell's body block.
+    const css = readFileSync(join(ASSETS, "shared/palette.css"), "utf8");
+    assert.match(css, /--mono-font:/);
+    assert.match(css, /--font: ui-sans-serif, system-ui;/);
+    assert.match(css, /--font-mono: var\(--mono-font\);/);
+    const boot = readFileSync(join(ASSETS, "app_boot.js"), "utf8");
+    assert.match(boot, /\/assets\/shared\/palette\.css/);
   });
 
   it("desktop shell defines the --text tokens pane tabs and notes read", () => {

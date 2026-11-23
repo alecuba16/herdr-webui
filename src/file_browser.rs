@@ -1671,16 +1671,7 @@ fn propagate_git_status(
 }
 
 fn git_repo_root(root: &Path) -> Option<(PathBuf, String)> {
-    let output = crate::git_bin::command()
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let repo_root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let repo_root = PathBuf::from(crate::git_bin::rev_parse_toplevel(root)?);
     let prefix = root
         .strip_prefix(&repo_root)
         .ok()
