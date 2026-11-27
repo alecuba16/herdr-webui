@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiDiffView({state, active, currentMode, activeToggleKind, compareRefLabel, isNoGitRepositoryView, diffFile, diffFileKey, diffFileLineCount, diffLineCount, largeDiffLineLimit, loadedLargeDiffPreviewLimit, previewDiffFile, diffLayoutMode, hashText, esc, arg, canSearchDiff, diffSearchMatchCount, LARGE_FILE_DIFF_LINE_LIMIT, titleWithGitShortcut, renderDiffConflictResolutionButtons, renderSideEditor, ensureBlame, renderChunk, stashCount, canOpenStashView, section, commitPreviewSection, stashListHtml, stashFileSection, renderGitViewTabs, hasStagedChanges, filterFiles, sideFileCount, renderWorktreeActions, renderDirContextMenu, appRefreshIconButton}) {
+  function createGitUiDiffView({state, active, currentMode, activeToggleKind, compareRefLabel, isNoGitRepositoryView, diffFile, diffFileKey, diffFileLineCount, diffLineCount, largeDiffLineLimit, loadedLargeDiffPreviewLimit, previewDiffFile, diffLayoutMode, hashText, esc, arg, canSearchDiff, diffSearchMatchCount, compareChangeCount, LARGE_FILE_DIFF_LINE_LIMIT, titleWithGitShortcut, renderDiffConflictResolutionButtons, renderSideEditor, ensureBlame, renderChunk, stashCount, canOpenStashView, section, commitPreviewSection, stashListHtml, stashFileSection, renderGitViewTabs, hasStagedChanges, filterFiles, sideFileCount, renderWorktreeActions, renderDirContextMenu, appRefreshIconButton}) {
     function canMutateDiff() {
       const view = active() || {};
       if (view.tab === "stash") return false;
@@ -140,7 +140,37 @@
           ? `<button class="git-ui-btn" title="${esc(titleWithGitShortcut("Edit file", "edit"))}" onclick="HerdrGitUi.editFile()">Edit</button>`
           : "";
       const search = renderDiffSearchControl(view);
-      return `<div class="git-ui-log-head">${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${search}${compare}</div>`;
+      const jump = renderCompareJumpControls(view, files);
+      return `<div class="git-ui-log-head">${changes}${history}${blame}${sideEditor}${conflicts ? `<button class="git-ui-btn ${activeTab === "conflicts" ? "active" : ""}" onclick="HerdrGitUi.tab('conflicts')">Conflicts</button>` : ""}${collapse}${search}${jump}${compare}</div>`;
+    }
+
+    // « » jump between files, ‹ › between change groups, each pair with a
+    // live counter. Only the full-tree commit compare renders them, so the
+    // working-tree changes toolbar stays as it was. The glyphs alone are
+    // not self-explanatory, so every button carries its aria-label, and
+    // the counters prepend a visually hidden word so screen readers
+    // announce "File 2/3" instead of a bare number. Buttons disable at
+    // the boundaries so the cursor never promises a no-op.
+    function renderCompareJumpControls(view, files) {
+      if (currentMode() !== "readonly-compare" || view.file || view.committedFile) return "";
+      const position = view.compareJump || {};
+      const fileIndex = position.file || 0;
+      const changeIndex = typeof position.change === "number" ? position.change : -1;
+      const fileLabel = files.length ? `${fileIndex + 1}/${files.length}` : "0/0";
+      const changeTotal = typeof compareChangeCount === "function" ? compareChangeCount(view) : 0;
+      const changeLabel = `${changeIndex < 0 ? 0 : changeIndex + 1}/${changeTotal}`;
+      const prevFileDisabled = files.length < 2 || fileIndex <= 0 ? " disabled" : "";
+      const nextFileDisabled = files.length < 2 || fileIndex >= files.length - 1 ? " disabled" : "";
+      const prevChangeDisabled = changeTotal < 1 || changeIndex <= 0 ? " disabled" : "";
+      const nextChangeDisabled = changeTotal < 1 || changeIndex >= changeTotal - 1 ? " disabled" : "";
+      return `<span class="git-ui-compare-jump" role="group" aria-label="Compare navigation">`
+        + `<button class="git-ui-btn git-ui-compare-jump-file" title="Previous file" aria-label="Previous file"${prevFileDisabled} onclick="HerdrGitUi.comparePrevFile()">«</button>`
+        + `<button class="git-ui-btn git-ui-compare-jump-file" title="Next file" aria-label="Next file"${nextFileDisabled} onclick="HerdrGitUi.compareNextFile()">»</button>`
+        + `<span class="git-ui-compare-jump-count" aria-live="polite"><span class="sr-only">File </span>${esc(fileLabel)}</span>`
+        + `<button class="git-ui-btn git-ui-compare-jump-change" title="Previous change" aria-label="Previous change"${prevChangeDisabled} onclick="HerdrGitUi.comparePrevChange()">‹</button>`
+        + `<button class="git-ui-btn git-ui-compare-jump-change" title="Next change" aria-label="Next change"${nextChangeDisabled} onclick="HerdrGitUi.compareNextChange()">›</button>`
+        + `<span class="git-ui-compare-jump-count" aria-live="polite"><span class="sr-only">Change </span>${esc(changeLabel)}</span>`
+        + `</span>`;
     }
 
     function renderDiffSearchControl(view) {
@@ -223,7 +253,12 @@
           : large && !loadedLarge
             ? renderLargeDiffPlaceholder(file)
             : renderDiffFileBody(file, lineCount, large, renderFullLarge);
-      return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${conflictActions}${restore}</span></div>${body}</div>`;
+      // A collapsed file keeps its counters visible in the header so the
+      // collapse reads as "large file, 1200 diff lines" instead of empty
+      // space. "diff lines" names what the count is: changed plus context
+      // lines, which can exceed the +/− badge numbers.
+      const collapsedHint = collapsed && mode !== "changes" ? ` · ${lineCount} diff lines` : "";
+      return `<div class="git-ui-diff-file" data-git-path="${esc(file.path)}"><div class="git-ui-diff-file-head"><button class="git-ui-file-collapse" title="${collapsed ? "Show file" : "Collapse file"}" onclick="HerdrGitUi.toggleFile('${arg(file.path)}')">${collapsed ? "+" : "−"}</button><strong>${esc(file.path)}</strong><span class="git-ui-muted">${esc(left)} → ${esc(right)}${esc(collapsedHint)}</span><span class="git-ui-diff-file-actions"><span class="git-ui-badge add">+${file.additions || 0}</span> <span class="git-ui-badge del">-${file.deletions || 0}</span>${conflictActions}${restore}</span></div>${body}</div>`;
     }
 
     function renderDiffFileBody(file, lineCount, large, renderFullLarge) {

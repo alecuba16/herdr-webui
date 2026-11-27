@@ -357,6 +357,7 @@
     arg,
     canSearchDiff,
     diffSearchMatchCount,
+    compareChangeCount,
     LARGE_FILE_DIFF_LINE_LIMIT,
     titleWithGitShortcut,
     renderDiffConflictResolutionButtons,
@@ -789,6 +790,114 @@
     return Math.max(0, Math.min(200, Number(view.diffContext || 3)));
   }
 
+  // Collapse threshold for the two-commit compare view: files above this
+  // many changed/context lines start collapsed (settings, default 500).
+  function compareCollapseLimit() {
+    const value = Number(gitUiOptions().gitUiCompareCollapseLimit);
+    return Number.isFinite(value) ? Math.max(0, value) : 500;
+  }
+
+  // Seeds view.collapsedFiles for a full-tree commit compare. Runs once per
+  // base..target pair: compareCommits resets the seed key, and every later
+  // fetch of the same pair (layout flip, search, focus return) keeps the
+  // user's manual toggles. Files already marked keep their state.
+  function seedCompareCollapsedFiles(view, files) {
+    if (!view) return;
+    const key = `${view.compareBase || ""}..${view.compareTarget || ""}`;
+    if (view.compareCollapseSeed === key) return;
+    view.compareCollapseSeed = key;
+    const limit = compareCollapseLimit();
+    view.collapsedFiles = view.collapsedFiles || {};
+    if (limit <= 0 || !files || !files.length) return;
+    for (const file of files) {
+      if (view.collapsedFiles[file.path] === undefined && diffFileLineCount(file) > limit) {
+        view.collapsedFiles[file.path] = true;
+      }
+    }
+  }
+
+  // Ordered change list for the compare jump controls: one entry per
+  // add/delete group per file, in render order. Each carries its file
+  // path and the hunk index so the jump can expand a collapsed file and
+  // scroll to the group inside it.
+  function compareChangeMarkers() {
+    const view = active() || {};
+    const files = (view.diff && view.diff.files) || [];
+    const markers = [];
+    for (const file of files) {
+      (file.chunks || []).forEach((chunk, chunkIndex) => {
+        const rows = markChangeGroups(rowsFromChunk(chunk));
+        rows.forEach((row, rowIndex) => {
+          if (row.groupStart) markers.push({ path: file.path, chunkIndex, rowIndex });
+        });
+      });
+    }
+    return markers;
+  }
+
+  // Total change groups in the loaded compare, for the jump counter.
+  function compareChangeCount(view) {
+    if (!view || view.mode !== "readonly-compare" || view.file) return 0;
+    return compareChangeMarkers().length;
+  }
+
+  // Jump state lives on the view; compareCommits resets it. Index -1 means
+  // no marker selected yet.
+  function compareJumpIndex(view) {
+    if (!view.compareJump) view.compareJump = { file: 0, change: -1 };
+    return view.compareJump.change;
+  }
+
+  // Moves the compare jump cursor, expands the target file when collapsed,
+  // scrolls to the marker row, and reports the position for the toolbar
+  // counter. Returns null when there is nothing to jump to.
+  function moveCompareJump(step) {
+    const view = active();
+    if (!view || currentMode() !== "readonly-compare" || view.file) return null;
+    const markers = compareChangeMarkers();
+    if (!markers.length) return null;
+    const current = compareJumpIndex(view);
+    const next = Math.min(markers.length - 1, Math.max(0, (current < 0 ? (step > 0 ? -1 : 0) : current) + step));
+    view.compareJump.change = next;
+    const marker = markers[next];
+    view.collapsedFiles = view.collapsedFiles || {};
+    if (view.collapsedFiles[marker.path]) view.collapsedFiles[marker.path] = false;
+    render();
+    requestAnimationFrame(() => scrollCompareJumpToMarker(marker));
+    return { index: next, total: markers.length, marker };
+  }
+
+  // Jumps between files of the compare: scrolls to the next (or previous)
+  // file header, expanding collapsed ones. Position resets to the first
+  // file after a wrap.
+  function moveCompareFileJump(step) {
+    const view = active();
+    if (!view || currentMode() !== "readonly-compare" || view.file) return null;
+    const files = (view.diff && view.diff.files) || [];
+    if (!files.length) return null;
+    if (!view.compareJump) view.compareJump = { file: 0, change: -1 };
+    const next = Math.min(files.length - 1, Math.max(0, view.compareJump.file + step));
+    view.compareJump.file = next;
+    view.collapsedFiles = view.collapsedFiles || {};
+    if (view.collapsedFiles[files[next].path]) view.collapsedFiles[files[next].path] = false;
+    render();
+    requestAnimationFrame(() => scrollToDiffFile(files[next].path));
+    return { index: next, total: files.length };
+  }
+
+  // The jump lands on the first row of the changed group. After render the
+  // hunk viewport holds DOM rows; find the one that carries the marker's
+  // row index inside its chunk.
+  function scrollCompareJumpToMarker(marker) {
+    const escapePath = typeof CSS !== "undefined" && CSS && CSS.escape ? CSS.escape(marker.path) : marker.path;
+    const node = document.querySelector(`.git-ui-diff-file[data-git-path="${escapePath}"]`);
+    if (!node) return;
+    const hunk = node.querySelectorAll(".git-ui-hunk")[marker.chunkIndex];
+    if (!hunk) { node.scrollIntoView({ block: "start", behavior: "smooth" }); return; }
+    const row = hunk.querySelectorAll(".git-ui-diff-row, .git-ui-unified-row")[marker.rowIndex];
+    (row || hunk).scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
   // What view.diff currently holds, as a comparable string. loadDiff
   // records it after every load; openViewTab compares it against what
   // the focused pane tab needs. The workspace view state is shared by
@@ -871,10 +980,25 @@
     if (!view) return;
     const context = diffContextOf(view);
     if (currentMode() !== "changes") {
+      const previousSignature = view.diffSignature;
       const mergeBase = currentMode() === "current-compare" ? "&merge_base=true" : "";
       const file = view.file ? `&file=${encodeURIComponent(view.file)}` : "";
       view.diff = await api(`/api/git-ui/compare?cwd=${encodeURIComponent(view.cwd)}&base=${encodeURIComponent(view.compareBase || "HEAD")}&target=${encodeURIComponent(view.compareTarget || "HEAD")}&context=${context}${mergeBase}${file}${diffFetchParams(view)}`);
       view.diffSignature = diffSignatureFor(view);
+      // Full-tree commit compare: apply the collapse threshold once per
+      // base..target pair so files over the limit start collapsed, then
+      // leave the user's manual toggles alone across re-renders and
+      // focus-return refetches of the same compare.
+      if (!view.file) {
+        seedCompareCollapsedFiles(view, (view.diff && view.diff.files) || []);
+        // A refetch under a new signature (layout flip, search) decorates
+        // rows differently, so a stale change index can point at the
+        // wrong row. File order is stable, so only the change cursor
+        // resets; a same-signature refetch keeps both cursors.
+        if (previousSignature && previousSignature !== view.diffSignature) {
+          view.compareJump = { file: (view.compareJump && view.compareJump.file) || 0, change: -1 };
+        }
+      }
       if (!view.file) view.compareFilePaths = ((view.diff && view.diff.files) || []).map((file) => file.path);
       saveFocusedDiff(view);
       if (state.visible) render();
@@ -2090,6 +2214,16 @@
       view.collapsedFiles[path] = !view.collapsedFiles[path];
       render();
     },
+    compareJumpChange(step) {
+      // A no-op jump is not an error: the toolbar counters show 0/0 and
+      // the keys just do nothing, same as the log search buttons when no
+      // commits match.
+      return moveCompareJump(step);
+    },
+    compareNextChange() { return this.compareJumpChange(1); },
+    comparePrevChange() { return this.compareJumpChange(-1); },
+    compareNextFile() { return moveCompareFileJump(1); },
+    comparePrevFile() { return moveCompareFileJump(-1); },
     toggleDir(path) {
       const view = active();
       if (!view) return;
@@ -2647,6 +2781,12 @@
       view.compareTarget = target;
       view.mode = "readonly-compare";
       clearHistoryCompareState(view);
+      // Fresh compare: clear the collapse state and let loadDiff seed it
+      // from the fetched files. The seed key guards later refetches of the
+      // same pair (layout flip, search) so manual toggles survive them.
+      view.compareCollapseSeed = "";
+      view.collapsedFiles = {};
+      view.compareJump = { file: 0, change: -1 };
       view.tab = "changes";
       // Phase 3c: a commit-pair compare rides its own center compare
       // tab, same as showHistoryCommit. Without this the pane tree keeps
@@ -2748,6 +2888,14 @@
       const view = active();
       if (!view || !hash) return;
       const selected = view.selectedLogCommits || [];
+      // Plain click with a pair armed: the pair is the compare input, so
+      // left-clicking either of its rows compares the two commits right
+      // away. The user flow is shift-click A, shift-click B, click either
+      // to open the comparison.
+      if (!event.shiftKey && selected.length === 2 && selected.includes(hash)) {
+        this.compareSelectedLog();
+        return;
+      }
       if (event.shiftKey && selected.includes(hash)) {
         view.selectedLogCommits = selected.filter((value) => value !== hash);
       } else if (event.shiftKey) {
