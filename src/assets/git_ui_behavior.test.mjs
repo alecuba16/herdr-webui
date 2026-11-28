@@ -726,6 +726,85 @@ test("compareCommits through the pane tree fetches the pair compare on a fresh t
   assert.match(compareContainerHtml(booted), /pair\.txt/, "the pair compare result renders");
 });
 
+test("third commit click after a pair compare restores the log view", async () => {
+  // The regression: compareCommits leaves the shared workspace view in
+  // compare state (tab="changes"), and a content click in the log pane
+  // only moves the pane focus pointer - writeRouteFromLeaf never routes
+  // git tabs through openGitTab. Nothing reset the stale state, so the
+  // third click rendered the pair compare over the log container and the
+  // log disappeared.
+  const THIRD = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": (params) => {
+      const target = params.get("target");
+      if (target === NEW) return { files: [{ path: "pair.txt", chunks: [] }] };
+      if (target === OLD) return { files: [{ path: "old-commit.txt", chunks: [] }] };
+      if (target === THIRD) return { files: [{ path: "third-commit.txt", chunks: [] }] };
+      throw new Error(`unexpected compare target: ${target}`);
+    },
+    "/api/git-ui/log": {
+      commits: [{ hash: NEW }, { hash: OLD }, { hash: THIRD }],
+      lines: [],
+      rows: [
+        { hash: NEW, graph: "*", title: "newest", labels: [], date: "2026-01-03", author: "A" },
+        { hash: OLD, graph: "*", title: "oldest", labels: [], date: "2026-01-01", author: "B" },
+        { hash: THIRD, graph: "*", title: "third", labels: [], date: "2026-01-02", author: "C" },
+      ],
+      has_more: false,
+      limit: 80,
+    },
+  });
+  const { ui, ctx, calls } = booted;
+  const chain = installRealPaneChain(booted);
+  const logContainerHtml = () => {
+    const containers = booted.ctx.document.__paneContainers || new Map();
+    return String(((containers.get("git-mount-log") || {}).innerHTML) || "");
+  };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await chain.panes.openGitTab("log");
+  await settle();
+  // replaceContent lands the async log body through the container's
+  // .git-ui-content child; capture it so the assertions read the real log
+  // markup, not just the synchronous wrapper.
+  const logBody = element();
+  ctx.document.getElementById("git-mount-log").querySelector = (selector) =>
+    selector === ".git-ui-content" ? logBody : null;
+  const logBodyHtml = () => String(logBody.innerHTML || "");
+  // Arm the pair from the log tab, then plain-click either armed row: the
+  // compare tab takes the pane focus and the log tab keeps its container.
+  ui.selectLogCommit({ shiftKey: true }, OLD);
+  ui.selectLogCommit({ shiftKey: true }, NEW);
+  ui.selectLogCommit({ shiftKey: false }, NEW);
+  await settle();
+  assert.equal(chain.activeTabId(), `git:compare@${OLD}..${NEW}`, "the pair compare owns the active tab");
+  assert.match(compareContainerHtml(booted), /pair\.txt/, "the compare tab renders its diff");
+  // A content click in the log pane moves only the pane focus pointer,
+  // which is all pane_focus gives a git tab: no openGitTab, no view-key
+  // application.
+  chain.panes.setActivePaneTab("git:log");
+  const before = calls.length;
+  ui.selectLogCommit({ shiftKey: false }, THIRD);
+  await settle();
+  const preview = calls.slice(before).filter((call) => call.path === "/api/git-ui/compare"
+    && call.params.get("base") === `${THIRD}^` && call.params.get("target") === THIRD);
+  assert.equal(preview.length, 1, "the third click fetches that commit's preview");
+  const logHtml = logContainerHtml();
+  assert.match(logHtml, /git-ui-content-log/, "the log container renders the log view");
+  assert.doesNotMatch(logHtml, /Comparing/, "the stale compare must not paint over the log");
+  assert.ok(!logHtml.includes("pair.txt"), "the pair compare diff must not paint over the log");
+  // The log body must actually render: the workbench with its rows and the
+  // third commit's preview in the details column.
+  const bodyHtml = logBodyHtml();
+  assert.match(bodyHtml, /git-ui-log-workbench/, "the log workbench renders after the compare");
+  assert.match(bodyHtml, /"third"|>third</, "the third commit row renders in the log");
+  assert.match(bodyHtml, /Committed files/, "the third commit's preview section renders");
+  assert.match(bodyHtml, /third-commit\.txt/, "the preview lists the third commit's file");
+  assert.match(compareContainerHtml(booted), /pair\.txt/, "the compare tab keeps its own diff");
+});
+
 test("status-row file click through the pane tree fetches the focused diff", async () => {
   const booted = await bootGitUi({
     "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] },

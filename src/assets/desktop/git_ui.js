@@ -477,6 +477,9 @@
       return true;
     }
     if (key === "log" || key === "stash" || key === "cleanup" || key === "conflicts") {
+      // Whole-tree tabs never render a compare: keep a stale compare mode
+      // from leaking its diff into these containers.
+      if (currentMode() !== "changes") resetToChangesMode(view);
       view.tab = key;
       return true;
     }
@@ -1567,6 +1570,18 @@
   function diffFile(path) {
     const view = active() || {};
     return ((view.diff && view.diff.files) || []).find((file) => file.path === path);
+  }
+
+  // Pane content clicks only move the focus pointer: no openGitTab, no
+  // view-key application. A focused compare can leave its mode behind on
+  // the shared workspace view while the pane tree still points at the log
+  // tab, and renderMain then paints the compare into the log container.
+  // The compare tab itself survives a re-focus: the re-applied compare@
+  // key restores its parked diff.
+  function ensureLogViewState(view) {
+    if (!view) return;
+    if (currentMode() !== "changes") resetToChangesMode(view);
+    view.tab = "log";
   }
 
   function loadSelectedCommitPreview(view, hash) {
@@ -2822,7 +2837,7 @@
       // Phase 3c: the log center tab carries the jump.
       const panes = window.HerdrWorkspacePanes;
       if (panes && panes.openGitTab) void panes.openGitTab("log");
-      else { view.tab = "log"; render(); }
+      else { ensureLogViewState(view); render(); }
     },
     async openFileHistory(cwd, path) {
       cwd = decodeURIComponent(cwd || "");
@@ -2852,6 +2867,7 @@
     clearLogFileHistory() {
       const view = active();
       if (!view) return;
+      ensureLogViewState(view);
       view.logFilePath = "";
       view.logLimit = GIT_LOG_PAGE_SIZE;
       render();
@@ -2896,6 +2912,7 @@
         this.compareSelectedLog();
         return;
       }
+      ensureLogViewState(view);
       if (event.shiftKey && selected.includes(hash)) {
         view.selectedLogCommits = selected.filter((value) => value !== hash);
       } else if (event.shiftKey) {
@@ -2915,6 +2932,7 @@
       const view = active();
       hash = decodeURIComponent(hash || "");
       if (!view || !hash) return false;
+      ensureLogViewState(view);
       // A pair selection is the two-commit compare input: right-clicking a
       // row that is part of the pair keeps it so the menu's Compare runs
       // the pair. Otherwise the click targets one commit, and the menu
@@ -2936,6 +2954,7 @@
     clearLogSelection() {
       const view = active();
       if (!view) return;
+      ensureLogViewState(view);
       view.selectedLogCommits = [];
       view.selectedCommitPreview = null;
       state.logContextMenu = null;
@@ -2956,8 +2975,12 @@
       this.compareCommits(base, target);
     },
     openSelectedCompareModal() {
-      const selected = ((active() || {}).selectedLogCommits || []).slice(0, 1);
+      const view = active();
+      const selected = ((view || {}).selectedLogCommits || []).slice(0, 1);
       if (!selected.length) return;
+      // The modal opens over the log view: render it against log state so a
+      // stale compare cannot repaint the log container behind it.
+      ensureLogViewState(view);
       state.compareSelectedModal = { ref: selected[0] };
       render();
     },
@@ -2994,6 +3017,7 @@
     cycleLogScope() {
       const view = active();
       if (!view) return;
+      ensureLogViewState(view);
       const order = ["all", "base-current", "base"];
       const current = normalizeLogScope(view.logScope || (view.logAll ? "all" : "base-current"));
       view.logScope = order[(order.indexOf(current) + 1) % order.length];
@@ -3004,6 +3028,7 @@
     async loadMoreLog() {
       const view = active();
       if (!view || view.logLoadingMore) return;
+      ensureLogViewState(view);
       view.logLimit = Math.min(GIT_LOG_MAX_LIMIT, Math.max(GIT_LOG_PAGE_SIZE, Number(view.logLimit || GIT_LOG_PAGE_SIZE)) + GIT_LOG_PAGE_SIZE);
       view.logLoadingMore = true;
       try {
@@ -3019,6 +3044,7 @@
       const view = active();
       if (!view) return;
       if (!["description", "date", "author"].includes(field)) return;
+      ensureLogViewState(view);
       view.logFilters = view.logFilters || { description: "", date: "", author: "" };
       view.logFilters[field] = value || "";
       if (window.HerdrGitLog && window.HerdrGitLog.applyFilters) window.HerdrGitLog.applyFilters(view.logFilters);
