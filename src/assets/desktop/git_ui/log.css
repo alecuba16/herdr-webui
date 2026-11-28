@@ -194,6 +194,19 @@ body.light .git-ui-log-workbench {
   font-size: 12px; margin-left: auto; max-width: 360px; overflow: hidden;
   padding: 3px 8px; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Compare jump controls: « » files, ‹ › change groups, with counters. */
+.git-ui-compare-jump {
+  align-items: center; display: inline-flex; gap: 4px; margin-left: auto;
+}
+.git-ui-compare-jump .git-ui-btn { padding: 2px 8px; }
+.git-ui-compare-jump-count {
+  color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums;
+  min-width: 40px; text-align: center; white-space: nowrap;
+}
+.git-ui-log-pair-compare {
+  flex-shrink: 0; margin-left: 8px; max-width: 220px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
 .git-ui-diff-search {
   align-items: center; border: 1px solid var(--border2); border-radius: 999px;
   color: var(--muted); display: inline-flex; flex: 1 1 220px; gap: 6px;

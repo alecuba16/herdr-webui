@@ -118,6 +118,7 @@
       );
       if (!targetInGitUi && !targetInTerminal) consume();
       if (handleDiffSearchShortcut(event, view)) { consume(); return; }
+      if (handleCompareJumpShortcut(event, view)) { consume(); return; }
       // Production prefix presses never reach this listener (the webui
       // dispatcher delegates through handleChordActionKey instead); only
       // direct feeds like tests land here, so re-arm for the next key.
@@ -198,6 +199,21 @@
       event.preventDefault();
       getGitUi().openDiffSearch();
       return true;
+    }
+
+    // Compare navigation on the full-tree commit compare: ]/[ walk change
+    // groups, }/{ walk files. Editable targets keep their keys, and the
+    // per-file compare keeps them too (its file list is the navigation).
+    function handleCompareJumpShortcut(event, view) {
+      if (!event || editableTarget(event.target)) return false;
+      if (event.metaKey || event.ctrlKey || event.altKey) return false;
+      if (!view || view.mode !== "readonly-compare" || view.file) return false;
+      const gitUi = getGitUi();
+      if (event.key === "]") { event.preventDefault(); gitUi.compareNextChange(); return true; }
+      if (event.key === "[") { event.preventDefault(); gitUi.comparePrevChange(); return true; }
+      if (event.key === "}") { event.preventDefault(); gitUi.compareNextFile(); return true; }
+      if (event.key === "{") { event.preventDefault(); gitUi.comparePrevFile(); return true; }
+      return false;
     }
 
     function isDiffSearchTarget(target) {
@@ -343,7 +359,7 @@
 
     function showGitKeyboardHelp() {
       const map = gitShortcutMap();
-      alertFn(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.cleanup)} Cleanup tab\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Branch popover in the location bar\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.pull)} Pull update\n${shortcutDisplay(map.push)} Push\n${shortcutDisplay(map.fetch)} Fetch origin\n${shortcutDisplay(map.pullRebase)} Pull with rebase\n${shortcutDisplay(map.stashPush)} Stash push\n${shortcutDisplay(map.stashApply)} Apply selected stash\n${shortcutDisplay(map.stashPop)} Pop selected stash\n${shortcutDisplay(map.stashDrop)} Drop selected stash\n${shortcutDisplay(map.conflictOurs)} Conflict: use HEAD\n${shortcutDisplay(map.conflictBase)} Conflict: use parent\n${shortcutDisplay(map.conflictTheirs)} Conflict: use remote\n${shortcutDisplay(map.conflictMark)} Conflict: mark resolved\n${shortcutDisplay(map.help)} Git shortcut help\n\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nEsc Back / hide`);
+      alertFn(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.cleanup)} Cleanup tab\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Branch popover in the location bar\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.pull)} Pull update\n${shortcutDisplay(map.push)} Push\n${shortcutDisplay(map.fetch)} Fetch origin\n${shortcutDisplay(map.pullRebase)} Pull with rebase\n${shortcutDisplay(map.stashPush)} Stash push\n${shortcutDisplay(map.stashApply)} Apply selected stash\n${shortcutDisplay(map.stashPop)} Pop selected stash\n${shortcutDisplay(map.stashDrop)} Drop selected stash\n${shortcutDisplay(map.conflictOurs)} Conflict: use HEAD\n${shortcutDisplay(map.conflictBase)} Conflict: use parent\n${shortcutDisplay(map.conflictTheirs)} Conflict: use remote\n${shortcutDisplay(map.conflictMark)} Conflict: mark resolved\n${shortcutDisplay(map.help)} Git shortcut help\n\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nShift-click two commits to arm a pair, then click either (or the Compare button) to compare them.\nCompare view: ]/[ next/previous change, }/{ next/previous file, « » and ‹ › buttons do the same.\nEsc Back / hide`);
     }
 
     // Display text lives in shared/core.js (HerdrAppHelpers) so the

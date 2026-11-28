@@ -84,7 +84,19 @@
     const footer = renderLoadMore(options.data || {}, rows, options, esc);
     const count = `${searchPosition >= 0 ? searchPosition + 1 : 0} / ${matches.length}`;
     const disabled = matches.length ? "" : " disabled";
-    const search = `<div class="git-ui-log-searchbar">${scopeButton}<label class="git-ui-log-search-input"><span>Search commits</span><input name="git-log-search" aria-label="Search commits" value="${esc(filters.description || "")}"${inputAttrs("search")} oninput="HerdrGitLog.setSearch(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();HerdrGitLog.navigateSearch(event.shiftKey?-1:1)}"></label><button type="button" class="git-ui-log-search-case" aria-label="Match case" aria-pressed="${searchCaseSensitive}" onclick="HerdrGitLog.toggleSearchCase()">Aa</button><button type="button" class="git-ui-log-search-previous" aria-label="Previous matching commit" onclick="HerdrGitLog.navigateSearch(-1)"${disabled}>↑</button><button type="button" class="git-ui-log-search-next" aria-label="Next matching commit" onclick="HerdrGitLog.navigateSearch(1)"${disabled}>↓</button><output class="git-ui-log-search-count" aria-live="polite">${count}</output><details class="git-ui-log-advanced-filters"><summary>Filters</summary>${renderFilterRow(filters, esc)}</details></div>`;
+    // Two armed commits are a compare pair waiting for one more click: the
+    // button gives the flow a visible affordance next to the rows the user
+    // just shift-clicked. The label orders the pair by log position
+    // (oldest ↔ newest), the same order compareSelectedLog uses, so the
+    // button never promises a different direction than the compare opens.
+    let pairCompare = "";
+    if (selected.length === 2) {
+      const commitOrder = new Map(((options.data || {}).commits || []).map((commit, index) => [String(commit.hash || ""), index]));
+      const rank = (hash) => (commitOrder.has(hash) ? commitOrder.get(hash) : Number.MAX_SAFE_INTEGER);
+      const [newest, oldest] = selected.slice().sort((a, b) => rank(a) - rank(b));
+      pairCompare = `<button type="button" class="git-ui-btn primary git-ui-log-pair-compare" title="Compare the two selected commits (or click either selected row)" onclick="HerdrGitUi.compareSelectedLog()">Compare ${esc(String(oldest || "").slice(0, 7))} ↔ ${esc(String(newest || "").slice(0, 7))}</button>`;
+    }
+    const search = `<div class="git-ui-log-searchbar">${scopeButton}<label class="git-ui-log-search-input"><span>Search commits</span><input name="git-log-search" aria-label="Search commits" value="${esc(filters.description || "")}"${inputAttrs("search")} oninput="HerdrGitLog.setSearch(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();HerdrGitLog.navigateSearch(event.shiftKey?-1:1)}"></label><button type="button" class="git-ui-log-search-case" aria-label="Match case" aria-pressed="${searchCaseSensitive}" onclick="HerdrGitLog.toggleSearchCase()">Aa</button><button type="button" class="git-ui-log-search-previous" aria-label="Previous matching commit" onclick="HerdrGitLog.navigateSearch(-1)"${disabled}>↑</button><button type="button" class="git-ui-log-search-next" aria-label="Next matching commit" onclick="HerdrGitLog.navigateSearch(1)"${disabled}>↓</button><output class="git-ui-log-search-count" aria-live="polite">${count}</output><details class="git-ui-log-advanced-filters"><summary>Filters</summary>${renderFilterRow(filters, esc)}</details>${pairCompare}</div>`;
     return `<section class="git-ui-log-workbench" data-git-log-design="zed" data-log-scope="${logScope}" data-has-selection="${selected.length > 0}" data-has-details="${selected.length === 1}"><div class="git-ui-log-layout"><div class="git-ui-log-browser">${search}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div></div>${selected.length === 1 ? detailsSeparator() : ""}${renderDetails(options)}</div></section>`;
   }
 
@@ -518,7 +530,11 @@
     const nonmatch = !hash || matchesFilters(filterText, filters) ? "" : " git-ui-log-nonmatch";
     const click = hash ? ` role="button" tabindex="0" aria-pressed="${selected.includes(hash)}" onclick="HerdrGitUi.selectLogCommit(event,'${arg(hash)}')" onkeydown="if(event.target===this&&(event.key==='ContextMenu'||(event.key==='F10'&&event.shiftKey&&!event.ctrlKey&&!event.altKey&&!event.metaKey))){event.preventDefault();event.stopPropagation();HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');}else if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();HerdrGitUi.selectLogCommit(event,'${arg(hash)}')}" oncontextmenu="HerdrGitUi.openLogContextMenu(event,'${arg(hash)}');return false"` : "";
     const hover = renderHover(row, color, esc, baseBranch);
-    const tooltip = hoverText(row);
+    // While a pair is armed, its rows advertise the compare-on-click
+    // behavior, so the trigger is never a surprise and users who want
+    // single-commit details know to open the context menu instead.
+    const pairArmed = hash && selected.length === 2 && selected.includes(hash);
+    const tooltip = hoverText(row) + (pairArmed ? "\nClick to compare the two selected commits" : "");
     return `<div class="git-ui-log-row${selectedClass}${graphOnly}${currentClass}${upstreamTip}${nonmatch}" data-log-hash="${esc(hash)}" data-log-filter-description="${esc(filterText.description)}" data-log-filter-date="${esc(filterText.date)}" data-log-filter-author="${esc(filterText.author)}" style="--lane:${color}" title="${esc(tooltip)}"${click}><span class="git-ui-log-cell-refs">${renderCompactLabels(row.labels || [], row.current, esc, baseBranch)}</span>${renderGraph(row.graph, !!hash, upstreamTip, isCurrent, painting)}<span class="git-ui-log-cell-description git-ui-log-desc"><span class="git-ui-log-title">${esc(title)}</span></span><span class="git-ui-log-cell-date git-ui-log-date">${esc(row.date || "")}</span><span class="git-ui-log-cell-author git-ui-log-author">${hash ? `<span class="git-ui-log-author-avatar">${renderPerson(16)}</span>` : ""}${esc(row.author || "")}</span><span class="git-ui-log-cell-hash">${esc(hash.slice(0, 7))}</span>${hover}</div>`;
   }
 

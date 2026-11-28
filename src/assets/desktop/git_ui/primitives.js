@@ -17,6 +17,13 @@
       return Number.isFinite(value) ? Math.max(0, value) : 2000;
     }
 
+    // Two-commit compare: files above this many changed/context lines
+    // render collapsed on load. 0 disables auto-collapse.
+    function compareCollapseLimit() {
+      const value = Number(gitUiOptions().gitUiCompareCollapseLimit);
+      return Number.isFinite(value) ? Math.max(0, value) : 500;
+    }
+
     function largeChangeFileLimit() {
       const value = Number(gitUiOptions().gitUiLargeChangeFileLimit);
       return Number.isFinite(value) ? Math.max(0, value) : 25;
@@ -133,6 +140,7 @@
       gitUiOptions,
       explorationDefaultDirectory,
       largeDiffLineLimit,
+      compareCollapseLimit,
       largeChangeFileLimit,
       largeSectionFileLimit,
       fileListMode,
